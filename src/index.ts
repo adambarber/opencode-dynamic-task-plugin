@@ -34,6 +34,7 @@ import {
   validateLineage,
   buildTaskLineage,
   resolveAwaitResponse,
+  isDispatchableAgent,
 } from "./shared/task-policy.js";
 import {
   createStateStore,
@@ -281,10 +282,7 @@ async function fetchAgents(client: any): Promise<any[]> {
       agents = result.agents || result.data || Object.values(result);
     }
 
-    cachedAgents = agents.filter((a: any) => {
-      const mode = a.mode || a.type || "all";
-      return mode === "subagent";
-    });
+    cachedAgents = agents.filter((a: any) => isDispatchableAgent(a));
 
     lastCacheTime = now;
   } catch (e: any) {

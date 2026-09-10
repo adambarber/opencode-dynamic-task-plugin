@@ -47,6 +47,22 @@ export function validateAgent(agentName: unknown, config: DynamicTaskConfig): Po
   return { ok: true };
 }
 
+// ─── isDispatchableAgent ───────────────────────────────────────────
+// Whether an agent may be invoked as a subagent by dynamic_task.
+// OpenCode's Agent.mode is a tri-state: "primary" | "subagent" | "all".
+// - "subagent": only ever invokable as a child → dispatchable.
+// - "all": usable as primary OR subagent → dispatchable.
+// - "primary": main-loop only → NOT dispatchable.
+// An absent/empty mode falls back to "all" (OpenCode's own default), so
+// unannotated agents remain dispatchable. A legacy `type` field is honored
+// when `mode` is absent to survive older API response shapes.
+
+export function isDispatchableAgent(agent: { mode?: unknown; type?: unknown }): boolean {
+  const raw = agent?.mode || agent?.type || "all";
+  const mode = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  return mode === "subagent" || mode === "all";
+}
+
 // ─── isSameAgent ───────────────────────────────────────────────────
 // Checks if parent and child agent names refer to the same agent.
 // Normalizes both names before comparison.

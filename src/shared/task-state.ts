@@ -291,6 +291,34 @@ export function stealTimeoutHandle(
   return handle;
 }
 
+// ─── noteLateOutcome ───────────────────────────────────────────────
+// Records a late terminal observation on a retained task without moving it.
+// Permitted edges: timed_out_retained → completed_after_timeout | error
+// (late completion), and any retained state → error (late failure).
+// Anything else throws — terminal states do not regress.
+
+export function noteLateOutcome(
+  store: TaskStore,
+  childSessionId: string,
+  toState: "completed_after_timeout" | "error",
+): RetainedTaskState {
+  const retained = store.retainedTasks.get(childSessionId);
+  if (!retained) {
+    throw new Error(`Task "${childSessionId}" is not retained.`);
+  }
+  const allowed: TaskLifecycleState[] =
+    retained.state === "timed_out_retained"
+      ? ["completed_after_timeout", "error"]
+      : ["error"];
+  if (!allowed.includes(toState)) {
+    throw new Error(
+      `Invalid late outcome: "${retained.state}" → "${toState}" for task "${childSessionId}".`,
+    );
+  }
+  retained.state = toState;
+  return retained;
+}
+
 // ─── discardRetained ───────────────────────────────────────────────
 // Removes a retained entry (e.g. on interrupt). Returns true when present.
 

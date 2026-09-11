@@ -14,6 +14,8 @@ import {
   classifyPromptError,
   extractTextFromParts,
   extractTextFromPromptResult,
+  getLatestAssistantText,
+  hydrateLatestText,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -929,6 +931,7 @@ import {
   forceRetain,
   discardRetained,
   stealTimeoutHandle,
+  noteLateOutcome,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1467,6 +1470,82 @@ describe("task-state: stealTimeoutHandle", () => {
     seedSesActive(store, config);
     assert.strictEqual(stealTimeoutHandle(store, "ses_active"), undefined);
     assert.strictEqual(stealTimeoutHandle(store, "ses_nope"), undefined);
+  });
+});
+
+describe("prompt dance: getLatestAssistantText", () => {
+  const assistant = (text) => ({ role: "assistant", parts: [{ type: "text", text }] });
+  const user = (text) => ({ role: "user", parts: [{ type: "text", text }] });
+
+  it("returns the newest assistant text", () => {
+    assert.strictEqual(
+      getLatestAssistantText([assistant("first"), user("q"), assistant("second")]),
+      "second"
+    );
+  });
+
+  it("skips messages before startIndex and empty parts", () => {
+    assert.strictEqual(getLatestAssistantText([assistant("old"), assistant("new")], 1), "new");
+    assert.strictEqual(getLatestAssistantText([assistant(""), user("q")]), "");
+    assert.strictEqual(getLatestAssistantText([]), "");
+    assert.strictEqual(getLatestAssistantText(null), "");
+  });
+});
+
+describe("prompt dance: hydrateLatestText", () => {
+  it("reads the latest assistant text from the session", async () => {
+    const client = {
+      session: {
+        messages: async () => [{ role: "assistant", parts: [{ type: "text", text: "CHILD_SAYS" }] }],
+      },
+    };
+    assert.strictEqual(await hydrateLatestText(client, "ses_1"), "CHILD_SAYS");
+  });
+
+  it("falls back to empty string when messages fail", async () => {
+    const client = { session: { messages: async () => { throw new Error("gone"); } } };
+    assert.strictEqual(await hydrateLatestText(client, "ses_1"), "");
+  });
+});
+
+describe("task-state: noteLateOutcome", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  function seedTimedOut(store) {
+    seedSesActive(store, config);
+    return forceRetain(store, "ses_active", { state: "timed_out_retained" });
+  }
+
+  it("advances timed_out_retained to completed_after_timeout", () => {
+    const store = createStateStore();
+    seedTimedOut(store);
+    const updated = noteLateOutcome(store, "ses_active", "completed_after_timeout");
+    assert.strictEqual(updated.state, "completed_after_timeout");
+    assert.ok(store.retainedTasks.has("ses_active"), "stays retained");
+  });
+
+  it("advances timed_out_retained to error", () => {
+    const store = createStateStore();
+    seedTimedOut(store);
+    assert.strictEqual(noteLateOutcome(store, "ses_active", "error").state, "error");
+  });
+
+  it("allows error observations on other terminal states", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "completed", config);
+    assert.strictEqual(noteLateOutcome(store, "ses_active", "error").state, "error");
+  });
+
+  it("rejects non-edges and unknown sessions", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "completed", config);
+    assert.throws(
+      () => noteLateOutcome(store, "ses_active", "completed_after_timeout"),
+      /Invalid late outcome/
+    );
+    assert.throws(() => noteLateOutcome(store, "ses_nope", "error"), /not retained/);
   });
 });
 

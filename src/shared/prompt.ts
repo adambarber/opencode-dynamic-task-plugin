@@ -90,3 +90,50 @@ export function extractTextFromPromptResult(result: any): string {
 
   return "";
 }
+
+// ─── extractMessages ───────────────────────────────────────────────
+// (Moved verbatim from index.ts — message-shape handling belongs here.)
+
+export function extractMessages(result: any): any[] {
+  if (Array.isArray(result)) return result;
+  if (Array.isArray(result?.data)) return result.data;
+  if (Array.isArray(result?.body?.messages)) return result.body.messages;
+  return [];
+}
+
+// ─── getLatestAssistantText ────────────────────────────────────────
+// (Moved verbatim from index.ts.)
+
+export function getLatestAssistantText(messages: any[], startIndex: number = 0): string {
+  if (!Array.isArray(messages) || messages.length === 0) return "";
+  const from = Math.max(0, startIndex);
+
+  for (let i = messages.length - 1; i >= from; i--) {
+    const msg = messages[i];
+    const role = msg?.info?.role || msg?.role;
+    if (role !== "assistant") continue;
+
+    const text = extractTextFromParts(msg?.parts || []);
+    if (text.trim()) return text;
+  }
+
+  return "";
+}
+
+// ─── hydrateLatestText ─────────────────────────────────────────────
+// Best-effort read of the latest assistant text for notifications and
+// summaries. Never throws: failures yield "" and callers apply their own
+// fallback marker — hydration must never break completion reporting.
+
+export async function hydrateLatestText(
+  client: any,
+  sessionId: string,
+  startIndex = 0,
+): Promise<string> {
+  try {
+    const messagesResult = await client.session.messages({ path: { id: sessionId } });
+    return getLatestAssistantText(extractMessages(messagesResult), startIndex);
+  } catch {
+    return "";
+  }
+}

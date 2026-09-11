@@ -149,6 +149,10 @@ describe("Background Task Completion Notification", () => {
         `notification must reference the child session [${childId}]`,
       );
       assert.ok(
+        note.message.includes("COMPLETED_OK"),
+        `notification must carry the child result text [${childId}]. Got: ${note.message}`,
+      );
+      assert.ok(
         note.message.includes("Background task completed successfully"),
         `success notification [${childId}]. Got: ${note.message}`,
       );

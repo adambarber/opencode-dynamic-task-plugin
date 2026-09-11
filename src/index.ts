@@ -42,8 +42,10 @@ import {
 import {
   invokePrompt,
   classifyPromptError,
-  extractTextFromParts,
   extractTextFromPromptResult,
+  extractMessages,
+  getLatestAssistantText,
+  hydrateLatestText,
 } from "./shared/prompt.js";
 import {
   startTimeout,
@@ -61,6 +63,7 @@ import {
   forceRetain,
   discardRetained,
   stealTimeoutHandle,
+  noteLateOutcome,
   type TaskStore,
   type TaskLifecycleState,
 } from "./shared/task-state.js";
@@ -209,29 +212,6 @@ export function extractSessionStatus(sessionInfo: any, messages: any[] = []): st
   if (messages.length > 0) return "busy";
 
   return "unknown";
-}
-
-function extractMessages(result: any): any[] {
-  if (Array.isArray(result)) return result;
-  if (Array.isArray(result?.data)) return result.data;
-  if (Array.isArray(result?.body?.messages)) return result.body.messages;
-  return [];
-}
-
-function getLatestAssistantText(messages: any[], startIndex: number = 0): string {
-  if (!Array.isArray(messages) || messages.length === 0) return "";
-  const from = Math.max(0, startIndex);
-
-  for (let i = messages.length - 1; i >= from; i--) {
-    const msg = messages[i];
-    const role = msg?.info?.role || msg?.role;
-    if (role !== "assistant") continue;
-
-    const text = extractTextFromParts(msg?.parts || []);
-    if (text.trim()) return text;
-  }
-
-  return "";
 }
 
 async function readSessionMessages(client: any, sessionId: string): Promise<any[]> {
@@ -452,7 +432,8 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
         pending.resolve({ text: "(completed)" });
       }
 
-    const latestText = "(completed)";
+    // Hydrate the result text — the parent gets content, not a liveness ping.
+    const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed)";
     const parentMessage = formatParentNotification({
       childSessionId: active.childSessionId,
       description: active.description,
@@ -473,21 +454,16 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
   const retained = store.retainedTasks.get(childSessionId);
   if (retained) {
     const status = getEventLifecycleStatus(event);
-    let newState: TaskLifecycleState = retained.state;
-
-    if (status === "error") {
-      newState = "error";
-    } else if (retained.state === "timed_out_retained") {
-      newState = "completed_after_timeout";
-    } else {
+    if (status !== "error" && retained.state !== "timed_out_retained") {
       // For other states (completed, error, interrupted), no update needed
       return;
     }
-
-    retained.state = newState;
+    const newState: "completed_after_timeout" | "error" =
+      status === "error" ? "error" : "completed_after_timeout";
+    noteLateOutcome(store, childSessionId, newState);
 
     // Notify parent that the timed-out task actually finished
-    const latestText = "(completed after timeout)";
+    const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed after timeout)";
     const kind = newState === "error" ? "error" : "completed_after_timeout";
     const parentMessage = formatParentNotification({
       childSessionId: retained.childSessionId,

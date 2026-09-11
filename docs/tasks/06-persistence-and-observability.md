@@ -24,3 +24,9 @@ Fix the persisted payload (full task records, correct key direction), internaliz
 ## Litmus
 
 A newcomer cannot persist task data except through the ledger dance, cannot bypass eviction, and cannot add a tool-visible state field without it appearing in the list/status views.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: versioned full-record ledger round-trips, rejects corrupt/unknown-version/foreign entries, and writes through injectable paths (no CWD pollution in unit tests); store owns bounds + `onRetainedChange` (active-only writes stay silent), pruning internal to register/transition/forceRetain/findTask/listTasks; crash recovery rehydrates via `restoreRetained` (live state wins); `task_list`/`task_status` (pure store reads — status works with the API down) production-driven; README lists all six tools; full suite 272/272, coverage gate green, 0 clones.
+
+Decisions: ledger file is `.dynamic-task-ledger.json` (old inverted map deleted with its tests; stale `.dynamic-task-ids.json` removed); `pruneRetainedTasks` kept exported with a narrowed limits param (existing callers type-check unchanged); `task_status` reads the store while `task_result` reads the API — complementary, not redundant; read-tool shell shared via `sessionReadTool` after jscpd flagged the definition boilerplate.

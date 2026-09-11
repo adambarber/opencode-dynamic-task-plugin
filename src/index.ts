@@ -3,7 +3,7 @@
 // Docs: https://opencode.ai/docs/plugins
 
 import { tool } from "@opencode-ai/plugin";
-import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
+import type { PluginInput, PluginOptions, ToolContext } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "./shared/client.js";
 import {
   normalizeStatus,
@@ -141,9 +141,19 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
   };
 }
 
+// Session identity with legacy tolerance (Task 08): the 1.18 contract
+// carries sessionID, but older shapes used sibling keys. The required
+// sessionID stays required; legacy keys are optional maybes — runtime
+// behavior (first non-empty wins) is unchanged, only the type is honest.
+export interface SessionContext extends ToolContext {
+  sessionId?: unknown;
+  session?: { id?: unknown; sessionID?: unknown } | null;
+  id?: unknown;
+}
+
 // Exported for contract tests (Tenet 12): suites pin these pure helpers via
 // dist/index.js instead of maintaining local copies that drift.
-export function resolveParentSessionId(ctx: any): string | null {
+export function resolveParentSessionId(ctx: SessionContext): string | null {
   const candidates = [
     ctx?.sessionID,
     ctx?.sessionId,
@@ -162,7 +172,7 @@ export function resolveParentSessionId(ctx: any): string | null {
 }
 
 export // Shared arg guard: every session-scoped tool rejects empty ids identically.
-function missingSessionId(args: any): string | null {
+function missingSessionId(args: { session_id: string }): string | null {
   if (!args.session_id) return "ERROR: session_id is required.";
   return null;
 }
@@ -195,14 +205,14 @@ function awaitContinuation(
 // empty-id guard. Handlers receive raw args and focus on their read.
 function sessionReadTool(
   description: string,
-  handler: (args: any) => Promise<string> | string,
+  handler: (args: { session_id: string }) => Promise<string> | string,
 ) {
   return tool({
     description,
     args: {
       session_id: tool.schema.string(),
     },
-    async execute(args: any) {
+    async execute(args) {
       const missing = missingSessionId(args);
       if (missing) return missing;
       return handler(args);
@@ -458,7 +468,7 @@ async function handleChildLifecycleEvent(client: OpenCodeClient, event: any): Pr
 // Lineage inheritance: a nested caller's session is itself a tracked child
 // whose stored lineage already ends with its own agent — inherit verbatim
 // (a copy). Re-appending would double-count the parent and collapse depth.
-function createDummyLineage(ctx: any, store: TaskStore): string[] {
+function createDummyLineage(ctx: SessionContext, store: TaskStore): string[] {
   const parentSessionId = resolveParentSessionId(ctx);
   if (!parentSessionId) return [];
 
@@ -653,7 +663,7 @@ export default async function dynamicTaskPlugin(
             .optional()
             .describe("Task dependencies — session IDs this task depends on."),
         },
-        async execute(args: any, ctx: any) {
+        async execute(args, ctx: ToolContext) {
           // Debug logging for await_response
           await safeLog(client, "info", `dynamic_task called with await_response=${JSON.stringify(args.await_response)} (type: ${typeof args.await_response})`);
           
@@ -838,7 +848,7 @@ export default async function dynamicTaskPlugin(
           prompt: tool.schema.string(),
           timeout_ms: tool.schema.number().optional().describe("Default: 120000"),
         },
-        async execute(args: any) {
+        async execute(args) {
           if (!args.session_id || !args.prompt) {
             return "ERROR: session_id and prompt are required.";
           }
@@ -1072,7 +1082,7 @@ export default async function dynamicTaskPlugin(
         args: {
           session_id: tool.schema.string(),
         },
-        async execute(args: any) {
+        async execute(args) {
           const missing = missingSessionId(args);
           if (missing) return missing;
 

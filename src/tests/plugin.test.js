@@ -336,6 +336,7 @@ import {
   buildBackgroundPrompt,
   formatParentNotification,
   formatTaskResultSummary,
+  truncateText,
 } from "../../dist/shared/task-formatting.js";
 
 describe("buildBackgroundPrompt", () => {
@@ -935,7 +936,11 @@ import {
 import {
   replyToQuestion,
   rejectQuestion,
+  getRequestIdFromQuestion,
+  isValidQuestionEvent,
+  normalizeQuestionAnswers,
 } from "../../dist/shared/question-handling.js";
+import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 
 describe("task-state: createStateStore", () => {
@@ -1303,6 +1308,140 @@ describe("question gate: reply/reject settlement", () => {
 
   it("reject rejects missing id", async () => {
     assert.strictEqual((await rejectQuestion(okClient(), "", "busy")).succeeded, false);
+  });
+});
+
+describe("question handling: event helpers", () => {
+  it("getRequestIdFromQuestion follows the priority chain", () => {
+    const props = (p) => ({ type: "question.created", properties: p });
+    assert.strictEqual(getRequestIdFromQuestion(props({ id: "a", request_id: "b" })), "a");
+    assert.strictEqual(getRequestIdFromQuestion(props({ request_id: "b" })), "b");
+    assert.strictEqual(getRequestIdFromQuestion(props({ task_id: "c" })), "c");
+    assert.strictEqual(getRequestIdFromQuestion(props({ requestID: "d" })), "d");
+    assert.strictEqual(getRequestIdFromQuestion(props({})), null);
+  });
+
+  it("isValidQuestionEvent guards shapes", () => {
+    assert.strictEqual(isValidQuestionEvent({ type: "question.created" }), true);
+    assert.strictEqual(isValidQuestionEvent({ type: "question.replied" }), true);
+    assert.strictEqual(isValidQuestionEvent({ type: "question.rejected" }), true);
+    assert.strictEqual(isValidQuestionEvent({ type: "nope" }), false);
+    assert.strictEqual(isValidQuestionEvent(null), false);
+  });
+
+  it("normalizeQuestionAnswers flattens answer shapes", () => {
+    assert.deepStrictEqual(
+      normalizeQuestionAnswers(["a", { text: "b" }, { value: "c" }, "", null]),
+      ["a", "b", "c"]
+    );
+    assert.deepStrictEqual(normalizeQuestionAnswers("nope"), []);
+    assert.deepStrictEqual(normalizeQuestionAnswers(undefined), []);
+  });
+});
+
+describe("task formatting: truncate + debug shape", () => {
+  it("truncateText caps long output", () => {
+    const out = truncateText("x".repeat(1300));
+    assert.strictEqual(out.length, 1203);
+    assert.ok(out.endsWith("..."));
+    assert.strictEqual(truncateText("short"), "short");
+  });
+
+  it("formatTaskResultSummary includes debug shape when provided", () => {
+    const summary = formatTaskResultSummary({
+      sessionId: "s", status: "completed", messageCount: 1,
+      latestText: "hi", tracked: true, timeoutNotified: false, debugShape: "SHAPE",
+    });
+    assert.ok(summary.includes("SHAPE"));
+  });
+
+  it("isTerminalSessionEvent matches the broad catch-all", () => {
+    assert.strictEqual(
+      isTerminalSessionEvent({ type: "session.custom", properties: { sessionID: "s1", status: "idle" } }),
+      true
+    );
+  });
+});
+
+describe("task policy: invalid inputs", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  it("validateAgent rejects empty names", () => {
+    assert.strictEqual(validateAgent("", config).ok, false);
+    assert.strictEqual(validateAgent(null, config).ok, false);
+  });
+
+  it("validateLineage rejects empty child names", () => {
+    assert.strictEqual(validateLineage([], "", config).ok, false);
+  });
+
+  it("transitionState rejects non-matrix edges from active", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    assert.throws(
+      () => transitionState(store, "ses_active", "completed_after_timeout", config),
+      /Invalid state transition/
+    );
+  });
+
+  it("forceRetain records abort errors", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    const retained = forceRetain(store, "ses_active", {
+      state: "timed_out_retained",
+      abortError: "boom",
+    });
+    assert.strictEqual(retained.abortError, "boom");
+  });
+});
+
+describe("prompt dance: extractor shape coverage", () => {
+  it("reads data/body/message wrapper variants", () => {
+    const text = [{ type: "text", text: "v" }];
+    assert.strictEqual(extractTextFromPromptResult({ data: { parts: text } }), "v");
+    assert.strictEqual(extractTextFromPromptResult({ body: { message: { parts: text } } }), "v");
+    assert.strictEqual(extractTextFromPromptResult({ message: { parts: text } }), "v");
+    assert.strictEqual(extractTextFromPromptResult({ body: { text: "bt" } }), "bt");
+    assert.strictEqual(extractTextFromPromptResult({ data: { content: "dc" } }), "dc");
+  });
+
+  it("classifyPromptError handles odd shapes", () => {
+    assert.strictEqual(classifyPromptError({ message: 42 }).message, "42");
+    assert.strictEqual(classifyPromptError(undefined).message, "undefined");
+    assert.strictEqual(classifyPromptError(undefined).retryable, false);
+  });
+});
+
+describe("config: file and env edges", () => {
+  it("parseDynamicTaskJsonc returns null for malformed JSON", () => {
+    const file = `${tmpdir()}/dt-malformed-${Date.now()}.jsonc`;
+    writeFileSync(file, "{ not json,");
+    try {
+      assert.strictEqual(parseDynamicTaskJsonc(file), null);
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  it("parseDynamicTaskJsonc returns null for non-object JSON", () => {
+    const file = `${tmpdir()}/dt-array-${Date.now()}.jsonc`;
+    writeFileSync(file, "[1, 2]");
+    try {
+      assert.strictEqual(parseDynamicTaskJsonc(file), null);
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  it("ignores non-numeric env maxConcurrent", () => {
+    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
+    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "bogus";
+    try {
+      assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
+    } finally {
+      if (prev === undefined) delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
+      else process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
+    }
   });
 });
 

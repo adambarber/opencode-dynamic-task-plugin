@@ -78,23 +78,57 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
   };
 }
 
-// ─── extractTextFromParts ──────────────────────────────────────────
-// (Moved verbatim from index.ts — prompt-result domain belongs to the dance.)
+// ─── Message/Part family (Task 08 Cycle 5) ─────────────────────────
+// The one hand-made type design in the program: the shapes the extraction
+// group validates *toward*. Guards are the only door in — consumers below
+// use the narrowed types instead of re-probing fields, so raw payloads are
+// treated as text parts or messages only once they have proven themselves.
 
-// Text parts in any supported shape: SDK Part members plus legacy plain
-// parts. Probed, never cast — a part is text only when it says so.
-function readTextPart(part: unknown): string | null {
-  if (!isEventRecord(part)) return null;
-  if (part.type !== "text") return null;
-  return typeof part.text === "string" ? part.text : null;
+export type MessageRole = "user" | "assistant" | "system" | "error";
+
+// The only role the extraction group branches on. Unknown role strings in
+// raw payloads stay data (messageRoleOf returns them unvalidated), never
+// type claims.
+export const ASSISTANT_ROLE: MessageRole = "assistant";
+
+export interface TextPart {
+  type: "text";
+  text: string;
 }
+
+export function isTextPart(value: unknown): value is TextPart {
+  if (!isEventRecord(value)) return false;
+  return value.type === "text" && typeof value.text === "string";
+}
+
+// Role arrives top-level or nested under info depending on the hydration
+// era (the shape this family exists to absorb); parts stay unknown[] —
+// text members are discriminated per part by isTextPart at read time.
+export interface Message {
+  role?: unknown;
+  info?: unknown;
+  parts: unknown[];
+}
+
+export function isMessage(value: unknown): value is Message {
+  return isEventRecord(value) && Array.isArray(value.parts);
+}
+
+export function messageRoleOf(message: Message): string {
+  const info = isEventRecord(message.info) ? message.info : undefined;
+  const role = info?.role ?? message.role;
+  return typeof role === "string" ? role : "";
+}
+
+// ─── extractTextFromParts ──────────────────────────────────────────
+// (Moved verbatim from index.ts — prompt-result domain belongs to the
+// dance. Text parts are probed through isTextPart, never cast.)
 
 export function extractTextFromParts(parts: unknown): string {
   if (!Array.isArray(parts)) return "";
   const out: string[] = [];
   for (const part of parts) {
-    const text = readTextPart(part);
-    if (text !== null) out.push(text);
+    if (isTextPart(part)) out.push(part.text);
   }
   return out.join("\n");
 }
@@ -154,10 +188,8 @@ export function getLatestAssistantText(messages: unknown, startIndex: number = 0
 
   for (let i = messages.length - 1; i >= from; i--) {
     const msg = messages[i];
-    if (!isEventRecord(msg)) continue;
-    const info = isEventRecord(msg.info) ? msg.info : undefined;
-    const role = info?.role ?? msg.role;
-    if (role !== "assistant") continue;
+    if (!isMessage(msg)) continue;
+    if (messageRoleOf(msg) !== ASSISTANT_ROLE) continue;
 
     const text = extractTextFromParts(msg.parts);
     if (text.trim()) return text;
@@ -170,48 +202,6 @@ export function getLatestAssistantText(messages: unknown, startIndex: number = 0
 // Best-effort read of the latest assistant text for notifications and
 // summaries. Never throws: failures yield "" and callers apply their own
 // fallback marker — hydration must never break completion reporting.
-
-// ─── Message/Part/Result Family Type Definitions ─────────────────────
-// Task 08 Cycle 5: The only genuine type design in the program —
-// discriminated unions over message shapes.
-
-export type MessageRole = "user" | "assistant" | "system" | "error";
-
-export interface TextPart {
-  type: "text";
-  text: string;
-}
-
-export interface Message {
-  id?: string;
-  role: MessageRole;
-  parts: TextPart[];
-  info?: {
-    role: MessageRole;
-    id?: string;
-  };
-  // Other optional fields
-  [key: string]: unknown;
-}
-
-export interface MessageWithLegacyRoles {
-  role?: MessageRole;
-  info?: {
-    role?: MessageRole;
-  };
-  parts: unknown[];
-  [key: string]: unknown;
-}
-
-export type PromptResult =
-  | { parts: TextPart[]; text?: string; content?: string }
-  | { messages?: Message[]; data?: { messages?: Message[] } }
-  | { body?: { parts?: TextPart[]; messages?: Message[] } };
-
-export type ExtractionResult =
-  | { kind: "text"; text: string; isEmpty: boolean }
-  | { kind: "empty"; text: ""; isEmpty: true }
-  | { kind: "error"; error: string };
 
 export async function hydrateLatestText(
   client: OpenCodeClient,

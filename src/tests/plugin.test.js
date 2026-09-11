@@ -17,6 +17,9 @@ import {
   getLatestAssistantText,
   hydrateLatestText,
   parseModelOverride,
+  isTextPart,
+  isMessage,
+  messageRoleOf,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -1433,6 +1436,45 @@ describe("prompt dance: classifyPromptError", () => {
   it("handles non-Error values", () => {
     assert.strictEqual(classifyPromptError("plain string").message, "plain string");
     assert.strictEqual(classifyPromptError(null).retryable, false);
+  });
+});
+
+describe("message/part family guards (Task 08)", () => {
+  it("isTextPart accepts only parts that declare themselves text with string content", () => {
+    assert.ok(isTextPart({ type: "text", text: "hi" }));
+    assert.ok(isTextPart({ type: "text", text: "" }));
+    assert.ok(!isTextPart({ type: "text" }));
+    assert.ok(!isTextPart({ type: "text", text: 42 }));
+    assert.ok(!isTextPart({ type: "image", url: "x" }));
+    assert.ok(!isTextPart({ text: "legacy, untyped" }));
+    assert.ok(!isTextPart("text"));
+    assert.ok(!isTextPart(null));
+  });
+
+  it("isMessage is a record with an array parts field", () => {
+    assert.ok(isMessage({ parts: [] }));
+    assert.ok(isMessage({ role: "assistant", parts: [{ type: "text", text: "x" }] }));
+    assert.ok(!isMessage({ parts: "nope" }));
+    assert.ok(!isMessage({}));
+    assert.ok(!isMessage(null));
+    assert.ok(!isMessage([]));
+  });
+
+  it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
+    assert.strictEqual(messageRoleOf({ info: { role: "assistant" }, parts: [] }), "assistant");
+    assert.strictEqual(messageRoleOf({ role: "user", parts: [] }), "user");
+    assert.strictEqual(messageRoleOf({ parts: [] }), "");
+    assert.strictEqual(messageRoleOf({ info: "junk", role: "system", parts: [] }), "system");
+    assert.strictEqual(messageRoleOf({ info: { role: 42 }, parts: [] }), "");
+  });
+
+  it("the extraction group is built on the guards: same answers through either door", () => {
+    const parts = [{ type: "text", text: "a" }, { type: "tool", x: 1 }, { type: "text", text: "b" }];
+    assert.strictEqual(extractTextFromParts(parts), "a\nb");
+    const messages = [{ info: { role: "user" }, parts: [] }, { role: "assistant", parts: [{ type: "text", text: "final" }] }];
+    assert.strictEqual(getLatestAssistantText(messages), "final");
+    // Non-message entries are skipped by the guard, never thrown on.
+    assert.strictEqual(getLatestAssistantText([null, "junk", ...messages]), "final");
   });
 });
 

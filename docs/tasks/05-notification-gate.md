@@ -23,3 +23,9 @@ Collapse kind computation to one site, route both lifecycle and timeout paths th
 ## Litmus
 
 A newcomer cannot notify the parent except through the gate — the build fails — and every notification has a queryable delivery record.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: `resolveNotifyKind` matrix unit-pinned; `notifyParent` delivers with exactly one retry (250ms default, injectable) and records `{delivered, attempts, error}` in a bounded (200) ledger; all four notify sites (timeout, completion, late completion, prompt failure) route through the gate with gate-computed kinds; legacy `notifyParentSession` deleted and banned by build invariant; `task_result` surfaces the latest delivery record; full suite 262/262, coverage gate green, 0 clones.
+
+Decisions: formatting stays in `task-formatting` (gate owns delivery+record, not text); failed delivery is data — the planner recovers by reading `task_result`, never by waiting; retry delay uses `globalThis.setTimeout` (same exemption shape as `REAL_TIMERS`).

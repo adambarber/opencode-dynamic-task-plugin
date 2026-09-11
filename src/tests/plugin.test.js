@@ -946,6 +946,23 @@ describe("task-state: createStateStore", () => {
   });
 });
 
+// Shared test-harness funnels: one way to build common fixtures.
+function fillBackgroundTasks(store, config, ids) {
+  for (const id of ids) {
+    registerActiveTask(store, {
+      childSessionId: id, parentSessionId: "parent_1",
+      agentName: id, description: id, lineage: [], isBackground: true,
+    }, config);
+  }
+}
+
+function seedSesActive(store, config) {
+  registerActiveTask(store, {
+    childSessionId: "ses_active", parentSessionId: "parent_1",
+    agentName: "reviewer", description: "test", lineage: [], isBackground: true,
+  }, config);
+}
+
 describe("task-state: registerActiveTask", () => {
   const config = normalizeDynamicTaskConfig({ maxConcurrent: 3 });
 
@@ -966,18 +983,7 @@ describe("task-state: registerActiveTask", () => {
   it("throws ConcurrencyLimitExceededError when at limit (background tasks only)", () => {
     const store = createStateStore();
     // Fill up with 3 background tasks
-    registerActiveTask(store, {
-      childSessionId: "ses_1", parentSessionId: "parent_1",
-      agentName: "a1", description: "t1", lineage: [], isBackground: true,
-    }, config);
-    registerActiveTask(store, {
-      childSessionId: "ses_2", parentSessionId: "parent_1",
-      agentName: "a2", description: "t2", lineage: [], isBackground: true,
-    }, config);
-    registerActiveTask(store, {
-      childSessionId: "ses_3", parentSessionId: "parent_1",
-      agentName: "a3", description: "t3", lineage: [], isBackground: true,
-    }, config);
+    fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
 
     // 4th background task should throw
     assert.throws(() => {
@@ -991,18 +997,7 @@ describe("task-state: registerActiveTask", () => {
   it("sync tasks (isBackground=false) do NOT count toward concurrency limit", () => {
     const store = createStateStore();
     // Fill to limit with background
-    registerActiveTask(store, {
-      childSessionId: "ses_1", parentSessionId: "parent_1",
-      agentName: "a1", description: "t1", lineage: [], isBackground: true,
-    }, config);
-    registerActiveTask(store, {
-      childSessionId: "ses_2", parentSessionId: "parent_1",
-      agentName: "a2", description: "t2", lineage: [], isBackground: true,
-    }, config);
-    registerActiveTask(store, {
-      childSessionId: "ses_3", parentSessionId: "parent_1",
-      agentName: "a3", description: "t3", lineage: [], isBackground: true,
-    }, config);
+    fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
 
     // Sync task should succeed even though at background limit
     const syncTask = registerActiveTask(store, {
@@ -1020,10 +1015,7 @@ describe("task-state: transitionState", () => {
 
   beforeEach(() => {
     store = createStateStore();
-    registerActiveTask(store, {
-      childSessionId: "ses_active", parentSessionId: "parent_1",
-      agentName: "reviewer", description: "test", lineage: [], isBackground: true,
-    }, config);
+    seedSesActive(store, config);
   });
 
   it("transitions active → completed", () => {
@@ -1081,10 +1073,7 @@ describe("task-state: flag operations (funnel for Task 01 bypasses)", () => {
 
   beforeEach(() => {
     store = createStateStore();
-    registerActiveTask(store, {
-      childSessionId: "ses_active", parentSessionId: "parent_1",
-      agentName: "reviewer", description: "test", lineage: [], isBackground: true,
-    }, config);
+    seedSesActive(store, config);
   });
 
   it("noteTimeoutFired sets flags and keeps the task active", () => {

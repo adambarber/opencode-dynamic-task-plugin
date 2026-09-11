@@ -143,6 +143,21 @@ async function executeDynamicTask(handler, args, ctx = {}) {
   return await handler.execute(args, ctx);
 }
 
+/**
+ * Shared arrange/act preamble: start a sync task, let it register, then
+ * complete its first child session. Collapses the per-test copy of the
+ * session-lookup + completion sequence into one funnel.
+ */
+async function startSyncTaskAndCompleteFirstChild(client, handler, args) {
+  const resultPromise = executeDynamicTask(handler, args);
+  // Small delay to let the Promise register (simulates network lag)
+  await new Promise((r) => setTimeout(r, 50));
+  const sessionId = [...client._sessions.keys()][0];
+  assert.ok(sessionId, "A session should have been created");
+  completeChildSession(client, sessionId);
+  return resultPromise;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════
@@ -170,24 +185,12 @@ describe("Sync Mode Integration — dynamic_task execute handler", () => {
   // ── Test 1: Normal sync — event arrives AFTER Promise registers ──
 
   it("sync mode: event arrives after Promise — resolves normally", async () => {
-    const resultPromise = executeDynamicTask(handler, {
+    const resultPromise = startSyncTaskAndCompleteFirstChild(client, handler, {
       subagent_type: "explore",
       prompt: "Say hello",
       await_response: true,
       timeout_ms: 5000,
     });
-
-    // Small delay to let the Promise register (simulates network lag)
-    await new Promise((r) => setTimeout(r, 50));
-
-    // Now complete the child
-    // We need to find the session ID — it's returned from execute but
-    // we can't get it until the Promise resolves. Instead, we look at
-    // the mock client's sessions list.
-    const sessionId = [...client._sessions.keys()][0];
-    assert.ok(sessionId, "A session should have been created");
-
-    completeChildSession(client, sessionId);
 
     const result = await resultPromise;
     assert.ok(result.includes("@explore Response"), `Expected agent response, got: ${result}`);
@@ -240,18 +243,12 @@ describe("Sync Mode Integration — dynamic_task execute handler", () => {
   // ── Test 3: String coercion — "true" string triggers sync mode ──
 
   it("sync mode: await_response='true' (string) triggers sync", async () => {
-    const resultPromise = executeDynamicTask(handler, {
+    const resultPromise = startSyncTaskAndCompleteFirstChild(client, handler, {
       subagent_type: "explore",
       prompt: "Say hi",
       await_response: "true",
       timeout_ms: 5000,
     });
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const sessionId = [...client._sessions.keys()][0];
-    assert.ok(sessionId, "A session should have been created");
-    completeChildSession(client, sessionId);
 
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error("TIMEOUT — string 'true' hung")), 3000),

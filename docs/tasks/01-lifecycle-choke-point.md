@@ -26,3 +26,7 @@ Refactor `src/index.ts` call sites to the funnel; delete the fallback surgery in
 ## Litmus
 
 A newcomer cannot mutate task state without going through `task-state.ts` — the build fails on direct map/flag access.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: lifecycle invariant passes with all six historical bypass sites (`index.ts` flag writes, manual map surgery, retained delete) routed through `noteTimeoutFired`, `markActiveCompleted` (atomic read-and-set, removes the check-then-set race), `forceRetain`, `discardRetained`; 8 funnel-op contract tests plus the pre-existing matrix/concurrency/pruning suites green; full suite 217/217. Retained-pruning internalization deferred to Task 06, which owns eviction.

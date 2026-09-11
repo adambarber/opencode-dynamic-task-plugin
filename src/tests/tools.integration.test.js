@@ -536,6 +536,41 @@ describe("question gate: child questions settle", () => {
   });
 });
 
+describe("notification delivery records", () => {
+  it("failed parent delivery is recorded and surfaced", async () => {
+    const hooks = { promptFailIds: new Set(["p1"]) };
+    const h = await setupTools(hooks);
+    const out = await h.tool.dynamic_task.execute(
+      { description: "doomed parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await sleep(700);
+    assert.strictEqual(h.client._state.notifications.length, 0, "nothing delivered");
+    const summary = await h.tool.task_result.execute({ session_id: childId });
+    assert.ok(summary.includes("FAILED"), `delivery failure surfaced. got: ${summary}`);
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("late completion yields exactly one completed_after_timeout record", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "late task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await sleep(200);
+    await h.fireEvent({
+      type: "session.idle",
+      properties: { sessionID: childId, status: "idle" },
+    });
+    const notes = h.client._state.notifications;
+    assert.strictEqual(notes.length, 2, "timeout + late completion, exactly once each");
+    assert.match(notes[1].message, /after an earlier timeout/);
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+});
+
 describe("timeout behavior modes", () => {
   function recordingDelegatingTimers() {
     const created = [];

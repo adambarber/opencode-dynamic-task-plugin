@@ -1355,6 +1355,22 @@ describe("task formatting: truncate + debug shape", () => {
     assert.strictEqual(truncateText("short"), "short");
   });
 
+  it("formatTaskResultSummary surfaces delivery records", () => {
+    const base = {
+      sessionId: "s", status: "completed", messageCount: 1,
+      latestText: "hi", tracked: true, timeoutNotified: false,
+    };
+    assert.ok(
+      formatTaskResultSummary({ ...base, notification: { kind: "completed", delivered: true, attempts: 1 } })
+        .includes("delivered in 1 attempt")
+    );
+    assert.ok(
+      formatTaskResultSummary({ ...base, notification: { kind: "timeout", delivered: false, attempts: 2 } })
+        .includes("FAILED after 2 attempt")
+    );
+    assert.ok(!formatTaskResultSummary(base).includes("notification:"));
+  });
+
   it("formatTaskResultSummary includes debug shape when provided", () => {
     const summary = formatTaskResultSummary({
       sessionId: "s", status: "completed", messageCount: 1,

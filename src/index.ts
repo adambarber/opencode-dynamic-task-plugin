@@ -55,6 +55,11 @@ import {
   ABORT_TIMEOUT_MS,
 } from "./shared/bound.js";
 import {
+  notifyParent,
+  resolveNotifyKind,
+  getLatestNotification,
+} from "./shared/notify.js";
+import {
   createStateStore,
   transitionState,
   findTask,
@@ -253,34 +258,18 @@ function truncateText(text: string, maxChars: number = 1200): string {
   return `${text.slice(0, maxChars)}...`;
 }
 
-async function notifyParentSession(client: any, parentSessionId: string, message: string): Promise<void> {
-  try {
-    await client.session.prompt({
-      path: { id: parentSessionId },
-      body: { parts: [{ type: "text", text: message }] },
-    });
-  } catch (e: any) {
-    await client.app.log({
-      body: {
-        service: "dynamic-task",
-        level: "warn",
-        message: `Failed parent notification to ${parentSessionId}: ${e.message}`,
-      },
-    });
-  }
-}
-
 async function handleTimeout(store: TaskStore, childSessionId: string, client: any, config: DynamicTaskConfig): Promise<void> {
   const task = store.activeTasks.get(childSessionId);
   if (!task || task.completed) return;
 
   noteTimeoutFired(store, childSessionId);
 
+  const timeoutKind = resolveNotifyKind("timeout", "", false);
   const timeoutMessage = formatParentNotification({
     childSessionId: task.childSessionId,
     description: task.description,
     timeoutMs: config.defaultTimeoutMs,
-  }, "timeout");
+  }, timeoutKind);
 
   let abortError: string | undefined;
 
@@ -327,7 +316,10 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
     }
   }
 
-  await notifyParentSession(client, task.parentSessionId, timeoutMessage);
+  await notifyParent(client, task.parentSessionId, timeoutMessage, {
+    childSessionId: task.childSessionId,
+    kind: timeoutKind,
+  });
 
   // Release the stored bound (it already fired — cancel is a no-op now)
   stealTimeoutHandle(store, childSessionId)?.cancel();
@@ -360,16 +352,14 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
       const alreadyCompleted = markActiveCompleted(store, childSessionId);
 
       const status = getEventLifecycleStatus(event);
-      let kind: "timeout" | "completed" | "completed_after_timeout" | "error" = "completed";
       if (status === "error") {
-        kind = "error";
         transitionState(store, childSessionId, "error", config);
       } else if (active.timeoutNotified || alreadyCompleted) {
-        kind = "completed_after_timeout";
         transitionState(store, childSessionId, "completed_after_timeout", config);
       } else {
         transitionState(store, childSessionId, "completed", config);
       }
+      const kind = resolveNotifyKind("event", status, active.timeoutNotified || alreadyCompleted);
 
     // Hydrate the result text — the parent gets content, not a liveness ping.
     const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed)";
@@ -378,7 +368,10 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
       description: active.description,
       timeoutMs: config.defaultTimeoutMs,
     }, kind, latestText);
-    await notifyParentSession(client, active.parentSessionId, parentMessage);
+    await notifyParent(client, active.parentSessionId, parentMessage, {
+      childSessionId: active.childSessionId,
+      kind,
+    });
 
     debugLog(active.parentSessionId, childSessionId, "child-lifecycle-event", {
       status,
@@ -403,13 +396,16 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
 
     // Notify parent that the timed-out task actually finished
     const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed after timeout)";
-    const kind = newState === "error" ? "error" : "completed_after_timeout";
+    const kind = resolveNotifyKind("event", status, true);
     const parentMessage = formatParentNotification({
       childSessionId: retained.childSessionId,
       description: retained.description,
       timeoutMs: config.defaultTimeoutMs,
     }, kind, latestText);
-    await notifyParentSession(client, retained.parentSessionId, parentMessage);
+    await notifyParent(client, retained.parentSessionId, parentMessage, {
+      childSessionId: retained.childSessionId,
+      kind,
+    });
 
     debugLog(retained.parentSessionId, childSessionId, "retained-lifecycle-event", {
       status,
@@ -756,12 +752,13 @@ export default async function dynamicTaskPlugin(
                   recorded = true;
                 } catch { /* already settled */ }
                 if (recorded && parentSessionId) {
+                  const errorKind = resolveNotifyKind("event", "error", false);
                   const parentMessage = formatParentNotification({
                     childSessionId,
                     description: args.description || `Task: ${agent.name}`,
                     timeoutMs: config.defaultTimeoutMs,
-                  }, "error", classified.message);
-                  void notifyParentSession(client, parentSessionId, parentMessage);
+                  }, errorKind, classified.message);
+                  void notifyParent(client, parentSessionId, parentMessage, { childSessionId, kind: errorKind });
                 }
               });
 
@@ -997,6 +994,7 @@ export default async function dynamicTaskPlugin(
                 latestText: truncateText(latest),
                 tracked: isTracked,
                 timeoutNotified: "timeoutNotified" in task ? Boolean(task.timeoutNotified) : false,
+                notification: getLatestNotification(args.session_id),
               });
             } catch {
               // API error — return what we know from state
@@ -1007,6 +1005,7 @@ export default async function dynamicTaskPlugin(
                 latestText: "(API unavailable)",
                 tracked: true,
                 timeoutNotified: "timeoutNotified" in task ? Boolean(task.timeoutNotified) : false,
+                notification: getLatestNotification(args.session_id),
               });
             }
           }
@@ -1025,6 +1024,7 @@ export default async function dynamicTaskPlugin(
               latestText: truncateText(latest),
               tracked: false,
               timeoutNotified: false,
+              notification: getLatestNotification(args.session_id),
             });
           } catch (err: any) {
             // 404 or network error → return unknown state

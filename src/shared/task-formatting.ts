@@ -70,6 +70,7 @@ export function formatTaskResultSummary(input: {
   latestText: string;
   tracked: boolean;
   timeoutNotified: boolean;
+  notification?: { kind: string; delivered: boolean; attempts: number } | null;
   debugShape?: string;
 }): string {
   const action =
@@ -87,12 +88,23 @@ export function formatTaskResultSummary(input: {
     `Messages: ${input.messageCount}`,
     `Tracked background task: ${input.tracked ? "yes" : "no"}`,
     `Timeout notification sent: ${input.timeoutNotified ? "yes" : "no"}`,
+  ];
+
+  if (input.notification) {
+    lines.push(
+      input.notification.delivered
+        ? `Last notification: ${input.notification.kind} (delivered in ${input.notification.attempts} attempt(s))`
+        : `Last notification: ${input.notification.kind} (FAILED after ${input.notification.attempts} attempt(s))`,
+    );
+  }
+
+  lines.push(
     "",
     "### Latest Assistant Output",
     input.latestText || "(No assistant text found)",
     "",
     action,
-  ];
+  );
 
   if (input.debugShape) {
     lines.push("", "### Debug: Raw Session Response Shape", "```", input.debugShape, "```");

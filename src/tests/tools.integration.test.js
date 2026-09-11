@@ -32,6 +32,8 @@ function createToolsMock(hooks = {}) {
     logs: [],
     aborted: [],
     questionCalls: [],
+    promptBodies: [],
+    sessionBodies: new Map(),
     createThrown: false,
     abortThrown: false,
   };
@@ -66,7 +68,7 @@ function createToolsMock(hooks = {}) {
         }
         const id = `ses_tools_${state.sessions.size + 1}`;
         state.sessions.add(id);
-        void body;
+        state.sessionBodies.set(id, body);
         return { id };
       },
       prompt: ({ path, body }) => {
@@ -82,6 +84,8 @@ function createToolsMock(hooks = {}) {
         const text = body?.parts?.[0]?.text || "";
         if (text.includes("[dynamic-task-notify]")) {
           state.notifications.push({ to: path.id, message: text });
+        } else {
+          state.promptBodies.push({ to: path.id, body });
         }
         return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
       },
@@ -715,6 +719,39 @@ describe("admission lineage", () => {
     assert.ok(admitted.includes("in background"), `flag honored. got: ${admitted}`);
     await lenient.tool.task_interrupt.execute({ session_id: id3 });
     await lenient.tool.task_interrupt.execute({ session_id: admitted.match(/Session: (\S+)/)[1] });
+  });
+});
+
+describe("prompt routing contract", () => {
+  it("model override travels on the prompt, not the create call", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "model task", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 5000, model: "prov/model-x" },
+      { sessionID: "p1" },
+    );
+    assert.ok(out.includes("PROMPT_OK"), `got: ${out}`);
+    const childId = out.match(/Session: ([\w-]+)/)[1];
+    const created = h.client._state.sessionBodies.get(childId);
+    assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
+    const bodies = h.client._state.promptBodies.filter((p) => p.to === childId);
+    assert.ok(bodies.length >= 1, "child prompt recorded");
+    assert.strictEqual(bodies[0].body.agent, "explore");
+    assert.deepStrictEqual(bodies[0].body.model, { providerID: "prov", modelID: "model-x" });
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("prompts without override carry the agent and no model", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "plain task", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: ([\w-]+)/)[1];
+    const bodies = h.client._state.promptBodies.filter((p) => p.to === childId);
+    assert.ok(bodies.length >= 1);
+    assert.strictEqual(bodies[0].body.agent, "explore");
+    assert.ok(!("model" in bodies[0].body), `no model key. got: ${JSON.stringify(bodies[0].body)}`);
+    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 });
 

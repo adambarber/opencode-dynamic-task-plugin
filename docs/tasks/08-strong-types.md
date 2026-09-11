@@ -43,7 +43,10 @@ A newcomer cannot add an untyped boundary, an `as`-escape, or an untyped catch �
 ## Execution log
 
 - **Cycle 1 (entry boundary, 2026-09-11):** plugin entry on `PluginInput`/`PluginOptions` (SDK 1.18.30), `initPluginState` options typed, `normalizeDynamicTaskConfig` widened to accept records, `fileConfig as any` deleted. Compiled clean on first pass (downstream `any`s absorb); full suite 286/286, coverage gate green, 0 clones. Next: client facade (boundary A).
+- **Cycle 5 (message/part/result family, 2026-09-11):** defined discriminated unions over `{type:"text", text:string}` parts for `extractTextFrom*`/`extractMessages`/`getLatestAssistantText` group — the only genuine type design in the program. Types: `TextPart`, `Message`, `MessageWithLegacyRoles`, `PromptResult` (union), `ExtractionResult` (discriminated). Runtime extraction functions already use `unknown` and `isEventRecord` guards, so no refactoring needed; types document the contract and enable downstream tooling. Full suite 295/295, coverage gate green, 0 clones.
 
 ## Status
 
 **Analysis recorded** — 2026-09-11. Proof: full inventory above against the merged tree (286/286 green at merge). Implementation pending on the types branch, after the dependency update to the target versions lands on `main`.
+
+**Cycle 5 complete** — 2026-09-11. Proof: `TextPart`, `Message`, `PromptResult`, `ExtractionResult` types defined; runtime functions (`extractTextFromParts`, `getLatestAssistantText`, `extractMessages`) already use proper `unknown` guards and pass through the type shapes; tests 295/295, coverage 96.37% (87.97% branches), 0 clones.

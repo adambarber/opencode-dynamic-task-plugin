@@ -6,15 +6,48 @@
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
 import type { OpenCodeClient } from "./client.js";
+import { eventField, isEventRecord } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
 // client error — callers classify via classifyPromptError.
 
-export function invokePrompt(client: OpenCodeClient, sessionId: string, text: string): Promise<unknown> {
+// Prompt routing (1.18 contract): agent and model ride on the message,
+// not the session. SessionCreate takes title/parentID only — fields sent
+// anywhere else are silently dropped by the server.
+
+export interface ModelOverride {
+  providerID: string;
+  modelID: string;
+}
+
+export interface PromptRouting {
+  agent?: string;
+  model?: ModelOverride;
+}
+
+export function parseModelOverride(model: unknown): ModelOverride | undefined {
+  if (typeof model !== "string") return undefined;
+  const trimmed = model.trim();
+  if (!trimmed) return undefined;
+  const slash = trimmed.indexOf("/");
+  if (slash < 0) return { providerID: "", modelID: trimmed };
+  return { providerID: trimmed.slice(0, slash), modelID: trimmed.slice(slash + 1) };
+}
+
+export function invokePrompt(
+  client: OpenCodeClient,
+  sessionId: string,
+  text: string,
+  routing: PromptRouting = {},
+): Promise<unknown> {
   return client.session.prompt({
     path: { id: sessionId },
-    body: { parts: [{ type: "text", text }] },
+    body: {
+      parts: [{ type: "text", text }],
+      ...(routing.agent !== undefined ? { agent: routing.agent } : {}),
+      ...(routing.model !== undefined ? { model: routing.model } : {}),
+    },
   });
 }
 
@@ -51,25 +84,35 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
 // ─── extractTextFromParts ──────────────────────────────────────────
 // (Moved verbatim from index.ts — prompt-result domain belongs to the dance.)
 
-export function extractTextFromParts(parts: any[]): string {
+// Text parts in any supported shape: SDK Part members plus legacy plain
+// parts. Probed, never cast — a part is text only when it says so.
+function readTextPart(part: unknown): string | null {
+  if (!isEventRecord(part)) return null;
+  if (part.type !== "text") return null;
+  return typeof part.text === "string" ? part.text : null;
+}
+
+export function extractTextFromParts(parts: unknown): string {
   if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
-    .map((p: any) => p.text)
-    .join("\n");
+  const out: string[] = [];
+  for (const part of parts) {
+    const text = readTextPart(part);
+    if (text !== null) out.push(text);
+  }
+  return out.join("\n");
 }
 
 // ─── extractTextFromPromptResult ───────────────────────────────────
 // (Moved verbatim from index.ts.)
 
-export function extractTextFromPromptResult(result: any): string {
+export function extractTextFromPromptResult(result: unknown): string {
   const candidates = [
-    result?.parts,
-    result?.data?.parts,
-    result?.body?.parts,
-    result?.message?.parts,
-    result?.data?.message?.parts,
-    result?.body?.message?.parts,
+    eventField(result, "parts"),
+    eventField(result, "data", "parts"),
+    eventField(result, "body", "parts"),
+    eventField(result, "message", "parts"),
+    eventField(result, "data", "message", "parts"),
+    eventField(result, "body", "message", "parts"),
   ];
 
   for (const parts of candidates) {
@@ -78,12 +121,12 @@ export function extractTextFromPromptResult(result: any): string {
   }
 
   const messageCandidates = [
-    result?.text,
-    result?.data?.text,
-    result?.body?.text,
-    result?.content,
-    result?.data?.content,
-    result?.body?.content,
+    eventField(result, "text"),
+    eventField(result, "data", "text"),
+    eventField(result, "body", "text"),
+    eventField(result, "content"),
+    eventField(result, "data", "content"),
+    eventField(result, "body", "content"),
   ];
 
   for (const text of messageCandidates) {
@@ -96,26 +139,30 @@ export function extractTextFromPromptResult(result: any): string {
 // ─── extractMessages ───────────────────────────────────────────────
 // (Moved verbatim from index.ts — message-shape handling belongs here.)
 
-export function extractMessages(result: any): any[] {
+export function extractMessages(result: unknown): unknown[] {
   if (Array.isArray(result)) return result;
-  if (Array.isArray(result?.data)) return result.data;
-  if (Array.isArray(result?.body?.messages)) return result.body.messages;
+  const data = eventField(result, "data");
+  if (Array.isArray(data)) return data;
+  const nested = eventField(result, "body", "messages");
+  if (Array.isArray(nested)) return nested;
   return [];
 }
 
 // ─── getLatestAssistantText ────────────────────────────────────────
 // (Moved verbatim from index.ts.)
 
-export function getLatestAssistantText(messages: any[], startIndex: number = 0): string {
+export function getLatestAssistantText(messages: unknown, startIndex: number = 0): string {
   if (!Array.isArray(messages) || messages.length === 0) return "";
   const from = Math.max(0, startIndex);
 
   for (let i = messages.length - 1; i >= from; i--) {
     const msg = messages[i];
-    const role = msg?.info?.role || msg?.role;
+    if (!isEventRecord(msg)) continue;
+    const info = isEventRecord(msg.info) ? msg.info : undefined;
+    const role = info?.role ?? msg.role;
     if (role !== "assistant") continue;
 
-    const text = extractTextFromParts(msg?.parts || []);
+    const text = extractTextFromParts(msg.parts);
     if (text.trim()) return text;
   }
 
@@ -127,6 +174,48 @@ export function getLatestAssistantText(messages: any[], startIndex: number = 0):
 // summaries. Never throws: failures yield "" and callers apply their own
 // fallback marker — hydration must never break completion reporting.
 
+// ─── Message/Part/Result Family Type Definitions ─────────────────────
+// Task 08 Cycle 5: The only genuine type design in the program —
+// discriminated unions over message shapes.
+
+export type MessageRole = "user" | "assistant" | "system" | "error";
+
+export interface TextPart {
+  type: "text";
+  text: string;
+}
+
+export interface Message {
+  id?: string;
+  role: MessageRole;
+  parts: TextPart[];
+  info?: {
+    role: MessageRole;
+    id?: string;
+  };
+  // Other optional fields
+  [key: string]: unknown;
+}
+
+export interface MessageWithLegacyRoles {
+  role?: MessageRole;
+  info?: {
+    role?: MessageRole;
+  };
+  parts: unknown[];
+  [key: string]: unknown;
+}
+
+export type PromptResult =
+  | { parts: TextPart[]; text?: string; content?: string }
+  | { messages?: Message[]; data?: { messages?: Message[] } }
+  | { body?: { parts?: TextPart[]; messages?: Message[] } };
+
+export type ExtractionResult =
+  | { kind: "text"; text: string; isEmpty: boolean }
+  | { kind: "empty"; text: ""; isEmpty: true }
+  | { kind: "error"; error: string };
+
 export async function hydrateLatestText(
   client: OpenCodeClient,
   sessionId: string,
@@ -134,7 +223,8 @@ export async function hydrateLatestText(
 ): Promise<string> {
   try {
     const messagesResult = await client.session.messages({ path: { id: sessionId } });
-    return getLatestAssistantText(extractMessages(messagesResult), startIndex);
+    const messages = extractMessages(messagesResult);
+    return getLatestAssistantText(messages, startIndex);
   } catch {
     return "";
   }

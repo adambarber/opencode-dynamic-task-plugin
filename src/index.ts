@@ -56,6 +56,7 @@ import {
   extractMessages,
   getLatestAssistantText,
   hydrateLatestText,
+  parseModelOverride,
 } from "./shared/prompt.js";
 import {
   startTimeout,
@@ -236,16 +237,16 @@ export function buildAgentList(agents: AgentRecord[]): string {
   return agents.map((a: any) => a.name).join(", ");
 }
 
-export function extractSessionStatus(sessionInfo: any, messages: any[] = []): string {
+export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
   const candidates = [
-    sessionInfo?.status,
-    sessionInfo?.body?.status,
-    sessionInfo?.data?.status,
-    sessionInfo?.data?.info?.status,
-    sessionInfo?.info?.status,
-    sessionInfo?.body?.info?.status,
-    sessionInfo?.data?.state,
-    sessionInfo?.state,
+    eventField(sessionInfo, "status"),
+    eventField(sessionInfo, "body", "status"),
+    eventField(sessionInfo, "data", "status"),
+    eventField(sessionInfo, "data", "info", "status"),
+    eventField(sessionInfo, "info", "status"),
+    eventField(sessionInfo, "body", "info", "status"),
+    eventField(sessionInfo, "data", "state"),
+    eventField(sessionInfo, "state"),
   ];
   for (const c of candidates) {
     const normalized = normalizeStatus(c);
@@ -253,18 +254,20 @@ export function extractSessionStatus(sessionInfo: any, messages: any[] = []): st
   }
 
   // client.session.get() does not return a status field — infer from messages
-  if (messages.length >= 2) {
-    const latest = messages[messages.length - 1];
-    const role = latest?.info?.role || latest?.role;
+  const list = Array.isArray(messages) ? messages : [];
+  if (list.length >= 2) {
+    const latest = list[list.length - 1];
+    const info = isEventRecord(latest) ? latest.info : undefined;
+    const role = (isEventRecord(info) ? info.role : undefined) ?? (isEventRecord(latest) ? latest.role : undefined);
     if (role === "assistant") return "completed";
     if (role === "error") return "error";
   }
-  if (messages.length > 0) return "busy";
+  if (list.length > 0) return "busy";
 
   return "unknown";
 }
 
-async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<any[]> {
+async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
 }
@@ -718,17 +721,12 @@ export default async function dynamicTaskPlugin(
           }
 
           try {
-            const sessionBody: any = {
+            // 1.18 contract: sessions carry title/parentID only — agent and
+            // model ride on each prompt via PromptRouting.
+            const sessionBody: { title: string; parentID?: string } = {
               title: args.description || `Task: ${agent.name}`,
-              agent: agent.name,
             };
-
-            if (args.model) {
-              const parts = args.model.split("/");
-              sessionBody.model = parts.length >= 2
-                ? { providerID: parts[0], modelID: parts.slice(1).join("/") }
-                : { providerID: "", modelID: args.model };
-            }
+            const modelOverride = parseModelOverride(args.model);
 
             const parentSessionId = resolveParentSessionId(ctx);
             if (parentSessionId) {
@@ -763,7 +761,7 @@ export default async function dynamicTaskPlugin(
               // Bounded prompt (Tasks 02/07): abort + transition on timeout.
               const outcome = await awaitContinuation(
                 store, config, client, childSessionId,
-                invokePrompt(client, childSessionId, args.prompt),
+                invokePrompt(client, childSessionId, args.prompt, { agent: agent.name, model: modelOverride }),
                 timeoutMs,
               );
 
@@ -780,7 +778,7 @@ export default async function dynamicTaskPlugin(
 
             if (!shouldAwait) {
               const childPrompt = buildBackgroundPrompt(args.prompt);
-              invokePrompt(client, childSessionId, childPrompt).catch((error: any) => {
+              invokePrompt(client, childSessionId, childPrompt, { agent: agent.name, model: modelOverride }).catch((error: unknown) => {
                 const classified = classifyPromptError(error);
                 safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
                 // First-class failure: record and notify now instead of
@@ -874,7 +872,10 @@ export default async function dynamicTaskPlugin(
               // Bounded prompt (Tasks 02/07): abort + transition on timeout.
               const outcome = await awaitContinuation(
                 store, config, client, args.session_id,
-                invokePrompt(client, args.session_id, args.prompt).catch(() => null),
+                invokePrompt(client, args.session_id, args.prompt, {
+                  agent: retained.agentName,
+                  model: parseModelOverride(retained.requestedModel),
+                }).catch(() => null),
                 timeoutMs,
               );
 
@@ -946,7 +947,10 @@ export default async function dynamicTaskPlugin(
               // settled through the shared bound waiter.
               const outcome = await awaitContinuation(
                 store, config, client, newSessionId,
-                invokePrompt(client, newSessionId, args.prompt),
+                invokePrompt(client, newSessionId, args.prompt, {
+                  agent: retained.agentName,
+                  model: parseModelOverride(retained.requestedModel),
+                }),
                 timeoutMs,
               );
 
@@ -970,7 +974,10 @@ export default async function dynamicTaskPlugin(
               // settled through the shared bound waiter.
               const outcome = await awaitContinuation(
                 store, config, client, args.session_id,
-                invokePrompt(client, args.session_id, args.prompt),
+                invokePrompt(client, args.session_id, args.prompt, {
+                  agent: active.agentName,
+                  model: parseModelOverride(active.requestedModel),
+                }),
                 timeoutMs,
               );
 

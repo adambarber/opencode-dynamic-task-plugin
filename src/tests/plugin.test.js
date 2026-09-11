@@ -16,6 +16,7 @@ import {
   extractTextFromPromptResult,
   getLatestAssistantText,
   hydrateLatestText,
+  parseModelOverride,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -1395,6 +1396,25 @@ describe("prompt dance: invokePrompt", () => {
   });
 });
 
+describe("prompt dance: parseModelOverride", () => {
+  it("splits provider and model on the first slash", () => {
+    assert.deepStrictEqual(parseModelOverride("prov/model-x"), { providerID: "prov", modelID: "model-x" });
+    assert.deepStrictEqual(parseModelOverride("a/b/c"), { providerID: "a", modelID: "b/c" });
+  });
+
+  it("keeps providerless models with an empty provider", () => {
+    assert.deepStrictEqual(parseModelOverride("lonely"), { providerID: "", modelID: "lonely" });
+  });
+
+  it("rejects empty and non-string overrides", () => {
+    assert.strictEqual(parseModelOverride(""), undefined);
+    assert.strictEqual(parseModelOverride("   "), undefined);
+    assert.strictEqual(parseModelOverride(null), undefined);
+    assert.strictEqual(parseModelOverride(undefined), undefined);
+    assert.strictEqual(parseModelOverride(42), undefined);
+  });
+});
+
 describe("prompt dance: classifyPromptError", () => {
   it("marks transport failures retryable", () => {
     for (const msg of ["ECONNREFUSED", "request ETIMEDOUT", "fetch failed", "network error"]) {
@@ -2089,3 +2109,4 @@ describe("debugLog — closed to 100% coverage", () => {
     assert.match(path, /passwd/);
   });
 });
+

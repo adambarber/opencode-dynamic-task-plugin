@@ -17,6 +17,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // hooks: {
 //   createThrowsOnce?: boolean,
 //   promptFailIds?: Set<string>,         // async rejections
+//   promptHangIds?: Set<string>,         // never-settling prompts (timeout branch)
 //   promptSyncThrowIds?: Set<string>,    // synchronous throws (dead-session fork)
 //   abortThrowsOnce?: boolean,
 //   abortFailIds?: Set<string>,
@@ -59,6 +60,9 @@ function createToolsMock(hooks = {}) {
       prompt: ({ path, body }) => {
         if (hooks.promptSyncThrowIds?.has(path.id)) {
           throw new Error(`prompt sync-dead for ${path.id}`);
+        }
+        if (hooks.promptHangIds?.has(path.id)) {
+          return new Promise(() => {});
         }
         if (hooks.promptFailIds?.has(path.id)) {
           return Promise.reject(new Error(`prompt failed for ${path.id}`));
@@ -239,32 +243,34 @@ describe("task_continue branches", () => {
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
   });
 
-  it("active continue resolves via the lifecycle event (double-wait shape, Task 03 owns the fix)", async () => {
+  it("active continue returns the prompt result without waiting for events (single-wait)", async () => {
     const childId = await spawnBg();
-    const pending = ctx.harness.tool.task_continue.execute({
+    const out = await ctx.harness.tool.task_continue.execute({
       session_id: childId,
       prompt: "follow up",
       timeout_ms: 5000,
     });
-    // Let execute park on its wait before settling it — else the event wins
-    // the race and the waiter burns the full timeout.
-    await sleep(50);
-    await ctx.harness.fireEvent({
-      type: "session.idle",
-      properties: { sessionID: childId, status: "idle" },
-    });
-    const out = await pending;
     assert.ok(out.includes("Follow-up Response"), `got: ${out}`);
+    assert.ok(out.includes("PROMPT_OK"), `uses the prompt result directly. got: ${out}`);
   });
 
-  it("active continue times out without an event", async () => {
-    const childId = await spawnBg();
-    const out = await ctx.harness.tool.task_continue.execute({
+  it("active continue times out when the child never answers", async () => {
+    // Arm the hang AFTER spawn: the spawn-time prompt must succeed.
+    const hooks = { promptHangIds: new Set() };
+    const hanging = await setupTools(hooks);
+    const out1 = await hanging.tool.dynamic_task.execute(
+      { description: "hang task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out1.match(/Session: (\S+)/)[1];
+    hooks.promptHangIds.add(childId);
+    const out = await hanging.tool.task_continue.execute({
       session_id: childId,
       prompt: "follow up",
       timeout_ms: 60,
     });
     assert.ok(out.includes("Timed out"), `got: ${out}`);
+    await hanging.tool.task_interrupt.execute({ session_id: childId });
   });
 
   it("retained continue reuses the live session", async () => {
@@ -323,6 +329,7 @@ describe("task_continue branches", () => {
     });
     const out = await pending;
     assert.ok(out.includes("new session"), `got: ${out}`);
+    assert.ok(out.includes("PROMPT_OK"), `uses the prompt result directly. got: ${out}`);
     assert.ok(out.includes(oldId) && out.includes(newId), `links both sessions. got: ${out}`);
     await dead.tool.task_interrupt.execute({ session_id: newId });
   });

@@ -27,7 +27,6 @@ import {
   parseDynamicTaskJsonc,
   checkConcurrencyLimit,
   type DynamicTaskConfig,
-  type TimerProvider,
 } from "./shared/config.js";
 import {
   normalizeAgentName,
@@ -51,7 +50,6 @@ import {
   startTimeout,
   withBound,
   ABORT_TIMEOUT_MS,
-  type TimeoutController,
 } from "./shared/bound.js";
 import {
   createStateStore,
@@ -74,18 +72,11 @@ let lastCacheTime = 0;
 const CACHE_TTL = 300000;
 const POLL_INTERVAL = 3000;
 
-type PendingSyncRequests = Map<string, {
-  resolve: (result: any) => void;
-  reject: (error: Error) => void;
-  timeoutHandle: TimeoutController;
-}>;
-
 // Plugin-level state store (ephemeral — lost on restart)
 interface PluginState {
   store: TaskStore;
   config: DynamicTaskConfig;
   deprecationWarned: boolean;
-  pendingSyncRequests: PendingSyncRequests;
 }
 
 let pluginState: PluginState | null = null;
@@ -149,7 +140,6 @@ function initPluginState(directory: string, options: any): PluginState {
     store,
     config,
     deprecationWarned: false,
-    pendingSyncRequests: new Map(),
   };
 }
 
@@ -279,41 +269,7 @@ async function notifyParentSession(client: any, parentSessionId: string, message
   }
 }
 
-// Shared waiter for task_continue follow-ups: parks on pendingSyncRequests
-// until the lifecycle event settles it, or the bound fires. The two former
-// inline copies differed only in timeout text and abort policy — both are
-// parameters now, so the wait exists exactly once.
-function waitForPendingSync(
-  pendingSyncRequests: PendingSyncRequests,
-  timerProvider: TimerProvider,
-  sessionId: string,
-  timeoutMs: number,
-  timeoutMessage: string,
-  onTimeout?: () => void,
-): Promise<string> {
-  return new Promise<string>((resolve) => {
-    const timer = startTimeout(timerProvider, timeoutMs, () => {
-      pendingSyncRequests.delete(sessionId);
-      onTimeout?.();
-      resolve(timeoutMessage);
-    });
-
-    pendingSyncRequests.set(sessionId, {
-      resolve: (result: any) => {
-        timer.cancel();
-        resolve(result.text || "(Subagent completed)");
-      },
-      reject: (err: Error) => {
-        timer.cancel();
-        resolve(`(Error: ${err.message})`);
-      },
-      timeoutHandle: timer,
-    });
-  });
-}
-
-async function handleTimeout(store: TaskStore, childSessionId: string, client: any, config: DynamicTaskConfig,
-  pendingSyncRequests: PendingSyncRequests): Promise<void> {
+async function handleTimeout(store: TaskStore, childSessionId: string, client: any, config: DynamicTaskConfig): Promise<void> {
   const task = store.activeTasks.get(childSessionId);
   if (!task || task.completed) return;
 
@@ -346,7 +302,6 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
 
   // Guard: event handler may have processed completion during the abort await
   if (!store.activeTasks.has(childSessionId)) {
-    pendingSyncRequests.delete(childSessionId);
     return;
   }
 
@@ -373,13 +328,6 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
 
   await notifyParentSession(client, task.parentSessionId, timeoutMessage);
 
-  // Clean up any pending sync request
-  const pending = pendingSyncRequests.get(childSessionId);
-  if (pending) {
-    pending.timeoutHandle.cancel();
-    pendingSyncRequests.delete(childSessionId);
-  }
-
   // Release the stored bound (it already fired — cancel is a no-op now)
   stealTimeoutHandle(store, childSessionId)?.cancel();
 
@@ -392,7 +340,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
 
 async function handleChildLifecycleEvent(client: any, event: any): Promise<void> {
   if (!pluginState) return;
-  const { store, config, pendingSyncRequests } = pluginState;
+  const { store, config } = pluginState;
 
   if (!isTerminalSessionEvent(event)) return;
 
@@ -420,16 +368,6 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
         transitionState(store, childSessionId, "completed_after_timeout", config);
       } else {
         transitionState(store, childSessionId, "completed", config);
-      }
-
-      // Check if there's a pending sync request for this task
-      const pending = pendingSyncRequests.get(childSessionId);
-      await safeLog(client, "info", `Event handler: pendingSyncRequest for ${childSessionId} = ${pending ? 'FOUND' : 'NOT FOUND'}`);
-      if (pending) {
-        pending.timeoutHandle.cancel();
-        pendingSyncRequests.delete(childSessionId);
-        // Resolve the sync Promise — this unblocks the parent
-        pending.resolve({ text: "(completed)" });
       }
 
     // Hydrate the result text — the parent gets content, not a liveness ping.
@@ -523,7 +461,7 @@ export default async function dynamicTaskPlugin(
   // Initialize state at plugin load time
   pluginState = initPluginState(directory, options);
   const state = pluginState;
-  const { config, store, pendingSyncRequests } = state;
+  const { config, store } = state;
 
   // Load persisted task ID mappings
   try {
@@ -809,7 +747,7 @@ export default async function dynamicTaskPlugin(
               // Fire-and-forget background mode: one bound owns the timeout.
               // Stored on the task so completion and interrupt paths can cancel it.
               activeTask.timeoutHandle = startTimeout(config.timerProvider, timeoutMs, () =>
-                handleTimeout(store, childSessionId, client, config, pendingSyncRequests),
+                handleTimeout(store, childSessionId, client, config),
               );
 
               debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
@@ -928,19 +866,24 @@ export default async function dynamicTaskPlugin(
               }, config);
 
               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-              await invokePrompt(client, newSessionId, args.prompt);
 
-              // Sync wait for response
-              const response = await waitForPendingSync(
-                pendingSyncRequests,
+              // Single-wait (Task 03): the prompt result IS the response.
+              // No event parking — the race that abandoned waiters is gone.
+              const outcome = await withBound(
                 config.timerProvider,
-                newSessionId,
                 timeoutMs,
-                `(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`,
-                config.timeoutBehavior === "interrupt"
-                  ? () => { client.session.abort({ path: { id: newSessionId } }).catch(() => {}); }
-                  : undefined,
+                invokePrompt(client, newSessionId, args.prompt),
+                () => {
+                  if (config.timeoutBehavior === "interrupt") {
+                    client.session.abort({ path: { id: newSessionId } }).catch(() => {});
+                  }
+                  try { transitionState(store, newSessionId, "timed_out_retained", config); } catch { }
+                },
               );
+
+              const response = outcome.timedOut
+                ? `(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`
+                : extractTextFromPromptResult(outcome.value) || "(Subagent completed)";
 
               return `## Follow-up Response (new session)\n\n${response}\n\n---\n*Previous session: ${args.session_id}*  *New session: ${newSessionId}*`;
             } catch (error: any) {
@@ -954,17 +897,25 @@ export default async function dynamicTaskPlugin(
             // Send prompt to existing active session
             const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
             try {
-              await invokePrompt(client, args.session_id, args.prompt);
-
-              const response = await waitForPendingSync(
-                pendingSyncRequests,
+              // Single-wait (Task 03): the prompt result IS the response.
+              const outcome = await withBound(
                 config.timerProvider,
-                args.session_id,
                 timeoutMs,
-                `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id})`,
+                invokePrompt(client, args.session_id, args.prompt),
+                () => {
+                  if (config.timeoutBehavior === "interrupt") {
+                    client.session.abort({ path: { id: args.session_id } }).catch(() => {});
+                  }
+                  try { transitionState(store, args.session_id, "timed_out_retained", config); } catch { }
+                },
               );
 
-              return `## Follow-up Response\n\n${response}\n\n---\n*Session: ${args.session_id}*`;
+              if (outcome.timedOut) {
+                return `## Follow-up Response\n\n(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id})\n\n---\n*Session: ${args.session_id}*`;
+              }
+
+              const responseText = extractTextFromPromptResult(outcome.value);
+              return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
             } catch (error: any) {
               if (error.message?.includes("not found")) {
                 return `ERROR: Session "${args.session_id}" not found.`;

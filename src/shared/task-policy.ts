@@ -57,7 +57,11 @@ export function validateAgent(agentName: unknown, config: DynamicTaskConfig): Po
 // unannotated agents remain dispatchable. A legacy `type` field is honored
 // when `mode` is absent to survive older API response shapes.
 
-export function isDispatchableAgent(agent: { mode?: unknown; type?: unknown }): boolean {
+export function isDispatchableAgent(agent: {
+  mode?: unknown;
+  type?: unknown;
+  [key: string]: unknown;
+}): boolean {
   const raw = agent?.mode || agent?.type || "all";
   const mode = typeof raw === "string" ? raw.trim().toLowerCase() : "";
   return mode === "subagent" || mode === "all";

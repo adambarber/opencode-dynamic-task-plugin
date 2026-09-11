@@ -984,6 +984,7 @@ import {
   registerAdmittedTask,
   resolveDependencies,
   formatAdmissionError,
+  parseAgentList,
 } from "../../dist/shared/admission.js";
 import {
   replyToQuestion,
@@ -1312,6 +1313,41 @@ describe("admission gate: formatAdmissionError", () => {
     assert.ok(
       formatAdmissionError({ kind: "lineage", message: "depth msg" }, "explore", "explore").includes("depth msg")
     );
+  });
+});
+
+describe("admission gate: parseAgentList", () => {
+  it("accepts bare arrays and drops nameless records", () => {
+    const records = parseAgentList([
+      { name: "explore", mode: "subagent" },
+      { noName: true },
+      null,
+    ]);
+    assert.deepStrictEqual(records.map((a) => a.name), ["explore"]);
+  });
+
+  it("accepts data and agents envelopes", () => {
+    assert.deepStrictEqual(
+      parseAgentList({ data: [{ name: "a" }] }).map((a) => a.name),
+      ["a"]
+    );
+    assert.deepStrictEqual(
+      parseAgentList({ agents: [{ name: "b" }] }).map((a) => a.name),
+      ["b"]
+    );
+  });
+
+  it("prefers the first non-empty list", () => {
+    assert.deepStrictEqual(
+      parseAgentList({ agents: [], data: [{ name: "c" }] }).map((a) => a.name),
+      ["c"]
+    );
+  });
+
+  it("rejects garbage", () => {
+    for (const bad of [null, undefined, "str", 42, {}, { agents: "x" }, [{ noName: 1 }]]) {
+      assert.deepStrictEqual(parseAgentList(bad), [], JSON.stringify(bad));
+    }
   });
 });
 

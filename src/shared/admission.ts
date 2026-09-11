@@ -111,6 +111,39 @@ export function formatAdmissionError(
   return `ERROR: ${reason.message}`;
 }
 
+// ─── parseAgentList ────────────────────────────────────────────────
+// Turns an untyped registry response into agent records. The 1.18 client
+// returns a { data } envelope; older servers and tests use bare arrays or
+// { agents } wrappers — the first non-empty list wins, anything else yields
+// []. Records are validated minimally ({name: string}); mode policy stays
+// in isDispatchableAgent.
+
+export function parseAgentList(result: unknown): AgentRecord[] {
+  const groups: unknown[] = [];
+  if (Array.isArray(result)) {
+    groups.push(result);
+  } else if (result && typeof result === "object") {
+    const envelope = result as { agents?: unknown; data?: unknown };
+    if (envelope.agents !== undefined) groups.push(envelope.agents);
+    if (envelope.data !== undefined) groups.push(envelope.data);
+    if (groups.length === 0) groups.push(Object.values(envelope));
+  }
+  for (const group of groups) {
+    if (!Array.isArray(group)) continue;
+    const records = group.filter(isAgentRecord);
+    if (records.length > 0) return records;
+  }
+  return [];
+}
+
+function isAgentRecord(item: unknown): item is AgentRecord {
+  return (
+    !!item &&
+    typeof item === "object" &&
+    typeof (item as { name?: unknown }).name === "string"
+  );
+}
+
 // ─── registerAdmittedTask ──────────────────────────────────────────
 // Post-create registration. Thin today by design: single ownership of the
 // registration path so continuation policy (Task 07) has one place to land.

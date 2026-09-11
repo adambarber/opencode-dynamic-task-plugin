@@ -4,6 +4,7 @@
 
 import { tool } from "@opencode-ai/plugin";
 import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
+import type { OpenCodeClient } from "./shared/client.js";
 import {
   normalizeStatus,
   getSessionIdFromEvent,
@@ -42,6 +43,8 @@ import {
   registerAdmittedTask,
   resolveDependencies,
   formatAdmissionError,
+  parseAgentList,
+  type AgentRecord,
 } from "./shared/admission.js";
 import {
   invokePrompt,
@@ -78,7 +81,7 @@ import {
   type TaskLifecycleState,
 } from "./shared/task-state.js";
 
-let cachedAgents: any[] = [];
+let cachedAgents: AgentRecord[] = [];
 let lastCacheTime = 0;
 
 const CACHE_TTL = 300000;
@@ -94,7 +97,9 @@ interface PluginState {
 let pluginState: PluginState | null = null;
 
 /** Safe logger that never throws — prevents secondary failures in error paths */
-async function safeLog(client: any, level: string, message: string): Promise<void> {
+type LogLevel = "debug" | "error" | "info" | "warn";
+
+async function safeLog(client: OpenCodeClient, level: LogLevel, message: string): Promise<void> {
   try {
     await client.app.log({
       body: { service: "dynamic-task", level, message },
@@ -173,7 +178,7 @@ function unknownSessionResult(sessionId: string): string {
 function awaitContinuation(
   store: TaskStore,
   config: DynamicTaskConfig,
-  client: any,
+  client: OpenCodeClient,
   sessionId: string,
   work: Promise<unknown>,
   timeoutMs: number,
@@ -213,7 +218,7 @@ export function validateSessionResult(result: any): string | null {
   return null;
 }
 
-export function buildAgentList(agents: any[]): string {
+export function buildAgentList(agents: AgentRecord[]): string {
   if (agents.length === 0) return "(none discovered)";
   return agents.map((a: any) => a.name).join(", ");
 }
@@ -246,12 +251,12 @@ export function extractSessionStatus(sessionInfo: any, messages: any[] = []): st
   return "unknown";
 }
 
-async function readSessionMessages(client: any, sessionId: string): Promise<any[]> {
+async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<any[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
 }
 
-export async function fetchAgents(client: any): Promise<any[]> {
+export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]> {
   const now = Date.now();
   if (now - lastCacheTime < CACHE_TTL && cachedAgents.length > 0) {
     return cachedAgents;
@@ -261,16 +266,8 @@ export async function fetchAgents(client: any): Promise<any[]> {
   // re-dial; persistent failure keeps the warn-and-stale behavior below.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const result = await client.app.agents();
-      let agents: any[] = [];
-
-      if (Array.isArray(result)) {
-        agents = result;
-      } else if (result && typeof result === "object") {
-        agents = result.agents || result.data || Object.values(result);
-      }
-
-      cachedAgents = agents.filter((a: any) => isDispatchableAgent(a));
+      const result: unknown = await client.app.agents();
+      cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
 
       lastCacheTime = now;
       break;
@@ -301,7 +298,7 @@ function truncateText(text: string, maxChars: number = 1200): string {
   return `${text.slice(0, maxChars)}...`;
 }
 
-async function handleTimeout(store: TaskStore, childSessionId: string, client: any, config: DynamicTaskConfig): Promise<void> {
+async function handleTimeout(store: TaskStore, childSessionId: string, client: OpenCodeClient, config: DynamicTaskConfig): Promise<void> {
   const task = store.activeTasks.get(childSessionId);
   if (!task || task.completed) return;
 
@@ -319,7 +316,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
   if (config.timeoutBehavior === "interrupt") {
     // Await the abort and track its outcome — prevents silent failure
     try {
-      const result = await Promise.race([
+      const result: { aborted: boolean; error?: string } = await Promise.race([
         client.session.abort({ path: { id: childSessionId } }).then(() => ({ aborted: true })),
         new Promise<{ aborted: false; error: string }>((_, reject) =>
           config.timerProvider.setTimeout(() => reject(new Error("abort timeout")), ABORT_TIMEOUT_MS)
@@ -374,7 +371,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
   });
 }
 
-async function handleChildLifecycleEvent(client: any, event: any): Promise<void> {
+async function handleChildLifecycleEvent(client: OpenCodeClient, event: any): Promise<void> {
   if (!pluginState) return;
   const { store, config } = pluginState;
 
@@ -485,7 +482,11 @@ export default async function dynamicTaskPlugin(
   input: PluginInput,
   options?: PluginOptions,
 ) {
-  const { client, directory } = input;
+  // Single sanctioned boundary cast (Task 08): the host provides the
+  // `question` namespace beyond the generated SDK surface. Everything
+  // downstream takes the augmented OpenCodeClient — no further casts.
+  const directory = input.directory;
+  const client = input.client as OpenCodeClient;
 
   if (!client?.app?.agents || !client?.session?.create || !client?.session?.prompt) {
     try {

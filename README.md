@@ -20,9 +20,9 @@ npm install && npm run build
 | `dynamic_task` | Spawn a subagent session (sync or background) |
 | `task_continue` | Send a follow-up prompt to a running session |
 | `task_result` | Poll a session's latest status and output |
-| `task_list` | List all tracked background tasks |
-| `task_status` | Detailed status for one tracked task |
 | `task_interrupt` | Abort a running session |
+
+> Planned but not yet implemented: `task_list`, `task_status` — see `docs/tasks/06-persistence-and-observability.md`.
 
 ### Key parameters
 
@@ -34,7 +34,7 @@ dynamic_task(
   await_response=false,             // background mode (default)
   timeout_ms=300000,                // 5 minute timeout
   model="opencode-go/mimo-v2.5",   // model override
-  depends_on=["ses_t1", "ses_t2"]  // wait for dependencies
+  depends_on=["ses_t1", "ses_t2"]  // accepted but not yet enforced — see docs/tasks/07-admission-gate.md
 )
 ```
 

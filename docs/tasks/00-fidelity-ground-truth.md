@@ -24,6 +24,8 @@
 
 1. Rewrite `README.md` tool table to the four real tools; mark `depends_on` as accepted-but-unenforced until Task 07.
 2. Archive (not rewrite): move `CONSOLIDATED-PLAN.md`, `re-verify-prompt.md`, `test-results-may-5.md`, `test11052026.md` out of the planning path so no future agent treats them as current. Deletion vs `docs/archive/` is the implementer's call; record it here.
+
+**Decision (Cycle A):** moved to `docs/archive/` — history preserved, planning path clean.
 3. Delete or quarantine `.dynamic-task-ids.json` fixture content; Task 06 owns the real format.
 
 ## Litmus

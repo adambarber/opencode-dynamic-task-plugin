@@ -1,6 +1,7 @@
 # Debug logs
 .dynamic-task-logs/
 .worktree/
+.cortexkit/
 
 # Build output
 dist/

@@ -179,6 +179,22 @@ describe("invariant: session.prompt flows through one dance (Task 03)", () => {
 // Primitive: answering child questions. Funnel: question-handling.ts owns the
 // only client.question.reply/reject calls (Tenets 1, 4).
 describe("invariant: question reply/reject funnel through question-handling (Task 04)", () => {
+  it("linkage map lives in the gate module only", () => {
+    const pattern = /questionIdToSessionId|questionSessions/;
+    const hits = listProdFiles()
+      .filter((f) => !f.endsWith("question-handling.ts"))
+      .flatMap((f) => scanLines(f, pattern));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/04-question-gate.md",
+        "Question linkage state outside the gate module.",
+        hits,
+      ),
+    );
+  });
+
   it("no direct client.question.reply/reject outside question-handling.ts", () => {
     const pattern = /client\.question\s*\.\s*(reply|reject)\s*\(/;
     const hits = listProdFiles()

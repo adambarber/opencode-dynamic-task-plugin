@@ -16,10 +16,13 @@ import {
 } from "./shared/task-formatting.js";
 import { debugLog } from "./debug-logger.js";
 import {
-  getRequestIdFromQuestion,
   normalizeQuestionAnswers,
   replyToQuestion,
   rejectQuestion,
+  resolveQuestionSession,
+  decideQuestion,
+  rememberQuestionSession,
+  forgetQuestionSession,
 } from "./shared/question-handling.js";
 import {
   normalizeDynamicTaskConfig,
@@ -123,8 +126,6 @@ async function abortSession(client: any, sessionId: string): Promise<void> {
 import { loadTaskIdMap, saveTaskIdMap, validateTaskId } from "./shared/session-lifecycle.js";
 
 const taskIdToSessionId: Map<string, string> = new Map();
-// Runtime question-to-session mapping (not persisted, populated from events)
-const questionIdToSessionId: Map<string, string> = new Map();
 
 function initPluginState(directory: string, options: any): PluginState {
   // Load dedicated config file if it exists
@@ -502,62 +503,66 @@ export default async function dynamicTaskPlugin(
         status: evtStatus,
       });
 
-      // --- Question API handlers ---
+      // --- Question gate (Task 04): attribute through the gate, then settle.
+      // Unattributable questions (including the operator's own) are never
+      // touched — the gate fails closed on ambiguity. ---
       try {
         if (event?.type === "question.created") {
-          const questionId = event.properties?.id;
-          if (!questionId) {
-            debugLog("unknown", "unknown", "question-missing-id", { type: event.type });
+          const resolved = resolveQuestionSession(event, store);
+          if (!resolved) {
+            debugLog("unknown", "unknown", "question-missing-id", { type: event?.type });
           } else {
-            let childSessionId = questionIdToSessionId.get(questionId) || null;
+            const { questionId, childSessionId } = resolved;
+            const active = childSessionId ? store.activeTasks.get(childSessionId) : undefined;
+            const retained = !active && childSessionId ? store.retainedTasks.get(childSessionId) : undefined;
 
-            if (!childSessionId) {
-              for (const [sessionId, task] of store.activeTasks) {
-                if (task.completed) continue;
-                // Find by matching session ID pattern
-              }
-            }
-
-            // Check if this question is for a retained task
-            const retainedTask = childSessionId ? store.retainedTasks.get(childSessionId) : null;
-            if (retainedTask) {
-              // M3: Questions for retained tasks are rejected with guidance
-              await rejectQuestion(client, questionId,
-                "This task timed out in the parent session. No response will be provided.");
-              debugLog("unknown", childSessionId || "unknown", "question-retained-rejected", { questionId });
-            } else if (childSessionId && store.activeTasks.has(childSessionId)) {
-              const task = store.activeTasks.get(childSessionId)!;
-              questionIdToSessionId.set(questionId, childSessionId);
-
+            if (active) {
+              rememberQuestionSession(questionId, childSessionId as string);
               const answers = normalizeQuestionAnswers(event.properties?.answers);
-              if (answers.length > 0) {
-                const result = await replyToQuestion(client, questionId, answers[0]);
-                if (!result.succeeded) {
-                  debugLog("unknown", childSessionId, "question-auto-answer-failed", {
+              const decision = decideQuestion("active", answers);
+              if (decision.action === "reply") {
+                const result = await replyToQuestion(client, questionId, decision.answer);
+                if (result.succeeded) {
+                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-answered", {
+                    questionId,
+                    answer: decision.answer,
+                  });
+                } else {
+                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-answer-failed", {
                     questionId,
                     reason: result.reason,
                   });
                   const rejectResult = await rejectQuestion(client, questionId,
                     "Background task question auto-answer failed");
                   if (!rejectResult.succeeded) {
-                    debugLog("unknown", childSessionId, "question-auto-reject-failed", {
+                    debugLog(active.parentSessionId, childSessionId as string, "question-auto-reject-failed", {
                       questionId,
                       reason: rejectResult.reason,
                     });
                   }
                 }
               } else {
-                const result = await rejectQuestion(client, questionId,
-                  "Background task — use task_continue for follow-up");
+                const result = await rejectQuestion(client, questionId, decision.reason);
                 if (!result.succeeded) {
-                  debugLog("unknown", childSessionId, "question-auto-reject-failed", {
+                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-reject-failed", {
                     questionId,
                     reason: result.reason,
                   });
+                } else {
+                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-rejected", {
+                    questionId,
+                  });
                 }
               }
+            } else if (retained) {
+              rememberQuestionSession(questionId, childSessionId as string);
+              const decision = decideQuestion("retained", []);
+              if (decision.action === "reject") {
+                await rejectQuestion(client, questionId, decision.reason);
+              }
+              debugLog(retained.parentSessionId, childSessionId as string, "question-retained-rejected", { questionId });
             } else {
-              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: event.type });
+              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: event?.type });
             }
           }
         }
@@ -565,7 +570,7 @@ export default async function dynamicTaskPlugin(
         if (event?.type === "question.replied" || event?.type === "question.rejected") {
           const questionId = event.properties?.id;
           if (questionId) {
-            questionIdToSessionId.delete(questionId);
+            forgetQuestionSession(questionId);
           }
         }
       } catch (qerr: any) {

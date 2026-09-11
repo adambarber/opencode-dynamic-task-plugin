@@ -943,6 +943,10 @@ import {
   getRequestIdFromQuestion,
   isValidQuestionEvent,
   normalizeQuestionAnswers,
+  resolveQuestionSession,
+  decideQuestion,
+  rememberQuestionSession,
+  forgetQuestionSession,
 } from "../../dist/shared/question-handling.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
@@ -1546,6 +1550,81 @@ describe("task-state: noteLateOutcome", () => {
       /Invalid late outcome/
     );
     assert.throws(() => noteLateOutcome(store, "ses_nope", "error"), /not retained/);
+  });
+});
+
+describe("question gate: resolveQuestionSession", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  function trackedStore() {
+    const store = createStateStore();
+    registerActiveTask(store, {
+      childSessionId: "ses_child", parentSessionId: "parent_1",
+      agentName: "explore", description: "t", lineage: [], isBackground: true,
+    }, config);
+    return store;
+  }
+
+  it("resolves via remembered linkage first", () => {
+    const store = trackedStore();
+    rememberQuestionSession("q1", "ses_child");
+    try {
+      const resolved = resolveQuestionSession({ type: "question.created", properties: { id: "q1" } }, store);
+      assert.deepStrictEqual(resolved, { questionId: "q1", childSessionId: "ses_child" });
+    } finally {
+      forgetQuestionSession("q1");
+    }
+  });
+
+  it("resolves ownership from session id fields validated against the store", () => {
+    const store = trackedStore();
+    for (const key of ["sessionID", "sessionId", "session_id"]) {
+      const resolved = resolveQuestionSession(
+        { type: "question.created", properties: { id: "q2", [key]: "ses_child" } },
+        store
+      );
+      assert.deepStrictEqual(resolved, { questionId: "q2", childSessionId: "ses_child" }, key);
+    }
+  });
+
+  it("resolves task ids validated against retained tasks", () => {
+    const store = trackedStore();
+    transitionState(store, "ses_child", "completed", config);
+    const resolved = resolveQuestionSession(
+      { type: "question.created", properties: { id: "q3", task_id: "ses_child" } },
+      store
+    );
+    assert.deepStrictEqual(resolved, { questionId: "q3", childSessionId: "ses_child" });
+  });
+
+  it("refuses to guess: unknown ids resolve unattributed, missing ids null", () => {
+    const store = trackedStore();
+    assert.deepStrictEqual(
+      resolveQuestionSession({ type: "question.created", properties: { id: "q4", sessionID: "ses_stranger" } }, store),
+      { questionId: "q4", childSessionId: null }
+    );
+    assert.deepStrictEqual(
+      resolveQuestionSession({ type: "question.created", properties: { sessionID: "ses_child" } }, store),
+      null
+    );
+  });
+});
+
+describe("question gate: decideQuestion", () => {
+  it("active with answers replies first", () => {
+    assert.deepStrictEqual(decideQuestion("active", ["yes", "no"]), { action: "reply", answer: "yes" });
+  });
+
+  it("active without answers rejects with follow-up guidance", () => {
+    const decision = decideQuestion("active", []);
+    assert.strictEqual(decision.action, "reject");
+    assert.ok(decision.reason.includes("task_continue"));
+  });
+
+  it("retained rejects with timeout guidance", () => {
+    const decision = decideQuestion("retained", ["yes"]);
+    assert.strictEqual(decision.action, "reject");
+    assert.ok(decision.reason.includes("timed out"));
   });
 });
 

@@ -31,6 +31,7 @@ function createToolsMock(hooks = {}) {
     notifications: [],
     logs: [],
     aborted: [],
+    questionCalls: [],
     createThrown: false,
     abortThrown: false,
   };
@@ -44,6 +45,17 @@ function createToolsMock(hooks = {}) {
       ],
       log: async ({ body }) => {
         state.logs.push(body);
+      },
+    },
+    question: {
+      reply: async ({ path, body }) => {
+        if (hooks.questionReplyThrows) throw new Error("reply failed");
+        state.questionCalls.push({ method: "reply", id: path.id, ...body });
+        return { ok: true };
+      },
+      reject: async ({ path, body }) => {
+        state.questionCalls.push({ method: "reject", id: path.id, ...body });
+        return { ok: true };
       },
     },
     session: {
@@ -426,11 +438,16 @@ describe("timeout, question and init guards", () => {
     await h.tool.task_interrupt.execute({ session_id: childId });
   });
 
-  it("unmatched question events are logged without reply (Task 04 owns the fix)", async () => {
+  it("unmatched question events are left untouched (fail-closed scoping)", async () => {
     const h = await setupTools();
     await h.fireEvent({ type: "question.created", properties: { id: "q1" } });
+    await h.fireEvent({
+      type: "question.created",
+      properties: { id: "q9", sessionID: "ses_stranger", answers: [{ text: "yes" }] },
+    });
     await h.fireEvent({ type: "question.replied", properties: { id: "q1" } });
     assert.strictEqual(h.client._state.notifications.length, 0, "no parent traffic for questions");
+    assert.strictEqual(h.client._state.questionCalls.length, 0, "never touches foreign questions");
   });
 
   it("init guard disables the plugin without required client APIs", async () => {
@@ -438,6 +455,84 @@ describe("timeout, question and init guards", () => {
     const pluginFn = mod.default || mod;
     const result = await pluginFn({ client: {}, directory: "/tmp" }, {});
     assert.deepStrictEqual(result, {});
+  });
+});
+
+describe("question gate: child questions settle", () => {
+  let harness;
+  let spawned;
+
+  beforeEach(async () => {
+    harness = await setupTools();
+    spawned = [];
+  });
+
+  afterEach(async () => {
+    await interruptSpawned(harness, spawned);
+  });
+
+  async function spawnChild(timeoutMs = 5000) {
+    const out = await harness.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: timeoutMs },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    spawned.push(childId);
+    return childId;
+  }
+
+  it("answers from an active child are auto-answered with the first option", async () => {
+    const childId = await spawnChild();
+    await harness.fireEvent({
+      type: "question.created",
+      properties: { id: "q1", sessionID: childId, answers: [{ text: "yes" }, { text: "no" }] },
+    });
+    const calls = harness.client._state.questionCalls;
+    assert.strictEqual(calls.length, 1, "exactly one settlement");
+    assert.deepStrictEqual(calls[0], { method: "reply", id: "q1", answer: "yes" });
+    assert.strictEqual(harness.client._state.notifications.length, 0);
+    await harness.fireEvent({ type: "question.replied", properties: { id: "q1" } });
+  });
+
+  it("answerless questions are rejected with follow-up guidance", async () => {
+    const childId = await spawnChild();
+    await harness.fireEvent({
+      type: "question.created",
+      properties: { id: "q2", sessionID: childId, answers: [] },
+    });
+    const calls = harness.client._state.questionCalls;
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].method, "reject");
+    assert.ok(calls[0].reason.includes("task_continue"), `got: ${calls[0].reason}`);
+  });
+
+  it("retained task questions are rejected with timeout guidance", async () => {
+    const childId = await spawnChild(60);
+    await sleep(200);
+    await harness.fireEvent({
+      type: "question.created",
+      properties: { id: "q3", sessionID: childId, answers: [{ text: "yes" }] },
+    });
+    const calls = harness.client._state.questionCalls;
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].method, "reject");
+    assert.ok(calls[0].reason.includes("timed out"), `got: ${calls[0].reason}`);
+  });
+
+  it("reply failure falls back to rejection", async () => {
+    const failing = await setupTools({ questionReplyThrows: true });
+    const out = await failing.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await failing.fireEvent({
+      type: "question.created",
+      properties: { id: "q4", sessionID: childId, answers: [{ text: "yes" }] },
+    });
+    const calls = failing.client._state.questionCalls;
+    assert.ok(calls.some((c) => c.method === "reject"), "fallback rejection must fire");
+    await failing.tool.task_interrupt.execute({ session_id: childId });
   });
 });
 

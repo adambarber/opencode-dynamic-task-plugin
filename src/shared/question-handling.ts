@@ -1,8 +1,14 @@
 // src/shared/question-handling.ts
-// Question API integration for background task management.
+// Question gate (Task 04) — the ONLY module that attributes child questions
+// to tracked tasks and settles them. Resolve-then-validate: candidate owner
+// ids are resolved from the event first, then checked against the task
+// store in the same place. Fail-closed scoping: unattributable questions
+// (including the operator's own) are never touched.
 // ref:opencode-sdk-question — client.question API method signatures
 // ref:opencode-sdk-events — event type definitions and property shapes
 // ref:runtime-observation — production event payloads from session logs
+
+import type { TaskStore } from "./task-state.js";
 
 export interface QuestionEvent {
   type: "question.created" | "question.replied" | "question.rejected";
@@ -81,6 +87,92 @@ async function invokeQuestionApi(
     }
     return { succeeded: false, reason: err?.message || String(err) };
   }
+}
+
+// ─── Question→session linkage ──────────────────────────────────────
+// Owned here (Tenet 5): resolution remembers it, replied/rejected forgets
+// it. Never accessed directly outside this module.
+
+const questionSessions = new Map<string, string>();
+
+export function rememberQuestionSession(questionId: string, childSessionId: string): void {
+  questionSessions.set(questionId, childSessionId);
+}
+
+export function forgetQuestionSession(questionId: string): void {
+  questionSessions.delete(questionId);
+}
+
+// ─── resolveQuestionSession ──────────────────────────────────────────
+// Resolve-then-validate gate. The question id uses the same priority chain
+// as the API calls; owner candidates cover both casings, both nestings,
+// and task ids — each validated against tracked tasks before use.
+// Returns null only when the event carries no question id at all.
+// A resolved-but-unknown childSessionId means "leave untouched".
+
+export interface ResolvedQuestion {
+  questionId: string;
+  childSessionId: string | null;
+}
+
+const OWNER_KEYS = [
+  "sessionID",
+  "sessionId",
+  "session_id",
+  "task_id",
+  "taskId",
+] as const;
+
+export function resolveQuestionSession(event: any, store: TaskStore): ResolvedQuestion | null {
+  const properties = event?.properties ?? {};
+  const data = event?.data ?? {};
+  const questionId = getRequestIdFromQuestion({
+    type: event?.type,
+    properties,
+  } as QuestionEvent);
+  if (!questionId) return null;
+
+  const remembered = questionSessions.get(questionId);
+  if (remembered) return { questionId, childSessionId: remembered };
+
+  const candidates = [
+    ...OWNER_KEYS.map((key) => properties[key]),
+    ...OWNER_KEYS.map((key) => data[key]),
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      if (store.activeTasks.has(candidate) || store.retainedTasks.has(candidate)) {
+        return { questionId, childSessionId: candidate };
+      }
+    }
+  }
+
+  return { questionId, childSessionId: null };
+}
+
+// ─── decideQuestion ──────────────────────────────────────────────────
+// Deliberate degradation (Tenet 11), recorded per kind. Active children
+// keep moving (first suggestion, recorded); nothing answerable or already
+// gone gets a rejection with the recovery path; the caller never guesses.
+
+export type QuestionDecision =
+  | { action: "reply"; answer: string }
+  | { action: "reject"; reason: string };
+
+export function decideQuestion(kind: "active" | "retained", answers: string[]): QuestionDecision {
+  if (kind === "retained") {
+    return {
+      action: "reject",
+      reason: "This task timed out in the parent session. No response will be provided.",
+    };
+  }
+  if (answers.length > 0) {
+    return { action: "reply", answer: answers[0] };
+  }
+  return {
+    action: "reject",
+    reason: "Background task — use task_continue for follow-up",
+  };
 }
 
 /**

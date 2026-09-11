@@ -119,8 +119,8 @@ function envValue(key: string): string | null {
 // Env vars only override if non-empty (avoids "" obliterating file config).
 
 export function normalizeDynamicTaskConfig(
-  options?: Partial<DynamicTaskConfig> | null,
-  fileConfig?: Partial<DynamicTaskConfig> | null,
+  options?: Partial<DynamicTaskConfig> | Record<string, unknown> | null,
+  fileConfig?: Partial<DynamicTaskConfig> | Record<string, unknown> | null,
 ): DynamicTaskConfig {
   const merged: DynamicTaskConfig = { ...DEFAULTS };
 

@@ -3,6 +3,7 @@
 // Docs: https://opencode.ai/docs/plugins
 
 import { tool } from "@opencode-ai/plugin";
+import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import {
   normalizeStatus,
   getSessionIdFromEvent,
@@ -106,14 +107,14 @@ async function safeLog(client: any, level: string, message: string): Promise<voi
 // Durable retained-task ledger for crash recovery (Task 06)
 import { loadTaskLedger, saveTaskLedger } from "./shared/session-lifecycle.js";
 
-function initPluginState(directory: string, options: any): PluginState {
+function initPluginState(directory: string, options?: PluginOptions): PluginState {
   // Load dedicated config file if it exists
   const configPath = directory
     ? `${directory}/.opencode/dynamic-task-plugin.jsonc`
     : null;
   const fileConfig = configPath ? parseDynamicTaskJsonc(configPath) : null;
 
-  const config = normalizeDynamicTaskConfig(options, fileConfig as any);
+  const config = normalizeDynamicTaskConfig(options, fileConfig);
   const store = createStateStore({
     retainedTaskTtlMs: config.retainedTaskTtlMs,
     retainedTaskMaxEntries: config.retainedTaskMaxEntries,
@@ -481,8 +482,8 @@ function createDummyLineage(ctx: any, store: TaskStore): string[] {
 }
 
 export default async function dynamicTaskPlugin(
-  input: { client: any; directory: string },
-  options: any = {},
+  input: PluginInput,
+  options?: PluginOptions,
 ) {
   const { client, directory } = input;
 

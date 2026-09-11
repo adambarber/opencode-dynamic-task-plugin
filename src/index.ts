@@ -10,6 +10,9 @@ import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
   isTerminalSessionEvent,
+  isEventRecord,
+  eventField,
+  eventString,
 } from "./shared/session-lifecycle.js";
 import {
   buildBackgroundPrompt,
@@ -381,7 +384,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: O
   });
 }
 
-async function handleChildLifecycleEvent(client: OpenCodeClient, event: any): Promise<void> {
+async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown): Promise<void> {
   if (!pluginState) return;
   const { store, config } = pluginState;
 
@@ -525,12 +528,12 @@ export default async function dynamicTaskPlugin(
   });
 
   return {
-    event: async ({ event }: any) => {
-      const eventType = event?.type;
-      const eventName = event?.name;
+    event: async ({ event }: { event: unknown }) => {
+      const eventType = eventString(event, ["type"]) ?? "(none)";
+      const eventName = eventString(event, ["name"]) ?? "(none)";
       const evtSessionId = getSessionIdFromEvent(event);
       const evtStatus = getEventLifecycleStatus(event);
-      const topKeys = event ? Object.keys(event).slice(0, 8).join(",") : "(null)";
+      const topKeys = isEventRecord(event) ? Object.keys(event).slice(0, 8).join(",") : "(null)";
 
       await client.app.log({
         body: {
@@ -551,10 +554,10 @@ export default async function dynamicTaskPlugin(
       // Unattributable questions (including the operator's own) are never
       // touched — the gate fails closed on ambiguity. ---
       try {
-        if (event?.type === "question.created") {
+        if (eventString(event, ["type"]) === "question.created") {
           const resolved = resolveQuestionSession(event, store);
           if (!resolved) {
-            debugLog("unknown", "unknown", "question-missing-id", { type: event?.type });
+            debugLog("unknown", "unknown", "question-missing-id", { type: eventString(event, ["type"]) });
           } else {
             const { questionId, childSessionId } = resolved;
             const active = childSessionId ? store.activeTasks.get(childSessionId) : undefined;
@@ -562,7 +565,7 @@ export default async function dynamicTaskPlugin(
 
             if (active) {
               rememberQuestionSession(questionId, childSessionId as string);
-              const answers = normalizeQuestionAnswers(event.properties?.answers);
+              const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
               const decision = decideQuestion("active", answers);
               if (decision.action === "reply") {
                 const result = await replyToQuestion(client, questionId, decision.answer);
@@ -606,13 +609,13 @@ export default async function dynamicTaskPlugin(
               }
               debugLog(retained.parentSessionId, childSessionId as string, "question-retained-rejected", { questionId });
             } else {
-              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: event?.type });
+              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
             }
           }
         }
 
-        if (event?.type === "question.replied" || event?.type === "question.rejected") {
-          const questionId = event.properties?.id;
+        if (eventString(event, ["type"]) === "question.replied" || eventString(event, ["type"]) === "question.rejected") {
+          const questionId = eventString(event, ["properties", "id"]);
           if (questionId) {
             forgetQuestionSession(questionId);
           }

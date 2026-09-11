@@ -10,6 +10,7 @@
 
 import type { TaskStore } from "./task-state.js";
 import type { OpenCodeClient } from "./client.js";
+import { eventField, isEventRecord } from "./session-lifecycle.js";
 
 export interface QuestionEvent {
   type: "question.created" | "question.replied" | "question.rejected";
@@ -32,14 +33,14 @@ export interface QuestionEvent {
  * The `id` field is preferred because it uniquely identifies the question instance
  * for reply/reject API calls, while `request_id` may be a broader correlation scope.
  */
-export function getRequestIdFromQuestion(event: QuestionEvent): string | null {
-  return (
-    event?.properties?.id ||
-    event?.properties?.request_id ||
-    event?.properties?.task_id ||
-    event?.properties?.requestID ||
-    null
-  );
+export function getRequestIdFromQuestion(event: unknown): string | null {
+  const properties = eventField(event, "properties");
+  if (!isEventRecord(properties)) return null;
+  for (const key of ["id", "request_id", "task_id", "requestID"]) {
+    const value = properties[key];
+    if (typeof value === "string" && value) return value;
+  }
+  return null;
 }
 
 /**
@@ -124,21 +125,20 @@ const OWNER_KEYS = [
   "taskId",
 ] as const;
 
-export function resolveQuestionSession(event: any, store: TaskStore): ResolvedQuestion | null {
-  const properties = event?.properties ?? {};
-  const data = event?.data ?? {};
-  const questionId = getRequestIdFromQuestion({
-    type: event?.type,
-    properties,
-  } as QuestionEvent);
+export function resolveQuestionSession(event: unknown, store: TaskStore): ResolvedQuestion | null {
+  const questionId = getRequestIdFromQuestion(event);
   if (!questionId) return null;
+  const properties = eventField(event, "properties");
+  const data = eventField(event, "data");
+  const props = isEventRecord(properties) ? properties : {};
+  const payload = isEventRecord(data) ? data : {};
 
   const remembered = questionSessions.get(questionId);
   if (remembered) return { questionId, childSessionId: remembered };
 
   const candidates = [
-    ...OWNER_KEYS.map((key) => properties[key]),
-    ...OWNER_KEYS.map((key) => data[key]),
+    ...OWNER_KEYS.map((key) => props[key]),
+    ...OWNER_KEYS.map((key) => payload[key]),
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim()) {

@@ -1,3 +1,29 @@
+// ─── unknown-event field access ────────────────────────────────────
+// Events arrive untyped (SDK union members plus sync envelopes and the
+// question API). These read them without casts: non-records yield
+// undefined, never throw.
+
+export function isEventRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object";
+}
+
+export function eventField(root: unknown, ...path: string[]): unknown {
+  let current = root;
+  for (const key of path) {
+    if (!isEventRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+export function eventString(root: unknown, ...paths: string[][]): string | null {
+  for (const path of paths) {
+    const value = eventField(root, ...path);
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
 export function normalizeStatus(raw: unknown): string {
   if (typeof raw === "string") return raw.trim().toLowerCase();
   if (raw && typeof raw === "object" && typeof (raw as { type?: unknown }).type === "string") {
@@ -6,42 +32,37 @@ export function normalizeStatus(raw: unknown): string {
   return "";
 }
 
-export function getSessionIdFromEvent(event: any): string | null {
-  const candidates = [
-    event?.properties?.sessionID,
-    event?.properties?.sessionId,
-    event?.properties?.id,
-    event?.data?.sessionID,
-    event?.data?.sessionId,
-    event?.data?.id,
-    event?.aggregateID,
-    event?.sessionID,
-    event?.sessionId,
-    event?.subject,
-    event?.resource?.id,
-    event?.id,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) return candidate;
-  }
-
-  return null;
+export function getSessionIdFromEvent(event: unknown): string | null {
+  return eventString(
+    event,
+    ["properties", "sessionID"],
+    ["properties", "sessionId"],
+    ["properties", "id"],
+    ["data", "sessionID"],
+    ["data", "sessionId"],
+    ["data", "id"],
+    ["aggregateID"],
+    ["sessionID"],
+    ["sessionId"],
+    ["subject"],
+    ["resource", "id"],
+    ["id"],
+  );
 }
 
-export function getEventLifecycleStatus(event: any): string {
+export function getEventLifecycleStatus(event: unknown): string {
   const candidates = [
-    event?.properties?.status,
-    event?.data?.info?.status,
-    event?.data?.status,
-    event?.info?.status,
-    event?.status,
-    event?.body?.status,
-    event?.body?.info?.status,
-    event?.properties?.info?.status,
+    ["properties", "status"],
+    ["data", "info", "status"],
+    ["data", "status"],
+    ["info", "status"],
+    ["status"],
+    ["body", "status"],
+    ["body", "info", "status"],
+    ["properties", "info", "status"],
   ];
-  for (const c of candidates) {
-    const normalized = normalizeStatus(c);
+  for (const path of candidates) {
+    const normalized = normalizeStatus(eventField(event, ...path));
     if (normalized) return normalized;
   }
   return "";
@@ -49,9 +70,9 @@ export function getEventLifecycleStatus(event: any): string {
 
 const TERMINAL_STATUSES = ["idle", "completed", "error", "deleted"];
 
-export function isTerminalSessionEvent(event: any): boolean {
-  const eventType = event?.type;
-  const eventName = event?.name;
+export function isTerminalSessionEvent(event: unknown): boolean {
+  const eventType = eventString(event, ["type"]) ?? "";
+  const eventName = eventString(event, ["name"]) ?? "";
   const status = getEventLifecycleStatus(event);
 
   // Pattern 1: sync events with session.updated/deleted names

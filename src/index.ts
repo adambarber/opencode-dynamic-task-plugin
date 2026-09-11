@@ -282,22 +282,22 @@ export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]
   // re-dial; persistent failure keeps the warn-and-stale behavior below.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const result: unknown = await client.app.agents();
-      cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
+       const result: unknown = await client.app.agents();
+       cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
 
-      lastCacheTime = now;
-      break;
-    } catch (e: any) {
-      if (attempt === 1) {
-        await client.app.log({
-          body: {
-            service: "dynamic-task",
-            level: "warn",
-            message: `Failed to fetch agents: ${e.message}`,
-          },
-        });
-      }
-    }
+       lastCacheTime = now;
+       break;
+     } catch (error: unknown) {
+       if (attempt === 1 && error instanceof Error) {
+         await client.app.log({
+           body: {
+             service: "dynamic-task",
+             level: "warn",
+             message: `Failed to fetch agents: ${error.message}`,
+           },
+         });
+       }
+     }
   }
 
   return cachedAgents;
@@ -338,12 +338,12 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: O
           config.timerProvider.setTimeout(() => reject(new Error("abort timeout")), ABORT_TIMEOUT_MS)
         ),
       ]);
-      if (!result.aborted) {
-        abortError = result.error;
-      }
-    } catch (e: any) {
-      abortError = e?.message || "abort failed";
-    }
+       if (!result.aborted) {
+         abortError = result.error;
+       }
+     } catch (error: unknown) {
+       abortError = error instanceof Error ? error.message : "abort failed";
+     }
   }
 
   // Guard: event handler may have processed completion during the abort await
@@ -628,20 +628,22 @@ export default async function dynamicTaskPlugin(
       }
 
       // --- Session lifecycle event handler ---
-      try {
-        await handleChildLifecycleEvent(client, event);
-      } catch (e: any) {
-        await client.app.log({
-          body: {
-            service: "dynamic-task",
-            level: "warn",
-            message: `event handler error: ${e?.message}`,
-          },
-        });
-        debugLog("event-handler", "event-handler", "event-handler-error", {
-          error: e?.message,
-        });
-      }
+       try {
+         await handleChildLifecycleEvent(client, event);
+       } catch (error: unknown) {
+         if (error instanceof Error) {
+           await client.app.log({
+             body: {
+               service: "dynamic-task",
+               level: "warn",
+               message: `event handler error: ${error.message}`,
+             },
+           });
+           debugLog("event-handler", "event-handler", "event-handler-error", {
+             error: error.message,
+           });
+         }
+       }
     },
 
     tool: {

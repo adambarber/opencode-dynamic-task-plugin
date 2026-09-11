@@ -1,0 +1,25 @@
+# 05 — Notification Gate
+
+**Doctrine:** Tenets 1, 6, 11. Parent notification is a fragile, irreversible cross-session write — one audited dance, with a named outcome when the parent cannot be reached.
+
+## Evidence
+
+- `notifyParentSession` (`src/index.ts:306-321`): `session.prompt` into the parent, catch → `warn` log. No queue, retry, or persistence. Loss is silent to the planner.
+- "Exactly-once" (`README.md:48`) rests on in-memory `completed`/`timeoutNotified` flags (`src/index.ts:328-329,427-428`) — at-most-once across the restart boundary where it matters.
+- Completion-kind computation is spread across `handleChildLifecycleEvent` (`src/index.ts:430-440`) and `handleTimeout` (`src/index.ts:323-405`), each formatting via `formatParentNotification` with different subsets of context.
+
+## Choke point
+
+- **Primitive:** any write addressed to the parent session.
+- **Funnel:** one `notifyParent(parentId, kind, payload)` gate: kind computed once from reconciled task state (not from which handler won the race), formatted once, delivered with one retry policy, recorded once on the task (notified kind + timestamp + delivery outcome).
+- **Enforcement:** build invariant — no direct parent-directed `session.prompt` outside the gate. Kind strings (`completed` / `completed_after_timeout` / `timeout` / `error`) constructed only in the gate.
+- **Contract test:** flaky-parent harness (parent busy, parent gone, transient prompt failure): asserts the recorded delivery outcome matches reality and that a late completion after timeout still produces exactly one `completed_after_timeout` record. Tests the real race (event vs timeout) with injected timers, not a mock of the formatter.
+- **Degradation:** parent unreachable → task retains the notification payload, delivery outcome recorded as failed with reason, `task_result` surfaces it. The planner recovers by reading (Task 06), never by waiting for a prompt that will never arrive. No silent `warn`-and-drop.
+
+## Scope
+
+Collapse kind computation to one site, route both lifecycle and timeout paths through the gate, record delivery on the task. Keep message text compatible with existing `[dynamic-task-notify]` consumers.
+
+## Litmus
+
+A newcomer cannot notify the parent except through the gate — the build fails — and every notification has a queryable delivery record.

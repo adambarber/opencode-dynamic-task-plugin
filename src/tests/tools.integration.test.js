@@ -97,6 +97,32 @@ function createToolsMock(hooks = {}) {
   return client;
 }
 
+// Shared test-harness funnel: one way to release spawned sessions.
+async function interruptSpawned(harness, spawned) {
+  for (const id of spawned) {
+    try {
+      await ctx.harness.tool.task_interrupt.execute({ session_id: id });
+    } catch {
+      // Already settled.
+    }
+  }
+}
+
+// Shared lifecycle funnel: every tracked suite gets a fresh harness and
+// releases its spawns the same way. beforeEach/afterEach register against
+// the calling describe block.
+function useTrackedHarness() {
+  const ctx = { harness: null, spawned: [] };
+  beforeEach(async () => {
+    ctx.harness = await setupTools();
+    ctx.spawned = [];
+  });
+  afterEach(async () => {
+    await interruptSpawned(ctx.harness, ctx.spawned);
+  });
+  return ctx;
+}
+
 async function setupTools(hooks = {}, options = {}) {
   const client = createToolsMock(hooks);
   resetAgentCache();
@@ -113,15 +139,11 @@ async function setupTools(hooks = {}, options = {}) {
 // --- Tests -----------------------------------------------------------------
 
 describe("dynamic_task validation", () => {
-  let harness;
-
-  beforeEach(async () => {
-    harness = await setupTools();
-  });
+  const ctx = useTrackedHarness();
 
   it("rejects missing subagent_type with the available list", async () => {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "t", prompt: "hi", await_response: false },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", prompt: "hi", await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("No subagent_type"), `got: ${out}`);
@@ -129,30 +151,30 @@ describe("dynamic_task validation", () => {
   });
 
   it("rejects unknown agents", async () => {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "t", subagent_type: "nope", prompt: "hi", await_response: false },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", subagent_type: "nope", prompt: "hi", await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(out.includes('Agent "nope" not found'), `got: ${out}`);
   });
 
   it("rejects missing and oversized prompts", async () => {
-    const missing = await harness.tool.dynamic_task.execute(
-      { description: "t", subagent_type: "explore", await_response: false },
+    const missing = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", subagent_type: "explore", await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(missing.includes("Invalid prompt"), `got: ${missing}`);
 
-    const long = await harness.tool.dynamic_task.execute(
-      { description: "t", subagent_type: "explore", prompt: "x".repeat(100001), await_response: false },
+    const long = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", subagent_type: "explore", prompt: "x".repeat(100001), await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
   });
 
   it("rejects blocked agents", async () => {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "t", subagent_type: "general", prompt: "hi", await_response: false },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", subagent_type: "general", prompt: "hi", await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("blocked"), `got: ${out}`);
@@ -161,13 +183,13 @@ describe("dynamic_task validation", () => {
   it("rejects over the concurrency limit", async () => {
     const limited = await setupTools({}, { maxConcurrent: 1 });
     const first = await limited.tool.dynamic_task.execute(
-      { description: "one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
+      { description: "task one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
       { sessionID: "p1" },
     );
     assert.ok(first.includes("in background"), `first must spawn. got: ${first}`);
 
     const second = await limited.tool.dynamic_task.execute(
-      { description: "two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
+      { description: "task two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
       { sessionID: "p1" },
     );
     assert.ok(second.includes("ConcurrencyLimitExceeded"), `got: ${second}`);
@@ -177,7 +199,7 @@ describe("dynamic_task validation", () => {
   it("surfaces session.create failures", async () => {
     const failing = await setupTools({ createThrowsOnce: true });
     const out = await failing.tool.dynamic_task.execute(
-      { description: "t", subagent_type: "explore", prompt: "hi", await_response: false },
+      { description: "task t", subagent_type: "explore", prompt: "hi", await_response: false },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("ERROR"), `got: ${out}`);
@@ -187,46 +209,30 @@ describe("dynamic_task validation", () => {
   it("warns once about async-by-default", async () => {
     // Short timeout: stray background handles must not outlive the suite.
     // await_response omitted: the deprecation path only fires on the default.
-    const args = { description: "t", subagent_type: "explore", prompt: "hi", timeout_ms: 300 };
-    await harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
-    await harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
-    const warnings = harness.client._state.logs.filter((l) => l.message.includes("Deprecation"));
+    const args = { description: "task t", subagent_type: "explore", prompt: "hi", timeout_ms: 300 };
+    await ctx.harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
+    await ctx.harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
+    const warnings = ctx.harness.client._state.logs.filter((l) => l.message.includes("Deprecation"));
     assert.strictEqual(warnings.length, 1, "exactly one deprecation warning");
   });
 });
 
 describe("task_continue branches", () => {
-  let harness;
-  let spawned;
-
-  beforeEach(async () => {
-    harness = await setupTools();
-    spawned = [];
-  });
-
-  afterEach(async () => {
-    for (const id of spawned) {
-      try {
-        await harness.tool.task_interrupt.execute({ session_id: id });
-      } catch {
-        // Already settled.
-      }
-    }
-  });
+  const ctx = useTrackedHarness();
 
   async function spawnBg(timeoutMs = 5000) {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: timeoutMs },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: timeoutMs },
       { sessionID: "p1" },
     );
     const id = out.match(/Session: (\S+)/)[1];
-    spawned.push(id);
+    ctx.spawned.push(id);
     return id;
   }
 
   it("rejects missing args and oversized prompts", async () => {
-    assert.ok((await harness.tool.task_continue.execute({})).includes("required"));
-    const long = await harness.tool.task_continue.execute({
+    assert.ok((await ctx.harness.tool.task_continue.execute({})).includes("required"));
+    const long = await ctx.harness.tool.task_continue.execute({
       session_id: "ses_tools_1",
       prompt: "x".repeat(100001),
     });
@@ -235,7 +241,7 @@ describe("task_continue branches", () => {
 
   it("active continue resolves via the lifecycle event (double-wait shape, Task 03 owns the fix)", async () => {
     const childId = await spawnBg();
-    const pending = harness.tool.task_continue.execute({
+    const pending = ctx.harness.tool.task_continue.execute({
       session_id: childId,
       prompt: "follow up",
       timeout_ms: 5000,
@@ -243,7 +249,7 @@ describe("task_continue branches", () => {
     // Let execute park on its wait before settling it — else the event wins
     // the race and the waiter burns the full timeout.
     await sleep(50);
-    await harness.fireEvent({
+    await ctx.harness.fireEvent({
       type: "session.idle",
       properties: { sessionID: childId, status: "idle" },
     });
@@ -253,7 +259,7 @@ describe("task_continue branches", () => {
 
   it("active continue times out without an event", async () => {
     const childId = await spawnBg();
-    const out = await harness.tool.task_continue.execute({
+    const out = await ctx.harness.tool.task_continue.execute({
       session_id: childId,
       prompt: "follow up",
       timeout_ms: 60,
@@ -264,7 +270,7 @@ describe("task_continue branches", () => {
   it("retained continue reuses the live session", async () => {
     const childId = await spawnBg(60);
     await sleep(200);
-    const out = await harness.tool.task_continue.execute({
+    const out = await ctx.harness.tool.task_continue.execute({
       session_id: childId,
       prompt: "summarize",
       timeout_ms: 5000,
@@ -276,7 +282,7 @@ describe("task_continue branches", () => {
   it("retained continue on an async-dead session reports timeout (Task 07 owns continuation policy)", async () => {
     const dead = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
     const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
       { sessionID: "p1" },
     );
     const oldId = out1.match(/Session: (\S+)/)[1];
@@ -295,7 +301,7 @@ describe("task_continue branches", () => {
     const hooks = { promptSyncThrowIds: new Set() };
     const dead = await setupTools(hooks);
     const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
       { sessionID: "p1" },
     );
     const oldId = out1.match(/Session: (\S+)/)[1];
@@ -322,7 +328,7 @@ describe("task_continue branches", () => {
   });
 
   it("unknown sessions resolve to unknown state", async () => {
-    const out = await harness.tool.task_continue.execute({
+    const out = await ctx.harness.tool.task_continue.execute({
       session_id: "ses_missing",
       prompt: "hello?",
     });
@@ -331,42 +337,26 @@ describe("task_continue branches", () => {
 });
 
 describe("task_result and task_interrupt paths", () => {
-  let harness;
-  let spawned;
-
-  beforeEach(async () => {
-    harness = await setupTools();
-    spawned = [];
-  });
-
-  afterEach(async () => {
-    for (const id of spawned) {
-      try {
-        await harness.tool.task_interrupt.execute({ session_id: id });
-      } catch {
-        // Already settled.
-      }
-    }
-  });
+  const ctx = useTrackedHarness();
 
   it("task_result requires a session id", async () => {
-    assert.ok((await harness.tool.task_result.execute({})).includes("required"));
+    assert.ok((await ctx.harness.tool.task_result.execute({})).includes("required"));
   });
 
   it("task_result reports tracked active tasks", async () => {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
       { sessionID: "p1" },
     );
     const childId = out.match(/Session: (\S+)/)[1];
-    spawned.push(childId);
-    const summary = await harness.tool.task_result.execute({ session_id: childId });
+    ctx.spawned.push(childId);
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: childId });
     assert.ok(summary.includes(childId), `got: ${summary}`);
     assert.ok(summary.includes("Tracked background task: yes"), `got: ${summary}`);
   });
 
   it("task_result maps API 404 to unknown", async () => {
-    const summary = await harness.tool.task_result.execute({ session_id: "ses_gone" });
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: "ses_gone" });
     assert.ok(summary.includes("unknown"), `got: ${summary}`);
   });
 
@@ -377,21 +367,22 @@ describe("task_result and task_interrupt paths", () => {
   });
 
   it("task_interrupt aborts, reports, and untracks", async () => {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
       { sessionID: "p1" },
     );
     const childId = out.match(/Session: (\S+)/)[1];
-    const done = await harness.tool.task_interrupt.execute({ session_id: childId });
+    ctx.spawned.push(childId);
+    const done = await ctx.harness.tool.task_interrupt.execute({ session_id: childId });
     assert.ok(done.includes("interrupted"), `got: ${done}`);
-    assert.ok(harness.client._state.aborted.includes(childId), "abort must reach the API");
+    assert.ok(ctx.harness.client._state.aborted.includes(childId), "abort must reach the API");
     // Interrupt removes the retained entry: the task is no longer tracked.
-    const summary = await harness.tool.task_result.execute({ session_id: childId });
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: childId });
     assert.ok(summary.includes("Tracked background task: no"), `got: ${summary}`);
   });
 
   it("task_interrupt requires a session id and names missing sessions", async () => {
-    assert.ok((await harness.tool.task_interrupt.execute({})).includes("required"));
+    assert.ok((await ctx.harness.tool.task_interrupt.execute({})).includes("required"));
     const missing = await setupTools({ abortFailIds: new Set(["ses_ghost"]) });
     const out = await missing.tool.task_interrupt.execute({ session_id: "ses_ghost" });
     assert.ok(out.includes("not found"), `got: ${out}`);
@@ -402,7 +393,7 @@ describe("timeout, question and init guards", () => {
   it("timeout still notifies when abort fails", async () => {
     const h = await setupTools({ abortThrowsOnce: true });
     const out = await h.tool.dynamic_task.execute(
-      { description: "bg", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
       { sessionID: "p1" },
     );
     const childId = out.match(/Session: (\S+)/)[1];

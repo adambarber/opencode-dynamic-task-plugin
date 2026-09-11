@@ -78,7 +78,7 @@ src/
 ## Development
 
 ```bash
-npm test                  # 130 tests
+npm test                  # 217 tests
 npm run lint              # tsc --noEmit
 npm run build             # compiles to dist/
 npm run test:coverage     # 90/80/90 gate enforceed

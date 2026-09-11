@@ -25,3 +25,7 @@ Build the gate, route both spawn sites through it, resolve lineage from `parentI
 ## Litmus
 
 A newcomer cannot spawn a session except through the admission gate — the build fails — and every refusal tells the planner exactly what to do next.
+
+## Known fork (found during foundation, pinned by tools.integration tests)
+
+Retained-continue on an async-dead session reports timeout; only a synchronously-throwing prompt reaches the spawn-new path. Whether a dead continuation should retry, replan, or refuse is continuation policy — decided here, in the gate, not in the tool handler.

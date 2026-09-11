@@ -24,3 +24,7 @@ Collapse the dual timers, route all three wait sites through the funnel, central
 ## Litmus
 
 A newcomer cannot add a second timer to a wait or inline a literal timeout — the build fails; and every bound's fire path is observable in output and logs.
+
+## Known gap (found during foundation, pinned by tools.integration tests)
+
+`task_interrupt` transitions state but does not clear the stored timeout handle — the timer fires later and no-ops against the missing task. Timer ownership must move to the bound helper so interrupt cancels the wait instead of leaking it.

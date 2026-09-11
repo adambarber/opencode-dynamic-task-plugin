@@ -54,6 +54,7 @@ import {
   startTimeout,
   withBound,
   ABORT_TIMEOUT_MS,
+  type BoundOutcome,
 } from "./shared/bound.js";
 import {
   notifyParent,
@@ -163,6 +164,25 @@ function missingSessionId(args: any): string | null {
 // Single shape for unknown sessions across all tools.
 function unknownSessionResult(sessionId: string): string {
   return JSON.stringify({ status: "unknown", session_id: sessionId });
+}
+
+// Shared bound waiter for live-session prompts (Tasks 02/07): one timer
+// owns abort + transition + race for every prompt that must settle bounded.
+// Callers pass already-started work; prompt construction stays at the site.
+function awaitContinuation(
+  store: TaskStore,
+  config: DynamicTaskConfig,
+  client: any,
+  sessionId: string,
+  work: Promise<unknown>,
+  timeoutMs: number,
+): Promise<BoundOutcome<unknown>> {
+  return withBound(config.timerProvider, timeoutMs, work, () => {
+    if (config.timeoutBehavior === "interrupt") {
+      client.session.abort({ path: { id: sessionId } }).catch(() => {});
+    }
+    try { transitionState(store, sessionId, "timed_out_retained", config); } catch { /* ok */ }
+  });
 }
 
 // Shared shell for session-scoped read tools: identical arg schema and
@@ -725,17 +745,11 @@ export default async function dynamicTaskPlugin(
             }, config);
 
             if (shouldAwait) {
-              // Single bound (Task 02): one timer owns abort + transition + race.
-              const outcome = await withBound(
-                config.timerProvider,
-                timeoutMs,
+              // Bounded prompt (Tasks 02/07): abort + transition on timeout.
+              const outcome = await awaitContinuation(
+                store, config, client, childSessionId,
                 invokePrompt(client, childSessionId, args.prompt),
-                () => {
-                  if (config.timeoutBehavior === "interrupt") {
-                    client.session.abort({ path: { id: childSessionId } }).catch(() => { /* ok */ });
-                  }
-                  try { transitionState(store, childSessionId, "timed_out_retained", config); } catch { /* ok */ }
-                },
+                timeoutMs,
               );
 
               if (outcome.timedOut) {
@@ -836,32 +850,49 @@ export default async function dynamicTaskPlugin(
           // Check if this is a retained task — spawn new session
           const retained = store.retainedTasks.get(args.session_id);
           if (retained) {
-            // Try existing session first — send prompt and await response directly
+            // Try existing session first — send prompt and await response directly.
+            // A genuine timeout reports as such; a dead session falls through
+            // to re-admission below.
             try {
               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
 
-              // Single bound (Task 02): one timer owns abort + transition + race.
-              const outcome = await withBound(
-                config.timerProvider,
-                timeoutMs,
+              // Bounded prompt (Tasks 02/07): abort + transition on timeout.
+              const outcome = await awaitContinuation(
+                store, config, client, args.session_id,
                 invokePrompt(client, args.session_id, args.prompt).catch(() => null),
-                () => {
-                  if (config.timeoutBehavior === "interrupt") {
-                    client.session.abort({ path: { id: args.session_id } }).catch(() => {});
-                  }
-                  try { transitionState(store, args.session_id, "timed_out_retained", config); } catch { }
-                },
+                timeoutMs,
               );
 
-              if (outcome.timedOut || outcome.value === null) {
+              if (outcome.timedOut) {
                 return `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id}. Use task_continue to resume.)`;
               }
 
-              const responseText = extractTextFromPromptResult(outcome.value);
-              try { transitionState(store, args.session_id, "completed", config); } catch { }
-              return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
+              if (outcome.value !== null) {
+                const responseText = extractTextFromPromptResult(outcome.value);
+                try { transitionState(store, args.session_id, "completed", config); } catch { }
+                return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
+              }
+              // Async-dead session (prompt rejected): fall through to re-admission.
             } catch {
-              // Session dead — fall through to spawn logic below
+              // Synchronously dead session — fall through to re-admission below.
+            }
+
+            // Continuation policy (Task 07): a dead session earns a fresh
+            // continuation only through the admission gate. Ancestors-only
+            // lineage: resuming is not re-delegating, so the task's own tail
+            // does not count against it.
+            const agents = await fetchAgents(client);
+            const readmission = resolveAdmission(
+              agents,
+              retained.agentName,
+              retained.lineage.slice(0, -1),
+              config,
+            );
+            if (!readmission.ok) {
+              return [
+                formatAdmissionError(readmission.reason, buildAgentList(agents), retained.agentName),
+                `(Previous session ${args.session_id} did not respond and cannot be continued.)`,
+              ].join("\n\n");
             }
 
             // Spawn a new child session with the same agent
@@ -896,18 +927,12 @@ export default async function dynamicTaskPlugin(
 
               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
 
-              // Single-wait (Task 03): the prompt result IS the response.
-              // No event parking — the race that abandoned waiters is gone.
-              const outcome = await withBound(
-                config.timerProvider,
-                timeoutMs,
+              // Single-wait (Task 03): the prompt result IS the response,
+              // settled through the shared bound waiter.
+              const outcome = await awaitContinuation(
+                store, config, client, newSessionId,
                 invokePrompt(client, newSessionId, args.prompt),
-                () => {
-                  if (config.timeoutBehavior === "interrupt") {
-                    client.session.abort({ path: { id: newSessionId } }).catch(() => {});
-                  }
-                  try { transitionState(store, newSessionId, "timed_out_retained", config); } catch { }
-                },
+                timeoutMs,
               );
 
               const response = outcome.timedOut
@@ -926,17 +951,12 @@ export default async function dynamicTaskPlugin(
             // Send prompt to existing active session
             const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
             try {
-              // Single-wait (Task 03): the prompt result IS the response.
-              const outcome = await withBound(
-                config.timerProvider,
-                timeoutMs,
+              // Single-wait (Task 03): the prompt result IS the response,
+              // settled through the shared bound waiter.
+              const outcome = await awaitContinuation(
+                store, config, client, args.session_id,
                 invokePrompt(client, args.session_id, args.prompt),
-                () => {
-                  if (config.timeoutBehavior === "interrupt") {
-                    client.session.abort({ path: { id: args.session_id } }).catch(() => {});
-                  }
-                  try { transitionState(store, args.session_id, "timed_out_retained", config); } catch { }
-                },
+                timeoutMs,
               );
 
               if (outcome.timedOut) {

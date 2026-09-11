@@ -39,7 +39,7 @@ function createToolsMock(hooks = {}) {
   const client = {
     _state: state,
     app: {
-      agents: async () => [
+      agents: async () => hooks.agentsList ?? [
         { name: "explore", mode: "subagent" },
         { name: "general", mode: "subagent" },
       ],
@@ -297,35 +297,7 @@ describe("task_continue branches", () => {
     assert.ok(out.includes("PROMPT_OK"), `reuses live session output. got: ${out}`);
   });
 
-  it("retained continue on an async-dead session reports timeout (Task 07 owns continuation policy)", async () => {
-    const dead = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
-    const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const oldId = out1.match(/Session: (\S+)/)[1];
-    await sleep(200);
-
-    const out = await dead.tool.task_continue.execute({
-      session_id: oldId,
-      prompt: "try again",
-      timeout_ms: 5000,
-    });
-    assert.ok(out.includes("Timed out"), `got: ${out}`);
-    assert.ok(out.includes(oldId), `names the dead session. got: ${out}`);
-  });
-
-  it("retained continue spawns a fresh session when prompt throws synchronously", async () => {
-    const hooks = { promptSyncThrowIds: new Set() };
-    const dead = await setupTools(hooks);
-    const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const oldId = out1.match(/Session: (\S+)/)[1];
-    await sleep(200);
-    hooks.promptSyncThrowIds.add(oldId);
-
+  async function continueDeadAndSettle(dead, oldId) {
     const pending = dead.tool.task_continue.execute({
       session_id: oldId,
       prompt: "try again",
@@ -341,6 +313,56 @@ describe("task_continue branches", () => {
     });
     const out = await pending;
     assert.ok(out.includes("new session"), `got: ${out}`);
+    assert.ok(out.includes(oldId) && out.includes(newId), `links both sessions. got: ${out}`);
+    return { out, newId };
+  }
+
+  it("retained continue on an async-dead session re-admits and spawns anew", async () => {
+    const dead = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
+    const out1 = await dead.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const oldId = out1.match(/Session: (\S+)/)[1];
+    await sleep(200);
+    const { newId } = await continueDeadAndSettle(dead, oldId);
+    await dead.tool.task_interrupt.execute({ session_id: newId });
+  });
+
+  it("dead continuation with a vanished agent is refused, not spawned", async () => {
+    const hooks = { promptFailIds: new Set(["ses_tools_1"]), agentsList: undefined };
+    const dead = await setupTools(hooks);
+    const out1 = await dead.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const oldId = out1.match(/Session: (\S+)/)[1];
+    await sleep(200);
+    // Registry drift: the agent is gone and the cache is cleared.
+    hooks.agentsList = [];
+    resetAgentCache();
+    const out = await dead.tool.task_continue.execute({
+      session_id: oldId,
+      prompt: "try again",
+      timeout_ms: 5000,
+    });
+    assert.ok(out.includes("not found"), `refusal names the cause. got: ${out}`);
+    assert.ok(out.includes(oldId), `names the dead session. got: ${out}`);
+    assert.strictEqual(dead.client._state.sessions.size, 1, "no continuation spawned");
+  });
+
+  it("retained continue spawns a fresh session when prompt throws synchronously", async () => {
+    const hooks = { promptSyncThrowIds: new Set() };
+    const dead = await setupTools(hooks);
+    const out1 = await dead.tool.dynamic_task.execute(
+      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const oldId = out1.match(/Session: (\S+)/)[1];
+    await sleep(200);
+    hooks.promptSyncThrowIds.add(oldId);
+
+    const { out, newId } = await continueDeadAndSettle(dead, oldId);
     assert.ok(out.includes("PROMPT_OK"), `uses the prompt result directly. got: ${out}`);
     assert.ok(out.includes(oldId) && out.includes(newId), `links both sessions. got: ${out}`);
     await dead.tool.task_interrupt.execute({ session_id: newId });

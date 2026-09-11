@@ -25,6 +25,10 @@ Collapse the dual timers, route all three wait sites through the funnel, central
 
 A newcomer cannot add a second timer to a wait or inline a literal timeout — the build fails; and every bound's fire path is observable in output and logs.
 
-## Known gap (found during foundation, pinned by tools.integration tests)
+## Known gap (found during foundation, fixed here)
 
-`task_interrupt` transitions state but does not clear the stored timeout handle — the timer fires later and no-ops against the missing task. Timer ownership must move to the bound helper so interrupt cancels the wait instead of leaking it.
+`task_interrupt` transitioned state but never cleared the stored timeout handle — fixed via `stealTimeoutHandle` + `cancel()` in the interrupt path, pinned by the recording-timer integration test.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: `bound.test.js` (11 tests: fire-once, idempotent cancel, single-timer call-shape, unref, bound race/slow/reject/cancel) plus `stealTimeoutHandle` unit tests plus interrupt-cancel/notify-mode integration pins green; sync prompt race (formerly two timers), retained try-existing race, `waitForPendingSync`, and the background arm all route through `startTimeout`/`withBound`; abort budget centralized as `ABORT_TIMEOUT_MS`; full suite 230/230, timer-shape invariant green, 0 clones. Decisions: handles are unref'd so waits never hold the host open; late settlement is swallowed, never an unhandled rejection; `waitForPendingSync` keeps the waiter map (Task 03 owns single-wait), the bound owns its timer.

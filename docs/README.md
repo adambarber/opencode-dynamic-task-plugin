@@ -6,15 +6,17 @@ Work proceeds in order. Each task doc is the spec for one unit of work — no co
 
 ## Task order
 
-| # | Doc | Primitive | Why first |
-|---|-----|-----------|-----------|
-| 00 | `tasks/00-fidelity-ground-truth.md` | Stale docs as hazard | Planners inherit phantom capabilities; fix the world model before the mechanism |
-| 01 | `tasks/01-lifecycle-choke-point.md` | Task state mutation | Every stall fix touches state; bypasses make all later guarantees folklore |
-| 02 | `tasks/02-execution-bound.md` | Unbounded wait | Timeout-as-detector is masking; bound execution, don't enumerate bad shapes |
-| 03 | `tasks/03-prompt-hydration-dance.md` | Prompt → result | Placeholder `"(completed)"` makes communication lossy even on success |
-| 04 | `tasks/04-question-gate.md` | Child questions | Unmatched questions deadlock children — the dominant mid-feature stall |
-| 05 | `tasks/05-notification-gate.md` | Parent notification | Best-effort prompt injection loses the one signal the planner waits on |
-| 06 | `tasks/06-persistence-and-observability.md` | Ephemeral store + phantom reads | Restart orphans; `task_list`/`task_status` advertised but absent |
-| 07 | `tasks/07-admission-gate.md` | Spawn admission | `depends_on`, lineage, dispatch each re-approach the same gate differently |
+| # | Doc | Primitive | Why first | Status |
+|---|-----|-----------|-----------|--------|
+| 00 | `tasks/00-fidelity-ground-truth.md` | Stale docs as hazard | Planners inherit phantom capabilities; fix the world model before the mechanism | Complete |
+| 01 | `tasks/01-lifecycle-choke-point.md` | Task state mutation | Every stall fix touches state; bypasses make all later guarantees folklore | Complete |
+| 02 | `tasks/02-execution-bound.md` | Unbounded wait | Timeout-as-detector is masking; bound execution, don't enumerate bad shapes | Complete |
+| 03 | `tasks/03-prompt-hydration-dance.md` | Prompt → result | Placeholder `"(completed)"` makes communication lossy even on success | Complete |
+| 04 | `tasks/04-question-gate.md` | Child questions | Unmatched questions deadlock children — the dominant mid-feature stall | Complete |
+| 05 | `tasks/05-notification-gate.md` | Parent notification | Best-effort prompt injection loses the one signal the planner waits on | Complete |
+| 06 | `tasks/06-persistence-and-observability.md` | Ephemeral store + phantom reads | Restart orphans; `task_list`/`task_status` advertised but absent | Complete |
+| 07 | `tasks/07-admission-gate.md` | Spawn admission | `depends_on`, lineage, dispatch each re-approach the same gate differently | Complete |
+
+Each doc carries its proof (commands, results, decisions) in its Status section.
 
 Conventions: plain markdown, no frontmatter, evidence cited as `path:line`. No new tooling or deps introduced by docs work.

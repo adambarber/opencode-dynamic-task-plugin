@@ -34,7 +34,7 @@ dynamic_task(
   await_response=false,             // background mode (default)
   timeout_ms=300000,                // 5 minute timeout
   model="opencode-go/mimo-v2.5",   // model override
-  depends_on=["ses_t1", "ses_t2"]  // accepted but not yet enforced — see docs/tasks/07-admission-gate.md
+  depends_on=["ses_t1", "ses_t2"]  // tasks start after deps complete (unknown ids pass)
 )
 ```
 
@@ -78,7 +78,7 @@ src/
 ## Development
 
 ```bash
-npm test                  # 217 tests
+npm test                  # 286 tests
 npm run lint              # tsc --noEmit
 npm run build             # compiles to dist/
 npm run test:coverage     # 90/80/90 gate enforceed

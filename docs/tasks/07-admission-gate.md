@@ -26,6 +26,12 @@ Build the gate, route both spawn sites through it, resolve lineage from `parentI
 
 A newcomer cannot spawn a session except through the admission gate — the build fails — and every refusal tells the planner exactly what to do next.
 
+## Status
+
+**Complete** — 2026-09-11. Proof: `allowSameAgentRecursion` honored (unit + nested integration, strict refusal pinned); `resolveDependencies` unit-pinned (none/completed/running/failed/unknown) with integration refusal-then-admission; `formatAdmissionError` renders all four refusal kinds identically to the old inline strings; fetch retry covered; lineage inheritance integration-pinned — which exposed the double-count (parent re-append collapsed depth and display, both fixed to verbatim); continuation policy implemented (dead → re-admit on ancestors-only lineage → spawn or named refusal, registry-drift covered); full suite 286/286, coverage gate green, 0 clones.
+
+Decisions: unknown dep ids pass (aged-out tolerance over deadlock); resumption checks ancestors-only (continuing is not re-delegating); all four bounded-prompt sites share `awaitContinuation`; refusal rendering centralized in the gate.
+
 ## Known fork (found during foundation, pinned by tools.integration tests)
 
 Retained-continue on an async-dead session reports timeout; only a synchronously-throwing prompt reaches the spawn-new path. Whether a dead continuation should retry, replan, or refuse is continuation policy — decided here, in the gate, not in the tool handler.

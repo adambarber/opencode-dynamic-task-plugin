@@ -5,11 +5,13 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
+import type { OpenCodeClient } from "./client.js";
+
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
 // client error — callers classify via classifyPromptError.
 
-export function invokePrompt(client: any, sessionId: string, text: string): Promise<unknown> {
+export function invokePrompt(client: OpenCodeClient, sessionId: string, text: string): Promise<unknown> {
   return client.session.prompt({
     path: { id: sessionId },
     body: { parts: [{ type: "text", text }] },
@@ -126,7 +128,7 @@ export function getLatestAssistantText(messages: any[], startIndex: number = 0):
 // fallback marker — hydration must never break completion reporting.
 
 export async function hydrateLatestText(
-  client: any,
+  client: OpenCodeClient,
   sessionId: string,
   startIndex = 0,
 ): Promise<string> {

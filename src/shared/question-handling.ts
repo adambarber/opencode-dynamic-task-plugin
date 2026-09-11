@@ -9,6 +9,7 @@
 // ref:runtime-observation — production event payloads from session logs
 
 import type { TaskStore } from "./task-state.js";
+import type { OpenCodeClient } from "./client.js";
 
 export interface QuestionEvent {
   type: "question.created" | "question.replied" | "question.rejected";
@@ -181,7 +182,7 @@ export function decideQuestion(kind: "active" | "retained", answers: string[]): 
  * Never throws — returns a result object.
  */
 export async function replyToQuestion(
-  client: any,
+  client: OpenCodeClient,
   questionId: string,
   answer: string
 ): Promise<{ succeeded: boolean; reason?: string }> {
@@ -202,7 +203,7 @@ export async function replyToQuestion(
  * Never throws — returns a result object.
  */
 export async function rejectQuestion(
-  client: any,
+  client: OpenCodeClient,
   questionId: string,
   reason: string
 ): Promise<{ succeeded: boolean; reason?: string }> {

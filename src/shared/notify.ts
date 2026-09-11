@@ -61,8 +61,10 @@ async function defaultSleep(ms: number): Promise<void> {
 // Delivers with exactly one retry, then records the outcome either way.
 // Never throws — transport failure is returned as data.
 
+import type { OpenCodeClient } from "./client.js";
+
 export async function notifyParent(
-  client: any,
+  client: OpenCodeClient,
   parentSessionId: string,
   message: string,
   meta: { childSessionId: string; kind: NotifyKind },

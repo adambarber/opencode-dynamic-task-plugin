@@ -40,6 +40,10 @@
 
 A newcomer cannot add an untyped boundary, an `as`-escape, or an untyped catch — the build (compiler flags plus invariant suite) fails first.
 
+## Execution log
+
+- **Cycle 1 (entry boundary, 2026-09-11):** plugin entry on `PluginInput`/`PluginOptions` (SDK 1.18.30), `initPluginState` options typed, `normalizeDynamicTaskConfig` widened to accept records, `fileConfig as any` deleted. Compiled clean on first pass (downstream `any`s absorb); full suite 286/286, coverage gate green, 0 clones. Next: client facade (boundary A).
+
 ## Status
 
 **Analysis recorded** — 2026-09-11. Proof: full inventory above against the merged tree (286/286 green at merge). Implementation pending on the types branch, after the dependency update to the target versions lands on `main`.

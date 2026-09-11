@@ -67,21 +67,27 @@ src/
 ├── plugin-entry.ts          Clean ESM re-export
 ├── debug-logger.ts          Opt-in diagnostics (off by default)
 └── shared/
+    ├── client.ts            SDK facade — the only @opencode-ai/sdk import
     ├── config.ts            Normalization, 4-layer precedence, TimerProvider
+    ├── bound.ts             Execution bound — the single wait/timeout funnel
+    ├── admission.ts         Admission gate — validate-then-register funnel
+    ├── prompt.ts            Prompt dance — payload shape, hydration, routing
+    ├── notify.ts            Parent-notification gate + bounded ledger
     ├── task-policy.ts       Pure validators — agent, lineage, depth
     ├── task-state.ts        TaskStore (active/retained), transition matrix
-    ├── session-lifecycle.ts Event parsing, status normalization
-    ├── task-formatting.ts   Notifications, prompt wrapping
+    ├── session-lifecycle.ts Event parsing, status normalization, unknown-narrowing readers
+    ├── task-formatting.ts   Result/status/continue formatting
     └── question-handling.ts Question API auto-answer/reject
 ```
 
 ## Development
 
 ```bash
-npm test                  # 286 tests
-npm run lint              # tsc --noEmit
+npm test                  # 297 tests + safety invariants (node:test)
+npm run lint              # tsc --noEmit (full strict flags)
 npm run build             # compiles to dist/
-npm run test:coverage     # 90/80/90 gate enforceed
+npm run test:coverage     # 90/80/90 gate enforced
+npm run test:duplication  # jscpd clone gate (zero clones)
 ```
 
 ## License

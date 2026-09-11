@@ -10,7 +10,7 @@
 
 import type { TaskStore } from "./task-state.js";
 import type { OpenCodeClient } from "./client.js";
-import { eventField, isEventRecord } from "./session-lifecycle.js";
+import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
 
 export interface QuestionEvent {
   type: "question.created" | "question.replied" | "question.rejected";
@@ -64,9 +64,13 @@ export function isValidQuestionEvent(event: unknown): event is QuestionEvent {
 export function normalizeQuestionAnswers(answers: unknown): string[] {
   if (!Array.isArray(answers)) return [];
   return answers
-    .map((a: any) => {
+    .map((a: unknown): string => {
       if (typeof a === "string") return a;
-      if (a && typeof a === "object") return a?.text || a?.value || "";
+      if (isEventRecord(a)) {
+        const text = typeof a.text === "string" ? a.text : "";
+        const value = typeof a.value === "string" ? a.value : "";
+        return text || value;
+      }
       return "";
     })
     .filter(Boolean);
@@ -83,11 +87,12 @@ async function invokeQuestionApi(
   try {
     await call();
     return { succeeded: true };
-  } catch (err: any) {
-    if (err?.message?.includes("already resolved") || err?.status === 409) {
+  } catch (err: unknown) {
+    const reason = errorMessage(err);
+    if (reason.includes("already resolved") || eventField(err, "status") === 409) {
       return { succeeded: true, reason: "already_resolved" };
     }
-    return { succeeded: false, reason: err?.message || String(err) };
+    return { succeeded: false, reason: reason || String(err) };
   }
 }
 

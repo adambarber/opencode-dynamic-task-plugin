@@ -63,6 +63,7 @@ async function defaultSleep(ms: number): Promise<void> {
 // Never throws — transport failure is returned as data.
 
 import type { OpenCodeClient } from "./client.js";
+import { errorMessage } from "./session-lifecycle.js";
 
 export async function notifyParent(
   client: OpenCodeClient,
@@ -91,10 +92,10 @@ export async function notifyParent(
       });
       record.delivered = true;
       break;
-    } catch (error: any) {
-      record.error = error?.message || String(error);
-      if (attempt < 2) await sleep(delayMs);
-    }
+  } catch (error: unknown) {
+    record.error = errorMessage(error) || String(error);
+    if (attempt < 2) await sleep(delayMs);
+  }
   }
 
   ledger.push(record);

@@ -6,7 +6,7 @@
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
 import type { OpenCodeClient } from "./client.js";
-import { eventField, isEventRecord } from "./session-lifecycle.js";
+import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
@@ -70,10 +70,7 @@ const RETRYABLE_FRAGMENTS = [
 ];
 
 export function classifyPromptError(error: unknown): PromptErrorClass {
-  const message =
-    (error as any)?.message !== undefined && (error as any)?.message !== null
-      ? String((error as any).message)
-      : String(error);
+  const message = errorMessage(error);
   const lowered = message.toLowerCase();
   return {
     message,

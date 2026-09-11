@@ -13,6 +13,7 @@ import {
   isEventRecord,
   eventField,
   eventString,
+  errorMessage,
 } from "./shared/session-lifecycle.js";
 import {
   buildBackgroundPrompt,
@@ -222,17 +223,19 @@ function sessionReadTool(
   });
 }
 
-export function validateSessionResult(result: any): string | null {
-  if (!result) return null;
-  if (typeof result.id === "string") return result.id;
-  if (result.body && typeof result.body.id === "string") return result.body.id;
-  if (result.data && typeof result.data.id === "string") return result.data.id;
+export function validateSessionResult(result: unknown): string | null {
+  const direct = eventField(result, "id");
+  if (typeof direct === "string") return direct;
+  const bodyId = eventField(result, "body", "id");
+  if (typeof bodyId === "string") return bodyId;
+  const dataId = eventField(result, "data", "id");
+  if (typeof dataId === "string") return dataId;
   return null;
 }
 
 export function buildAgentList(agents: AgentRecord[]): string {
   if (agents.length === 0) return "(none discovered)";
-  return agents.map((a: any) => a.name).join(", ");
+  return agents.map((a) => a.name).join(", ");
 }
 
 export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
@@ -561,56 +564,60 @@ export default async function dynamicTaskPlugin(
             debugLog("unknown", "unknown", "question-missing-id", { type: eventString(event, ["type"]) });
           } else {
             const { questionId, childSessionId } = resolved;
-            const active = childSessionId ? store.activeTasks.get(childSessionId) : undefined;
-            const retained = !active && childSessionId ? store.retainedTasks.get(childSessionId) : undefined;
+            if (childSessionId === null) {
+              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
+            } else {
+              const active = store.activeTasks.get(childSessionId);
+              const retained = active ? undefined : store.retainedTasks.get(childSessionId);
 
-            if (active) {
-              rememberQuestionSession(questionId, childSessionId as string);
-              const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
-              const decision = decideQuestion("active", answers);
-              if (decision.action === "reply") {
-                const result = await replyToQuestion(client, questionId, decision.answer);
-                if (result.succeeded) {
-                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-answered", {
-                    questionId,
-                    answer: decision.answer,
-                  });
-                } else {
-                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-answer-failed", {
-                    questionId,
-                    reason: result.reason,
-                  });
-                  const rejectResult = await rejectQuestion(client, questionId,
-                    "Background task question auto-answer failed");
-                  if (!rejectResult.succeeded) {
-                    debugLog(active.parentSessionId, childSessionId as string, "question-auto-reject-failed", {
+              if (active) {
+                rememberQuestionSession(questionId, childSessionId);
+                const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
+                const decision = decideQuestion("active", answers);
+                if (decision.action === "reply") {
+                  const result = await replyToQuestion(client, questionId, decision.answer);
+                  if (result.succeeded) {
+                    debugLog(active.parentSessionId, childSessionId, "question-auto-answered", {
                       questionId,
-                      reason: rejectResult.reason,
+                      answer: decision.answer,
+                    });
+                  } else {
+                    debugLog(active.parentSessionId, childSessionId, "question-auto-answer-failed", {
+                      questionId,
+                      reason: result.reason,
+                    });
+                    const rejectResult = await rejectQuestion(client, questionId,
+                      "Background task question auto-answer failed");
+                    if (!rejectResult.succeeded) {
+                      debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
+                        questionId,
+                        reason: rejectResult.reason,
+                      });
+                    }
+                  }
+                } else {
+                  const result = await rejectQuestion(client, questionId, decision.reason);
+                  if (!result.succeeded) {
+                    debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
+                      questionId,
+                      reason: result.reason,
+                    });
+                  } else {
+                    debugLog(active.parentSessionId, childSessionId, "question-auto-rejected", {
+                      questionId,
                     });
                   }
                 }
-              } else {
-                const result = await rejectQuestion(client, questionId, decision.reason);
-                if (!result.succeeded) {
-                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-reject-failed", {
-                    questionId,
-                    reason: result.reason,
-                  });
-                } else {
-                  debugLog(active.parentSessionId, childSessionId as string, "question-auto-rejected", {
-                    questionId,
-                  });
+              } else if (retained) {
+                rememberQuestionSession(questionId, childSessionId);
+                const decision = decideQuestion("retained", []);
+                if (decision.action === "reject") {
+                  await rejectQuestion(client, questionId, decision.reason);
                 }
+                debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
+              } else {
+                debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
               }
-            } else if (retained) {
-              rememberQuestionSession(questionId, childSessionId as string);
-              const decision = decideQuestion("retained", []);
-              if (decision.action === "reject") {
-                await rejectQuestion(client, questionId, decision.reason);
-              }
-              debugLog(retained.parentSessionId, childSessionId as string, "question-retained-rejected", { questionId });
-            } else {
-              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
             }
           }
         }
@@ -621,8 +628,8 @@ export default async function dynamicTaskPlugin(
             forgetQuestionSession(questionId);
           }
         }
-      } catch (qerr: any) {
-        debugLog("unknown", "unknown", "question-handler-error", { error: qerr?.message });
+      } catch (qerr: unknown) {
+        debugLog("unknown", "unknown", "question-handler-error", { error: errorMessage(qerr) });
       }
 
       // --- Session lifecycle event handler ---
@@ -836,14 +843,15 @@ export default async function dynamicTaskPlugin(
 
             return "ERROR: Unreachable dynamic_task state.";
 
-          } catch (error: any) {
-            if (error.message?.includes("not found")) {
+          } catch (error: unknown) {
+            const message = errorMessage(error);
+            if (message.includes("not found")) {
               return `ERROR: Agent "${agent.name}" not found.`;
             }
-            if (error.message?.includes("permission") || error.message?.includes("denied")) {
+            if (message.includes("permission") || message.includes("denied")) {
               return "ERROR: Permission denied.";
             }
-            return `ERROR: ${error.message}`;
+            return `ERROR: ${message}`;
           }
         },
       }),
@@ -920,9 +928,8 @@ export default async function dynamicTaskPlugin(
 
             // Spawn a new child session with the same agent
             try {
-              const sessionBody: any = {
+              const sessionBody: { title: string; parentID?: string } = {
                 title: `Continuation: ${retained.description}`,
-                agent: retained.agentName,
               };
               if (retained.parentSessionId) {
                 sessionBody.parentID = retained.parentSessionId;
@@ -967,12 +974,12 @@ export default async function dynamicTaskPlugin(
                 : extractTextFromPromptResult(outcome.value) || "(Subagent completed)";
 
               return `## Follow-up Response (new session)\n\n${response}\n\n---\n*Previous session: ${args.session_id}*  *New session: ${newSessionId}*`;
-            } catch (error: any) {
-              return `ERROR: ${error.message}`;
-            }
-          }
+             } catch (error: unknown) {
+               return `ERROR: ${errorMessage(error)}`;
+             }
+           }
 
-          // Not a retained task — check if it's active
+           // Not a retained task — check if it's active
           const active = store.activeTasks.get(args.session_id);
            if (active) {
             // Send prompt to existing active session
@@ -996,11 +1003,12 @@ export default async function dynamicTaskPlugin(
 
               const responseText = extractTextFromPromptResult(outcome.value);
               return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
-            } catch (error: any) {
-              if (error.message?.includes("not found")) {
+            } catch (error: unknown) {
+              const message = errorMessage(error);
+              if (message.includes("not found")) {
                 return `ERROR: Session "${args.session_id}" not found.`;
               }
-              return `ERROR: ${error.message}`;
+              return `ERROR: ${message}`;
             }
           }
 
@@ -1025,7 +1033,7 @@ export default async function dynamicTaskPlugin(
 
       task_result: sessionReadTool(
         "Fetch latest known child session result/status without sending a new prompt.",
-        async (args: any) => {
+        async (args) => {
           // Search active first, then retained
           const task = findTask(store, args.session_id);
           if (task) {
@@ -1081,16 +1089,19 @@ export default async function dynamicTaskPlugin(
               timeoutNotified: false,
               notification: getLatestNotification(args.session_id),
             });
-          } catch (err: any) {
+          } catch (err: unknown) {
             // 404 or network error → return unknown state
-            if (err?.status === 404 || err?.message?.includes("not found")) {
+            const message = errorMessage(err);
+            const status = eventField(err, "status");
+            const code = eventField(err, "code");
+            if (status === 404 || message.includes("not found")) {
               return unknownSessionResult(args.session_id);
             }
             return JSON.stringify({
               status: "error",
               session_id: args.session_id,
-              error: err?.message || "Network error querying session",
-              retryable: err?.code === "ECONNREFUSED" || err?.code === "ETIMEDOUT",
+              error: message || "Network error querying session",
+              retryable: code === "ECONNREFUSED" || code === "ETIMEDOUT",
             });
           }
         },
@@ -1121,11 +1132,12 @@ export default async function dynamicTaskPlugin(
             discardRetained(store, args.session_id);
 
             return `Session ${args.session_id} interrupted.`;
-          } catch (error: any) {
-            if (error.message?.includes("not found")) {
+          } catch (error: unknown) {
+            const message = errorMessage(error);
+            if (message.includes("not found")) {
               return `ERROR: Session "${args.session_id}" not found.`;
             }
-            return `ERROR: ${error.message}`;
+            return `ERROR: ${message}`;
           }
         },
       }),
@@ -1153,7 +1165,7 @@ export default async function dynamicTaskPlugin(
 
       task_status: sessionReadTool(
         "Detailed tracked state for one task without calling the API.",
-        async (args: any) => {
+        async (args) => {
           const task = findTask(store, args.session_id);
           if (!task) {
             return unknownSessionResult(args.session_id);

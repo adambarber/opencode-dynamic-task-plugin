@@ -346,3 +346,48 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     );
   });
 });
+
+
+// --- Task 08: strong types ----------------------------------------------------
+// Primitive: `any` — the missing choke point. Every typed boundary uses
+// `unknown` + narrowing (isEventRecord/eventField/errorMessage). A sanctioned
+// exemption needs a named reason inline (Tenet 9); the list starts and stays
+// empty — the whole point of the task is that it can.
+describe("invariant: production code has no `any` (Task 08)", () => {
+  const sanctioned = []; // file-suffix → reason; none sanctioned.
+  const anyPattern = /:\s*any\b|\bas\s+any\b|<any>|\bany\[\]/;
+  const isProseLine = (content) => {
+    const t = content.trimStart();
+    return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*");
+  };
+
+  it("no any annotation, cast, or generic in production sources", () => {
+    const hits = listProdFiles()
+      .filter((f) => !sanctioned.some((s) => f.endsWith(s)))
+      .flatMap((f) => scanLines(f, anyPattern))
+      .filter((h) => !isProseLine(h.split(" :: ")[1] ?? ""));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/08-strong-types.md",
+        "`any` reopens an unvalidated boundary — take `unknown` and narrow it.",
+        hits,
+      ),
+    );
+  });
+
+  it("catch variables are never typed any", () => {
+    const pattern = /catch\s*\([^)]*:\s*any\s*\)/;
+    const hits = listProdFiles().flatMap((f) => scanLines(f, pattern));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/08-strong-types.md",
+        "`catch (e: any)` opts out of useUnknownInCatchVariables — narrow unknown instead.",
+        hits,
+      ),
+    );
+  });
+});

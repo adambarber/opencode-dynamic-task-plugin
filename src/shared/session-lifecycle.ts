@@ -24,6 +24,17 @@ export function eventString(root: unknown, ...paths: string[][]): string | null 
   return null;
 }
 
+// The one way to read an error's message from `unknown`: Error instances
+// first, message-bearing records next (SDK failures are sometimes plain
+// objects), string fallback last. Never throws, never casts.
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  const msg = eventField(error, "message");
+  if (typeof msg === "string") return msg;
+  if (msg !== undefined && msg !== null) return String(msg);
+  return String(error);
+}
+
 export function normalizeStatus(raw: unknown): string {
   if (typeof raw === "string") return raw.trim().toLowerCase();
   if (raw && typeof raw === "object" && typeof (raw as { type?: unknown }).type === "string") {

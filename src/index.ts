@@ -27,6 +27,7 @@ import {
   parseDynamicTaskJsonc,
   checkConcurrencyLimit,
   type DynamicTaskConfig,
+  type TimerProvider,
 } from "./shared/config.js";
 import {
   normalizeAgentName,
@@ -38,6 +39,12 @@ import {
   resolveAdmission,
   registerAdmittedTask,
 } from "./shared/admission.js";
+import {
+  invokePrompt,
+  classifyPromptError,
+  extractTextFromParts,
+  extractTextFromPromptResult,
+} from "./shared/prompt.js";
 import {
   createStateStore,
   transitionState,
@@ -57,16 +64,18 @@ let lastCacheTime = 0;
 const CACHE_TTL = 300000;
 const POLL_INTERVAL = 3000;
 
+type PendingSyncRequests = Map<string, {
+  resolve: (result: any) => void;
+  reject: (error: Error) => void;
+  timeoutHandle: ReturnType<typeof setTimeout>;
+}>;
+
 // Plugin-level state store (ephemeral — lost on restart)
 interface PluginState {
   store: TaskStore;
   config: DynamicTaskConfig;
   deprecationWarned: boolean;
-  pendingSyncRequests: Map<string, {
-    resolve: (result: any) => void;
-    reject: (error: Error) => void;
-    timeoutHandle: ReturnType<typeof setTimeout>;
-  }>;
+  pendingSyncRequests: PendingSyncRequests;
 }
 
 let pluginState: PluginState | null = null;
@@ -167,46 +176,7 @@ export function buildAgentList(agents: any[]): string {
   return agents.map((a: any) => a.name).join(", ");
 }
 
-export function extractTextFromParts(parts: any[]): string {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
-    .map((p: any) => p.text)
-    .join("\n");
-}
-
-function extractTextFromPromptResult(result: any): string {
-  const candidates = [
-    result?.parts,
-    result?.data?.parts,
-    result?.body?.parts,
-    result?.message?.parts,
-    result?.data?.message?.parts,
-    result?.body?.message?.parts,
-  ];
-
-  for (const parts of candidates) {
-    const text = extractTextFromParts(parts);
-    if (text.trim()) return text;
-  }
-
-  const messageCandidates = [
-    result?.text,
-    result?.data?.text,
-    result?.body?.text,
-    result?.content,
-    result?.data?.content,
-    result?.body?.content,
-  ];
-
-  for (const text of messageCandidates) {
-    if (typeof text === "string" && text.trim()) return text;
-  }
-
-  return "";
-}
-
-function extractSessionStatus(sessionInfo: any, messages: any[] = []): string {
+export function extractSessionStatus(sessionInfo: any, messages: any[] = []): string {
   const candidates = [
     sessionInfo?.status,
     sessionInfo?.body?.status,
@@ -260,15 +230,6 @@ function getLatestAssistantText(messages: any[], startIndex: number = 0): string
 async function readSessionMessages(client: any, sessionId: string): Promise<any[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
-}
-
-async function getMessageCount(client: any, sessionId: string): Promise<number> {
-  try {
-    const messages = await readSessionMessages(client, sessionId);
-    return messages.length;
-  } catch {
-    return 0;
-  }
 }
 
 export async function fetchAgents(client: any): Promise<any[]> {
@@ -331,8 +292,41 @@ async function notifyParentSession(client: any, parentSessionId: string, message
   }
 }
 
+// Shared waiter for task_continue follow-ups: parks on pendingSyncRequests
+// until the lifecycle event settles it, or the bound fires. The two former
+// inline copies differed only in timeout text and abort policy — both are
+// parameters now, so the wait exists exactly once.
+function waitForPendingSync(
+  pendingSyncRequests: PendingSyncRequests,
+  timerProvider: TimerProvider,
+  sessionId: string,
+  timeoutMs: number,
+  timeoutMessage: string,
+  onTimeout?: () => void,
+): Promise<string> {
+  return new Promise<string>((resolve) => {
+    const timeoutHandle = timerProvider.setTimeout(() => {
+      pendingSyncRequests.delete(sessionId);
+      onTimeout?.();
+      resolve(timeoutMessage);
+    }, timeoutMs);
+
+    pendingSyncRequests.set(sessionId, {
+      resolve: (result: any) => {
+        timerProvider.clearTimeout(timeoutHandle);
+        resolve(result.text || "(Subagent completed)");
+      },
+      reject: (err: Error) => {
+        timerProvider.clearTimeout(timeoutHandle);
+        resolve(`(Error: ${err.message})`);
+      },
+      timeoutHandle,
+    });
+  });
+}
+
 async function handleTimeout(store: TaskStore, childSessionId: string, client: any, config: DynamicTaskConfig,
-  pendingSyncRequests: Map<string, { resolve: (result: any) => void; reject: (error: Error) => void; timeoutHandle: ReturnType<typeof setTimeout>; }>): Promise<void> {
+  pendingSyncRequests: PendingSyncRequests): Promise<void> {
   const task = store.activeTasks.get(childSessionId);
   if (!task || task.completed) return;
 
@@ -813,10 +807,7 @@ export default async function dynamicTaskPlugin(
               }, timeoutMs);
 
               const promptResult = await Promise.race([
-                client.session.prompt({
-                  path: { id: childSessionId },
-                  body: { parts: [{ type: "text", text: args.prompt }] },
-                }),
+                invokePrompt(client, childSessionId, args.prompt),
                 new Promise<typeof timeoutResult>((resolve) => {
                   config.timerProvider.setTimeout(() => resolve(timeoutResult), timeoutMs);
                 }),
@@ -839,11 +830,9 @@ export default async function dynamicTaskPlugin(
 
             if (!shouldAwait) {
               const childPrompt = buildBackgroundPrompt(args.prompt);
-              client.session.prompt({
-                path: { id: childSessionId },
-                body: { parts: [{ type: "text", text: childPrompt }] },
-              }).catch((error: any) => {
-                safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${error?.message || error}`);
+              invokePrompt(client, childSessionId, childPrompt).catch((error: any) => {
+                const classified = classifyPromptError(error);
+                safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
               });
 
               // Fire-and-forget background mode
@@ -926,10 +915,7 @@ export default async function dynamicTaskPlugin(
               }, timeoutMs);
 
               const result = await Promise.race([
-                client.session.prompt({
-                  path: { id: args.session_id },
-                  body: { parts: [{ type: "text", text: args.prompt }] },
-                }).catch(() => null),
+                invokePrompt(client, args.session_id, args.prompt).catch(() => null),
                 new Promise<null>((resolve) =>
                   config.timerProvider.setTimeout(() => resolve(null), timeoutMs)
                 ),
@@ -979,34 +965,19 @@ export default async function dynamicTaskPlugin(
               }, config);
 
               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-              await client.session.prompt({
-                path: { id: newSessionId },
-                body: { parts: [{ type: "text", text: args.prompt }] },
-              });
+              await invokePrompt(client, newSessionId, args.prompt);
 
               // Sync wait for response
-              const baselineCount = await getMessageCount(client, newSessionId);
-              const response = await new Promise<string>((resolve) => {
-                const timeoutHandle = config.timerProvider.setTimeout(() => {
-                  pendingSyncRequests.delete(newSessionId);
-                  if (config.timeoutBehavior === "interrupt") {
-                    client.session.abort({ path: { id: newSessionId } }).catch(() => {});
-                  }
-                  resolve(`(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`);
-                }, timeoutMs);
-
-                pendingSyncRequests.set(newSessionId, {
-                  resolve: (result: any) => {
-                    config.timerProvider.clearTimeout(timeoutHandle);
-                    resolve(result.text || "(Subagent completed)");
-                  },
-                  reject: (err: Error) => {
-                    config.timerProvider.clearTimeout(timeoutHandle);
-                    resolve(`(Error: ${err.message})`);
-                  },
-                  timeoutHandle,
-                });
-              });
+              const response = await waitForPendingSync(
+                pendingSyncRequests,
+                config.timerProvider,
+                newSessionId,
+                timeoutMs,
+                `(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`,
+                config.timeoutBehavior === "interrupt"
+                  ? () => { client.session.abort({ path: { id: newSessionId } }).catch(() => {}); }
+                  : undefined,
+              );
 
               return `## Follow-up Response (new session)\n\n${response}\n\n---\n*Previous session: ${args.session_id}*  *New session: ${newSessionId}*`;
             } catch (error: any) {
@@ -1020,30 +991,15 @@ export default async function dynamicTaskPlugin(
             // Send prompt to existing active session
             const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
             try {
-              const baselineCount = await getMessageCount(client, args.session_id);
-              await client.session.prompt({
-                path: { id: args.session_id },
-                body: { parts: [{ type: "text", text: args.prompt }] },
-              });
+              await invokePrompt(client, args.session_id, args.prompt);
 
-              const response = await new Promise<string>((resolve) => {
-                const timeoutHandle = config.timerProvider.setTimeout(() => {
-                  pendingSyncRequests.delete(args.session_id);
-                  resolve(`(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id})`);
-                }, timeoutMs);
-
-                pendingSyncRequests.set(args.session_id, {
-                  resolve: (result: any) => {
-                    config.timerProvider.clearTimeout(timeoutHandle);
-                    resolve(result.text || "(Subagent completed)");
-                  },
-                  reject: (err: Error) => {
-                    config.timerProvider.clearTimeout(timeoutHandle);
-                    resolve(`(Error: ${err.message})`);
-                  },
-                  timeoutHandle,
-                });
-              });
+              const response = await waitForPendingSync(
+                pendingSyncRequests,
+                config.timerProvider,
+                args.session_id,
+                timeoutMs,
+                `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id})`,
+              );
 
               return `## Follow-up Response\n\n${response}\n\n---\n*Session: ${args.session_id}*`;
             } catch (error: any) {

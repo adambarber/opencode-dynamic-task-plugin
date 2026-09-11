@@ -122,21 +122,54 @@ describe("invariant: waits use the injected TimerProvider (Task 02)", () => {
 // there is no sanctioned caller — every site is reported so the migration
 // has a complete list (Tenets 1, 6).
 describe("invariant: session.prompt flows through one dance (Task 03)", () => {
-  it("no direct client.session.prompt outside the dance module", () => {
-    // Sanctioned set is intentionally empty: the dance module does not exist
-    // yet. index.ts:notifyParentSession is the Task 05 gate, not this dance —
-    // it is listed here so the split is explicit when both gates land.
-    const pattern = /client\.session\.prompt\s*\(/;
-    const hits = listProdFiles().flatMap((f) => scanLines(f, pattern));
+  // Tenet 9: prompt.ts IS the dance (sanctioned), and notifyParentSession in
+  // index.ts is the Task 05 gate — its single parent-write call is sanctioned
+  // here so the split stays explicit until both gates land.
+  function promptHitsWithLines(file) {
+    const lines = readFileSync(file, "utf8").split("\n");
+    const hits = [];
+    lines.forEach((content, i) => {
+      if (/client\.session\.prompt\s*\(/.test(content)) {
+        hits.push({ file: path.relative(REPO_ROOT, file), line: i + 1, text: content.trim() });
+      }
+    });
+    return hits;
+  }
+
+  function notifyParentSpan() {
+    const file = path.join(SRC_DIR, "index.ts");
+    const lines = readFileSync(file, "utf8").split("\n");
+    const start = lines.findIndex((l) => l.includes("function notifyParentSession("));
+    if (start === -1) return null;
+    const rel = lines.slice(start + 1).findIndex((l) => /^\}/.test(l));
+    if (rel === -1) return null;
+    return { file: path.relative(REPO_ROOT, file), start: start + 1, end: start + 1 + rel + 1 };
+  }
+
+  it("no direct client.session.prompt outside dance + notification gate", () => {
+    const span = notifyParentSpan();
+    const hits = listProdFiles()
+      .filter((f) => !f.endsWith("prompt.ts"))
+      .flatMap(promptHitsWithLines)
+      .filter((h) => !(span && h.file === span.file && h.line >= span.start && h.line <= span.end))
+      .map((h) => `${h.file}:${h.line} :: ${h.text}`);
     assert.strictEqual(
       hits.length,
       0,
       formatViolations(
         "docs/tasks/03-prompt-hydration-dance.md",
-        "Direct session.prompt call sites (each must route via runPrompt).",
+        "Direct session.prompt call sites (each must route via invokePrompt).",
         hits,
       ),
     );
+  });
+
+  it("notification gate holds exactly one parent-write call", () => {
+    const span = notifyParentSpan();
+    assert.ok(span, "notifyParentSession function not found");
+    const inside = promptHitsWithLines(path.join(SRC_DIR, "index.ts"))
+      .filter((h) => h.line >= span.start && h.line <= span.end);
+    assert.strictEqual(inside.length, 1, `Expected 1 parent-write call, found ${inside.length}.`);
   });
 });
 
@@ -243,7 +276,7 @@ describe("invariant: spawn admission flows through one gate (Task 07)", () => {
 // the eed3a04 dispatchability fix it should pin.
 describe("invariant: tests import production, never redefine it (Tenet 12)", () => {
   it("no production-function copies in test files", () => {
-    const pattern = /^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|extractTextFromPromptResult|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText)\s*\(/;
+    const pattern = /^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|extractTextFromPromptResult|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText|registerBackgroundTask|handleChildLifecycleEvent)\s*\(/;
     const hits = listTestFiles().flatMap((f) => scanLines(f, pattern));
     assert.strictEqual(
       hits.length,

@@ -5,11 +5,16 @@ import assert from "node:assert";
 import {
   buildAgentList,
   validateSessionResult,
-  extractTextFromParts,
   resolveParentSessionId,
   fetchAgents,
   resetAgentCache,
 } from "../../dist/index.js";
+import {
+  invokePrompt,
+  classifyPromptError,
+  extractTextFromParts,
+  extractTextFromPromptResult,
+} from "../../dist/shared/prompt.js";
 
 // --- Tests ---
 describe("buildAgentList", () => {
@@ -927,6 +932,10 @@ import {
   resolveAdmission,
   registerAdmittedTask,
 } from "../../dist/shared/admission.js";
+import {
+  replyToQuestion,
+  rejectQuestion,
+} from "../../dist/shared/question-handling.js";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 
 describe("task-state: createStateStore", () => {
@@ -1194,6 +1203,117 @@ describe("admission gate: registerAdmittedTask", () => {
       childSessionId: "ses_2", parentSessionId: "parent_1",
       agentName: "explore", description: "t2", lineage: [], isBackground: true,
     }, limited), /Concurrency/);
+  });
+});
+
+describe("prompt dance: invokePrompt", () => {
+  it("sends the single payload shape and resolves with the client result", async () => {
+    let captured;
+    const client = {
+      session: {
+        prompt: async (args) => {
+          captured = args;
+          return { parts: [{ type: "text", text: "hi" }] };
+        },
+      },
+    };
+    const result = await invokePrompt(client, "ses_1", "hello");
+    assert.deepStrictEqual(captured, {
+      path: { id: "ses_1" },
+      body: { parts: [{ type: "text", text: "hello" }] },
+    });
+    assert.deepStrictEqual(result, { parts: [{ type: "text", text: "hi" }] });
+  });
+
+  it("rejects with the raw client error (callers classify)", async () => {
+    const failure = new Error("boom");
+    const client = { session: { prompt: async () => { throw failure; } } };
+    await assert.rejects(() => invokePrompt(client, "ses_1", "hello"), /boom/);
+  });
+});
+
+describe("prompt dance: classifyPromptError", () => {
+  it("marks transport failures retryable", () => {
+    for (const msg of ["ECONNREFUSED", "request ETIMEDOUT", "fetch failed", "network error"]) {
+      const classified = classifyPromptError(new Error(msg));
+      assert.strictEqual(classified.retryable, true, msg);
+      assert.strictEqual(classified.message, msg);
+    }
+  });
+
+  it("marks application errors non-retryable", () => {
+    const classified = classifyPromptError(new Error("session not found"));
+    assert.strictEqual(classified.retryable, false);
+    assert.strictEqual(classified.message, "session not found");
+  });
+
+  it("handles non-Error values", () => {
+    assert.strictEqual(classifyPromptError("plain string").message, "plain string");
+    assert.strictEqual(classifyPromptError(null).retryable, false);
+  });
+});
+
+describe("prompt dance: extractTextFromPromptResult", () => {
+  it("extracts text from parts shapes", () => {
+    const result = { parts: [{ type: "text", text: "hello" }] };
+    assert.strictEqual(extractTextFromPromptResult(result), "hello");
+  });
+
+  it("extracts text from message-content shapes", () => {
+    assert.strictEqual(extractTextFromPromptResult({ content: "world" }), "world");
+  });
+
+  it("returns empty string when no text is present", () => {
+    assert.strictEqual(extractTextFromPromptResult({}), "");
+    assert.strictEqual(extractTextFromPromptResult(null), "");
+  });
+});
+
+describe("question gate: reply/reject settlement", () => {
+  function questionClient(behavior) {
+    return { question: { reply: behavior.reply, reject: behavior.reject } };
+  }
+  const okClient = () => questionClient({ reply: async () => {}, reject: async () => {} });
+
+  it("reply succeeds", async () => {
+    assert.deepStrictEqual(await replyToQuestion(okClient(), "q1", "yes"), { succeeded: true });
+  });
+
+  it("reply absorbs already-resolved as success", async () => {
+    const client = questionClient({ reply: async () => { throw new Error("already resolved"); }, reject: async () => {} });
+    assert.deepStrictEqual(
+      await replyToQuestion(client, "q1", "yes"),
+      { succeeded: true, reason: "already_resolved" }
+    );
+  });
+
+  it("reply reports transport failures", async () => {
+    const client = questionClient({ reply: async () => { throw new Error("nope"); }, reject: async () => {} });
+    assert.deepStrictEqual(
+      await replyToQuestion(client, "q1", "yes"),
+      { succeeded: false, reason: "nope" }
+    );
+  });
+
+  it("reply rejects missing id/answer", async () => {
+    assert.strictEqual((await replyToQuestion(okClient(), "", "yes")).succeeded, false);
+    assert.strictEqual((await replyToQuestion(okClient(), "q1", "")).succeeded, false);
+  });
+
+  it("reject succeeds and absorbs 409 conflicts", async () => {
+    assert.deepStrictEqual(await rejectQuestion(okClient(), "q1", "busy"), { succeeded: true });
+    const conflicted = questionClient({
+      reply: async () => {},
+      reject: async () => { const e = new Error("gone"); e.status = 409; throw e; },
+    });
+    assert.deepStrictEqual(
+      await rejectQuestion(conflicted, "q1", "busy"),
+      { succeeded: true, reason: "already_resolved" }
+    );
+  });
+
+  it("reject rejects missing id", async () => {
+    assert.strictEqual((await rejectQuestion(okClient(), "", "busy")).succeeded, false);
   });
 });
 

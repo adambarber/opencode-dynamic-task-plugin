@@ -65,6 +65,25 @@ export function normalizeQuestionAnswers(answers: unknown): string[] {
 }
 
 /**
+ * Shared idempotent-call core: runs the API call, absorbs already-resolved
+ * (409 Conflict) as success, and never throws. Both reply and reject funnel
+ * through here — one place owns the settlement semantics.
+ */
+async function invokeQuestionApi(
+  call: () => Promise<unknown>,
+): Promise<{ succeeded: boolean; reason?: string }> {
+  try {
+    await call();
+    return { succeeded: true };
+  } catch (err: any) {
+    if (err?.message?.includes("already resolved") || err?.status === 409) {
+      return { succeeded: true, reason: "already_resolved" };
+    }
+    return { succeeded: false, reason: err?.message || String(err) };
+  }
+}
+
+/**
  * Idempotent reply to a question.
  * Silently succeeds if question is already resolved (409 Conflict).
  * Never throws — returns a result object.
@@ -77,18 +96,12 @@ export async function replyToQuestion(
   if (!questionId || !answer) {
     return { succeeded: false, reason: "Missing questionId or answer" };
   }
-  try {
-    await client.question.reply({
+  return invokeQuestionApi(() =>
+    client.question.reply({
       path: { id: questionId },
       body: { answer },
-    });
-    return { succeeded: true };
-  } catch (err: any) {
-    if (err?.message?.includes("already resolved") || err?.status === 409) {
-      return { succeeded: true, reason: "already_resolved" };
-    }
-    return { succeeded: false, reason: err?.message || String(err) };
-  }
+    })
+  );
 }
 
 /**
@@ -104,16 +117,10 @@ export async function rejectQuestion(
   if (!questionId) {
     return { succeeded: false, reason: "Missing questionId" };
   }
-  try {
-    await client.question.reject({
+  return invokeQuestionApi(() =>
+    client.question.reject({
       path: { id: questionId },
       body: { reason },
-    });
-    return { succeeded: true };
-  } catch (err: any) {
-    if (err?.message?.includes("already resolved") || err?.status === 409) {
-      return { succeeded: true, reason: "already_resolved" };
-    }
-    return { succeeded: false, reason: err?.message || String(err) };
-  }
+    })
+  );
 }

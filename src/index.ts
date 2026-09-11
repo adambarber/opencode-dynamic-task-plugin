@@ -46,6 +46,12 @@ import {
   extractTextFromPromptResult,
 } from "./shared/prompt.js";
 import {
+  startTimeout,
+  withBound,
+  ABORT_TIMEOUT_MS,
+  type TimeoutController,
+} from "./shared/bound.js";
+import {
   createStateStore,
   transitionState,
   findTask,
@@ -54,6 +60,7 @@ import {
   markActiveCompleted,
   forceRetain,
   discardRetained,
+  stealTimeoutHandle,
   type TaskStore,
   type TaskLifecycleState,
 } from "./shared/task-state.js";
@@ -67,7 +74,7 @@ const POLL_INTERVAL = 3000;
 type PendingSyncRequests = Map<string, {
   resolve: (result: any) => void;
   reject: (error: Error) => void;
-  timeoutHandle: ReturnType<typeof setTimeout>;
+  timeoutHandle: TimeoutController;
 }>;
 
 // Plugin-level state store (ephemeral — lost on restart)
@@ -305,22 +312,22 @@ function waitForPendingSync(
   onTimeout?: () => void,
 ): Promise<string> {
   return new Promise<string>((resolve) => {
-    const timeoutHandle = timerProvider.setTimeout(() => {
+    const timer = startTimeout(timerProvider, timeoutMs, () => {
       pendingSyncRequests.delete(sessionId);
       onTimeout?.();
       resolve(timeoutMessage);
-    }, timeoutMs);
+    });
 
     pendingSyncRequests.set(sessionId, {
       resolve: (result: any) => {
-        timerProvider.clearTimeout(timeoutHandle);
+        timer.cancel();
         resolve(result.text || "(Subagent completed)");
       },
       reject: (err: Error) => {
-        timerProvider.clearTimeout(timeoutHandle);
+        timer.cancel();
         resolve(`(Error: ${err.message})`);
       },
-      timeoutHandle,
+      timeoutHandle: timer,
     });
   });
 }
@@ -346,7 +353,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
       const result = await Promise.race([
         client.session.abort({ path: { id: childSessionId } }).then(() => ({ aborted: true })),
         new Promise<{ aborted: false; error: string }>((_, reject) =>
-          config.timerProvider.setTimeout(() => reject(new Error("abort timeout")), 5000)
+          config.timerProvider.setTimeout(() => reject(new Error("abort timeout")), ABORT_TIMEOUT_MS)
         ),
       ]);
       if (!result.aborted) {
@@ -389,14 +396,12 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
   // Clean up any pending sync request
   const pending = pendingSyncRequests.get(childSessionId);
   if (pending) {
-    config.timerProvider.clearTimeout(pending.timeoutHandle);
+    pending.timeoutHandle.cancel();
     pendingSyncRequests.delete(childSessionId);
   }
 
-  // Clear the stored timeout handle (it already fired, no-op now)
-  if (task.timeoutHandle) {
-    config.timerProvider.clearTimeout(task.timeoutHandle);
-  }
+  // Release the stored bound (it already fired — cancel is a no-op now)
+  stealTimeoutHandle(store, childSessionId)?.cancel();
 
   debugLog(task.parentSessionId, childSessionId, "timeout-fired", {
     timeoutBehavior: config.timeoutBehavior,
@@ -419,10 +424,8 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
     if (active) {
       await safeLog(client, "info", `Event handler: found active task ${childSessionId}, status=${getEventLifecycleStatus(event)}, completed=${active.completed}`);
       
-      // Clear the stored timeout handle — prevents the "timeout wins the race" bug
-      if (active.timeoutHandle) {
-        config.timerProvider.clearTimeout(active.timeoutHandle);
-      }
+      // Cancel the stored bound — prevents the "timeout wins the race" bug
+      stealTimeoutHandle(store, childSessionId)?.cancel();
 
       // If already marked completed (timeout fired first), still report the result
       const alreadyCompleted = markActiveCompleted(store, childSessionId);
@@ -443,7 +446,7 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
       const pending = pendingSyncRequests.get(childSessionId);
       await safeLog(client, "info", `Event handler: pendingSyncRequest for ${childSessionId} = ${pending ? 'FOUND' : 'NOT FOUND'}`);
       if (pending) {
-        config.timerProvider.clearTimeout(pending.timeoutHandle);
+        pending.timeoutHandle.cancel();
         pendingSyncRequests.delete(childSessionId);
         // Resolve the sync Promise — this unblocks the parent
         pending.resolve({ text: "(completed)" });
@@ -796,32 +799,24 @@ export default async function dynamicTaskPlugin(
             }
 
             if (shouldAwait) {
-              let timedOut = false;
-              const timeoutResult = Symbol("dynamic-task-timeout");
-              const timeoutHandle = config.timerProvider.setTimeout(async () => {
-                timedOut = true;
-                if (config.timeoutBehavior === "interrupt") {
-                  try { await client.session.abort({ path: { id: childSessionId } }); } catch { /* ok */ }
-                }
-                try { transitionState(store, childSessionId, "timed_out_retained", config); } catch { /* ok */ }
-              }, timeoutMs);
-
-              const promptResult = await Promise.race([
+              // Single bound (Task 02): one timer owns abort + transition + race.
+              const outcome = await withBound(
+                config.timerProvider,
+                timeoutMs,
                 invokePrompt(client, childSessionId, args.prompt),
-                new Promise<typeof timeoutResult>((resolve) => {
-                  config.timerProvider.setTimeout(() => resolve(timeoutResult), timeoutMs);
-                }),
-              ]);
+                () => {
+                  if (config.timeoutBehavior === "interrupt") {
+                    client.session.abort({ path: { id: childSessionId } }).catch(() => { /* ok */ });
+                  }
+                  try { transitionState(store, childSessionId, "timed_out_retained", config); } catch { /* ok */ }
+                },
+              );
 
-              if (promptResult !== timeoutResult) {
-                config.timerProvider.clearTimeout(timeoutHandle);
-              }
-
-              if (promptResult === timeoutResult || timedOut) {
+              if (outcome.timedOut) {
                 return `## @${agent.name} Response\n\n(Timed out after ${timeoutMs / 1000}s. Session: ${childSessionId}. Use task_continue to resume.)\n\n---\n*Session: ${childSessionId}*`;
               }
 
-              const responseText = extractTextFromPromptResult(promptResult);
+              const responseText = extractTextFromPromptResult(outcome.value);
               try {
                 transitionState(store, childSessionId, "completed", config);
               } catch { /* already terminal or not tracked */ }
@@ -835,13 +830,11 @@ export default async function dynamicTaskPlugin(
                 safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
               });
 
-              // Fire-and-forget background mode
-              const timeoutHandle = config.timerProvider.setTimeout(
-                () => handleTimeout(store, childSessionId, client, config, pendingSyncRequests),
-                timeoutMs,
+              // Fire-and-forget background mode: one bound owns the timeout.
+              // Stored on the task so completion and interrupt paths can cancel it.
+              activeTask.timeoutHandle = startTimeout(config.timerProvider, timeoutMs, () =>
+                handleTimeout(store, childSessionId, client, config, pendingSyncRequests),
               );
-              // Store the handle so the lifecycle handler can clear it on early completion
-              activeTask.timeoutHandle = timeoutHandle;
 
               debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
                 timeoutMs,
@@ -903,31 +896,25 @@ export default async function dynamicTaskPlugin(
             // Try existing session first — send prompt and await response directly
             try {
               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-              let timedOut = false;
 
-              // Schedule timeout
-              const timeoutHandle = config.timerProvider.setTimeout(() => {
-                timedOut = true;
-                if (config.timeoutBehavior === "interrupt") {
-                  client.session.abort({ path: { id: args.session_id } }).catch(() => {});
-                }
-                try { transitionState(store, args.session_id, "timed_out_retained", config); } catch { }
-              }, timeoutMs);
-
-              const result = await Promise.race([
+              // Single bound (Task 02): one timer owns abort + transition + race.
+              const outcome = await withBound(
+                config.timerProvider,
+                timeoutMs,
                 invokePrompt(client, args.session_id, args.prompt).catch(() => null),
-                new Promise<null>((resolve) =>
-                  config.timerProvider.setTimeout(() => resolve(null), timeoutMs)
-                ),
-              ]);
+                () => {
+                  if (config.timeoutBehavior === "interrupt") {
+                    client.session.abort({ path: { id: args.session_id } }).catch(() => {});
+                  }
+                  try { transitionState(store, args.session_id, "timed_out_retained", config); } catch { }
+                },
+              );
 
-              config.timerProvider.clearTimeout(timeoutHandle);
-
-              if (result === null || timedOut) {
+              if (outcome.timedOut || outcome.value === null) {
                 return `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id}. Use task_continue to resume.)`;
               }
 
-              const responseText = extractTextFromPromptResult(result);
+              const responseText = extractTextFromPromptResult(outcome.value);
               try { transitionState(store, args.session_id, "completed", config); } catch { }
               return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
             } catch {
@@ -1118,6 +1105,9 @@ export default async function dynamicTaskPlugin(
 
           try {
             await client.session.abort({ path: { id: args.session_id } });
+
+            // Cancel the armed bound first — the handle must not outlive the task.
+            stealTimeoutHandle(store, args.session_id)?.cancel();
 
             // Clean up from active tasks if present
             const active = store.activeTasks.get(args.session_id);

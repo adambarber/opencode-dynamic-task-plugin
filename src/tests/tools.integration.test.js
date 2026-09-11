@@ -416,3 +416,54 @@ describe("timeout, question and init guards", () => {
     assert.deepStrictEqual(result, {});
   });
 });
+
+describe("timeout behavior modes", () => {
+  function recordingDelegatingTimers() {
+    const created = [];
+    const cleared = [];
+    return {
+      created,
+      cleared,
+      provider: {
+        setTimeout: (fn, ms, ...rest) => {
+          const handle = setTimeout(fn, ms, ...rest);
+          created.push(handle);
+          return handle;
+        },
+        clearTimeout: (handle) => {
+          cleared.push(handle);
+          clearTimeout(handle);
+        },
+      },
+    };
+  }
+
+  it("interrupt cancels the armed timeout", async () => {
+    const rec = recordingDelegatingTimers();
+    const h = await setupTools({}, { timerProvider: rec.provider });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "timed task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    assert.ok(rec.created.length >= 1, "arm must be observable");
+    await h.tool.task_interrupt.execute({ session_id: childId });
+    assert.ok(
+      rec.created.every((handle) => rec.cleared.includes(handle)),
+      "every armed handle must be cancelled on interrupt",
+    );
+  });
+
+  it("notify mode skips abort and still notifies", async () => {
+    const h = await setupTools({}, { timeoutBehavior: "notify", minTimeoutMs: 20 });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "notify task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await sleep(250);
+    assert.strictEqual(h.client._state.notifications.length, 1);
+    assert.strictEqual(h.client._state.aborted.length, 0, "notify mode must not abort");
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+});

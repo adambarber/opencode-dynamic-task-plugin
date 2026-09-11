@@ -5,6 +5,7 @@
 // Retained tasks are bounded by TTL/max-entries lazy pruning.
 
 import type { DynamicTaskConfig } from "./config.js";
+import type { TimeoutController } from "./bound.js";
 
 // ─── TaskLifecycleState ────────────────────────────────────────────
 
@@ -32,7 +33,7 @@ export interface ActiveTaskState {
   completed: boolean;
   requestedModel?: string;        // model override for the child session
   dependsOn?: string[];           // task dependencies (session IDs)
-  timeoutHandle?: ReturnType<typeof setTimeout>; // stored so lifecycle handler can clear it
+  timeoutHandle?: TimeoutController; // owned by the bound funnel; cancel, never clearTimeout
 }
 
 export interface RetainedTaskState {
@@ -272,6 +273,22 @@ export function forceRetain(
   store.activeTasks.delete(childSessionId);
   store.retainedTasks.set(childSessionId, retained);
   return retained;
+}
+
+// ─── stealTimeoutHandle ────────────────────────────────────────────
+// Detaches the armed timeout from an active task and returns it so the
+// caller (interrupt path, completion path) can cancel it. Returns undefined
+// when the task is unknown or has no handle — both are benign.
+
+export function stealTimeoutHandle(
+  store: TaskStore,
+  childSessionId: string,
+): TimeoutController | undefined {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active?.timeoutHandle) return undefined;
+  const handle = active.timeoutHandle;
+  active.timeoutHandle = undefined;
+  return handle;
 }
 
 // ─── discardRetained ───────────────────────────────────────────────

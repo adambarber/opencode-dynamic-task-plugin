@@ -99,11 +99,13 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
 // injected TimerProvider — bare global setTimeout is unrepresentable outside
 // the provider definition itself (Tenets 2, 7).
 describe("invariant: waits use the injected TimerProvider (Task 02)", () => {
-  it("no bare setTimeout outside config.ts provider definition", () => {
+  it("no bare setTimeout outside the bound funnel and provider definition", () => {
     // Negative lookbehind exempts timerProvider.* and globalThis.* call shapes.
+    // Tenet 9: bound.ts IS the funnel (owns every armed wait); config.ts owns
+    // the provider definition. Both sanctioned, everything else flagged.
     const pattern = /(?<!timerProvider\.)(?<!globalThis\.)\bsetTimeout\s*\(/;
     const hits = listProdFiles()
-      .filter((f) => !f.endsWith("config.ts"))
+      .filter((f) => !f.endsWith("config.ts") && !f.endsWith("bound.ts"))
       .flatMap((f) => scanLines(f, pattern));
     assert.strictEqual(
       hits.length,

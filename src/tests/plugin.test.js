@@ -928,6 +928,7 @@ import {
   markActiveCompleted,
   forceRetain,
   discardRetained,
+  stealTimeoutHandle,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1442,6 +1443,30 @@ describe("config: file and env edges", () => {
       if (prev === undefined) delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
       else process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
     }
+  });
+});
+
+describe("task-state: stealTimeoutHandle", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  it("removes and returns the armed handle", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    const task = store.activeTasks.get("ses_active");
+    let cancelled = false;
+    task.timeoutHandle = { cancel: () => { cancelled = true; } };
+    const stolen = stealTimeoutHandle(store, "ses_active");
+    assert.ok(stolen, "must return the handle");
+    assert.strictEqual(task.timeoutHandle, undefined, "must detach from the task");
+    stolen.cancel();
+    assert.strictEqual(cancelled, true);
+  });
+
+  it("returns undefined when absent or unknown", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    assert.strictEqual(stealTimeoutHandle(store, "ses_active"), undefined);
+    assert.strictEqual(stealTimeoutHandle(store, "ses_nope"), undefined);
   });
 });
 

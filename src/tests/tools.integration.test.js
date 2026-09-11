@@ -9,9 +9,19 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/index.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// A fresh temp project directory per harness: the ledger must follow the
+// plugin's project directory (contamination regression, see suite below), so
+// shared paths (/tmp, CWD) are forbidden as harness state roots.
+function tmpProjectDir() {
+  return mkdtempSync(join(tmpdir(), `dt-harness-${Date.now()}-${Math.floor(Math.random() * 1e6)}-`));
+}
 
 // --- Hookable mock client --------------------------------------------------
 // hooks: {
@@ -143,13 +153,13 @@ function useTrackedHarness() {
   return ctx;
 }
 
-async function setupTools(hooks = {}, options = {}) {
+async function setupTools(hooks = {}, options = {}, directory = tmpProjectDir()) {
   const client = createToolsMock(hooks);
   resetAgentCache();
   const mod = await import("../../dist/index.js");
   const pluginFn = mod.default || mod;
   const result = await pluginFn(
-    { client, directory: "/tmp" },
+    { client, directory },
     { minTimeoutMs: 20, ...options },
   );
   assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
@@ -802,6 +812,37 @@ describe("timeout behavior modes", () => {
     await sleep(250);
     assert.strictEqual(h.client._state.notifications.length, 1);
     assert.strictEqual(h.client._state.aborted.length, 0, "notify mode must not abort");
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+});
+
+// --- State scoping (contamination regression) -------------------------------
+// Root cause of the poisoned repo ledger: persistence resolved against the
+// process CWD, not the plugin's project directory. Pins: retained mutations
+// write inside the directory the host provided, and the CWD is untouched.
+describe("ledger follows the plugin directory, never the process cwd", () => {
+  it("persists retained tasks under the provided directory only", async () => {
+    const dir = tmpProjectDir();
+    const cwdLedger = join(process.cwd(), ".dynamic-task-ledger.json");
+    const cwdBefore = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
+
+    const h = await setupTools({}, {}, dir);
+    const out = await h.tool.dynamic_task.execute(
+      { description: "scoped", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } });
+    await sleep(30); // onRetainedChange fires synchronously; sleep is for CI, not the contract.
+
+    const ledgerFile = join(dir, ".dynamic-task-ledger.json");
+    assert.ok(existsSync(ledgerFile), "ledger must be written inside the plugin directory");
+    const ledger = JSON.parse(readFileSync(ledgerFile, "utf8"));
+    assert.ok(ledger.tasks?.[childId], "completed task must be retained in the project ledger");
+
+    const cwdAfter = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
+    assert.strictEqual(cwdAfter, cwdBefore, "the suite must never create or mutate the cwd ledger");
+
     await h.tool.task_interrupt.execute({ session_id: childId });
   });
 });

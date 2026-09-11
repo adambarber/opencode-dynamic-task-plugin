@@ -12,6 +12,13 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+
+// Harness state must live in a fresh temp project dir, never CWD or a
+// shared path — see the ledger-scoping regression suite.
+const tmpProjectDir = () => mkdtempSync(join(tmpdir(), `dt-harness-${Date.now()}-${Math.floor(Math.random() * 1e6)}-`));
 
 // ─── Module-level state for mock client ──────────────────────────
 // These are set by createMockClient and read by fireLifecycleEvent.
@@ -118,7 +125,7 @@ async function setupPlugin(client, options = {}) {
   // Plugin function expects export default
   const pluginFn = plugin.default || plugin;
   const result = await pluginFn(
-    { client, directory: "/tmp" },
+    { client, directory: tmpProjectDir() },
     { defaultTimeoutMs: 5000, ...options },
   );
 

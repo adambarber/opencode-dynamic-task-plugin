@@ -59,6 +59,13 @@ Set via environment variables or `.opencode/dynamic-task-plugin.jsonc`:
 | `DYNAMIC_TASK_DEBUG` | off | `1` to enable per-session debug logs |
 | `DYNAMIC_TASK_DEBUG_BLOCKLIST` | `prompt,fullPrompt` | Fields to exclude from logs |
 
+### State Files
+
+Both live in the **project directory the host provides** (never the process CWD — running the test suite writes no state into the repo):
+
+- `.dynamic-task-ledger.json` — retained-task crash recovery, written atomically on every retained mutation.
+- `.dynamic-task-logs/` — per-session debug logs, only created when `DYNAMIC_TASK_DEBUG=1`.
+
 ## Architecture
 
 ```
@@ -83,7 +90,7 @@ src/
 ## Development
 
 ```bash
-npm test                  # 297 tests + safety invariants (node:test)
+npm test                  # full suite + safety invariants (node:test)
 npm run lint              # tsc --noEmit (full strict flags)
 npm run build             # compiles to dist/
 npm run test:coverage     # 90/80/90 gate enforced

@@ -8,9 +8,16 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/index.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Harness state must live in a fresh temp project dir, never CWD or a
+// shared path — see the ledger-scoping regression suite.
+const tmpProjectDir = () => mkdtempSync(join(tmpdir(), `dt-harness-${Date.now()}-${Math.floor(Math.random() * 1e6)}-`));
 
 // --- Production-shaped mock client -----------------------------------------
 // session.prompt routes by marker: parent notifications carry
@@ -68,7 +75,7 @@ async function setupHarness() {
   const pluginFn = mod.default || mod;
   // Low minTimeoutMs: sub-second timeouts keep the suite fast without
   // touching production clamping (resolveTimeoutMs still enforced).
-  const result = await pluginFn({ client, directory: "/tmp" }, { minTimeoutMs: 20 });
+  const result = await pluginFn({ client, directory: tmpProjectDir() }, { minTimeoutMs: 20 });
   assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
   return { client, tool: result.tool, fireEvent: (event) => result.event({ event }) };
 }

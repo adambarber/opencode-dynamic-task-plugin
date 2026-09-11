@@ -247,6 +247,29 @@ describe("invariant: file writes funnel through ledger/logger dances (Task 06)",
 // Primitive: spawn admission. Until the Task 07 gate exists there is no
 // sanctioned caller of registration/validation — every site is reported
 // (Tenets 3, 4).
+// --- Task 06 amendment (2026-09-11 smoke finding): state scoping -----------
+// The poisoned repo ledger came from state paths resolved against the
+// process CWD. tsc now forces every caller to pass a path, but string
+// literals can re-establish CWD roots silently — the names belong to the
+// two persistence dances, nowhere else.
+describe("invariant: durable state paths derive from the project directory", () => {
+  it("no bare state-file/dir literals outside the ledger/logger dances", () => {
+    const pattern = /"\.dynamic-task-(ledger|logs)/;
+    const hits = listProdFiles()
+      .filter((f) => !f.endsWith("session-lifecycle.ts") && !f.endsWith("debug-logger.ts"))
+      .flatMap((f) => scanLines(f, pattern));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/06-persistence-and-observability.md",
+        "State-path literal outside the dances (resolve via the host directory instead).",
+        hits,
+      ),
+    );
+  });
+});
+
 describe("invariant: spawn admission flows through one gate (Task 07)", () => {
   it("no direct register/validate/agent-find outside the admission gate", () => {
     const callPattern = /registerActiveTask\s*\(|validateAgent\s*\(|validateLineage\s*\(|\bagents\s*\.\s*find\s*\(/;

@@ -128,6 +128,7 @@ export const MAX_CONCURRENT_TASKS = Number.isFinite(parsed) && parsed > 0 ? pars
 // dropped — a corrupt ledger starts empty, never crashes boot.
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RetainedTaskState } from "./task-state.js";
 
 const TASK_LEDGER_PATH = ".dynamic-task-ledger.json";
@@ -159,7 +160,16 @@ function isValidLedgerEntry(value: unknown): value is RetainedTaskState {
   );
 }
 
-export function loadTaskLedger(filePath: string = TASK_LEDGER_PATH): Map<string, RetainedTaskState> {
+// The ledger lives with the project it tracks — the same directory the host
+// hands the plugin (where .opencode/ config lives), never the process CWD.
+// Requiring the argument (no default) makes accidental CWD writes a
+// compile error for every future caller; the empty-directory fallback
+// exists only for hosts that omit `directory` entirely.
+export function resolveTaskLedgerPath(directory: string): string {
+  return directory ? join(directory, TASK_LEDGER_PATH) : TASK_LEDGER_PATH;
+}
+
+export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState> {
   const map = new Map<string, RetainedTaskState>();
   if (!existsSync(filePath)) return map;
   try {
@@ -176,7 +186,7 @@ export function loadTaskLedger(filePath: string = TASK_LEDGER_PATH): Map<string,
   return map;
 }
 
-export function saveTaskLedger(map: Map<string, RetainedTaskState>, filePath: string = TASK_LEDGER_PATH): void {
+export function saveTaskLedger(map: Map<string, RetainedTaskState>, filePath: string): void {
   const tasks: Record<string, RetainedTaskState> = {};
   for (const [id, entry] of map) {
     tasks[id] = entry;

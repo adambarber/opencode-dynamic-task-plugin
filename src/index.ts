@@ -22,7 +22,7 @@ import {
   formatTaskListSummary,
   formatTaskStatusDetail,
 } from "./shared/task-formatting.js";
-import { debugLog } from "./debug-logger.js";
+import { debugLog, configureDebugRoot } from "./debug-logger.js";
 import {
   normalizeQuestionAnswers,
   replyToQuestion,
@@ -113,7 +113,7 @@ async function safeLog(client: OpenCodeClient, level: LogLevel, message: string)
 }
 
 // Durable retained-task ledger for crash recovery (Task 06)
-import { loadTaskLedger, saveTaskLedger } from "./shared/session-lifecycle.js";
+import { loadTaskLedger, saveTaskLedger, resolveTaskLedgerPath } from "./shared/session-lifecycle.js";
 
 function initPluginState(directory: string, options?: PluginOptions): PluginState {
   // Load dedicated config file if it exists
@@ -128,14 +128,20 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
     retainedTaskMaxEntries: config.retainedTaskMaxEntries,
   });
 
+  // State is scoped to the project directory the host provides (the same
+  // root as the config file above) — never the process CWD, which for
+  // tests and multi-project hosts is somebody else's tree.
+  configureDebugRoot(directory);
+  const ledgerPath = resolveTaskLedgerPath(directory);
+
   // Ledger sync: every retained mutation persists (never throws — the
   // store swallows callback errors so persistence can't break control flow).
   store.onRetainedChange = () => {
-    saveTaskLedger(store.retainedTasks);
+    saveTaskLedger(store.retainedTasks, ledgerPath);
   };
 
   // Crash recovery: rehydrate retained tasks from the ledger.
-  restoreRetained(store, loadTaskLedger());
+  restoreRetained(store, loadTaskLedger(ledgerPath));
 
   return {
     store,

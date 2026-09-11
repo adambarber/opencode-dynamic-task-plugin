@@ -211,7 +211,10 @@ describe("invariant: spawn admission flows through one gate (Task 07)", () => {
   it("no direct register/validate/agent-find outside the admission gate", () => {
     const callPattern = /registerActiveTask\s*\(|validateAgent\s*\(|validateLineage\s*\(|\bagents\s*\.\s*find\s*\(/;
     const defPattern = /function\s+(registerActiveTask|validateAgent|validateLineage)\s*\(/;
-    const hits = listProdFiles().flatMap((f) => {
+    // Tenet 9: admission.ts IS the gate — its internal composition is sanctioned.
+    const hits = listProdFiles()
+      .filter((f) => !f.endsWith("admission.ts"))
+      .flatMap((f) => {
       const lines = readFileSync(f, "utf8").split("\n");
       const fileHits = [];
       lines.forEach((content, i) => {

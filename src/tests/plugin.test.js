@@ -923,6 +923,10 @@ import {
   forceRetain,
   discardRetained,
 } from "../../dist/shared/task-state.js";
+import {
+  resolveAdmission,
+  registerAdmittedTask,
+} from "../../dist/shared/admission.js";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 
 describe("task-state: createStateStore", () => {
@@ -1125,6 +1129,71 @@ describe("task-state: flag operations (funnel for Task 01 bypasses)", () => {
     assert.strictEqual(discardRetained(store, "ses_active"), true);
     assert.strictEqual(store.retainedTasks.has("ses_active"), false);
     assert.strictEqual(discardRetained(store, "ses_active"), false);
+  });
+});
+
+describe("admission gate: resolveAdmission", () => {
+  const config = normalizeDynamicTaskConfig({});
+  const agents = [
+    { name: "explore" },
+    { name: "architect", mode: "all" },
+  ];
+
+  it("admits a known agent with extended lineage", () => {
+    const result = resolveAdmission(agents, "explore", ["planner"], config);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.agent.name, "explore");
+    assert.deepStrictEqual(result.newLineage, ["planner", "explore"]);
+  });
+
+  it("does not mutate the input lineage", () => {
+    const lineage = ["planner"];
+    resolveAdmission(agents, "explore", lineage, config);
+    assert.deepStrictEqual(lineage, ["planner"]);
+  });
+
+  it("denies missing names", () => {
+    for (const bad of [undefined, null, "", "   "]) {
+      const result = resolveAdmission(agents, bad, [], config);
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.reason.kind, "missing-name");
+    }
+  });
+
+  it("denies unknown agents", () => {
+    const result = resolveAdmission(agents, "nope", [], config);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason.kind, "unknown-agent");
+  });
+
+  it("denies blocked agents", () => {
+    const result = resolveAdmission([{ name: "general" }], "general", [], config);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason.kind, "blocked");
+  });
+
+  it("denies lineage violations", () => {
+    const result = resolveAdmission(agents, "explore", ["explore"], config);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason.kind, "lineage");
+  });
+});
+
+describe("admission gate: registerAdmittedTask", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  it("registers through the funnel and enforces the concurrency limit", () => {
+    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+    const store = createStateStore();
+    const task = registerAdmittedTask(store, {
+      childSessionId: "ses_1", parentSessionId: "parent_1",
+      agentName: "explore", description: "t1", lineage: [], isBackground: true,
+    }, limited);
+    assert.strictEqual(task.agentName, "explore");
+    assert.throws(() => registerAdmittedTask(store, {
+      childSessionId: "ses_2", parentSessionId: "parent_1",
+      agentName: "explore", description: "t2", lineage: [], isBackground: true,
+    }, limited), /Concurrency/);
   });
 });
 

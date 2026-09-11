@@ -30,15 +30,16 @@ import {
 } from "./shared/config.js";
 import {
   normalizeAgentName,
-  validateAgent,
-  validateLineage,
   buildTaskLineage,
   resolveAwaitResponse,
   isDispatchableAgent,
 } from "./shared/task-policy.js";
 import {
+  resolveAdmission,
+  registerAdmittedTask,
+} from "./shared/admission.js";
+import {
   createStateStore,
-  registerActiveTask,
   transitionState,
   findTask,
   pruneRetainedTasks,
@@ -724,16 +725,21 @@ export default async function dynamicTaskPlugin(
           pruneRetainedTasks(store, config);
 
           const agents = await fetchAgents(client);
-          const requestedName = args.subagent_type?.toLowerCase()?.trim();
 
-          if (!requestedName) {
-            return `ERROR: No subagent_type provided.\n\nAvailable: ${buildAgentList(agents)}`;
+          // Admission gate: resolve + policy-check before session.create.
+          // Fail-fast ordering: unknown callers are rejected before payload validation.
+          const lineage = createDummyLineage(ctx, store);
+          const admission = resolveAdmission(agents, args.subagent_type, lineage, config);
+          if (!admission.ok) {
+            if (admission.reason.kind === "missing-name") {
+              return `ERROR: No subagent_type provided.\n\nAvailable: ${buildAgentList(agents)}`;
+            }
+            if (admission.reason.kind === "unknown-agent") {
+              return `ERROR: Agent "${args.subagent_type}" not found.\n\nAvailable: ${buildAgentList(agents)}`;
+            }
+            return `ERROR: ${admission.reason.message}`;
           }
-
-          const agent = agents.find((a: any) => a.name.toLowerCase() === requestedName);
-          if (!agent) {
-            return `ERROR: Agent "${args.subagent_type}" not found.\n\nAvailable: ${buildAgentList(agents)}`;
-          }
+          const agent = admission.agent;
 
           if (!args.prompt || typeof args.prompt !== "string") {
             return "ERROR: Invalid prompt. Must be a non-empty string.";
@@ -746,19 +752,6 @@ export default async function dynamicTaskPlugin(
           // Resolve config values
           const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
           const shouldAwait = resolveAwaitResponse(args.await_response, config);
-
-          // Policy checks before session.create
-          const lineage = createDummyLineage(ctx, store);
-
-          const agentCheck = validateAgent(agent.name, config);
-          if (!agentCheck.ok) {
-            return `ERROR: ${agentCheck.error}`;
-          }
-
-          const lineageCheck = validateLineage(lineage, agent.name, config);
-          if (!lineageCheck.ok) {
-            return `ERROR: ${lineageCheck.error}`;
-          }
 
           try {
             const sessionBody: any = {
@@ -788,16 +781,15 @@ export default async function dynamicTaskPlugin(
               return `ERROR: Failed to create session. Response: ${JSON.stringify(sessionResult)}`;
             }
 
-            // Register in active state
-            const newLineage = buildTaskLineage(lineage, agent.name);
+            // Register in active state via the admission gate
             const isBg = !shouldAwait;
 
-            const activeTask = registerActiveTask(store, {
+            const activeTask = registerAdmittedTask(store, {
               childSessionId,
               parentSessionId: parentSessionId || "unknown",
               agentName: agent.name,
               description: args.description || `Task: ${agent.name}`,
-              lineage: newLineage,
+              lineage: admission.newLineage,
               isBackground: isBg,
               requestedModel: args.model || undefined,
               dependsOn: args.depends_on,
@@ -977,7 +969,7 @@ export default async function dynamicTaskPlugin(
               }
 
               // Register new active task for the continuation
-              const activeTask = registerActiveTask(store, {
+              const activeTask = registerAdmittedTask(store, {
                 childSessionId: newSessionId,
                 parentSessionId: retained.parentSessionId,
                 agentName: retained.agentName,

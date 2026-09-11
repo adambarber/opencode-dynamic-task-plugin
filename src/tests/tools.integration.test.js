@@ -646,6 +646,56 @@ describe("admission dependencies", () => {
   });
 });
 
+describe("admission lineage", () => {
+  it("nested spawns inherit the parent lineage", async () => {
+    const h = await setupTools({}, { blockedAgents: [] });
+    const out1 = await h.tool.dynamic_task.execute(
+      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const id1 = out1.match(/Session: (\S+)/)[1];
+    const out2 = await h.tool.dynamic_task.execute(
+      { description: "nested task", subagent_type: "general", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: id1 },
+    );
+    assert.ok(out2.includes("in background"), `nested spawn admitted. got: ${out2}`);
+    const id2 = out2.match(/Session: (\S+)/)[1];
+    const status = await h.tool.task_status.execute({ session_id: id2 });
+    assert.ok(status.includes("explore \u2192 general"), `parent chain visible. got: ${status}`);
+    await h.tool.task_interrupt.execute({ session_id: id1 });
+    await h.tool.task_interrupt.execute({ session_id: id2 });
+  });
+
+  it("same-agent nesting is admitted only with the recursion flag", async () => {
+    const strict = await setupTools();
+    const out1 = await strict.tool.dynamic_task.execute(
+      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const id1 = out1.match(/Session: (\S+)/)[1];
+    const denied = await strict.tool.dynamic_task.execute(
+      { description: "nested task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: id1 },
+    );
+    assert.ok(denied.includes("Recursive delegation blocked"), `got: ${denied}`);
+    await strict.tool.task_interrupt.execute({ session_id: id1 });
+
+    const lenient = await setupTools({}, { allowSameAgentRecursion: true });
+    const out2 = await lenient.tool.dynamic_task.execute(
+      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const id3 = out2.match(/Session: (\S+)/)[1];
+    const admitted = await lenient.tool.dynamic_task.execute(
+      { description: "nested task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: id3 },
+    );
+    assert.ok(admitted.includes("in background"), `flag honored. got: ${admitted}`);
+    await lenient.tool.task_interrupt.execute({ session_id: id3 });
+    await lenient.tool.task_interrupt.execute({ session_id: admitted.match(/Session: (\S+)/)[1] });
+  });
+});
+
 describe("timeout behavior modes", () => {
   function recordingDelegatingTimers() {
     const created = [];

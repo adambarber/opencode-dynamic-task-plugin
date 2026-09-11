@@ -158,6 +158,25 @@ describe("fetchAgents", () => {
     assert.strictEqual(result.length, 0);
   });
 
+  it("retries once after a transient failure", async () => {
+    let calls = 0;
+    const mockClient = {
+      app: {
+        agents: async () => {
+          calls++;
+          if (calls === 1) throw new Error("blip");
+          return [{ name: "explore", mode: "subagent" }];
+        },
+        log: async () => {},
+      },
+    };
+
+    const result = await fetchAgents(mockClient);
+    assert.strictEqual(calls, 2, "one immediate retry");
+    assert.strictEqual(result.length, 1);
+    assert.strictEqual(result[0].name, "explore");
+  });
+
   it("handles wrapped response (result.data)", async () => {
     const mockClient = clientWith({
       data: [
@@ -1842,7 +1861,7 @@ describe("task formatting: fleet views", () => {
       requestedModel: "prov/model",
     }, null);
     assert.ok(detail.includes("ses_1"));
-    assert.ok(detail.includes("planner \u2192 explore") || detail.includes("planner"));
+    assert.ok(detail.includes("planner"));
     assert.ok(detail.includes("prov/model"));
   });
 

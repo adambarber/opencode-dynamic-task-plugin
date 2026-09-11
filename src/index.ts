@@ -33,8 +33,6 @@ import {
   type DynamicTaskConfig,
 } from "./shared/config.js";
 import {
-  normalizeAgentName,
-  buildTaskLineage,
   resolveAwaitResponse,
   isDispatchableAgent,
 } from "./shared/task-policy.js";
@@ -238,27 +236,34 @@ export async function fetchAgents(client: any): Promise<any[]> {
     return cachedAgents;
   }
 
-  try {
-    const result = await client.app.agents();
-    let agents: any[] = [];
+  // One immediate retry: setup races and transient blips often clear on
+  // re-dial; persistent failure keeps the warn-and-stale behavior below.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const result = await client.app.agents();
+      let agents: any[] = [];
 
-    if (Array.isArray(result)) {
-      agents = result;
-    } else if (result && typeof result === "object") {
-      agents = result.agents || result.data || Object.values(result);
+      if (Array.isArray(result)) {
+        agents = result;
+      } else if (result && typeof result === "object") {
+        agents = result.agents || result.data || Object.values(result);
+      }
+
+      cachedAgents = agents.filter((a: any) => isDispatchableAgent(a));
+
+      lastCacheTime = now;
+      break;
+    } catch (e: any) {
+      if (attempt === 1) {
+        await client.app.log({
+          body: {
+            service: "dynamic-task",
+            level: "warn",
+            message: `Failed to fetch agents: ${e.message}`,
+          },
+        });
+      }
     }
-
-    cachedAgents = agents.filter((a: any) => isDispatchableAgent(a));
-
-    lastCacheTime = now;
-  } catch (e: any) {
-    await client.app.log({
-      body: {
-        service: "dynamic-task",
-        level: "warn",
-        message: `Failed to fetch agents: ${e.message}`,
-      },
-    });
   }
 
   return cachedAgents;
@@ -432,6 +437,9 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
   }
 }
 
+// Lineage inheritance: a nested caller's session is itself a tracked child
+// whose stored lineage already ends with its own agent — inherit verbatim
+// (a copy). Re-appending would double-count the parent and collapse depth.
 function createDummyLineage(ctx: any, store: TaskStore): string[] {
   const parentSessionId = resolveParentSessionId(ctx);
   if (!parentSessionId) return [];
@@ -439,14 +447,13 @@ function createDummyLineage(ctx: any, store: TaskStore): string[] {
   // Check if the parent session is itself a child task (i.e., this is a nested call)
   const parentTask = store.activeTasks.get(parentSessionId);
   if (parentTask) {
-    // Inherit parent's lineage plus parent's own agent type
-    return buildTaskLineage(parentTask.lineage, parentTask.agentName);
+    return [...parentTask.lineage];
   }
 
   // Also check retained tasks for the parent
   const parentRetained = store.retainedTasks.get(parentSessionId);
   if (parentRetained) {
-    return buildTaskLineage(parentRetained.lineage, parentRetained.agentName);
+    return [...parentRetained.lineage];
   }
 
   // Root-level call — no lineage constraints

@@ -127,7 +127,7 @@ export function formatTaskStatusDetail(
     `State: ${task.state}`,
     `Mode: ${task.isBackground ? "background" : "sync"}`,
     `Description: ${task.description}`,
-    `Lineage: ${task.lineage.length > 0 ? [...task.lineage, task.agentName].join(" \u2192 ") : "(root)"}`,
+    `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" \u2192 ") : "(root)"}`,
     `Model: ${task.requestedModel || "(default)"}`,
     `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
     `Timeout notified: ${task.timeoutNotified ? "yes" : "no"}`,

@@ -168,7 +168,10 @@ export function decideQuestion(kind: "active" | "retained", answers: string[]): 
     };
   }
   if (answers.length > 0) {
-    return { action: "reply", answer: answers[0] };
+    const [first] = answers;
+    if (first !== undefined) {
+      return { action: "reply", answer: first };
+    }
   }
   return {
     action: "reject",

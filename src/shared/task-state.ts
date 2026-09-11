@@ -31,8 +31,8 @@ export interface ActiveTaskState {
   startedAt: number;
   timeoutNotified: boolean;
   completed: boolean;
-  requestedModel?: string;        // model override for the child session
-  dependsOn?: string[];           // task dependencies (session IDs)
+  requestedModel?: string | undefined;        // model override for the child session
+  dependsOn?: string[] | undefined;           // task dependencies (session IDs)
   timeoutHandle?: TimeoutController; // owned by the bound funnel; cancel, never clearTimeout
 }
 
@@ -48,10 +48,10 @@ export interface RetainedTaskState {
   retainedAt: number;
   timeoutNotified: boolean;
   completed: boolean;
-  requestedModel?: string;
-  dependsOn?: string[];
-  previousSessionId?: string; // set when this entry was created by task_continue
-  abortError?: string;         // populated when client.session.abort() fails
+  requestedModel?: string | undefined;
+  dependsOn?: string[] | undefined;
+  previousSessionId?: string | undefined; // set when this entry was created by task_continue
+  abortError?: string | undefined;         // populated when client.session.abort() fails
 }
 
 // ─── Valid Transition Matrix ───────────────────────────────────────
@@ -109,8 +109,8 @@ export function registerActiveTask(
     description: string;
     lineage: string[];
     isBackground: boolean;
-    requestedModel?: string;
-    dependsOn?: string[];
+    requestedModel?: string | undefined;
+    dependsOn?: string[] | undefined;
   },
   config: DynamicTaskConfig,
 ): ActiveTaskState {
@@ -159,7 +159,6 @@ export function transitionState(
   store: TaskStore,
   childSessionId: string,
   toState: TaskLifecycleState,
-  config: DynamicTaskConfig,
 ): ActiveTaskState | RetainedTaskState {
   const active = store.activeTasks.get(childSessionId);
   let fromState: TaskLifecycleState;
@@ -258,7 +257,7 @@ export function forceRetain(
     state: TaskLifecycleState;
     timeoutNotified?: boolean;
     completed?: boolean;
-    abortError?: string;
+    abortError?: string | undefined;
   },
 ): RetainedTaskState {
   const base = store.activeTasks.get(childSessionId)
@@ -304,7 +303,7 @@ export function stealTimeoutHandle(
   const active = store.activeTasks.get(childSessionId);
   if (!active?.timeoutHandle) return undefined;
   const handle = active.timeoutHandle;
-  active.timeoutHandle = undefined;
+  delete active.timeoutHandle;
   return handle;
 }
 
@@ -427,8 +426,10 @@ export function pruneRetainedTasks(
     const entries = [...store.retainedTasks.entries()]
       .sort((a, b) => a[1].retainedAt - b[1].retainedAt); // oldest first
     const toRemove = store.retainedTasks.size - limits.retainedTaskMaxEntries;
-    for (let i = 0; i < toRemove && i < entries.length; i++) {
-      store.retainedTasks.delete(entries[i][0]);
+    for (let i = 0; i < toRemove; i++) {
+      const entry = entries[i];
+      if (!entry) break;
+      store.retainedTasks.delete(entry[0]);
       pruned++;
     }
   }

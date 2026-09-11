@@ -155,8 +155,8 @@ export interface RegistrationParams {
   description: string;
   lineage: string[];
   isBackground: boolean;
-  requestedModel?: string;
-  dependsOn?: string[];
+  requestedModel?: string | undefined;
+  dependsOn?: string[] | undefined;
 }
 
 export function registerAdmittedTask(

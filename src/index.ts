@@ -82,14 +82,12 @@ import {
   noteLateOutcome,
   restoreRetained,
   type TaskStore,
-  type TaskLifecycleState,
 } from "./shared/task-state.js";
 
 let cachedAgents: AgentRecord[] = [];
 let lastCacheTime = 0;
 
 const CACHE_TTL = 300000;
-const POLL_INTERVAL = 3000;
 
 // Plugin-level state store (ephemeral — lost on restart)
 interface PluginState {
@@ -201,7 +199,7 @@ function awaitContinuation(
     if (config.timeoutBehavior === "interrupt") {
       client.session.abort({ path: { id: sessionId } }).catch(() => {});
     }
-    try { transitionState(store, sessionId, "timed_out_retained", config); } catch { /* ok */ }
+    try { transitionState(store, sessionId, "timed_out_retained"); } catch { /* ok */ }
   });
 }
 
@@ -353,16 +351,16 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: O
 
   // Always transition to retained — preserves state regardless of abort outcome
   try {
-    transitionState(store, childSessionId, "timed_out_retained", config);
-  } catch {
-    // Race: completion landed during the abort await — force the move
-    forceRetain(store, childSessionId, {
-      state: "timed_out_retained",
-      timeoutNotified: true,
-      completed: true,
-      abortError,
-    });
-  }
+    transitionState(store, childSessionId, "timed_out_retained");
+   } catch {
+     // Race: completion landed during the abort await — force the move
+     forceRetain(store, childSessionId, {
+       state: "timed_out_retained",
+       timeoutNotified: true,
+       completed: true,
+       abortError,
+     });
+   }
 
   // Attach abort error to retained entry if applicable
   if (abortError) {
@@ -409,11 +407,11 @@ async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown)
 
       const status = getEventLifecycleStatus(event);
       if (status === "error") {
-        transitionState(store, childSessionId, "error", config);
+        transitionState(store, childSessionId, "error");
       } else if (active.timeoutNotified || alreadyCompleted) {
-        transitionState(store, childSessionId, "completed_after_timeout", config);
+        transitionState(store, childSessionId, "completed_after_timeout");
       } else {
-        transitionState(store, childSessionId, "completed", config);
+        transitionState(store, childSessionId, "completed");
       }
       const kind = resolveNotifyKind("event", status, active.timeoutNotified || alreadyCompleted);
 
@@ -763,7 +761,10 @@ export default async function dynamicTaskPlugin(
               // Bounded prompt (Tasks 02/07): abort + transition on timeout.
               const outcome = await awaitContinuation(
                 store, config, client, childSessionId,
-                invokePrompt(client, childSessionId, args.prompt, { agent: agent.name, model: modelOverride }),
+                invokePrompt(client, childSessionId, args.prompt, {
+                  agent: agent.name,
+                  ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+                }),
                 timeoutMs,
               );
 
@@ -773,14 +774,17 @@ export default async function dynamicTaskPlugin(
 
               const responseText = extractTextFromPromptResult(outcome.value);
               try {
-                transitionState(store, childSessionId, "completed", config);
+                transitionState(store, childSessionId, "completed");
               } catch { /* already terminal or not tracked */ }
               return `## @${agent.name} Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${childSessionId}*`;
             }
 
             if (!shouldAwait) {
               const childPrompt = buildBackgroundPrompt(args.prompt);
-              invokePrompt(client, childSessionId, childPrompt, { agent: agent.name, model: modelOverride }).catch((error: unknown) => {
+              invokePrompt(client, childSessionId, childPrompt, {
+                agent: agent.name,
+                ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+              }).catch((error: unknown) => {
                 const classified = classifyPromptError(error);
                 safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
                 // First-class failure: record and notify now instead of
@@ -788,7 +792,7 @@ export default async function dynamicTaskPlugin(
                 stealTimeoutHandle(store, childSessionId)?.cancel();
                 let recorded = false;
                 try {
-                  transitionState(store, childSessionId, "error", config);
+                  transitionState(store, childSessionId, "error");
                   recorded = true;
                 } catch { /* already settled */ }
                 if (recorded && parentSessionId) {
@@ -868,18 +872,19 @@ export default async function dynamicTaskPlugin(
             // Try existing session first — send prompt and await response directly.
             // A genuine timeout reports as such; a dead session falls through
             // to re-admission below.
-            try {
-              const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
+             try {
+               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
+               const modelOverride = parseModelOverride(retained.requestedModel);
 
-              // Bounded prompt (Tasks 02/07): abort + transition on timeout.
-              const outcome = await awaitContinuation(
-                store, config, client, args.session_id,
-                invokePrompt(client, args.session_id, args.prompt, {
-                  agent: retained.agentName,
-                  model: parseModelOverride(retained.requestedModel),
-                }).catch(() => null),
-                timeoutMs,
-              );
+               // Bounded prompt (Tasks 02/07): abort + transition on timeout.
+               const outcome = await awaitContinuation(
+                 store, config, client, args.session_id,
+                 invokePrompt(client, args.session_id, args.prompt, {
+                   agent: retained.agentName,
+                   ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+                 }).catch(() => null),
+                 timeoutMs,
+               );
 
               if (outcome.timedOut) {
                 return `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id}. Use task_continue to resume.)`;
@@ -887,7 +892,7 @@ export default async function dynamicTaskPlugin(
 
               if (outcome.value !== null) {
                 const responseText = extractTextFromPromptResult(outcome.value);
-                try { transitionState(store, args.session_id, "completed", config); } catch { }
+                try { transitionState(store, args.session_id, "completed"); } catch { }
                 return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
               }
               // Async-dead session (prompt rejected): fall through to re-admission.
@@ -933,28 +938,29 @@ export default async function dynamicTaskPlugin(
                 return `ERROR: Failed to create continuation session. Response: ${JSON.stringify(sessionResult)}`;
               }
 
-              // Register new active task for the continuation
-              const activeTask = registerAdmittedTask(store, {
-                childSessionId: newSessionId,
-                parentSessionId: retained.parentSessionId,
-                agentName: retained.agentName,
-                description: `Continue: ${retained.description}`,
-                lineage: retained.lineage,
-                isBackground: false,
-              }, config);
+               // Register new active task for the continuation
+               registerAdmittedTask(store, {
+                 childSessionId: newSessionId,
+                 parentSessionId: retained.parentSessionId,
+                 agentName: retained.agentName,
+                 description: `Continue: ${retained.description}`,
+                 lineage: retained.lineage,
+                 isBackground: false,
+               }, config);
 
-              const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
+               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
+               const modelOverride = parseModelOverride(retained.requestedModel);
 
-              // Single-wait (Task 03): the prompt result IS the response,
-              // settled through the shared bound waiter.
-              const outcome = await awaitContinuation(
-                store, config, client, newSessionId,
-                invokePrompt(client, newSessionId, args.prompt, {
-                  agent: retained.agentName,
-                  model: parseModelOverride(retained.requestedModel),
-                }),
-                timeoutMs,
-              );
+               // Single-wait (Task 03): the prompt result IS the response,
+               // settled through the shared bound waiter.
+               const outcome = await awaitContinuation(
+                 store, config, client, newSessionId,
+                 invokePrompt(client, newSessionId, args.prompt, {
+                   agent: retained.agentName,
+                   ...(modelOverride !== undefined ? { model: modelOverride } : {}),
+                 }),
+                 timeoutMs,
+               );
 
               const response = outcome.timedOut
                 ? `(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`
@@ -968,9 +974,10 @@ export default async function dynamicTaskPlugin(
 
           // Not a retained task — check if it's active
           const active = store.activeTasks.get(args.session_id);
-          if (active) {
+           if (active) {
             // Send prompt to existing active session
             const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
+            const modelOverride = parseModelOverride(active.requestedModel);
             try {
               // Single-wait (Task 03): the prompt result IS the response,
               // settled through the shared bound waiter.
@@ -978,7 +985,7 @@ export default async function dynamicTaskPlugin(
                 store, config, client, args.session_id,
                 invokePrompt(client, args.session_id, args.prompt, {
                   agent: active.agentName,
-                  model: parseModelOverride(active.requestedModel),
+                  ...(modelOverride !== undefined ? { model: modelOverride } : {}),
                 }),
                 timeoutMs,
               );
@@ -1107,7 +1114,7 @@ export default async function dynamicTaskPlugin(
             // Clean up from active tasks if present
             const active = store.activeTasks.get(args.session_id);
             if (active) {
-              transitionState(store, args.session_id, "interrupted", config);
+              transitionState(store, args.session_id, "interrupted");
             }
 
             // Clean up from retained tasks if present

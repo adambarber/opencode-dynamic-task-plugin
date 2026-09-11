@@ -30,7 +30,8 @@ export function resetNotificationLog(): void {
 
 export function getLatestNotification(childSessionId: string): NotificationRecord | undefined {
   for (let i = ledger.length - 1; i >= 0; i--) {
-    if (ledger[i].childSessionId === childSessionId) return ledger[i];
+    const rec = ledger[i];
+    if (rec && rec.childSessionId === childSessionId) return rec;
   }
   return undefined;
 }

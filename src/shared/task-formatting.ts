@@ -110,11 +110,11 @@ export function formatTaskStatusDetail(
     state: string;
     isBackground: boolean;
     startedAt: number;
-    retainedAt?: number;
+    retainedAt?: number | undefined;
     timeoutNotified: boolean;
     completed: boolean;
-    requestedModel?: string;
-    dependsOn?: string[];
+    requestedModel?: string | undefined;
+    dependsOn?: string[] | undefined;
   },
   notification?: { kind: string; delivered: boolean; attempts: number } | null,
 ): string {
@@ -150,7 +150,7 @@ export function formatTaskResultSummary(input: {
   latestText: string;
   tracked: boolean;
   timeoutNotified: boolean;
-  notification?: { kind: string; delivered: boolean; attempts: number } | null;
+  notification?: { kind: string; delivered: boolean; attempts: number } | null | undefined;
   debugShape?: string;
 }): string {
   const action =

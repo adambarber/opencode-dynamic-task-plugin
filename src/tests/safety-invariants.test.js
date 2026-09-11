@@ -78,7 +78,8 @@ function formatViolations(taskDoc, why, hits) {
 describe("invariant: lifecycle mutations funnel through task-state (Task 01)", () => {
   it("no raw store/flag mutation outside task-state.ts", () => {
     const sanctioned = `task-state.ts`;
-    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=|\.\s*timeoutNotified\s*=/;
+    // (?!=) excludes == / === reads: only real assignments are bypasses.
+    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)/;
     const hits = listProdFiles()
       .filter((f) => !f.endsWith(sanctioned))
       .flatMap((f) => scanLines(f, pattern));
@@ -319,8 +320,9 @@ describe("invariant: tests import production, never redefine it (Tenet 12)", () 
 describe("invariant: README tool inventory matches registered tools (Task 00)", () => {
   it("every documented tool is registered and vice versa", () => {
     const indexSrc = readFileSync(path.join(SRC_DIR, "index.ts"), "utf8");
+    // Both tool shells count: tool({...}) and the sessionReadTool funnel.
     const registered = new Set(
-      [...indexSrc.matchAll(/^\s{6}(\w+):\s*tool\(\{/gm)].map((m) => m[1]),
+      [...indexSrc.matchAll(/^\s{6}(\w+):\s*(?:tool\s*\(\{|sessionReadTool\s*\()/gm)].map((m) => m[1]),
     );
     const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8").split("\n");
     const headerIdx = readme.findIndex((l) => l.startsWith("| Tool |"));

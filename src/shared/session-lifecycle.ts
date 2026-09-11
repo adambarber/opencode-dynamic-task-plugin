@@ -89,36 +89,68 @@ const raw = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
 const parsed = Number(raw);
 export const MAX_CONCURRENT_TASKS = Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
 
-// --- Task ID persistence (atomic JSON file) ---
+// --- Task ledger persistence (atomic JSON file, Task 06) ---
+// Versioned envelope of full retained-task records keyed by child session
+// id. Replaces the inverted description-keyed ID map: crash recovery reads
+// what was actually retained. Unknown versions and malformed entries are
+// dropped — a corrupt ledger starts empty, never crashes boot.
 
 import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import type { RetainedTaskState } from "./task-state.js";
 
-const TASK_ID_MAP_PATH = ".dynamic-task-ids.json";
+const TASK_LEDGER_PATH = ".dynamic-task-ledger.json";
+const TASK_LEDGER_VERSION = 1;
 
-export function validateTaskId(taskId: string): boolean {
-  return typeof taskId === "string" && /^[a-zA-Z0-9_-]+$/.test(taskId) && taskId.length <= 64;
+const RETAINED_STATES: readonly string[] = [
+  "timed_out_retained",
+  "completed",
+  "completed_after_timeout",
+  "error",
+  "interrupted",
+];
+
+function isValidLedgerEntry(value: unknown): value is RetainedTaskState {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.childSessionId === "string" && entry.childSessionId.length > 0 &&
+    typeof entry.parentSessionId === "string" &&
+    typeof entry.agentName === "string" &&
+    typeof entry.description === "string" &&
+    Array.isArray(entry.lineage) &&
+    typeof entry.state === "string" && RETAINED_STATES.includes(entry.state) &&
+    typeof entry.isBackground === "boolean" &&
+    typeof entry.startedAt === "number" &&
+    typeof entry.retainedAt === "number" &&
+    typeof entry.timeoutNotified === "boolean" &&
+    typeof entry.completed === "boolean"
+  );
 }
 
-export function loadTaskIdMap(): Map<string, string> {
-  const map = new Map<string, string>();
-  if (existsSync(TASK_ID_MAP_PATH)) {
-    try {
-      const data = JSON.parse(readFileSync(TASK_ID_MAP_PATH, "utf8"));
-      for (const [taskId, sessionId] of Object.entries(data)) {
-        if (validateTaskId(taskId) && typeof sessionId === "string") {
-          map.set(taskId, sessionId);
-        }
+export function loadTaskLedger(filePath: string = TASK_LEDGER_PATH): Map<string, RetainedTaskState> {
+  const map = new Map<string, RetainedTaskState>();
+  if (!existsSync(filePath)) return map;
+  try {
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    if (!data || typeof data !== "object") return map;
+    if (data.version !== TASK_LEDGER_VERSION) return map;
+    if (!data.tasks || typeof data.tasks !== "object") return map;
+    for (const [id, entry] of Object.entries(data.tasks)) {
+      if (typeof id === "string" && id.length > 0 && isValidLedgerEntry(entry)) {
+        map.set(id, entry);
       }
-    } catch { /* ignore corrupt file */ }
-  }
+    }
+  } catch { /* corrupt ledger starts empty */ }
   return map;
 }
 
-export function saveTaskIdMap(map: Map<string, string>): void {
-  const obj: Record<string, string> = {};
-  for (const [k, v] of map) { obj[k] = v; }
-  // Atomic write: write to temp file, then rename to avoid corruption on crash
-  const tmp = TASK_ID_MAP_PATH + ".tmp";
-  writeFileSync(tmp, JSON.stringify(obj, null, 2));
-  renameSync(tmp, TASK_ID_MAP_PATH);
+export function saveTaskLedger(map: Map<string, RetainedTaskState>, filePath: string = TASK_LEDGER_PATH): void {
+  const tasks: Record<string, RetainedTaskState> = {};
+  for (const [id, entry] of map) {
+    tasks[id] = entry;
+  }
+  // Atomic write: temp file plus rename survives a mid-write crash.
+  const tmp = `${filePath}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ version: TASK_LEDGER_VERSION, tasks }, null, 2));
+  renameSync(tmp, filePath);
 }

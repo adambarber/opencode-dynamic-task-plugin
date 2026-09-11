@@ -571,6 +571,44 @@ describe("notification delivery records", () => {
   });
 });
 
+describe("task fleet views", () => {
+  it("task_list shows active and retained tasks", async () => {
+    const h = await setupTools();
+    const out1 = await h.tool.dynamic_task.execute(
+      { description: "fleet one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const id1 = out1.match(/Session: (\S+)/)[1];
+    const out2 = await h.tool.dynamic_task.execute(
+      { description: "fleet two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
+      { sessionID: "p1" },
+    );
+    const id2 = out2.match(/Session: (\S+)/)[1];
+    await sleep(200);
+    const list = await h.tool.task_list.execute({});
+    assert.ok(list.includes(id1) && list.includes(id2), `both fleets visible. got: ${list}`);
+    assert.ok(list.includes("Active background"), `got: ${list}`);
+    await h.tool.task_interrupt.execute({ session_id: id1 });
+    await h.tool.task_interrupt.execute({ session_id: id2 });
+  });
+
+  it("task_status details tracked tasks and unknowns", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "status probe", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    const detail = await h.tool.task_status.execute({ session_id: childId });
+    assert.ok(detail.includes(childId), `got: ${detail}`);
+    assert.ok(detail.includes("explore"), `got: ${detail}`);
+    const missing = await h.tool.task_status.execute({ session_id: "ses_ghost" });
+    assert.ok(missing.includes("unknown"), `got: ${missing}`);
+    assert.ok((await h.tool.task_status.execute({})).includes("required"));
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+});
+
 describe("timeout behavior modes", () => {
   function recordingDelegatingTimers() {
     const created = [];

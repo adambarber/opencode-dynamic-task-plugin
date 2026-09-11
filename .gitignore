@@ -30,6 +30,7 @@ dynamic-task-plugin-fixes-implementation-plan.md
 
 # Dynamic Task Plugin artifacts
 .dynamic-task-ids.json
+.dynamic-task-ledger.json*
 .handoff-*
 .tmp/
 .yolo.json

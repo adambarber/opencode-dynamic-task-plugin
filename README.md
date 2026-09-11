@@ -19,10 +19,10 @@ npm install && npm run build
 |------|-------------|
 | `dynamic_task` | Spawn a subagent session (sync or background) |
 | `task_continue` | Send a follow-up prompt to a running session |
-| `task_result` | Poll a session's latest status and output |
-| `task_interrupt` | Abort a running session |
-
-> Planned but not yet implemented: `task_list`, `task_status` — see `docs/tasks/06-persistence-and-observability.md`.
+| `task_result` | Poll a session's latest status and output (live API) |
+| `task_interrupt` | Abort a running child session |
+| `task_list` | List all tracked tasks with lifecycle states |
+| `task_status` | Detailed tracked state for one task (store read, no API calls) |
 
 ### Key parameters
 

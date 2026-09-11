@@ -338,6 +338,8 @@ import {
   buildBackgroundPrompt,
   formatParentNotification,
   formatTaskResultSummary,
+  formatTaskListSummary,
+  formatTaskStatusDetail,
   truncateText,
 } from "../../dist/shared/task-formatting.js";
 
@@ -471,60 +473,84 @@ describe("safeDebugPayload fallback parsing", () => {
   });
 });
 
-// --- Task ID validation and persistence (Task 1) ---
+// --- Task ledger persistence (Task 6): versioned full-record ledger ---
 import {
-  validateTaskId,
-  loadTaskIdMap,
-  saveTaskIdMap,
+  saveTaskLedger,
+  loadTaskLedger,
 } from "../../dist/shared/session-lifecycle.js";
 
 import { readFileSync, unlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
 
-const TEST_MAP_PATH = ".dynamic-task-ids.json";
+function retainedEntry(overrides = {}) {
+  return {
+    childSessionId: "ses_1",
+    parentSessionId: "parent_1",
+    agentName: "explore",
+    description: "t",
+    lineage: [],
+    state: "completed",
+    isBackground: true,
+    startedAt: 1,
+    retainedAt: 2,
+    timeoutNotified: false,
+    completed: true,
+    ...overrides,
+  };
+}
 
-describe("validateTaskId", () => {
-  it("accepts valid task IDs", () => {
-    assert.strictEqual(validateTaskId("task_123"), true);
-    assert.strictEqual(validateTaskId("my-task"), true);
-    assert.strictEqual(validateTaskId("TaskName01"), true);
+function tmpLedgerPath() {
+  return `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
+}
+
+describe("task ledger persistence", () => {
+  it("round-trips retained records through an injectable path", () => {
+    const file = tmpLedgerPath();
+    try {
+      saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.size, 1);
+      assert.strictEqual(loaded.get("ses_1").agentName, "explore");
+      assert.strictEqual(loaded.get("ses_1").state, "completed");
+    } finally {
+      if (existsSync(file)) unlinkSync(file);
+    }
   });
 
-  it("rejects invalid task IDs", () => {
-    assert.strictEqual(validateTaskId(""), false);
-    assert.strictEqual(validateTaskId("task!@#"), false);
-    assert.strictEqual(validateTaskId("a".repeat(65)), false);
-    assert.strictEqual(validateTaskId(null), false);
-    assert.strictEqual(validateTaskId(undefined), false);
-  });
-});
-
-describe("taskId persistence", () => {
-  beforeEach(() => {
-    // Clean up test file before each test
-    if (existsSync(TEST_MAP_PATH)) unlinkSync(TEST_MAP_PATH);
-  });
-
-  it("loads and saves task ID mappings", () => {
-    const map = new Map([["task1", "ses_1"], ["task2", "ses_2"]]);
-    saveTaskIdMap(map);
-    const loaded = loadTaskIdMap();
-    assert.strictEqual(loaded.get("task1"), "ses_1");
-    assert.strictEqual(loaded.get("task2"), "ses_2");
+  it("returns empty for missing, corrupt, and unknown-version files", () => {
+    assert.strictEqual(loadTaskLedger(`${tmpdir()}/dt-nope-${Date.now()}.json`).size, 0);
+    const bad = tmpLedgerPath();
+    writeFileSync(bad, "{ nope");
+    try {
+      assert.strictEqual(loadTaskLedger(bad).size, 0);
+    } finally {
+      unlinkSync(bad);
+    }
+    const future = tmpLedgerPath();
+    writeFileSync(future, JSON.stringify({ version: 999, tasks: {} }));
+    try {
+      assert.strictEqual(loadTaskLedger(future).size, 0);
+    } finally {
+      unlinkSync(future);
+    }
   });
 
-  it("handles empty map", () => {
-    saveTaskIdMap(new Map());
-    const loaded = loadTaskIdMap();
-    assert.strictEqual(loaded.size, 0);
-  });
-
-  it("ignores invalid entries on load", () => {
-    saveTaskIdMap(new Map([["valid_id", "ses_1"]]));
-    // Manually corrupt the file to add an invalid entry
-    writeFileSync(TEST_MAP_PATH, JSON.stringify({ "valid_id": "ses_1", "": "ses_2", "bad!@#": "ses_3" }));
-    const loaded = loadTaskIdMap();
-    assert.strictEqual(loaded.get("valid_id"), "ses_1");
-    assert.strictEqual(loaded.size, 1, "Invalid entries must be filtered out");
+  it("drops entries with unknown states or invalid ids", () => {
+    const file = tmpLedgerPath();
+    writeFileSync(file, JSON.stringify({
+      version: 1,
+      tasks: {
+        ses_ok: retainedEntry(),
+        ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
+        ses_noid: { ...retainedEntry(), childSessionId: 42 },
+      },
+    }));
+    try {
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.size, 1);
+      assert.ok(loaded.has("ses_ok"));
+    } finally {
+      unlinkSync(file);
+    }
   });
 });
 
@@ -932,6 +958,7 @@ import {
   discardRetained,
   stealTimeoutHandle,
   noteLateOutcome,
+  restoreRetained,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1641,6 +1668,140 @@ describe("question gate: decideQuestion", () => {
     const decision = decideQuestion("retained", ["yes"]);
     assert.strictEqual(decision.action, "reject");
     assert.ok(decision.reason.includes("timed out"));
+  });
+});
+
+describe("task store: retained-change callback and bounds", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  function seedActive(store, id) {
+    registerActiveTask(store, {
+      childSessionId: id, parentSessionId: "p",
+      agentName: "a", description: "d", lineage: [], isBackground: true,
+    }, config);
+  }
+
+  it("notifies on retained writes, silent on active-only writes", () => {
+    const store = createStateStore();
+    let calls = 0;
+    store.onRetainedChange = () => { calls++; };
+    seedActive(store, "s1");
+    assert.strictEqual(calls, 0, "active-only writes stay silent");
+    transitionState(store, "s1", "completed", config);
+    assert.strictEqual(calls, 1);
+    noteLateOutcome(store, "s1", "error");
+    assert.strictEqual(calls, 2);
+    discardRetained(store, "s1");
+    assert.strictEqual(calls, 3);
+  });
+
+  it("forceRetain notifies", () => {
+    const store = createStateStore();
+    let calls = 0;
+    store.onRetainedChange = () => { calls++; };
+    seedActive(store, "s1");
+    forceRetain(store, "s1", { state: "timed_out_retained" });
+    assert.strictEqual(calls, 1);
+  });
+
+  it("prunes internally when bounds are set", () => {
+    const store = createStateStore({ retainedTaskTtlMs: 3600000, retainedTaskMaxEntries: 1 });
+    seedActive(store, "s1");
+    transitionState(store, "s1", "completed", config);
+    seedActive(store, "s2");
+    transitionState(store, "s2", "completed", config);
+    assert.strictEqual(store.retainedTasks.size, 1);
+    assert.ok(store.retainedTasks.has("s2"));
+  });
+
+  it("skips internal pruning without bounds (backward compatible)", () => {
+    const store = createStateStore();
+    seedActive(store, "s1");
+    transitionState(store, "s1", "completed", config);
+    seedActive(store, "s2");
+    transitionState(store, "s2", "completed", config);
+    assert.strictEqual(store.retainedTasks.size, 2);
+  });
+});
+
+describe("task formatting: fleet views", () => {
+  it("formatTaskListSummary counts and rows active plus retained", () => {
+    const now = Date.now();
+    const summary = formatTaskListSummary({
+      active: [{
+        childSessionId: "ses_a", agentName: "explore", description: "A task",
+        state: "active", isBackground: true, startedAt: now - 65000,
+      }],
+      retained: [{
+        childSessionId: "ses_r", agentName: "reviewer", description: "R task",
+        state: "completed", isBackground: true, startedAt: now - 5000,
+      }],
+      maxConcurrent: 4,
+    });
+    assert.ok(summary.includes("Active background: 1/4"), `got: ${summary}`);
+    assert.ok(summary.includes("ses_a") && summary.includes("ses_r"));
+    assert.ok(summary.includes("65s"), `ages render. got: ${summary}`);
+  });
+
+  it("formatTaskListSummary names empty states", () => {
+    const summary = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4 });
+    assert.ok(summary.includes("(none)"));
+  });
+
+  it("formatTaskStatusDetail renders tracked metadata offline", () => {
+    const detail = formatTaskStatusDetail({
+      childSessionId: "ses_1",
+      parentSessionId: "parent_1",
+      agentName: "explore",
+      description: "Deep dive",
+      lineage: ["planner"],
+      state: "active",
+      isBackground: true,
+      startedAt: 1,
+      timeoutNotified: false,
+      completed: false,
+      requestedModel: "prov/model",
+    }, null);
+    assert.ok(detail.includes("ses_1"));
+    assert.ok(detail.includes("planner \u2192 explore") || detail.includes("planner"));
+    assert.ok(detail.includes("prov/model"));
+  });
+
+  it("formatTaskStatusDetail surfaces delivery records", () => {
+    const detail = formatTaskStatusDetail({
+      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
+      description: "d", lineage: [], state: "completed", isBackground: true,
+      startedAt: 1, retainedAt: 2, timeoutNotified: true, completed: true,
+    }, { kind: "timeout", delivered: false, attempts: 2 });
+    assert.ok(detail.includes("FAILED"), `got: ${detail}`);
+  });
+});
+
+describe("task-state: restoreRetained", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  function ledgerEntry(id, state = "completed") {
+    return {
+      childSessionId: id, parentSessionId: "p", agentName: "a",
+      description: "d", lineage: [], state, isBackground: true,
+      startedAt: 1, retainedAt: 2, timeoutNotified: false, completed: true,
+    };
+  }
+
+  it("restores unknown ids and skips live state", () => {
+    const store = createStateStore();
+    seedSesActive(store, config);
+    const restored = restoreRetained(store, [
+      ["ses_ledger", ledgerEntry("ses_ledger")],
+      ["ses_active", ledgerEntry("ses_active")],
+    ]);
+    assert.strictEqual(restored, 1);
+    assert.ok(store.retainedTasks.has("ses_ledger"));
+    assert.ok(store.activeTasks.has("ses_active"), "live state wins");
+  });
+
+  it("returns zero for empty input", () => {
+    assert.strictEqual(restoreRetained(createStateStore(), []), 0);
   });
 });
 

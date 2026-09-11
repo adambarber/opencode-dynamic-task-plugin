@@ -63,6 +63,86 @@ export function formatParentNotification(
   ].join("\n");
 }
 
+export interface FleetRow {
+  childSessionId: string;
+  agentName: string;
+  description: string;
+  state: string;
+  isBackground: boolean;
+  startedAt: number;
+}
+
+function formatAge(ms: number): string {
+  return `${Math.max(0, Math.round(ms / 1000))}s`;
+}
+
+function formatFleetRow(row: FleetRow, now: number): string {
+  const mode = row.isBackground ? "bg" : "sync";
+  return `- ${row.childSessionId} @${row.agentName} [${row.state}/${mode}] ${row.description} (${formatAge(now - row.startedAt)})`;
+}
+
+export function formatTaskListSummary(input: {
+  active: FleetRow[];
+  retained: FleetRow[];
+  maxConcurrent: number;
+}): string {
+  const now = Date.now();
+  const bgActive = input.active.filter((t) => t.isBackground).length;
+  const lines = [
+    "## Task List",
+    "",
+    `Active background: ${bgActive}/${input.maxConcurrent}`,
+    ...(input.active.length > 0 ? input.active.map((t) => formatFleetRow(t, now)) : ["(none)"]),
+    "",
+    `Retained: ${input.retained.length}`,
+    ...(input.retained.length > 0 ? input.retained.map((t) => formatFleetRow(t, now)) : ["(none)"]),
+  ];
+  return lines.join("\n");
+}
+
+export function formatTaskStatusDetail(
+  task: {
+    childSessionId: string;
+    parentSessionId: string;
+    agentName: string;
+    description: string;
+    lineage: string[];
+    state: string;
+    isBackground: boolean;
+    startedAt: number;
+    retainedAt?: number;
+    timeoutNotified: boolean;
+    completed: boolean;
+    requestedModel?: string;
+    dependsOn?: string[];
+  },
+  notification?: { kind: string; delivered: boolean; attempts: number } | null,
+): string {
+  const lines = [
+    "## Task Status",
+    "",
+    `Session: ${task.childSessionId}`,
+    `Parent: ${task.parentSessionId}`,
+    `Agent: ${task.agentName}`,
+    `State: ${task.state}`,
+    `Mode: ${task.isBackground ? "background" : "sync"}`,
+    `Description: ${task.description}`,
+    `Lineage: ${task.lineage.length > 0 ? [...task.lineage, task.agentName].join(" \u2192 ") : "(root)"}`,
+    `Model: ${task.requestedModel || "(default)"}`,
+    `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
+    `Timeout notified: ${task.timeoutNotified ? "yes" : "no"}`,
+    `Completed: ${task.completed ? "yes" : "no"}`,
+  ];
+  if (notification) {
+    lines.push(
+      notification.delivered
+        ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`
+        : `Last notification: ${notification.kind} (FAILED after ${notification.attempts} attempt(s))`,
+    );
+  }
+  return lines.join("\n");
+}
+
 export function formatTaskResultSummary(input: {
   sessionId: string;
   status: string;

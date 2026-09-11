@@ -13,6 +13,8 @@ import {
   buildBackgroundPrompt,
   formatParentNotification,
   formatTaskResultSummary,
+  formatTaskListSummary,
+  formatTaskStatusDetail,
 } from "./shared/task-formatting.js";
 import { debugLog } from "./debug-logger.js";
 import {
@@ -28,7 +30,6 @@ import {
   normalizeDynamicTaskConfig,
   resolveTimeoutMs,
   parseDynamicTaskJsonc,
-  checkConcurrencyLimit,
   type DynamicTaskConfig,
 } from "./shared/config.js";
 import {
@@ -63,13 +64,14 @@ import {
   createStateStore,
   transitionState,
   findTask,
-  pruneRetainedTasks,
+  listTasks,
   noteTimeoutFired,
   markActiveCompleted,
   forceRetain,
   discardRetained,
   stealTimeoutHandle,
   noteLateOutcome,
+  restoreRetained,
   type TaskStore,
   type TaskLifecycleState,
 } from "./shared/task-state.js";
@@ -100,37 +102,8 @@ async function safeLog(client: any, level: string, message: string): Promise<voi
   }
 }
 
-/** Check whether an error indicates a session was not found (404, NOT_FOUND code, etc.) */
-function isNotFoundSessionError(error: any): boolean {
-  if (error?.status === 404) return true;
-  if (error?.response?.status === 404) return true;
-  if (error?.code === "NOT_FOUND" || error?.code === "not_found") return true;
-
-  const message = error?.message || "";
-  if (typeof message === "string") {
-    const normalized = message.toLowerCase();
-    return (
-      normalized.includes("session not found") ||
-      normalized.includes("session_id not found") ||
-      normalized.includes("enoent")
-    );
-  }
-  return false;
-}
-
-/** Abort a session server-side (best-effort, swallows errors) */
-async function abortSession(client: any, sessionId: string): Promise<void> {
-  try {
-    await client.session.abort({ path: { id: sessionId } });
-  } catch {
-    // best-effort: server may be unreachable or session already terminated
-  }
-}
-
-// Persisted task-to-session mapping for crash recovery
-import { loadTaskIdMap, saveTaskIdMap, validateTaskId } from "./shared/session-lifecycle.js";
-
-const taskIdToSessionId: Map<string, string> = new Map();
+// Durable retained-task ledger for crash recovery (Task 06)
+import { loadTaskLedger, saveTaskLedger } from "./shared/session-lifecycle.js";
 
 function initPluginState(directory: string, options: any): PluginState {
   // Load dedicated config file if it exists
@@ -140,7 +113,19 @@ function initPluginState(directory: string, options: any): PluginState {
   const fileConfig = configPath ? parseDynamicTaskJsonc(configPath) : null;
 
   const config = normalizeDynamicTaskConfig(options, fileConfig as any);
-  const store = createStateStore();
+  const store = createStateStore({
+    retainedTaskTtlMs: config.retainedTaskTtlMs,
+    retainedTaskMaxEntries: config.retainedTaskMaxEntries,
+  });
+
+  // Ledger sync: every retained mutation persists (never throws — the
+  // store swallows callback errors so persistence can't break control flow).
+  store.onRetainedChange = () => {
+    saveTaskLedger(store.retainedTasks);
+  };
+
+  // Crash recovery: rehydrate retained tasks from the ledger.
+  restoreRetained(store, loadTaskLedger());
 
   return {
     store,
@@ -167,6 +152,36 @@ export function resolveParentSessionId(ctx: any): string | null {
   }
 
   return null;
+}
+
+export // Shared arg guard: every session-scoped tool rejects empty ids identically.
+function missingSessionId(args: any): string | null {
+  if (!args.session_id) return "ERROR: session_id is required.";
+  return null;
+}
+
+// Single shape for unknown sessions across all tools.
+function unknownSessionResult(sessionId: string): string {
+  return JSON.stringify({ status: "unknown", session_id: sessionId });
+}
+
+// Shared shell for session-scoped read tools: identical arg schema and
+// empty-id guard. Handlers receive raw args and focus on their read.
+function sessionReadTool(
+  description: string,
+  handler: (args: any) => Promise<string> | string,
+) {
+  return tool({
+    description,
+    args: {
+      session_id: tool.schema.string(),
+    },
+    async execute(args: any) {
+      const missing = missingSessionId(args);
+      if (missing) return missing;
+      return handler(args);
+    },
+  });
 }
 
 export function validateSessionResult(result: any): string | null {
@@ -460,14 +475,6 @@ export default async function dynamicTaskPlugin(
   const state = pluginState;
   const { config, store } = state;
 
-  // Load persisted task ID mappings
-  try {
-    const taskMap = loadTaskIdMap();
-    for (const [k, v] of taskMap) {
-      taskIdToSessionId.set(k, v);
-    }
-  } catch { /* ignore */ }
-
   await client.app.log({
     body: {
       service: "dynamic-task",
@@ -633,9 +640,7 @@ export default async function dynamicTaskPlugin(
             }
           }
 
-          // Prune retained tasks before any operation
-          pruneRetainedTasks(store, config);
-
+          // Pruning is internal to the store (bounds set at init).
           const agents = await fetchAgents(client);
 
           // Admission gate: resolve + policy-check before session.create.
@@ -706,12 +711,6 @@ export default async function dynamicTaskPlugin(
               requestedModel: args.model || undefined,
               dependsOn: args.depends_on,
             }, config);
-
-            // Persist taskId mapping
-            if (args.description && validateTaskId(args.description)) {
-              taskIdToSessionId.set(childSessionId, args.description);
-              saveTaskIdMap(taskIdToSessionId);
-            }
 
             if (shouldAwait) {
               // Single bound (Task 02): one timer owns abort + transition + race.
@@ -820,7 +819,7 @@ export default async function dynamicTaskPlugin(
             return `ERROR: Prompt too long (${args.prompt.length} chars).`;
           }
 
-          pruneRetainedTasks(store, config);
+          // Pruning is internal to the store (bounds set at init).
 
           // Check if this is a retained task — spawn new session
           const retained = store.retainedTasks.get(args.session_id);
@@ -956,21 +955,14 @@ export default async function dynamicTaskPlugin(
               timeoutNotified: false,
             });
           } catch {
-            return JSON.stringify({ status: "unknown", session_id: args.session_id });
+            return unknownSessionResult(args.session_id);
           }
         },
       }),
 
-      task_result: tool({
-        description: "Fetch latest known child session result/status without sending a new prompt.",
-        args: {
-          session_id: tool.schema.string(),
-        },
-        async execute(args: any) {
-          if (!args.session_id) {
-            return "ERROR: session_id is required.";
-          }
-
+      task_result: sessionReadTool(
+        "Fetch latest known child session result/status without sending a new prompt.",
+        async (args: any) => {
           // Search active first, then retained
           const task = findTask(store, args.session_id);
           if (task) {
@@ -1029,7 +1021,7 @@ export default async function dynamicTaskPlugin(
           } catch (err: any) {
             // 404 or network error → return unknown state
             if (err?.status === 404 || err?.message?.includes("not found")) {
-              return JSON.stringify({ status: "unknown", session_id: args.session_id });
+              return unknownSessionResult(args.session_id);
             }
             return JSON.stringify({
               status: "error",
@@ -1039,7 +1031,7 @@ export default async function dynamicTaskPlugin(
             });
           }
         },
-      }),
+      ),
 
       task_interrupt: tool({
         description: "Interrupt/abort a running child session.",
@@ -1047,9 +1039,8 @@ export default async function dynamicTaskPlugin(
           session_id: tool.schema.string(),
         },
         async execute(args: any) {
-          if (!args.session_id) {
-            return "ERROR: session_id is required.";
-          }
+          const missing = missingSessionId(args);
+          if (missing) return missing;
 
           try {
             await client.session.abort({ path: { id: args.session_id } });
@@ -1075,6 +1066,38 @@ export default async function dynamicTaskPlugin(
           }
         },
       }),
+
+      task_list: tool({
+        description: "List all tracked background tasks with their lifecycle states.",
+        args: {},
+        async execute() {
+          const { active, retained } = listTasks(store);
+          const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; isBackground: boolean; startedAt: number }) => ({
+            childSessionId: t.childSessionId,
+            agentName: t.agentName,
+            description: t.description,
+            state: t.state,
+            isBackground: t.isBackground,
+            startedAt: t.startedAt,
+          });
+          return formatTaskListSummary({
+            active: active.map(toRow),
+            retained: retained.map(toRow),
+            maxConcurrent: config.maxConcurrent,
+          });
+        },
+      }),
+
+      task_status: sessionReadTool(
+        "Detailed tracked state for one task without calling the API.",
+        async (args: any) => {
+          const task = findTask(store, args.session_id);
+          if (!task) {
+            return unknownSessionResult(args.session_id);
+          }
+          return formatTaskStatusDetail(task, getLatestNotification(args.session_id) ?? null);
+        },
+      ),
     },
   };
 }

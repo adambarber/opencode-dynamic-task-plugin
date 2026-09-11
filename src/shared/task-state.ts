@@ -68,19 +68,31 @@ const VALID_TRANSITIONS: Record<TaskLifecycleState, TaskLifecycleState[]> = {
   "interrupted": [],         // terminal
 };
 
-// ─── TaskStore ─────────────────────────────────────────────────────
+// ─── RetainedBounds + TaskStore ─────────────────────────────────────
+// Bounds drive internal pruning; onRetainedChange fires after every
+// retained mutation so the ledger (Task 06) stays current without any
+// caller remembering to persist. Both optional: bare stores behave exactly
+// as before (no pruning, no callback).
+
+export interface RetainedBounds {
+  retainedTaskTtlMs: number;
+  retainedTaskMaxEntries: number;
+}
 
 export interface TaskStore {
   activeTasks: Map<string, ActiveTaskState>;
   retainedTasks: Map<string, RetainedTaskState>;
+  bounds?: RetainedBounds;
+  onRetainedChange?: () => void;
 }
 
 // ─── createStateStore ──────────────────────────────────────────────
 
-export function createStateStore(): TaskStore {
+export function createStateStore(bounds?: RetainedBounds): TaskStore {
   return {
     activeTasks: new Map(),
     retainedTasks: new Map(),
+    ...(bounds ? { bounds } : {}),
   };
 }
 
@@ -132,6 +144,7 @@ export function registerActiveTask(
     dependsOn: params.dependsOn,
   };
 
+  pruneIfBounded(store);
   store.activeTasks.set(params.childSessionId, task);
   return task;
 }
@@ -183,6 +196,8 @@ export function transitionState(
     };
     store.activeTasks.delete(childSessionId);
     store.retainedTasks.set(childSessionId, retained);
+    pruneIfBounded(store);
+    emitRetainedChange(store);
     return retained;
   }
 
@@ -270,8 +285,10 @@ export function forceRetain(
   if (patch.abortError !== undefined) {
     retained.abortError = patch.abortError;
   }
+  pruneIfBounded(store);
   store.activeTasks.delete(childSessionId);
   store.retainedTasks.set(childSessionId, retained);
+  emitRetainedChange(store);
   return retained;
 }
 
@@ -316,14 +333,40 @@ export function noteLateOutcome(
     );
   }
   retained.state = toState;
+  emitRetainedChange(store);
   return retained;
+}
+
+// ─── restoreRetained ───────────────────────────────────────────────
+// Crash-recovery bulk load: inserts ledger entries the store does not
+// already track. Live state always wins over the ledger; unknown ids with
+// valid records are retained, then pruned to bounds. Returns the count
+// restored. Entries are pre-validated by loadTaskLedger.
+
+export function restoreRetained(
+  store: TaskStore,
+  entries: Iterable<readonly [string, RetainedTaskState]>,
+): number {
+  let restored = 0;
+  for (const [id, task] of entries) {
+    if (store.activeTasks.has(id) || store.retainedTasks.has(id)) continue;
+    store.retainedTasks.set(id, task);
+    restored++;
+  }
+  if (restored > 0) {
+    pruneIfBounded(store);
+    emitRetainedChange(store);
+  }
+  return restored;
 }
 
 // ─── discardRetained ───────────────────────────────────────────────
 // Removes a retained entry (e.g. on interrupt). Returns true when present.
 
 export function discardRetained(store: TaskStore, childSessionId: string): boolean {
-  return store.retainedTasks.delete(childSessionId);
+  const removed = store.retainedTasks.delete(childSessionId);
+  if (removed) emitRetainedChange(store);
+  return removed;
 }
 
 // ─── findTask ──────────────────────────────────────────────────────
@@ -333,6 +376,8 @@ export function findTask(
   store: TaskStore,
   childSessionId: string,
 ): ActiveTaskState | RetainedTaskState | null {
+  // Read hygiene: evictions on read keep the ledger honest for recovery.
+  if (pruneIfBounded(store) > 0) emitRetainedChange(store);
   const active = store.activeTasks.get(childSessionId);
   if (active) return active;
   const retained = store.retainedTasks.get(childSessionId);
@@ -340,31 +385,48 @@ export function findTask(
   return null;
 }
 
+// ─── listTasks ─────────────────────────────────────────────────────
+// Read-only fleet snapshot for task_list. Prunes to bounds first so the
+// view matches what recovery would see. Returns live references — views
+// format immediately and never mutate.
+
+export function listTasks(store: TaskStore): {
+  active: ActiveTaskState[];
+  retained: RetainedTaskState[];
+} {
+  if (pruneIfBounded(store) > 0) emitRetainedChange(store);
+  return {
+    active: [...store.activeTasks.values()],
+    retained: [...store.retainedTasks.values()],
+  };
+}
+
 // ─── pruneRetainedTasks ────────────────────────────────────────────
 // Lazy pruning: removes expired retained tasks by TTL and max entries.
-// Call before any dynamic_task/task_continue/task_result read.
-// Returns number of pruned entries.
+// Runs internally on every store op when bounds are set; direct calls
+// remain supported (existing callers pass full config — structurally
+// compatible with RetainedBounds). Returns number of pruned entries.
 
 export function pruneRetainedTasks(
   store: TaskStore,
-  config: DynamicTaskConfig,
+  limits: RetainedBounds,
 ): number {
   const now = Date.now();
   let pruned = 0;
 
   // Remove expired by TTL
   for (const [id, entry] of store.retainedTasks) {
-    if (now - entry.retainedAt > config.retainedTaskTtlMs) {
+    if (now - entry.retainedAt > limits.retainedTaskTtlMs) {
       store.retainedTasks.delete(id);
       pruned++;
     }
   }
 
   // Remove oldest entries if over max
-  if (store.retainedTasks.size > config.retainedTaskMaxEntries) {
+  if (store.retainedTasks.size > limits.retainedTaskMaxEntries) {
     const entries = [...store.retainedTasks.entries()]
       .sort((a, b) => a[1].retainedAt - b[1].retainedAt); // oldest first
-    const toRemove = store.retainedTasks.size - config.retainedTaskMaxEntries;
+    const toRemove = store.retainedTasks.size - limits.retainedTaskMaxEntries;
     for (let i = 0; i < toRemove && i < entries.length; i++) {
       store.retainedTasks.delete(entries[i][0]);
       pruned++;
@@ -372,4 +434,21 @@ export function pruneRetainedTasks(
   }
 
   return pruned;
+}
+
+// ─── pruneIfBounded + emitRetainedChange ───────────────────────────
+// Internal plumbing: prune on bounded stores; notify (never throwing, so
+// persistence can never break control flow) after retained mutations.
+
+function pruneIfBounded(store: TaskStore): number {
+  if (!store.bounds) return 0;
+  return pruneRetainedTasks(store, store.bounds);
+}
+
+function emitRetainedChange(store: TaskStore): void {
+  try {
+    store.onRetainedChange?.();
+  } catch {
+    // Persistence must never break control flow.
+  }
 }

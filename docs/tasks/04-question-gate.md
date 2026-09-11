@@ -15,7 +15,7 @@
 - **Funnel:** one `resolveQuestionSession(event, store)` gate — resolve first (event `session_id`/`task_id` properties, then question→session map, then active-task scan by owning session), then validate (active vs retained vs unknown) in the same place. All question traffic passes through it.
 - **Enforcement:** build invariant — no direct `client.question.reply/reject` outside the gate module; `questionIdToSessionId` owned by the gate, never touched by the event handler directly.
 - **Contract test:** real question-event shapes (primary `id`, legacy `request_id`/`task_id`/`requestID` per `src/shared/question-handling.ts:28-36`), including the unmatched case. Pins the mapping priority chain, not a mock of it.
-- **Degradation (explicit):** active task + answers present → reply first answer (recorded); active + no answers → reject with `task_continue` guidance; retained/timed-out → reject with timeout guidance (keep the M3 behavior at `src/index.ts:607-610`); unknown → reject-with-guidance rather than silent block, plus metric/log. A question never leaves a child hanging without an observable decision.
+- **Degradation (explicit):** active task + answers present → reply first answer (recorded); active + no answers → reject with `task_continue` guidance; retained/timed-out → reject with timeout guidance (kept M3 behavior); unattributable (no id, unknown id, ambiguous — including the operator's own questions) → **left untouched**, log only. Rationale (decided in implementation): auto-settling a question that cannot be positively attributed risks hijacking the human's own flow — a hung child is visible and recoverable, a corrupted operator intent is not. Fail-closed on ambiguity is the deliberate direction.
 
 ## Scope
 
@@ -24,3 +24,9 @@ Implement the resolver, wire the existing `replyToQuestion`/`rejectQuestion` hel
 ## Litmus
 
 A newcomer cannot answer or reject a question except through the gate — the build fails — and every question event produces exactly one recorded decision.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: `resolveQuestionSession`/`decideQuestion` unit-pinned (priority chain, store-validated ownership, no-guess rule, all three degradation kinds); integration through the real event handler — auto-answer, guidance rejection, retained rejection, reply-failure fallback, and foreign-question untouchedness; linkage map moved into the gate with its own build invariant; full suite 251/251, coverage gate green, 0 clones.
+
+Decisions: linkage state owned by the gate module (`remember`/`forget`); session/task id candidates cover both casings and nestings; reply-failure still falls back to rejection (defense in depth); `question-auto-answered`/`rejected` debug records added so every settlement is observable.

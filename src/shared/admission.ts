@@ -13,6 +13,7 @@ import {
 } from "./task-policy.js";
 import {
   registerActiveTask,
+  findTask,
   type ActiveTaskState,
   type TaskStore,
 } from "./task-state.js";
@@ -65,6 +66,49 @@ export function resolveAdmission(
   }
 
   return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
+}
+
+// ─── resolveDependencies ───────────────────────────────────────────
+// Readiness gate: every dependency must have completed — straightforwardly
+// or after an earlier timeout. Running, failed, timed-out, and interrupted
+// deps block with the pending set. Unknown ids pass: they may have
+// completed and aged out of the bounded retained history, and blocking
+// forever on garbage-collected history would deadlock planners.
+
+const SATISFIED_DEPENDENCY_STATES: readonly string[] = [
+  "completed",
+  "completed_after_timeout",
+];
+
+export function resolveDependencies(
+  store: TaskStore,
+  dependsOn: string[] | undefined,
+): { ok: true } | { ok: false; pending: string[] } {
+  if (!dependsOn || dependsOn.length === 0) return { ok: true };
+  const pending = dependsOn.filter((id) => {
+    const task = findTask(store, id);
+    if (!task) return false;
+    return !SATISFIED_DEPENDENCY_STATES.includes(task.state);
+  });
+  return pending.length === 0 ? { ok: true } : { ok: false, pending };
+}
+
+// ─── formatAdmissionError ──────────────────────────────────────────
+// Single rendering for every refusal (Tenet 1 for error text): the gate
+// decides, this formats, callers return verbatim.
+
+export function formatAdmissionError(
+  reason: AdmissionDeniedReason,
+  available: string,
+  requestedName: unknown,
+): string {
+  if (reason.kind === "missing-name") {
+    return `ERROR: No subagent_type provided.\n\nAvailable: ${available}`;
+  }
+  if (reason.kind === "unknown-agent") {
+    return `ERROR: Agent "${String(requestedName)}" not found.\n\nAvailable: ${available}`;
+  }
+  return `ERROR: ${reason.message}`;
 }
 
 // ─── registerAdmittedTask ──────────────────────────────────────────

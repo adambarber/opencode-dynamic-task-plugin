@@ -963,6 +963,8 @@ import {
 import {
   resolveAdmission,
   registerAdmittedTask,
+  resolveDependencies,
+  formatAdmissionError,
 } from "../../dist/shared/admission.js";
 import {
   replyToQuestion,
@@ -1214,6 +1216,83 @@ describe("admission gate: resolveAdmission", () => {
     const result = resolveAdmission(agents, "explore", ["explore"], config);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.reason.kind, "lineage");
+  });
+});
+
+describe("admission gate: allowSameAgentRecursion", () => {
+  const strict = normalizeDynamicTaskConfig({});
+  const lenient = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true });
+
+  it("blocks same-agent recursion by default", () => {
+    const result = resolveAdmission([{ name: "explore" }], "explore", ["explore"], strict);
+    assert.strictEqual(result.ok, false);
+  });
+
+  it("honors the recursion flag", () => {
+    const result = resolveAdmission([{ name: "explore" }], "explore", ["explore"], lenient);
+    assert.strictEqual(result.ok, true);
+  });
+
+  it("still enforces depth when recursion is allowed", () => {
+    const shallow = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true, maxDepth: 1 });
+    const result = resolveAdmission([{ name: "explore" }], "explore", ["a", "b"], shallow);
+    assert.strictEqual(result.ok, false);
+  });
+});
+
+describe("admission gate: resolveDependencies", () => {
+  const config = normalizeDynamicTaskConfig({});
+
+  function storeWith(childSessionId, state) {
+    const store = createStateStore();
+    registerActiveTask(store, {
+      childSessionId, parentSessionId: "p", agentName: "a",
+      description: "d", lineage: [], isBackground: true,
+    }, config);
+    if (state !== "active") transitionState(store, childSessionId, state, config);
+    return store;
+  }
+
+  it("admits with no dependencies", () => {
+    assert.deepStrictEqual(
+      resolveDependencies(createStateStore(), undefined),
+      { ok: true }
+    );
+  });
+
+  it("admits when deps completed (including after timeout)", () => {
+    const store = storeWith("s1", "completed");
+    const s2 = createStateStore();
+    for (const [id, task] of store.retainedTasks) s2.retainedTasks.set(id, task);
+    assert.deepStrictEqual(resolveDependencies(s2, ["s1"]), { ok: true });
+  });
+
+  it("refuses with the pending set for running or failed deps", () => {
+    const active = storeWith("s1", "active");
+    assert.deepStrictEqual(resolveDependencies(active, ["s1"]), { ok: false, pending: ["s1"] });
+    const failed = storeWith("s2", "error");
+    assert.deepStrictEqual(resolveDependencies(failed, ["s2"]), { ok: false, pending: ["s2"] });
+  });
+
+  it("treats unknown ids as satisfied (aged-out tolerance)", () => {
+    assert.deepStrictEqual(resolveDependencies(createStateStore(), ["ses_gone"]), { ok: true });
+  });
+});
+
+describe("admission gate: formatAdmissionError", () => {
+  it("renders all refusal kinds with remedy", () => {
+    assert.ok(
+      formatAdmissionError({ kind: "missing-name" }, "explore", undefined).includes("No subagent_type")
+    );
+    assert.ok(
+      formatAdmissionError({ kind: "unknown-agent", requested: "nope" }, "explore", "nope").includes('"nope" not found')
+    );
+    assert.ok(
+      formatAdmissionError({ kind: "blocked", message: "blocked msg" }, "explore", "general").includes("blocked msg")
+    );
+    assert.ok(
+      formatAdmissionError({ kind: "lineage", message: "depth msg" }, "explore", "explore").includes("depth msg")
+    );
   });
 });
 

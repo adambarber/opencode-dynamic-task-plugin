@@ -41,6 +41,8 @@ import {
 import {
   resolveAdmission,
   registerAdmittedTask,
+  resolveDependencies,
+  formatAdmissionError,
 } from "./shared/admission.js";
 import {
   invokePrompt,
@@ -648,13 +650,7 @@ export default async function dynamicTaskPlugin(
           const lineage = createDummyLineage(ctx, store);
           const admission = resolveAdmission(agents, args.subagent_type, lineage, config);
           if (!admission.ok) {
-            if (admission.reason.kind === "missing-name") {
-              return `ERROR: No subagent_type provided.\n\nAvailable: ${buildAgentList(agents)}`;
-            }
-            if (admission.reason.kind === "unknown-agent") {
-              return `ERROR: Agent "${args.subagent_type}" not found.\n\nAvailable: ${buildAgentList(agents)}`;
-            }
-            return `ERROR: ${admission.reason.message}`;
+            return formatAdmissionError(admission.reason, buildAgentList(agents), args.subagent_type);
           }
           const agent = admission.agent;
 
@@ -669,6 +665,15 @@ export default async function dynamicTaskPlugin(
           // Resolve config values
           const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
           const shouldAwait = resolveAwaitResponse(args.await_response, config);
+
+          // Dependency readiness (temporal — after all static validation).
+          const readiness = resolveDependencies(store, args.depends_on);
+          if (!readiness.ok) {
+            return [
+              `ERROR: Dependencies pending: ${readiness.pending.join(", ")}.`,
+              "Complete them first (unknown ids are treated as satisfied).",
+            ].join("\n");
+          }
 
           try {
             const sessionBody: any = {

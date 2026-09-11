@@ -90,15 +90,18 @@ export function validateLineage(
     return { ok: false, error: "Invalid child agent name." };
   }
 
-  // Rule 1: Same-agent recursion check (absolute — runs before depth check)
-  for (const ancestor of lineage) {
-    if (isSameAgent(ancestor, childName)) {
-      return {
-        ok: false,
-        error: `Recursive delegation blocked: agent "${childAgent}" ` +
-          `is already present in the task lineage. ` +
-          "Same-agent delegation is not allowed at any depth.",
-      };
+  // Rule 1: Same-agent recursion check (runs before depth check) —
+  // skipped only when the operator explicitly allows re-delegation.
+  if (!config.allowSameAgentRecursion) {
+    for (const ancestor of lineage) {
+      if (isSameAgent(ancestor, childName)) {
+        return {
+          ok: false,
+          error: `Recursive delegation blocked: agent "${childAgent}" ` +
+            `is already present in the task lineage. ` +
+            "Same-agent delegation is not allowed at any depth.",
+        };
+      }
     }
   }
 

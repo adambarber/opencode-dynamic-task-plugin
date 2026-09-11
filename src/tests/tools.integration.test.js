@@ -609,6 +609,43 @@ describe("task fleet views", () => {
   });
 });
 
+describe("admission dependencies", () => {
+  it("refuses until deps complete, admits after", async () => {
+    const h = await setupTools();
+    const outA = await h.tool.dynamic_task.execute(
+      { description: "dep task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const idA = outA.match(/Session: (\S+)/)[1];
+
+    const refused = await h.tool.dynamic_task.execute(
+      { description: "blocked task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: [idA] },
+      { sessionID: "p1" },
+    );
+    assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
+    assert.ok(refused.includes(idA));
+
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: idA, status: "idle" } });
+    const admitted = await h.tool.dynamic_task.execute(
+      { description: "ready task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: [idA] },
+      { sessionID: "p1" },
+    );
+    assert.ok(admitted.includes("in background"), `got: ${admitted}`);
+    await h.tool.task_interrupt.execute({ session_id: idA });
+    await h.tool.task_interrupt.execute({ session_id: admitted.match(/Session: (\S+)/)[1] });
+  });
+
+  it("unknown deps are treated as satisfied", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "lone task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: ["ses_gone"] },
+      { sessionID: "p1" },
+    );
+    assert.ok(out.includes("in background"), `got: ${out}`);
+    await h.tool.task_interrupt.execute({ session_id: out.match(/Session: (\S+)/)[1] });
+  });
+});
+
 describe("timeout behavior modes", () => {
   function recordingDelegatingTimers() {
     const created = [];

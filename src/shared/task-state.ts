@@ -195,6 +195,92 @@ export function transitionState(
   throw new Error(`Unexpected transition state for task "${childSessionId}".`);
 }
 
+// ─── noteTimeoutFired ──────────────────────────────────────────────
+// Marks an active task as timeout-fired (timeoutNotified + completed flags).
+// The task stays active until transitioned — the flags record that the
+// timeout path won the race. Throws if the task is not active.
+
+export function noteTimeoutFired(
+  store: TaskStore,
+  childSessionId: string,
+): ActiveTaskState {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) {
+    throw new Error(`Task "${childSessionId}" is not active.`);
+  }
+  active.timeoutNotified = true;
+  active.completed = true;
+  return active;
+}
+
+// ─── markActiveCompleted ───────────────────────────────────────────
+// Atomically reads and sets the completed flag on an active task.
+// Returns the previous value (true when the timeout path already fired).
+
+export function markActiveCompleted(
+  store: TaskStore,
+  childSessionId: string,
+): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) {
+    throw new Error(`Task "${childSessionId}" is not active.`);
+  }
+  const was = active.completed;
+  active.completed = true;
+  return was;
+}
+
+// ─── forceRetain ───────────────────────────────────────────────────
+// Last-resort move into retained for races where the matrix rejects the
+// transition (e.g. completion lands during the abort await). Bases on
+// whatever is known (active preferred, else retained) and applies the patch.
+
+export function forceRetain(
+  store: TaskStore,
+  childSessionId: string,
+  patch: {
+    state: TaskLifecycleState;
+    timeoutNotified?: boolean;
+    completed?: boolean;
+    abortError?: string;
+  },
+): RetainedTaskState {
+  const base = store.activeTasks.get(childSessionId)
+    ?? store.retainedTasks.get(childSessionId);
+  if (!base) {
+    throw new Error(`Task "${childSessionId}" not found in active or retained tasks.`);
+  }
+  const retained: RetainedTaskState = {
+    childSessionId: base.childSessionId,
+    parentSessionId: base.parentSessionId,
+    agentName: base.agentName,
+    description: base.description,
+    lineage: base.lineage,
+    isBackground: base.isBackground,
+    startedAt: base.startedAt,
+    requestedModel: base.requestedModel,
+    dependsOn: base.dependsOn,
+    previousSessionId: "previousSessionId" in base ? base.previousSessionId : undefined,
+    timeoutNotified: patch.timeoutNotified ?? base.timeoutNotified,
+    completed: patch.completed ?? base.completed,
+    retainedAt: Date.now(),
+    state: patch.state,
+  };
+  if (patch.abortError !== undefined) {
+    retained.abortError = patch.abortError;
+  }
+  store.activeTasks.delete(childSessionId);
+  store.retainedTasks.set(childSessionId, retained);
+  return retained;
+}
+
+// ─── discardRetained ───────────────────────────────────────────────
+// Removes a retained entry (e.g. on interrupt). Returns true when present.
+
+export function discardRetained(store: TaskStore, childSessionId: string): boolean {
+  return store.retainedTasks.delete(childSessionId);
+}
+
 // ─── findTask ──────────────────────────────────────────────────────
 // Looks up a task in active first, then retained. Returns the state or null.
 

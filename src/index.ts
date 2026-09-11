@@ -42,9 +42,11 @@ import {
   transitionState,
   findTask,
   pruneRetainedTasks,
+  noteTimeoutFired,
+  markActiveCompleted,
+  forceRetain,
+  discardRetained,
   type TaskStore,
-  type ActiveTaskState,
-  type RetainedTaskState,
   type TaskLifecycleState,
 } from "./shared/task-state.js";
 
@@ -333,8 +335,7 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
   const task = store.activeTasks.get(childSessionId);
   if (!task || task.completed) return;
 
-  task.timeoutNotified = true;
-  task.completed = true;
+  noteTimeoutFired(store, childSessionId);
 
   const timeoutMessage = formatParentNotification({
     childSessionId: task.childSessionId,
@@ -371,16 +372,13 @@ async function handleTimeout(store: TaskStore, childSessionId: string, client: a
   try {
     transitionState(store, childSessionId, "timed_out_retained", config);
   } catch {
-    // If transition fails (e.g., already terminal), force the move manually
-    store.activeTasks.delete(childSessionId);
-    store.retainedTasks.set(childSessionId, {
-      ...task,
+    // Race: completion landed during the abort await — force the move
+    forceRetain(store, childSessionId, {
       state: "timed_out_retained",
-      retainedAt: Date.now(),
       timeoutNotified: true,
       completed: true,
       abortError,
-    } as RetainedTaskState);
+    });
   }
 
   // Attach abort error to retained entry if applicable
@@ -432,8 +430,7 @@ async function handleChildLifecycleEvent(client: any, event: any): Promise<void>
       }
 
       // If already marked completed (timeout fired first), still report the result
-      const alreadyCompleted = active.completed;
-      active.completed = true;
+      const alreadyCompleted = markActiveCompleted(store, childSessionId);
 
       const status = getEventLifecycleStatus(event);
       let kind: "timeout" | "completed" | "completed_after_timeout" | "error" = "completed";
@@ -1181,10 +1178,7 @@ export default async function dynamicTaskPlugin(
             }
 
             // Clean up from retained tasks if present
-            const retained = store.retainedTasks.get(args.session_id);
-            if (retained) {
-              store.retainedTasks.delete(args.session_id);
-            }
+            discardRetained(store, args.session_id);
 
             return `Session ${args.session_id} interrupted.`;
           } catch (error: any) {

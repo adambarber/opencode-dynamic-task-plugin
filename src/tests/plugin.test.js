@@ -918,6 +918,10 @@ import {
   transitionState,
   findTask,
   pruneRetainedTasks,
+  noteTimeoutFired,
+  markActiveCompleted,
+  forceRetain,
+  discardRetained,
 } from "../../dist/shared/task-state.js";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 
@@ -1055,6 +1059,72 @@ describe("task-state: transitionState", () => {
     assert.throws(() => {
       transitionState(store, "nonexistent", "completed", config);
     }, /not found|unknown/i);
+  });
+});
+
+describe("task-state: flag operations (funnel for Task 01 bypasses)", () => {
+  const config = normalizeDynamicTaskConfig({});
+  let store;
+
+  beforeEach(() => {
+    store = createStateStore();
+    registerActiveTask(store, {
+      childSessionId: "ses_active", parentSessionId: "parent_1",
+      agentName: "reviewer", description: "test", lineage: [], isBackground: true,
+    }, config);
+  });
+
+  it("noteTimeoutFired sets flags and keeps the task active", () => {
+    const task = noteTimeoutFired(store, "ses_active");
+    assert.strictEqual(task.timeoutNotified, true);
+    assert.strictEqual(task.completed, true);
+    assert.strictEqual(store.activeTasks.has("ses_active"), true);
+  });
+
+  it("noteTimeoutFired throws for unknown session", () => {
+    assert.throws(() => noteTimeoutFired(store, "ses_nope"), /not active/);
+  });
+
+  it("markActiveCompleted returns previous value and sets the flag", () => {
+    assert.strictEqual(markActiveCompleted(store, "ses_active"), false);
+    assert.strictEqual(markActiveCompleted(store, "ses_active"), true);
+  });
+
+  it("markActiveCompleted throws for unknown session", () => {
+    assert.throws(() => markActiveCompleted(store, "ses_nope"), /not active/);
+  });
+
+  it("forceRetain moves an active task to retained with the patch", () => {
+    const retained = forceRetain(store, "ses_active", {
+      state: "timed_out_retained",
+      timeoutNotified: true,
+      completed: true,
+    });
+    assert.strictEqual(retained.state, "timed_out_retained");
+    assert.strictEqual(store.activeTasks.has("ses_active"), false);
+    assert.strictEqual(store.retainedTasks.get("ses_active").description, "test");
+  });
+
+  it("forceRetain overwrites an already-retained entry (timeout/completion race)", () => {
+    transitionState(store, "ses_active", "completed", config);
+    const retained = forceRetain(store, "ses_active", {
+      state: "timed_out_retained",
+      timeoutNotified: true,
+      completed: true,
+    });
+    assert.strictEqual(retained.state, "timed_out_retained");
+    assert.strictEqual(retained.completed, true);
+  });
+
+  it("forceRetain throws for unknown session", () => {
+    assert.throws(() => forceRetain(store, "ses_nope", { state: "timed_out_retained" }), /not found/);
+  });
+
+  it("discardRetained removes retained entries and reports presence", () => {
+    transitionState(store, "ses_active", "completed", config);
+    assert.strictEqual(discardRetained(store, "ses_active"), true);
+    assert.strictEqual(store.retainedTasks.has("ses_active"), false);
+    assert.strictEqual(discardRetained(store, "ses_active"), false);
   });
 });
 

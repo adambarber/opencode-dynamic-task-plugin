@@ -742,6 +742,22 @@ export default async function dynamicTaskPlugin(
               invokePrompt(client, childSessionId, childPrompt).catch((error: any) => {
                 const classified = classifyPromptError(error);
                 safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
+                // First-class failure: record and notify now instead of
+                // stalling to timeout. Only the first terminal reporter wins.
+                stealTimeoutHandle(store, childSessionId)?.cancel();
+                let recorded = false;
+                try {
+                  transitionState(store, childSessionId, "error", config);
+                  recorded = true;
+                } catch { /* already settled */ }
+                if (recorded && parentSessionId) {
+                  const parentMessage = formatParentNotification({
+                    childSessionId,
+                    description: args.description || `Task: ${agent.name}`,
+                    timeoutMs: config.defaultTimeoutMs,
+                  }, "error", classified.message);
+                  void notifyParentSession(client, parentSessionId, parentMessage);
+                }
               });
 
               // Fire-and-forget background mode: one bound owns the timeout.

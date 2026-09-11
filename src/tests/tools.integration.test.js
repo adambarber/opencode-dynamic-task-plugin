@@ -397,6 +397,23 @@ describe("task_result and task_interrupt paths", () => {
 });
 
 describe("timeout, question and init guards", () => {
+  it("background prompt failure notifies error promptly", async () => {
+    // Arm the failure BEFORE spawn: the spawn id is deterministic per harness.
+    const hooks = { promptFailIds: new Set(["ses_tools_1"]) };
+    const failing = await setupTools(hooks);
+    const out = await failing.tool.dynamic_task.execute(
+      { description: "doomed task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await sleep(100);
+    const notes = failing.client._state.notifications;
+    assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
+    assert.match(notes[0].message, /ended with an error/i, "error-kind notification");
+    const summary = await failing.tool.task_result.execute({ session_id: childId });
+    assert.ok(summary.includes("error"), `task must be retained as error. got: ${summary}`);
+  });
+
   it("timeout still notifies when abort fails", async () => {
     const h = await setupTools({ abortThrowsOnce: true });
     const out = await h.tool.dynamic_task.execute(

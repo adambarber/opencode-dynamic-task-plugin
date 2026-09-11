@@ -1,69 +1,15 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 
-// Re-implement pure functions here for testing (copied from src/index.ts)
-function buildAgentList(agents) {
-  if (agents.length === 0) return "(none discovered)";
-  return agents.map((a) => a.name).join(", ");
-}
-
-function validateSessionResult(result) {
-  if (!result) return null;
-  if (typeof result.id === "string") return result.id;
-  if (result.body && typeof result.body.id === "string") return result.body.id;
-  if (result.data && typeof result.data.id === "string") return result.data.id;
-  return null;
-}
-
-function extractTextFromParts(parts) {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((p) => p?.type === "text" && typeof p?.text === "string")
-    .map((p) => p.text)
-    .join("\n");
-}
-
-function resolveParentSessionId(ctx) {
-  const candidates = [
-    ctx?.sessionID,
-    ctx?.sessionId,
-    ctx?.session?.id,
-    ctx?.session?.sessionID,
-    ctx?.id,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-async function fetchAgents(client) {
-  const CACHE_TTL = 300000;
-  const now = Date.now();
-  // Simple cache simulation
-  try {
-    const result = await client.app.agents();
-    let agents = [];
-
-    if (Array.isArray(result)) {
-      agents = result;
-    } else if (result && typeof result === "object") {
-      agents = result.agents || result.data || Object.values(result);
-    }
-
-    return agents.filter((a) => {
-      const mode = a.mode || a.type || "all";
-      return mode === "subagent";
-    });
-  } catch (e) {
-    console.warn("Failed to fetch agents:", e.message);
-    return [];
-  }
-}
+// Tenet 12: pin the real production contract via dist/ — never local copies.
+import {
+  buildAgentList,
+  validateSessionResult,
+  extractTextFromParts,
+  resolveParentSessionId,
+  fetchAgents,
+  resetAgentCache,
+} from "../../dist/index.js";
 
 // --- Tests ---
 describe("buildAgentList", () => {
@@ -163,19 +109,32 @@ describe("resolveParentSessionId", () => {
 });
 
 describe("fetchAgents", () => {
-  it("filters only subagents", async () => {
-    const mockClient = {
+  beforeEach(() => {
+    resetAgentCache();
+  });
+
+  function clientWith(agents, log = async () => {}) {
+    return {
       app: {
-        agents: async () => [
-          { name: "explore", mode: "subagent" },
-          { name: "build", mode: "primary" },
-        ],
+        agents: async () => agents,
+        log,
       },
     };
+  }
+
+  it("dispatches subagent and all modes, rejects primary", async () => {
+    const mockClient = clientWith([
+      { name: "explore", mode: "subagent" },
+      { name: "architect", mode: "all" },
+      { name: "unannotated" },
+      { name: "build", mode: "primary" },
+    ]);
 
     const result = await fetchAgents(mockClient);
-    assert.strictEqual(result.length, 1);
-    assert.strictEqual(result[0].name, "explore");
+    assert.deepStrictEqual(
+      result.map((a) => a.name).sort(),
+      ["architect", "explore", "unannotated"]
+    );
   });
 
   it("handles error gracefully", async () => {
@@ -184,6 +143,7 @@ describe("fetchAgents", () => {
         agents: async () => {
           throw new Error("Network error");
         },
+        log: async () => {},
       },
     };
 
@@ -192,16 +152,12 @@ describe("fetchAgents", () => {
   });
 
   it("handles wrapped response (result.data)", async () => {
-    const mockClient = {
-      app: {
-        agents: async () => ({
-          data: [
-            { name: "general", mode: "subagent" },
-            { name: "plan", mode: "primary" },
-          ],
-        }),
-      },
-    };
+    const mockClient = clientWith({
+      data: [
+        { name: "general", mode: "subagent" },
+        { name: "plan", mode: "primary" },
+      ],
+    });
 
     const result = await fetchAgents(mockClient);
     assert.strictEqual(result.length, 1);
@@ -209,16 +165,12 @@ describe("fetchAgents", () => {
   });
 
   it("handles wrapped response (result.agents)", async () => {
-    const mockClient = {
-      app: {
-        agents: async () => ({
-          agents: [
-            { name: "review", mode: "subagent" },
-            { name: "build", mode: "primary" },
-          ],
-        }),
-      },
-    };
+    const mockClient = clientWith({
+      agents: [
+        { name: "review", mode: "subagent" },
+        { name: "build", mode: "primary" },
+      ],
+    });
 
     const result = await fetchAgents(mockClient);
     assert.strictEqual(result.length, 1);

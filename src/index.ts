@@ -131,7 +131,9 @@ function initPluginState(directory: string, options: any): PluginState {
   };
 }
 
-function resolveParentSessionId(ctx: any): string | null {
+// Exported for contract tests (Tenet 12): suites pin these pure helpers via
+// dist/index.js instead of maintaining local copies that drift.
+export function resolveParentSessionId(ctx: any): string | null {
   const candidates = [
     ctx?.sessionID,
     ctx?.sessionId,
@@ -149,7 +151,7 @@ function resolveParentSessionId(ctx: any): string | null {
   return null;
 }
 
-function validateSessionResult(result: any): string | null {
+export function validateSessionResult(result: any): string | null {
   if (!result) return null;
   if (typeof result.id === "string") return result.id;
   if (result.body && typeof result.body.id === "string") return result.body.id;
@@ -157,12 +159,12 @@ function validateSessionResult(result: any): string | null {
   return null;
 }
 
-function buildAgentList(agents: any[]): string {
+export function buildAgentList(agents: any[]): string {
   if (agents.length === 0) return "(none discovered)";
   return agents.map((a: any) => a.name).join(", ");
 }
 
-function extractTextFromParts(parts: any[]): string {
+export function extractTextFromParts(parts: any[]): string {
   if (!Array.isArray(parts)) return "";
   return parts
     .filter((p: any) => p?.type === "text" && typeof p?.text === "string")
@@ -266,7 +268,7 @@ async function getMessageCount(client: any, sessionId: string): Promise<number> 
   }
 }
 
-async function fetchAgents(client: any): Promise<any[]> {
+export async function fetchAgents(client: any): Promise<any[]> {
   const now = Date.now();
   if (now - lastCacheTime < CACHE_TTL && cachedAgents.length > 0) {
     return cachedAgents;
@@ -296,6 +298,12 @@ async function fetchAgents(client: any): Promise<any[]> {
   }
 
   return cachedAgents;
+}
+
+/** Test seam: clears the agent-list cache. Production code never calls this. */
+export function resetAgentCache(): void {
+  cachedAgents = [];
+  lastCacheTime = 0;
 }
 
 function truncateText(text: string, maxChars: number = 1200): string {

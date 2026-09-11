@@ -26,6 +26,10 @@
 2. Archive (not rewrite): move `CONSOLIDATED-PLAN.md`, `re-verify-prompt.md`, `test-results-may-5.md`, `test11052026.md` out of the planning path so no future agent treats them as current. Deletion vs `docs/archive/` is the implementer's call; record it here.
 
 **Decision (Cycle A):** moved to `docs/archive/` — history preserved, planning path clean.
+
+## Status
+
+**Complete** — 2026-09-11. Proof: `safety-invariants` README↔code inventory passes (11/11 suites green); `README.md` tool table matches the four registered tools, `depends_on` marked unenforced, `task_list`/`task_status` carried only as an explicit planned-note pointing at Task 06; four superseded files verified present in `docs/archive/`; full suite 217/217. Item 3 (`.dynamic-task-ids.json` fixture) deferred to Task 06, which owns the ledger format.
 3. Delete or quarantine `.dynamic-task-ids.json` fixture content; Task 06 owns the real format.
 
 ## Litmus

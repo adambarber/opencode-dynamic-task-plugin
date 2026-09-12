@@ -6,7 +6,6 @@ import { tool } from "@opencode-ai/plugin";
 import type { PluginInput, PluginOptions, ToolContext } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "./shared/client.js";
 import {
-  normalizeStatus,
   getSessionIdFromEvent,
   getEventLifecycleStatus,
   isTerminalSessionEvent,
@@ -14,6 +13,9 @@ import {
   eventField,
   eventString,
   errorMessage,
+  resolveParentSessionId,
+  validateSessionResult,
+  type SessionContext,
 } from "./shared/session-lifecycle.js";
 import {
   buildBackgroundPrompt,
@@ -58,7 +60,7 @@ import {
   extractMessages,
   getLatestAssistantText,
   hydrateLatestOutcome,
-  messageErrorDetail,
+  extractSessionStatus,
   parseModelOverride,
 } from "./shared/prompt.js";
 import {
@@ -154,37 +156,9 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
   };
 }
 
-// Session identity with legacy tolerance (Task 08): the 1.18 contract
-// carries sessionID, but older shapes used sibling keys. The required
-// sessionID stays required; legacy keys are optional maybes — runtime
-// behavior (first non-empty wins) is unchanged, only the type is honest.
-export interface SessionContext extends ToolContext {
-  sessionId?: unknown;
-  session?: { id?: unknown; sessionID?: unknown } | null;
-  id?: unknown;
-}
-
-// Exported for contract tests (Tenet 12): suites pin these pure helpers via
-// dist/index.js instead of maintaining local copies that drift.
-export function resolveParentSessionId(ctx: SessionContext): string | null {
-  const candidates = [
-    ctx?.sessionID,
-    ctx?.sessionId,
-    ctx?.session?.id,
-    ctx?.session?.sessionID,
-    ctx?.id,
-  ];
-
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
-    }
-  }
-
-  return null;
-}
-
-export // Shared arg guard: every session-scoped tool rejects empty ids identically.
+// Shared arg guard: every session-scoped tool rejects empty ids identically.
+// (Module-private: the host invokes every entry export as a candidate plugin
+// function, so only the default export is public.)
 function missingSessionId(args: unknown): string | null {
   if (!isEventRecord(args) || !args.session_id) return "ERROR: session_id is required.";
   return null;
@@ -233,16 +207,6 @@ function sessionReadTool(
   });
 }
 
-export function validateSessionResult(result: unknown): string | null {
-  const direct = eventField(result, "id");
-  if (typeof direct === "string") return direct;
-  const bodyId = eventField(result, "body", "id");
-  if (typeof bodyId === "string") return bodyId;
-  const dataId = eventField(result, "data", "id");
-  if (typeof dataId === "string") return dataId;
-  return null;
-}
-
 export function buildAgentList(agents: unknown): string {
   // Total on malformed input: the host may invoke named exports outside the
   // default-export lifecycle (observed: called with a non-array while the
@@ -254,39 +218,6 @@ export function buildAgentList(agents: unknown): string {
     .map((a) => a.name);
   if (names.length === 0) return "(none discovered)";
   return names.join(", ");
-}
-
-export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
-  const candidates = [
-    eventField(sessionInfo, "status"),
-    eventField(sessionInfo, "body", "status"),
-    eventField(sessionInfo, "data", "status"),
-    eventField(sessionInfo, "data", "info", "status"),
-    eventField(sessionInfo, "info", "status"),
-    eventField(sessionInfo, "body", "info", "status"),
-    eventField(sessionInfo, "data", "state"),
-    eventField(sessionInfo, "state"),
-  ];
-  for (const c of candidates) {
-    const normalized = normalizeStatus(c);
-    if (normalized) return normalized;
-  }
-
-  // client.session.get() does not return a status field — infer from messages
-  const list = Array.isArray(messages) ? messages : [];
-  if (list.length >= 2) {
-    const latest = list[list.length - 1];
-    // A failed turn keeps role "assistant" with the cause on info.error —
-    // check it before trusting the role (same signal the notifier uses).
-    if (messageErrorDetail(latest)) return "error";
-    const info = isEventRecord(latest) ? latest.info : undefined;
-    const role = (isEventRecord(info) ? info.role : undefined) ?? (isEventRecord(latest) ? latest.role : undefined);
-    if (role === "assistant") return "completed";
-    if (role === "error") return "error";
-  }
-  if (list.length > 0) return "busy";
-
-  return "unknown";
 }
 
 async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {

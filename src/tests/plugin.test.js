@@ -4,12 +4,13 @@ import assert from "node:assert";
 // Tenet 12: pin the real production contract via dist/ — never local copies.
 import {
   buildAgentList,
-  validateSessionResult,
-  resolveParentSessionId,
   fetchAgents,
   resetAgentCache,
-  extractSessionStatus,
 } from "../../dist/index.js";
+import {
+  validateSessionResult,
+  resolveParentSessionId,
+} from "../../dist/shared/session-lifecycle.js";
 import * as pluginEntry from "../../dist/index.js";
 import {
   invokePrompt,
@@ -23,6 +24,7 @@ import {
   isMessage,
   messageRoleOf,
   messageErrorDetail,
+  extractSessionStatus,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -238,7 +240,8 @@ describe("fetchAgents", () => {
 // (observed during boot: buildAgentList with a non-array, fetchAgents with
 // an unusable client) and any throw fails the whole plugin load. This
 // invariant pins totality for every named function export so the next probe
-// victim is caught here, not in a field log.
+// victim is caught here, not in a field log. (Commit 2 removes the exports
+// entirely and tightens this to only-default.)
 describe("plugin entry: named exports are total on host probe input", () => {
   it("no named function export throws on undefined", async () => {
     resetAgentCache();

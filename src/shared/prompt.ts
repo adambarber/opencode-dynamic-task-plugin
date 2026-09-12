@@ -6,7 +6,7 @@
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
 import type { OpenCodeClient } from "./client.js";
-import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
+import { eventField, isEventRecord, errorMessage, normalizeStatus } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
@@ -262,4 +262,43 @@ export async function hydrateLatestOutcome(
   } catch {
     return { text: "", errorDetail: "" };
   }
+}
+
+// ─── extractSessionStatus ──────────────────────────────────────────
+// client.session.get() has no status field — infer liveness from the
+// session info, else from the message stream. A failed turn keeps role
+// "assistant" with the cause on info.error, so the error check precedes
+// the role read (same signal the notifier uses). Total on unknown input:
+// the host invokes entry-adjacent readers outside the plugin lifecycle.
+export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
+  const candidates = [
+    eventField(sessionInfo, "status"),
+    eventField(sessionInfo, "body", "status"),
+    eventField(sessionInfo, "data", "status"),
+    eventField(sessionInfo, "data", "info", "status"),
+    eventField(sessionInfo, "info", "status"),
+    eventField(sessionInfo, "body", "info", "status"),
+    eventField(sessionInfo, "data", "state"),
+    eventField(sessionInfo, "state"),
+  ];
+  for (const c of candidates) {
+    const normalized = normalizeStatus(c);
+    if (normalized) return normalized;
+  }
+
+  // client.session.get() does not return a status field — infer from messages
+  const list = Array.isArray(messages) ? messages : [];
+  if (list.length >= 2) {
+    const latest = list[list.length - 1];
+    // A failed turn keeps role "assistant" with the cause on info.error —
+    // check it before trusting the role (same signal the notifier uses).
+    if (messageErrorDetail(latest)) return "error";
+    const info = isEventRecord(latest) ? latest.info : undefined;
+    const role = (isEventRecord(info) ? info.role : undefined) ?? (isEventRecord(latest) ? latest.role : undefined);
+    if (role === "assistant") return "completed";
+    if (role === "error") return "error";
+  }
+  if (list.length > 0) return "busy";
+
+  return "unknown";
 }

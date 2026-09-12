@@ -1,3 +1,5 @@
+import type { ToolContext } from "@opencode-ai/plugin";
+
 // ─── unknown-event field access ────────────────────────────────────
 // Events arrive untyped (SDK union members plus sync envelopes and the
 // question API). These read them without casts: non-records yield
@@ -206,4 +208,47 @@ export function saveTaskLedger(map: Map<string, RetainedTaskState>, filePath: st
   const tmp = `${filePath}.tmp`;
   writeFileSync(tmp, JSON.stringify({ version: TASK_LEDGER_VERSION, tasks }, null, 2));
   renameSync(tmp, filePath);
+}
+
+// ─── session identity + create-result readers ──────────────────────
+// The host invokes every entry-module export as a candidate plugin
+// function, so these live here (total on unknown input) instead of on the
+// entry: a throw in any of them fails the entire plugin boot.
+
+// Session identity with legacy tolerance (Task 08): the 1.18 contract
+// carries sessionID, but older shapes used sibling keys. The required
+// sessionID stays required; legacy keys are optional maybes — runtime
+// behavior (first non-empty wins) is unchanged, only the type is honest.
+export interface SessionContext extends ToolContext {
+  sessionId?: unknown;
+  session?: { id?: unknown; sessionID?: unknown } | null;
+  id?: unknown;
+}
+
+export function resolveParentSessionId(ctx: SessionContext): string | null {
+  const candidates = [
+    ctx?.sessionID,
+    ctx?.sessionId,
+    ctx?.session?.id,
+    ctx?.session?.sessionID,
+    ctx?.id,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+export function validateSessionResult(result: unknown): string | null {
+  const direct = eventField(result, "id");
+  if (typeof direct === "string") return direct;
+  const bodyId = eventField(result, "body", "id");
+  if (typeof bodyId === "string") return bodyId;
+  const dataId = eventField(result, "data", "id");
+  if (typeof dataId === "string") return dataId;
+  return null;
 }

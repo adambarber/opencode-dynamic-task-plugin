@@ -6,10 +6,13 @@
 // can bypass it.
 
 import type { DynamicTaskConfig } from "./config.js";
+import type { OpenCodeClient } from "./client.js";
+import { safeLog } from "./notify.js";
 import {
   validateAgent,
   validateLineage,
   buildTaskLineage,
+  isDispatchableAgent,
 } from "./task-policy.js";
 import {
   registerActiveTask,
@@ -165,4 +168,60 @@ export function registerAdmittedTask(
   config: DynamicTaskConfig,
 ): ActiveTaskState {
   return registerActiveTask(store, params, config);
+}
+
+// ─── agent discovery ───────────────────────────────────────────────
+// Server agent listing with caching lives here (not on the plugin entry):
+// the host invokes every entry export as a candidate plugin function, so
+// entry-adjacent helpers must be total — and agent shape is this module's
+// domain. All three functions degrade instead of throwing on probe input.
+
+let cachedAgents: AgentRecord[] = [];
+let lastCacheTime = 0;
+
+const CACHE_TTL = 300000;
+
+export function buildAgentList(agents: unknown): string {
+  // Total on malformed input: the host may invoke named exports outside the
+  // default-export lifecycle (observed: called with a non-array while the
+  // plugin entry never ran), and a throw here fails the entire plugin boot.
+  // Never throw; degrade to the empty-list marker.
+  if (!Array.isArray(agents)) return "(none discovered)";
+  const names = agents.filter(isAgentRecord).map((a) => a.name);
+  if (names.length === 0) return "(none discovered)";
+  return names.join(", ");
+}
+
+export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]> {
+  const now = Date.now();
+  if (now - lastCacheTime < CACHE_TTL && cachedAgents.length > 0) {
+    return cachedAgents;
+  }
+
+  // One immediate retry: setup races and transient blips often clear on
+  // re-dial; persistent failure keeps the warn-and-stale behavior below.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+       const result: unknown = await client.app.agents();
+       cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
+
+       lastCacheTime = now;
+       break;
+      } catch (error: unknown) {
+        if (attempt === 1 && error instanceof Error) {
+          // safeLog, not a raw app.log: the client itself may be unusable
+          // (host probes entry exports outside the plugin lifecycle) and a
+          // throw here fails the entire plugin boot.
+          await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
+        }
+      }
+  }
+
+  return cachedAgents;
+}
+
+/** Test seam: clears the agent-list cache. Production code never calls this. */
+export function resetAgentCache(): void {
+  cachedAgents = [];
+  lastCacheTime = 0;
 }

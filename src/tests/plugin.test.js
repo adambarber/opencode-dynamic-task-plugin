@@ -6,7 +6,7 @@ import {
   buildAgentList,
   fetchAgents,
   resetAgentCache,
-} from "../../dist/index.js";
+} from "../../dist/shared/admission.js";
 import {
   validateSessionResult,
   resolveParentSessionId,
@@ -236,26 +236,16 @@ describe("fetchAgents", () => {
   });
 });
 
-// The host invokes the entry's named exports outside the plugin lifecycle
-// (observed during boot: buildAgentList with a non-array, fetchAgents with
-// an unusable client) and any throw fails the whole plugin load. This
-// invariant pins totality for every named function export so the next probe
-// victim is caught here, not in a field log. (Commit 2 removes the exports
-// entirely and tightens this to only-default.)
-describe("plugin entry: named exports are total on host probe input", () => {
-  it("no named function export throws on undefined", async () => {
-    resetAgentCache();
-    const failures = [];
-    for (const [name, value] of Object.entries(pluginEntry)) {
-      if (name === "default" || typeof value !== "function") continue;
-      try {
-        await value(undefined);
-      } catch (error) {
-        failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }
-    resetAgentCache();
-    assert.deepStrictEqual(failures, []);
+// The host invokes every entry-module export as a candidate plugin
+// function, so the entry exposes exactly one: the default plugin function.
+// Domain readers live in shared modules (this test failed the boot before
+// the move — probe calls against entry exports failed the plugin load).
+describe("plugin entry: exposes only the default plugin function", () => {
+  it("has no named function exports for the host to probe", () => {
+    const named = Object.entries(pluginEntry).filter(
+      ([name, value]) => name !== "default" && typeof value === "function",
+    );
+    assert.deepStrictEqual(named.map(([name]) => name), []);
   });
 });
 

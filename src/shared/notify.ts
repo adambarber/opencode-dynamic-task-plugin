@@ -102,3 +102,19 @@ export async function notifyParent(
   while (ledger.length > MAX_NOTIFICATION_RECORDS) ledger.shift();
   return record;
 }
+
+// ─── safeLog ───────────────────────────────────────────────────────
+// Best-effort client log that never throws — prevents secondary failures
+// in error paths (including host probes of exported functions outside the
+// plugin lifecycle, where the client itself may be unusable).
+type LogLevel = "debug" | "error" | "info" | "warn";
+
+export async function safeLog(client: OpenCodeClient, level: LogLevel, message: string): Promise<void> {
+  try {
+    await client.app.log({
+      body: { service: "dynamic-task", level, message },
+    });
+  } catch {
+    // best-effort: logging must never break control flow
+  }
+}

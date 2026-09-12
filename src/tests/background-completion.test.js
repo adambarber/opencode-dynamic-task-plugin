@@ -11,7 +11,7 @@ import assert from "node:assert";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { resetAgentCache } from "../../dist/index.js";
+import { resetAgentCache } from "../../dist/shared/admission.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

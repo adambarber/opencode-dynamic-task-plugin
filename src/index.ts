@@ -43,15 +43,14 @@ import {
 } from "./shared/config.js";
 import {
   resolveAwaitResponse,
-  isDispatchableAgent,
 } from "./shared/task-policy.js";
 import {
   resolveAdmission,
   registerAdmittedTask,
   resolveDependencies,
   formatAdmissionError,
-  parseAgentList,
-  type AgentRecord,
+  buildAgentList,
+  fetchAgents,
 } from "./shared/admission.js";
 import {
   invokePrompt,
@@ -73,6 +72,7 @@ import {
   notifyParent,
   resolveNotifyKind,
   getLatestNotification,
+  safeLog,
 } from "./shared/notify.js";
 import {
   createStateStore,
@@ -91,11 +91,6 @@ import {
   type TaskLifecycleState,
 } from "./shared/task-state.js";
 
-let cachedAgents: AgentRecord[] = [];
-let lastCacheTime = 0;
-
-const CACHE_TTL = 300000;
-
 // Plugin-level state store (ephemeral — lost on restart)
 interface PluginState {
   store: TaskStore;
@@ -105,20 +100,6 @@ interface PluginState {
 
 let pluginState: PluginState | null = null;
 
-/** Safe logger that never throws — prevents secondary failures in error paths */
-type LogLevel = "debug" | "error" | "info" | "warn";
-
-async function safeLog(client: OpenCodeClient, level: LogLevel, message: string): Promise<void> {
-  try {
-    await client.app.log({
-      body: { service: "dynamic-task", level, message },
-    });
-  } catch {
-    // best-effort: logging must never break control flow
-  }
-}
-
-// Durable retained-task ledger for crash recovery (Task 06)
 import { loadTaskLedger, saveTaskLedger, resolveTaskLedgerPath } from "./shared/session-lifecycle.js";
 
 function initPluginState(directory: string, options?: PluginOptions): PluginState {
@@ -207,56 +188,9 @@ function sessionReadTool(
   });
 }
 
-export function buildAgentList(agents: unknown): string {
-  // Total on malformed input: the host may invoke named exports outside the
-  // default-export lifecycle (observed: called with a non-array while the
-  // plugin entry never ran), and a throw here fails the entire plugin boot.
-  // Never throw; degrade to the empty-list marker.
-  if (!Array.isArray(agents)) return "(none discovered)";
-  const names = agents
-    .filter((a): a is { name: string } => isEventRecord(a) && typeof a.name === "string")
-    .map((a) => a.name);
-  if (names.length === 0) return "(none discovered)";
-  return names.join(", ");
-}
-
 async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
-}
-
-export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]> {
-  const now = Date.now();
-  if (now - lastCacheTime < CACHE_TTL && cachedAgents.length > 0) {
-    return cachedAgents;
-  }
-
-  // One immediate retry: setup races and transient blips often clear on
-  // re-dial; persistent failure keeps the warn-and-stale behavior below.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-       const result: unknown = await client.app.agents();
-       cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
-
-       lastCacheTime = now;
-       break;
-      } catch (error: unknown) {
-        if (attempt === 1 && error instanceof Error) {
-          // safeLog, not a raw app.log: the client itself may be unusable
-          // (host probes entry exports outside the plugin lifecycle) and a
-          // throw here fails the entire plugin boot.
-          await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
-        }
-      }
-  }
-
-  return cachedAgents;
-}
-
-/** Test seam: clears the agent-list cache. Production code never calls this. */
-export function resetAgentCache(): void {
-  cachedAgents = [];
-  lastCacheTime = 0;
 }
 
 function truncateText(text: string, maxChars: number = 1200): string {

@@ -34,6 +34,8 @@ Decisions: unknown dep ids pass (aged-out tolerance over deadlock); resumption c
 
 Follow-up 2026-09-12 (orphan on concurrency rejection): background concurrency is pre-checked via `checkConcurrencyLimit(countActiveBackgroundTasks(store), config)` BEFORE `session.create` — rejecting after create left an untracked child running on the server. `registerActiveTask` re-checks as the authoritative gate (same-tick race); any post-create failure now aborts the untracked session or settles a registered task to `error` (which also fixes sync-mode prompt rejects lingering as permanently active). `countActiveBackgroundTasks` extracted as the single count source.
 
+Follow-up 2026-09-12 (entry-contract: the host invokes every entry export as a candidate plugin function): server agent discovery (`buildAgentList`, `fetchAgents` + cache, `resetAgentCache`) moved here from the entry — agent shape is this module's domain. `safeLog` moved to `notify.ts` (client-communication domain).
+
 ## Known fork (found during foundation, pinned by tools.integration tests)
 
 Retained-continue on an async-dead session reports timeout; only a synchronously-throwing prompt reaches the spawn-new path. Whether a dead continuation should retry, replan, or refuse is continuation policy — decided here, in the gate, not in the tool handler.

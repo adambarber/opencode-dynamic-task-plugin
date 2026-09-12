@@ -30,6 +30,8 @@
 ## Status
 
 **Complete** — 2026-09-11. Proof: `safety-invariants` README↔code inventory passes (11/11 suites green); `README.md` tool table matches the four registered tools, `depends_on` marked unenforced, `task_list`/`task_status` carried only as an explicit planned-note pointing at Task 06; four superseded files verified present in `docs/archive/`; full suite 217/217. Item 3 (`.dynamic-task-ids.json` fixture) deferred to Task 06, which owns the ledger format.
+
+Follow-up 2026-09-12 (plugin failed to load intermittently: the host invokes the entry's named exports outside the plugin lifecycle and any throw fails the boot — observed `agents.map` on a non-array, then `client.app.log` on an unusable client, then `missingSessionId` on undefined): every `dist/index.js` named export is now total on probe input (`buildAgentList` degrades to the empty marker, `fetchAgents` warns via never-throwing `safeLog`, `missingSessionId` rejects non-records like empty ids), pinned by a structural invariant that calls each named function export with `undefined` and asserts no throw.
 3. Delete or quarantine `.dynamic-task-ids.json` fixture content; Task 06 owns the real format.
 
 ## Litmus

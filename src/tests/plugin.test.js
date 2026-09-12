@@ -10,6 +10,7 @@ import {
   resetAgentCache,
   extractSessionStatus,
 } from "../../dist/index.js";
+import * as pluginEntry from "../../dist/index.js";
 import {
   invokePrompt,
   classifyPromptError,
@@ -36,6 +37,21 @@ describe("buildAgentList", () => {
 
   it("returns '(none discovered)' for empty array", () => {
     assert.strictEqual(buildAgentList([]), "(none discovered)");
+  });
+
+  // Total on malformed input: the host probes named exports during load and
+  // a throw here fails the entire plugin boot (field: agents.map on a
+  // non-array while the default export never ran). Never throw; degrade.
+  it("returns '(none discovered)' for non-array input instead of throwing", () => {
+    assert.strictEqual(buildAgentList(undefined), "(none discovered)");
+    assert.strictEqual(buildAgentList(null), "(none discovered)");
+    assert.strictEqual(buildAgentList({ agents: [] }), "(none discovered)");
+    assert.strictEqual(buildAgentList("general"), "(none discovered)");
+  });
+
+  it("drops non-record entries instead of printing undefined", () => {
+    assert.strictEqual(buildAgentList([{ name: "general" }, { nope: 1 }, "x", null]), "general");
+    assert.strictEqual(buildAgentList([{ nope: 1 }]), "(none discovered)");
   });
 });
 
@@ -164,6 +180,14 @@ describe("fetchAgents", () => {
     assert.strictEqual(result.length, 0);
   });
 
+  // The host probes entry exports outside the plugin lifecycle; the
+  // final-failure warn path must not throw when the client itself is
+  // unusable, or the whole plugin boot fails (field: client.app.log).
+  it("returns [] without throwing when the client is unusable", async () => {
+    const result = await fetchAgents(undefined);
+    assert.deepStrictEqual(result, []);
+  });
+
   it("retries once after a transient failure", async () => {
     let calls = 0;
     const mockClient = {
@@ -207,6 +231,28 @@ describe("fetchAgents", () => {
     const result = await fetchAgents(mockClient);
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].name, "review");
+  });
+});
+
+// The host invokes the entry's named exports outside the plugin lifecycle
+// (observed during boot: buildAgentList with a non-array, fetchAgents with
+// an unusable client) and any throw fails the whole plugin load. This
+// invariant pins totality for every named function export so the next probe
+// victim is caught here, not in a field log.
+describe("plugin entry: named exports are total on host probe input", () => {
+  it("no named function export throws on undefined", async () => {
+    resetAgentCache();
+    const failures = [];
+    for (const [name, value] of Object.entries(pluginEntry)) {
+      if (name === "default" || typeof value !== "function") continue;
+      try {
+        await value(undefined);
+      } catch (error) {
+        failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    resetAgentCache();
+    assert.deepStrictEqual(failures, []);
   });
 });
 

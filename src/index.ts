@@ -185,8 +185,8 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
 }
 
 export // Shared arg guard: every session-scoped tool rejects empty ids identically.
-function missingSessionId(args: { session_id: string }): string | null {
-  if (!args.session_id) return "ERROR: session_id is required.";
+function missingSessionId(args: unknown): string | null {
+  if (!isEventRecord(args) || !args.session_id) return "ERROR: session_id is required.";
   return null;
 }
 
@@ -243,9 +243,17 @@ export function validateSessionResult(result: unknown): string | null {
   return null;
 }
 
-export function buildAgentList(agents: AgentRecord[]): string {
-  if (agents.length === 0) return "(none discovered)";
-  return agents.map((a) => a.name).join(", ");
+export function buildAgentList(agents: unknown): string {
+  // Total on malformed input: the host may invoke named exports outside the
+  // default-export lifecycle (observed: called with a non-array while the
+  // plugin entry never ran), and a throw here fails the entire plugin boot.
+  // Never throw; degrade to the empty-list marker.
+  if (!Array.isArray(agents)) return "(none discovered)";
+  const names = agents
+    .filter((a): a is { name: string } => isEventRecord(a) && typeof a.name === "string")
+    .map((a) => a.name);
+  if (names.length === 0) return "(none discovered)";
+  return names.join(", ");
 }
 
 export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
@@ -301,17 +309,14 @@ export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]
 
        lastCacheTime = now;
        break;
-     } catch (error: unknown) {
-       if (attempt === 1 && error instanceof Error) {
-         await client.app.log({
-           body: {
-             service: "dynamic-task",
-             level: "warn",
-             message: `Failed to fetch agents: ${error.message}`,
-           },
-         });
-       }
-     }
+      } catch (error: unknown) {
+        if (attempt === 1 && error instanceof Error) {
+          // safeLog, not a raw app.log: the client itself may be unusable
+          // (host probes entry exports outside the plugin lifecycle) and a
+          // throw here fails the entire plugin boot.
+          await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
+        }
+      }
   }
 
   return cachedAgents;

@@ -8,6 +8,7 @@ import {
   resolveParentSessionId,
   fetchAgents,
   resetAgentCache,
+  extractSessionStatus,
 } from "../../dist/index.js";
 import {
   invokePrompt,
@@ -15,11 +16,12 @@ import {
   extractTextFromParts,
   extractTextFromPromptResult,
   getLatestAssistantText,
-  hydrateLatestText,
+  hydrateLatestOutcome,
   parseModelOverride,
   isTextPart,
   isMessage,
   messageRoleOf,
+  messageErrorDetail,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -292,6 +294,100 @@ describe("getEventLifecycleStatus", () => {
 
   it("returns empty string for no status anywhere", () => {
     assert.strictEqual(getEventLifecycleStatus({}), "");
+  });
+
+  // A provider failure (429/auth/overload) is delivered as a session.error
+  // event whose payload rides properties.error — there is NO status field, so
+  // the status-path candidates return "" and the task was misreported as a
+  // clean completion (field log 2026-09-11T19:30:00.485Z). An error-typed
+  // event is an error regardless of payload shape.
+  it("returns error for session.error events (no status field)", () => {
+    assert.strictEqual(
+      getEventLifecycleStatus({
+        type: "session.error",
+        properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      }),
+      "error",
+    );
+  });
+
+  it("returns error for sync-wrapped session.error envelopes", () => {
+    assert.strictEqual(
+      getEventLifecycleStatus({ type: "sync", name: "session.error.1", properties: { sessionID: "s1" } }),
+      "error",
+    );
+  });
+
+  it("still reads status for non-error events", () => {
+    assert.strictEqual(
+      getEventLifecycleStatus({ type: "session.idle", properties: { sessionID: "s1", status: "idle" } }),
+      "idle",
+    );
+  });
+});
+
+// The real 429 signal lives on the message INFO (AssistantMessage.error ->
+// ApiError.data.message), never as a part type or a message role: a failed
+// turn still has role "assistant" with empty text. The reader must dig the
+// info envelope (dual-era, like messageRoleOf) and surface a human detail.
+describe("messageErrorDetail", () => {
+  it("extracts ApiError.data.message from the info envelope", () => {
+    assert.strictEqual(
+      messageErrorDetail({
+        info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } } },
+        parts: [],
+      }),
+      "Too Many Requests",
+    );
+  });
+
+  it("falls back to the error name when no message", () => {
+    assert.strictEqual(
+      messageErrorDetail({ info: { role: "assistant", error: { name: "MessageAbortedError" } }, parts: [] }),
+      "MessageAbortedError",
+    );
+  });
+
+  it("returns empty for a clean assistant message", () => {
+    assert.strictEqual(
+      messageErrorDetail({ info: { role: "assistant" }, parts: [{ type: "text", text: "done" }] }),
+      "",
+    );
+  });
+
+  it("reads the legacy flat error role from its text parts", () => {
+    assert.strictEqual(
+      messageErrorDetail({ role: "error", parts: [{ type: "text", text: "provider exploded" }] }),
+      "provider exploded",
+    );
+  });
+
+  it("returns empty for non-message values", () => {
+    assert.strictEqual(messageErrorDetail(null), "");
+    assert.strictEqual(messageErrorDetail("junk"), "");
+    assert.strictEqual(messageErrorDetail({ role: "assistant" }), "");
+  });
+});
+
+describe("extractSessionStatus: message-level error", () => {
+  it("reports error when the latest assistant message carries info.error", () => {
+    assert.strictEqual(
+      extractSessionStatus({}, [
+        { info: { role: "user" }, parts: [] },
+        { info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } }, parts: [] },
+      ]),
+      "error",
+    );
+  });
+
+  it("still reports completed for a clean latest assistant message", () => {
+    assert.strictEqual(
+      extractSessionStatus({}, [
+        { info: { role: "user" }, parts: [] },
+        { info: { role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
+      ]),
+      "completed",
+    );
   });
 });
 
@@ -1622,13 +1718,19 @@ describe("task policy: invalid inputs", () => {
     assert.strictEqual(validateLineage([], "", config).ok, false);
   });
 
-  it("transitionState rejects non-matrix edges from active", () => {
+  it("allows active -> completed_after_timeout when the timeout fired first", () => {
+    // The timeout-vs-completion race: noteTimeoutFired keeps the task active
+    // (flags only), so a completion event landing before handleTimeout
+    // retains it must transition active -> completed_after_timeout. This edge
+    // was absent, the transition threw, the outer catch swallowed it, and the
+    // parent never learned the real outcome.
     const store = createStateStore();
     seedSesActive(store, config);
-    assert.throws(
-      () => transitionState(store, "ses_active", "completed_after_timeout", config),
-      /Invalid state transition/
-    );
+    noteTimeoutFired(store, "ses_active");
+    const retained = transitionState(store, "ses_active", "completed_after_timeout", config);
+    assert.strictEqual(retained.state, "completed_after_timeout");
+    assert.strictEqual(store.activeTasks.has("ses_active"), false);
+    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed_after_timeout");
   });
 
   it("forceRetain records abort errors", () => {
@@ -1735,19 +1837,31 @@ describe("prompt dance: getLatestAssistantText", () => {
   });
 });
 
-describe("prompt dance: hydrateLatestText", () => {
+describe("prompt dance: hydrateLatestOutcome", () => {
   it("reads the latest assistant text from the session", async () => {
     const client = {
       session: {
         messages: async () => [{ role: "assistant", parts: [{ type: "text", text: "CHILD_SAYS" }] }],
       },
     };
-    assert.strictEqual(await hydrateLatestText(client, "ses_1"), "CHILD_SAYS");
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "CHILD_SAYS", errorDetail: "" });
   });
 
-  it("falls back to empty string when messages fail", async () => {
+  it("surfaces the message-level error detail from the same read", async () => {
+    const client = {
+      session: {
+        messages: async () => [{
+          info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } },
+          parts: [],
+        }],
+      },
+    };
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "", errorDetail: "Too Many Requests" });
+  });
+
+  it("falls back to empty fields when messages fail", async () => {
     const client = { session: { messages: async () => { throw new Error("gone"); } } };
-    assert.strictEqual(await hydrateLatestText(client, "ses_1"), "");
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "", errorDetail: "" });
   });
 });
 

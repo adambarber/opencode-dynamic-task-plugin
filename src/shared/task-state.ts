@@ -59,7 +59,11 @@ export interface RetainedTaskState {
 // Invalid transitions throw.
 
 const VALID_TRANSITIONS: Record<TaskLifecycleState, TaskLifecycleState[]> = {
-  "active": ["completed", "timeout_interrupting", "timed_out_retained", "error", "interrupted"],
+  // completed_after_timeout from active: the timeout fired (noteTimeoutFired
+  // flags the task, still "active") and the completion event lands before
+  // handleTimeout retains it. Without this edge the transition throws, the
+  // outer catch swallows it, and the parent never learns the real outcome.
+  "active": ["completed", "timeout_interrupting", "timed_out_retained", "error", "interrupted", "completed_after_timeout"],
   "timeout_interrupting": ["timed_out_retained", "completed_after_timeout", "completed"],
   "timed_out_retained": [],  // terminal — no further transitions (must go via task_continue which spawns new)
   "completed": [],           // terminal
@@ -100,6 +104,16 @@ export function createStateStore(bounds?: RetainedBounds): TaskStore {
 // Registers a task in the active store. Throws if background count exceeds maxConcurrent.
 // Returns the registered task state on success.
 
+// Single source for the background count — the spawn pre-check and the
+// authoritative register gate below must agree, or the advisory check lies.
+export function countActiveBackgroundTasks(store: TaskStore): number {
+  let bgCount = 0;
+  for (const task of store.activeTasks.values()) {
+    if (task.isBackground) bgCount++;
+  }
+  return bgCount;
+}
+
 export function registerActiveTask(
   store: TaskStore,
   params: {
@@ -115,11 +129,8 @@ export function registerActiveTask(
   config: DynamicTaskConfig,
 ): ActiveTaskState {
   // Count background tasks toward concurrency (sync tasks excluded)
-  let bgCount = 0;
   if (params.isBackground) {
-    for (const task of store.activeTasks.values()) {
-      if (task.isBackground) bgCount++;
-    }
+    const bgCount = countActiveBackgroundTasks(store);
     if (bgCount >= config.maxConcurrent) {
       throw new Error(
         `ConcurrencyLimitExceeded: Cannot register more than ${config.maxConcurrent} ` +

@@ -198,21 +198,68 @@ export function getLatestAssistantText(messages: unknown, startIndex: number = 0
   return "";
 }
 
-// ─── hydrateLatestText ─────────────────────────────────────────────
-// Best-effort read of the latest assistant text for notifications and
-// summaries. Never throws: failures yield "" and callers apply their own
-// fallback marker — hydration must never break completion reporting.
+// ─── message error detail + outcome hydration ──────────────────────
+// The message stream is the ground truth for turn failures: a provider error
+// ends the turn as "idle" with the cause on the message info, invisible to
+// event status. These readers surface it so notifications never claim success
+// for a failed turn.
 
-export async function hydrateLatestText(
+// Provider failures (429/auth/overload) are recorded on the message INFO
+// (AssistantMessage.error -> ApiError.data.message), never as a part type or
+// a message role: a failed turn still has role "assistant" with empty text.
+// Dual-era like messageRoleOf — the legacy flat { role: "error" } carried the
+// cause in its text parts. Returns "" for a clean message.
+export function messageErrorDetail(message: unknown): string {
+  if (!isMessage(message) || !isEventRecord(message)) return "";
+  const info = isEventRecord(message.info) ? message.info : undefined;
+  const error = info?.error ?? message.error;
+  if (isEventRecord(error)) {
+    const data = isEventRecord(error.data) ? error.data : undefined;
+    const detail =
+      (typeof data?.message === "string" && data.message) ||
+      (typeof error.message === "string" && error.message) ||
+      (typeof error.name === "string" && error.name) ||
+      "";
+    return detail.trim();
+  }
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (messageRoleOf(message) === "error") return extractTextFromParts(message.parts).trim();
+  return "";
+}
+
+// The newest message decides — walking past it would resurface stale errors
+// from earlier (retried) turns.
+function latestMessageErrorDetail(messages: unknown): string {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (isMessage(message)) return messageErrorDetail(message);
+  }
+  return "";
+}
+
+// One read of the message stream supplies BOTH the latest assistant text and
+// the message-level error detail — a terminal "idle" event can hide a provider
+// failure that only the message info reveals. Never throws: failures yield
+// empty fields and callers degrade to event-status-only reporting.
+export interface HydratedOutcome {
+  text: string;
+  errorDetail: string;
+}
+
+export async function hydrateLatestOutcome(
   client: OpenCodeClient,
   sessionId: string,
   startIndex = 0,
-): Promise<string> {
+): Promise<HydratedOutcome> {
   try {
     const messagesResult = await client.session.messages({ path: { id: sessionId } });
     const messages = extractMessages(messagesResult);
-    return getLatestAssistantText(messages, startIndex);
+    return {
+      text: getLatestAssistantText(messages, startIndex),
+      errorDetail: latestMessageErrorDetail(messages),
+    };
   } catch {
-    return "";
+    return { text: "", errorDetail: "" };
   }
 }

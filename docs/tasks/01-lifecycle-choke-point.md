@@ -30,3 +30,5 @@ A newcomer cannot mutate task state without going through `task-state.ts` — th
 ## Status
 
 **Complete** — 2026-09-11. Proof: lifecycle invariant passes with all six historical bypass sites (`index.ts` flag writes, manual map surgery, retained delete) routed through `noteTimeoutFired`, `markActiveCompleted` (atomic read-and-set, removes the check-then-set race), `forceRetain`, `discardRetained`; 8 funnel-op contract tests plus the pre-existing matrix/concurrency/pruning suites green; full suite 217/217. Retained-pruning internalization deferred to Task 06, which owns eviction.
+
+Follow-up 2026-09-12 (field repro: timeout/completion race swallowed the notification): matrix gains `active → completed_after_timeout` — the timeout flags the task (still `active`) and the completion event lands before `handleTimeout` retains it; without the edge the transition threw and the outer catch swallowed it. `task_interrupt` cleans local state (steal + `interrupted` transition) on a confirmed server 404 instead of returning before cleanup; transient abort failures still preserve state for retry.

@@ -62,6 +62,17 @@ export function getSessionIdFromEvent(event: unknown): string | null {
 }
 
 export function getEventLifecycleStatus(event: unknown): string {
+  // session.error carries its payload in properties.error and has NO status
+  // field (SDK 1.18 EventSessionError). An error-typed event is an error
+  // regardless of payload shape — otherwise a provider failure (429/auth)
+  // reads as "" and is misreported as a clean completion (field log
+  // 2026-09-11T19:30:00.485Z). Checked before the status candidates so a
+  // status-bearing non-error event still resolves normally.
+  const type = eventString(event, ["type"]);
+  const name = eventString(event, ["name"]);
+  if (type === "session.error" || name === "session.error" || name === "session.error.1") {
+    return "error";
+  }
   const candidates = [
     ["properties", "status"],
     ["data", "info", "status"],

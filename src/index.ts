@@ -56,7 +56,8 @@ import {
   extractTextFromPromptResult,
   extractMessages,
   getLatestAssistantText,
-  hydrateLatestText,
+  hydrateLatestOutcome,
+  messageErrorDetail,
   parseModelOverride,
 } from "./shared/prompt.js";
 import {
@@ -83,6 +84,7 @@ import {
   noteLateOutcome,
   restoreRetained,
   type TaskStore,
+  type TaskLifecycleState,
 } from "./shared/task-state.js";
 
 let cachedAgents: AgentRecord[] = [];
@@ -264,6 +266,9 @@ export function extractSessionStatus(sessionInfo: unknown, messages: unknown = [
   const list = Array.isArray(messages) ? messages : [];
   if (list.length >= 2) {
     const latest = list[list.length - 1];
+    // A failed turn keeps role "assistant" with the cause on info.error —
+    // check it before trusting the role (same signal the notifier uses).
+    if (messageErrorDetail(latest)) return "error";
     const info = isEventRecord(latest) ? latest.info : undefined;
     const role = (isEventRecord(info) ? info.role : undefined) ?? (isEventRecord(latest) ? latest.role : undefined);
     if (role === "assistant") return "completed";
@@ -403,29 +408,41 @@ async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown)
   const childSessionId = getSessionIdFromEvent(event);
   if (!childSessionId) return;
 
-    // Check active tasks first
-    const active = store.activeTasks.get(childSessionId);
-    if (active) {
-      await safeLog(client, "info", `Event handler: found active task ${childSessionId}, status=${getEventLifecycleStatus(event)}, completed=${active.completed}`);
-      
-      // Cancel the stored bound — prevents the "timeout wins the race" bug
-      stealTimeoutHandle(store, childSessionId)?.cancel();
+  // Check active tasks first.
+  const active = store.activeTasks.get(childSessionId);
+  if (active) {
+    // Synchronous claim — nothing may await before it. The 2026-09-11 field
+    // burst (session.error + session.status + session.idle within 1ms) proved
+    // an await here lets every event pass the active check and storm the
+    // parent. transitionState is the single-winner gate: it replaces the
+    // active entry, so a competing writer's transition throws and it bails.
+    stealTimeoutHandle(store, childSessionId)?.cancel();
+    const alreadyCompleted = markActiveCompleted(store, childSessionId);
+    const status = getEventLifecycleStatus(event);
+    const timeoutFlagged = active.timeoutNotified || alreadyCompleted;
+    const provisional: TaskLifecycleState =
+      status === "error" ? "error"
+        : timeoutFlagged ? "completed_after_timeout"
+        : "completed";
+    try {
+      transitionState(store, childSessionId, provisional);
+    } catch {
+      void safeLog(client, "info", `Event handler: lost settlement race for ${childSessionId}`);
+      return;
+    }
+    void safeLog(client, "info", `Event handler: settled ${childSessionId} as ${provisional}`);
 
-      // If already marked completed (timeout fired first), still report the result
-      const alreadyCompleted = markActiveCompleted(store, childSessionId);
-
-      const status = getEventLifecycleStatus(event);
-      if (status === "error") {
-        transitionState(store, childSessionId, "error");
-      } else if (active.timeoutNotified || alreadyCompleted) {
-        transitionState(store, childSessionId, "completed_after_timeout");
-      } else {
-        transitionState(store, childSessionId, "completed");
-      }
-      const kind = resolveNotifyKind("event", status, active.timeoutNotified || alreadyCompleted);
-
-    // Hydrate the result text — the parent gets content, not a liveness ping.
-    const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed)";
+    // One hydration feeds both the decision and the content: a provider
+    // failure can end as a bare idle event with the cause only in the message
+    // info (Task 03's content-first principle).
+    const outcome = await hydrateLatestOutcome(client, childSessionId);
+    let kind = resolveNotifyKind("event", status, timeoutFlagged);
+    if (kind !== "error" && outcome.errorDetail) {
+      kind = "error";
+      noteLateOutcome(store, childSessionId, "error");
+    }
+    const latestText =
+      outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
     const parentMessage = formatParentNotification({
       childSessionId: active.childSessionId,
       description: active.description,
@@ -439,27 +456,30 @@ async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown)
     debugLog(active.parentSessionId, childSessionId, "child-lifecycle-event", {
       status,
       kind,
+      errorDetail: outcome.errorDetail || undefined,
       timeoutNotified: active.timeoutNotified,
       alreadyCompleted,
     });
     return;
   }
 
-  // Check retained tasks — update state and notify parent of late completion
+  // Check retained tasks — update state and notify parent of a late outcome.
   const retained = store.retainedTasks.get(childSessionId);
   if (retained) {
     const status = getEventLifecycleStatus(event);
     if (status !== "error" && retained.state !== "timed_out_retained") {
-      // For other states (completed, error, interrupted), no update needed
+      // For other states (completed, error, interrupted), no update needed.
       return;
     }
-    const newState: "completed_after_timeout" | "error" =
-      status === "error" ? "error" : "completed_after_timeout";
+    const outcome = await hydrateLatestOutcome(client, childSessionId);
+    const isError = status === "error" || Boolean(outcome.errorDetail);
+    const newState: "completed_after_timeout" | "error" = isError ? "error" : "completed_after_timeout";
+    if (retained.state === newState) return; // already reported — dedupe the burst
     noteLateOutcome(store, childSessionId, newState);
 
-    // Notify parent that the timed-out task actually finished
-    const latestText = (await hydrateLatestText(client, childSessionId)) || "(completed after timeout)";
-    const kind = resolveNotifyKind("event", status, true);
+    const kind = resolveNotifyKind("event", isError ? "error" : status, true);
+    const latestText =
+      outcome.text || (isError ? outcome.errorDetail || "(error — no detail)" : "(completed after timeout)");
     const parentMessage = formatParentNotification({
       childSessionId: retained.childSessionId,
       description: retained.description,
@@ -473,6 +493,7 @@ async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown)
     debugLog(retained.parentSessionId, childSessionId, "retained-lifecycle-event", {
       status,
       newState,
+      errorDetail: outcome.errorDetail || undefined,
       previousState: retained.state,
     });
   }

@@ -29,6 +29,8 @@ A newcomer cannot call `session.prompt` directly or invent a new placeholder str
 
 **Complete** — 2026-09-11. Proof: notifications carry hydrated child text (`COMPLETED_OK` asserted production-driven); `task_continue` (active + retained-spawn) resolves the prompt result via `withBound` — no event parking; background prompt failure transitions to error and notifies immediately; `getLatestAssistantText`/`extractMessages` moved to `prompt.ts` with `hydrateLatestText` (never throws, callers keep their fallback markers); full suite 239/239 in ~11s, coverage gate green, 0 clones.
 
+Follow-up 2026-09-12 (field repro: 429 reported as clean completion): `hydrateLatestText` replaced by `hydrateLatestOutcome` — one read supplies both latest text and `messageErrorDetail` (the `AssistantMessage.error → ApiError.data.message` signal, which event status cannot see). A terminal `idle` over an errored stream now notifies `error` with the provider detail instead of `completed successfully` + `(completed)`. Same never-throws contract.
+
 Root-caused along the way: the parked-waiter hang — when a background arm fired while a follow-up waited, `handleTimeout` cancelled the waiter's timer without resolving it, hanging `task_continue` forever. Single-wait removes the race class structurally (the waiter map is deleted); no test ever let the arm win before, which is why the suite stayed green around it.
 
 Decisions: `extractTextFromPromptResult` empty output still yields `(Subagent completed)`; retained late-outcomes route through new `noteLateOutcome` (timed_out→completed/error, any-terminal→error) instead of raw assignment; `buildBackgroundPrompt` text verbatim.

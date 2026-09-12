@@ -99,9 +99,10 @@ function createToolsMock(hooks = {}) {
         }
         return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
       },
-      messages: async () => [
-        { role: "assistant", parts: [{ type: "text", text: "COMPLETED_OK" }] },
-      ],
+      messages: async ({ path }) =>
+        hooks.messages?.({ path }) ?? [
+          { role: "assistant", parts: [{ type: "text", text: "COMPLETED_OK" }] },
+        ],
       get: async ({ path }) => {
         if (hooks.getThrows) throw hooks.getThrows;
         if (!state.sessions.has(path.id)) {
@@ -843,6 +844,100 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
     const cwdAfter = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
     assert.strictEqual(cwdAfter, cwdBefore, "the suite must never create or mutate the cwd ledger");
 
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+});
+
+// ─── Outcome correctness (field repro 2026-09-11T19:30:00.485Z) ─────
+// A provider 429 exhausts retries and the server emits session.error (payload
+// in properties.error, NO status) plus a terminal idle. The message stream
+// records the failure on the assistant message's info.error. The old handler
+// read only event status paths, saw "", and told the parent "completed
+// successfully" with "Latest output: (completed)". These tests pin the fix.
+
+describe("outcome correctness: failed turns never report success", () => {
+  const erroredMessages = () => [
+    { info: { role: "user" }, parts: [] },
+    {
+      info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } } },
+      parts: [],
+    },
+  ];
+
+  it("idle terminal event over an errored message stream notifies error, not success", async () => {
+    const h = await setupTools({ messages: erroredMessages });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "A1 success-status axis", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId } });
+    await sleep(30);
+
+    assert.strictEqual(h.client._state.notifications.length, 1, "exactly one parent notification");
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
+    assert.ok(note.includes("Too Many Requests"), `must carry provider detail. got: ${note}`);
+    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
+
+    const status = await h.tool.task_status.execute({ session_id: childId });
+    assert.ok(status.includes("error"), `task_status must show error. got: ${status}`);
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("session.error event notifies error even when hydration finds nothing", async () => {
+    const h = await setupTools({ messages: () => [] });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "err evt", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await h.fireEvent({
+      type: "session.error",
+      properties: { sessionID: childId, error: { name: "APIError", data: { message: "Too Many Requests" } } },
+    });
+    await sleep(30);
+
+    assert.strictEqual(h.client._state.notifications.length, 1);
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("ended with an error"), `got: ${note}`);
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("a burst of terminal events notifies the parent exactly once", async () => {
+    const h = await setupTools({ messages: erroredMessages });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "burst", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    // The field log showed three terminal events within 1ms for one failure.
+    await Promise.all([
+      h.fireEvent({ type: "session.error", properties: { sessionID: childId, error: { name: "APIError", data: { message: "Too Many Requests" } } } }),
+      h.fireEvent({ type: "session.status", properties: { sessionID: childId, status: "idle" } }),
+      h.fireEvent({ type: "session.idle", properties: { sessionID: childId } }),
+    ]);
+    await sleep(30);
+
+    assert.strictEqual(h.client._state.notifications.length, 1, "single winner must notify once");
+    assert.ok(h.client._state.notifications[0].message.includes("ended with an error"));
+    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("clean completions still report success unchanged", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "clean", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } });
+    await sleep(30);
+
+    assert.strictEqual(h.client._state.notifications.length, 1);
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("completed successfully"), `got: ${note}`);
+    assert.ok(note.includes("COMPLETED_OK"), `carries assistant text. got: ${note}`);
     await h.tool.task_interrupt.execute({ session_id: childId });
   });
 });

@@ -1,65 +1,18 @@
-const NOTIFY_MAX_TEXT = 1200;
-
-export function truncateText(text: string, maxChars: number = NOTIFY_MAX_TEXT): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}...`;
-}
+// Presentation for fleet/status/result reads. Notification text is owned by
+// the gate (notify.ts); this module only renders store records for humans.
+// truncateText and formatAge live in notify.ts / task-state.ts respectively —
+// one home each, imported here.
+import { truncateText, type NotificationRecord } from "./notify.js";
+import { formatAge } from "./task-state.js";
 
 export function buildBackgroundPrompt(prompt: string): string {
   return [
     "You are running as a background child task.",
     "Return a final, self-contained answer.",
     "Do not wait for parent follow-up.",
-    "If blocked, state the blocker explicitly.",
+    "If blocked mid-task, call task_notify with what you need; the parent may reply via task_continue.",
     "",
     prompt,
-  ].join("\n");
-}
-
-export function formatParentNotification(
-  state: { childSessionId: string; description: string; timeoutMs: number },
-  kind: "timeout" | "completed" | "completed_after_timeout" | "error",
-  resultText = ""
-): string {
-  const safeResult = truncateText(resultText || "(No text output)");
-
-  if (kind === "timeout") {
-    return [
-      "[dynamic-task-notify]",
-      `Background task did not report completion before timeout (${Math.round(state.timeoutMs / 1000)}s).`,
-      `Session: ${state.childSessionId}`,
-      `Description: ${state.description}`,
-      "Use task_result to inspect the latest state.",
-    ].join("\n");
-  }
-
-  if (kind === "error") {
-    return [
-      "[dynamic-task-notify]",
-      "Background task ended with an error.",
-      `Session: ${state.childSessionId}`,
-      `Description: ${state.description}`,
-      `Latest output: ${safeResult}`,
-      "Use task_result or task_continue to inspect or recover.",
-    ].join("\n");
-  }
-
-  if (kind === "completed_after_timeout") {
-    return [
-      "[dynamic-task-notify]",
-      "Background task completed after an earlier timeout notification.",
-      `Session: ${state.childSessionId}`,
-      `Description: ${state.description}`,
-      `Latest output: ${safeResult}`,
-    ].join("\n");
-  }
-
-  return [
-    "[dynamic-task-notify]",
-    "Background task completed successfully.",
-    `Session: ${state.childSessionId}`,
-    `Description: ${state.description}`,
-    `Latest output: ${safeResult}`,
   ].join("\n");
 }
 
@@ -68,17 +21,11 @@ export interface FleetRow {
   agentName: string;
   description: string;
   state: string;
-  isBackground: boolean;
   startedAt: number;
 }
 
-function formatAge(ms: number): string {
-  return `${Math.max(0, Math.round(ms / 1000))}s`;
-}
-
-function formatFleetRow(row: FleetRow, now: number): string {
-  const mode = row.isBackground ? "bg" : "sync";
-  return `- ${row.childSessionId} @${row.agentName} [${row.state}/${mode}] ${row.description} (${formatAge(now - row.startedAt)})`;
+function formatFleetRow(row: FleetRow): string {
+  return `- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})`;
 }
 
 export function formatTaskListSummary(input: {
@@ -86,37 +33,27 @@ export function formatTaskListSummary(input: {
   retained: FleetRow[];
   maxConcurrent: number;
 }): string {
-  const now = Date.now();
-  const bgActive = input.active.filter((t) => t.isBackground).length;
   const lines = [
     "## Task List",
     "",
-    `Active background: ${bgActive}/${input.maxConcurrent}`,
-    ...(input.active.length > 0 ? input.active.map((t) => formatFleetRow(t, now)) : ["(none)"]),
+    `Active: ${input.active.length}/${input.maxConcurrent}`,
+    ...(input.active.length > 0 ? input.active.map(formatFleetRow) : ["(none)"]),
     "",
     `Retained: ${input.retained.length}`,
-    ...(input.retained.length > 0 ? input.retained.map((t) => formatFleetRow(t, now)) : ["(none)"]),
+    ...(input.retained.length > 0 ? input.retained.map(formatFleetRow) : ["(none)"]),
   ];
   return lines.join("\n");
 }
 
+function formatNotificationLine(notification: NotificationRecord): string {
+  return notification.delivered
+    ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`
+    : `Last notification: ${notification.kind} (FAILED after ${notification.attempts} attempt(s))`;
+}
+
 export function formatTaskStatusDetail(
-  task: {
-    childSessionId: string;
-    parentSessionId: string;
-    agentName: string;
-    description: string;
-    lineage: string[];
-    state: string;
-    isBackground: boolean;
-    startedAt: number;
-    retainedAt?: number | undefined;
-    timeoutNotified: boolean;
-    completed: boolean;
-    requestedModel?: string | undefined;
-    dependsOn?: string[] | undefined;
-  },
-  notification?: { kind: string; delivered: boolean; attempts: number } | null,
+  task: import("./task-state.js").TaskRecord,
+  notification: NotificationRecord | null,
 ): string {
   const lines = [
     "## Task Status",
@@ -125,20 +62,24 @@ export function formatTaskStatusDetail(
     `Parent: ${task.parentSessionId}`,
     `Agent: ${task.agentName}`,
     `State: ${task.state}`,
-    `Mode: ${task.isBackground ? "background" : "sync"}`,
     `Description: ${task.description}`,
-    `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" \u2192 ") : "(root)"}`,
-    `Model: ${task.requestedModel || "(default)"}`,
+    `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" → ") : "(root)"}`,
+    `Model: ${task.requestedModel ? `${task.requestedModel.providerID}/${task.requestedModel.modelID}` : "(default)"}`,
     `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
-    `Timeout notified: ${task.timeoutNotified ? "yes" : "no"}`,
-    `Completed: ${task.completed ? "yes" : "no"}`,
   ];
+  if (task.state === "active") {
+    lines.push(`Started: ${formatAge(task.startedAt)} ago`);
+    if (task.lastNotice) {
+      lines.push(`Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`);
+    }
+  } else {
+    lines.push(`Settled: ${formatAge(task.retainedAt)} ago`);
+    if (task.abortError) {
+      lines.push(`Abort error: ${truncateText(task.abortError, 200)}`);
+    }
+  }
   if (notification) {
-    lines.push(
-      notification.delivered
-        ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`
-        : `Last notification: ${notification.kind} (FAILED after ${notification.attempts} attempt(s))`,
-    );
+    lines.push(formatNotificationLine(notification));
   }
   return lines.join("\n");
 }
@@ -149,8 +90,7 @@ export function formatTaskResultSummary(input: {
   messageCount: number;
   latestText: string;
   tracked: boolean;
-  timeoutNotified: boolean;
-  notification?: { kind: string; delivered: boolean; attempts: number } | null | undefined;
+  notification?: NotificationRecord | null | undefined;
   debugShape?: string;
 }): string {
   const action =
@@ -166,22 +106,17 @@ export function formatTaskResultSummary(input: {
     `Session: ${input.sessionId}`,
     `Status: ${input.status}`,
     `Messages: ${input.messageCount}`,
-    `Tracked background task: ${input.tracked ? "yes" : "no"}`,
-    `Timeout notification sent: ${input.timeoutNotified ? "yes" : "no"}`,
+    `Tracked: ${input.tracked ? "yes" : "no"}`,
   ];
 
   if (input.notification) {
-    lines.push(
-      input.notification.delivered
-        ? `Last notification: ${input.notification.kind} (delivered in ${input.notification.attempts} attempt(s))`
-        : `Last notification: ${input.notification.kind} (FAILED after ${input.notification.attempts} attempt(s))`,
-    );
+    lines.push(formatNotificationLine(input.notification));
   }
 
   lines.push(
     "",
     "### Latest Assistant Output",
-    input.latestText || "(No assistant text found)",
+    truncateText(input.latestText) || "(No assistant text found)",
     "",
     action,
   );

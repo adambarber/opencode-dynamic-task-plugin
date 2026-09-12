@@ -95,25 +95,38 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
   });
 });
 
-// --- Task 02: execution bound ---------------------------------------------
-// Primitive: waiting on child work. Shape rule: every wait goes through the
-// injected TimerProvider — bare global setTimeout is unrepresentable outside
-// the provider definition itself (Tenets 2, 7).
-describe("invariant: waits use the injected TimerProvider (Task 02)", () => {
-  it("no bare setTimeout outside the bound funnel and provider definition", () => {
+// --- Task 09: non-blocking settlement -------------------------------------
+// Primitive: waiting on child work / per-call execution bounds. The cutover
+// deleted the timer funnel; the ONLY sanctioned wall-clock wait in production
+// is the notification gate's fixed retry backoff (notify.ts). Everything else
+// is unrepresentable by invariance, and the deleted vocabulary may not return.
+describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", () => {
+  it("no bare setTimeout outside the notification retry", () => {
     // Negative lookbehind exempts timerProvider.* and globalThis.* call shapes.
-    // Tenet 9: bound.ts IS the funnel (owns every armed wait); config.ts owns
-    // the provider definition. Both sanctioned, everything else flagged.
     const pattern = /(?<!timerProvider\.)(?<!globalThis\.)\bsetTimeout\s*\(/;
     const hits = listProdFiles()
-      .filter((f) => !f.endsWith("config.ts") && !f.endsWith("bound.ts"))
+      .filter((f) => !f.endsWith("notify.ts"))
       .flatMap((f) => scanLines(f, pattern));
     assert.strictEqual(
       hits.length,
       0,
       formatViolations(
-        "docs/tasks/02-execution-bound.md",
-        "Bare setTimeout escapes the named-budget funnel.",
+        "docs/tasks/09-non-blocking-settlement.md",
+        "A wall-clock wait returned outside the notification gate.",
+        hits,
+      ),
+    );
+  });
+
+  it("deleted timer vocabulary never returns", () => {
+    const pattern = /\btimeout_ms\b|\btimeoutBehavior\b|\bawait_response\b|\btimed_out_retained\b|\bcompleted_after_timeout\b|\bDYNAMIC_TASK_TIMEOUT\b|\bcreateTimerProvider\b|\bstealTimeoutHandle\b/;
+    const hits = listProdFiles().flatMap((f) => scanLines(f, pattern));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/09-non-blocking-settlement.md",
+        "Pre-cutover timer vocabulary reappeared in production source.",
         hits,
       ),
     );

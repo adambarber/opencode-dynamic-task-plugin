@@ -1,120 +1,202 @@
-// src/shared/notify.ts
-// Parent-notification gate (Task 05) — the ONLY module that delivers
-// parent-directed messages. Kinds are constructed here via
-// resolveNotifyKind; every delivery is attempted, retried once after a
-// short delay, and recorded in a bounded ledger that task_result surfaces.
-// A failed delivery is data, not silence: the record carries the cause and
-// the planner recovers by reading.
+// Notification gate (Task 05): one parent-write primitive, one delivery ledger.
+// Kinds: completed/error settle a task once (the lifecycle event drives them);
+// "notice" is the child's general mid-flight voice — progress, findings, or a
+// block needing parent input — deduped by message text so verbatim repeats land
+// once while new information always passes.
+// The plugin arms no timers; only the parent prompt itself is bounded by transport.
+import type { OpenCodeClient } from "./client";
 
-export type NotifyKind = "timeout" | "completed" | "completed_after_timeout" | "error";
+// Client logging that never throws: a dead log call must not break a
+// lifecycle path. Best-effort visibility, owned beside the parent-write gate.
+export async function safeLog(
+  client: OpenCodeClient,
+  level: "info" | "warn" | "error",
+  message: string,
+): Promise<void> {
+  try {
+    await client.app.log({ body: { service: "dynamic-task", level, message } });
+  } catch {
+    // logging is best-effort by design
+  }
+}
+
+export type NotifyKind = "completed" | "error" | "notice";
 
 export interface NotificationRecord {
-  childSessionId: string;
-  parentSessionId: string;
-  kind: NotifyKind;
-  delivered: boolean;
-  attempts: number;
-  error?: string;
   at: number;
+  parentSessionId: string;
+  childSessionId: string;
+  kind: NotifyKind;
+  message: string;
+  attempts: number;
+  delivered: boolean;
 }
 
-// Bound for the in-memory ledger (Tenet 7: named, single place).
-export const MAX_NOTIFICATION_RECORDS = 200;
+const notifyLedger: NotificationRecord[] = [];
+const NOTIFY_LEDGER_MAX = 200;
 
-const ledger: NotificationRecord[] = [];
-
-/** Test seam: clears the ledger. Production code never calls this. */
-export function resetNotificationLog(): void {
-  ledger.length = 0;
+export function recordNotification(entry: NotificationRecord): void {
+  notifyLedger.push(entry);
+  if (notifyLedger.length > NOTIFY_LEDGER_MAX) notifyLedger.shift();
 }
 
-export function getLatestNotification(childSessionId: string): NotificationRecord | undefined {
-  for (let i = ledger.length - 1; i >= 0; i--) {
-    const rec = ledger[i];
-    if (rec && rec.childSessionId === childSessionId) return rec;
+export function getLatestNotification(childSessionId: string): NotificationRecord | null {
+  for (let i = notifyLedger.length - 1; i >= 0; i--) {
+    const entry = notifyLedger[i];
+    if (entry && entry.childSessionId === childSessionId) return entry;
   }
-  return undefined;
+  return null;
 }
 
-// ─── resolveNotifyKind ─────────────────────────────────────────────
-// Single site where notification kinds are constructed. Timeout triggers
-// always map to timeout; event triggers map status plus whether a timeout
-// was already reported (the completed_after_timeout race).
-
-export function resolveNotifyKind(
-  trigger: "event" | "timeout",
-  status: string,
-  timeoutNotified: boolean,
-): NotifyKind {
-  if (trigger === "timeout") return "timeout";
-  if (status === "error") return "error";
-  if (timeoutNotified) return "completed_after_timeout";
-  return "completed";
+export function clearNotifyLedger(): void {
+  notifyLedger.length = 0;
+  gateLedger.clear();
 }
 
-async function defaultSleep(ms: number): Promise<void> {
+// Event-driven kinds only: terminal statuses map to the two settlement kinds;
+// deletion is a failure, never a success (a vanished session did not finish).
+export function resolveNotifyKind(status: string): NotifyKind | null {
+  if (status === "error" || status === "deleted") return "error";
+  if (status === "idle") return "completed";
+  return null;
+}
+
+export function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     globalThis.setTimeout(resolve, ms);
   });
 }
 
-// ─── notifyParent ──────────────────────────────────────────────────
-// Delivers with exactly one retry, then records the outcome either way.
-// Never throws — transport failure is returned as data.
+const NOTIFY_RETRY_DELAY_MS = 250;
 
-import type { OpenCodeClient } from "./client.js";
-import { errorMessage } from "./session-lifecycle.js";
+interface NotifyParentOptions {
+  sleep?: (ms: number) => Promise<void>;
+  record?: (entry: NotificationRecord) => void;
+  childSessionId: string;
+  kind: NotifyKind;
+  dedupKey?: string;
+}
 
+interface GateLedger {
+  record(childSessionId: string, dedupKey: string): boolean;
+  duplicate(childSessionId: string, dedupKey: string): boolean;
+  // Revival resets settle-dedup: a continued task is a fresh settlement
+  // subject, so its next completed/error must be deliverable even though the
+  // prior turn's kind was recorded. Delivery history stays in the ledger.
+  forgetChild(childSessionId: string): void;
+  // Test-only isolation: the gate is process-global by design.
+  clear(): void;
+}
+
+// Notification decisions are process memory; durable task state is the ledger.
+// Tenet 8: one place to grep for "who got told what, once". dedupKey defaults
+// to kind (settle-once semantics); "notice" callers pass a message-derived key.
+// Session ids are globally unique, so entries outlive their usefulness once a
+// child leaves the retained ledger — the gate is FIFO-bounded to stay honest
+// about exactly-once without growing without limit.
+const GATE_MAX_CHILDREN = 1000;
+
+function createGateLedger(): GateLedger {
+  const delivered = new Map<string, Set<string>>();
+  return {
+    record(childSessionId, dedupKey) {
+      const kinds = delivered.get(childSessionId) ?? new Set();
+      if (kinds.has(dedupKey)) return false;
+      kinds.add(dedupKey);
+      delivered.set(childSessionId, kinds);
+      if (delivered.size > GATE_MAX_CHILDREN) {
+        const oldest = delivered.keys().next();
+        if (!oldest.done) delivered.delete(oldest.value);
+      }
+      return true;
+    },
+    duplicate(childSessionId, dedupKey) {
+      return delivered.get(childSessionId)?.has(dedupKey) ?? false;
+    },
+    forgetChild(childSessionId) {
+      delivered.delete(childSessionId);
+    },
+    clear() {
+      delivered.clear();
+    },
+  };
+}
+
+export const gateLedger = createGateLedger();
+
+// The gate: every parent-directed write goes through here. One retry (a busy
+// parent prompt can transiently fail), honest failure, recorded either way.
 export async function notifyParent(
   client: OpenCodeClient,
   parentSessionId: string,
   message: string,
-  meta: { childSessionId: string; kind: NotifyKind },
-  opts: { retryDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
-): Promise<NotificationRecord> {
+  opts: NotifyParentOptions,
+): Promise<boolean> {
+  const kind = opts.kind;
   const sleep = opts.sleep ?? defaultSleep;
-  const delayMs = opts.retryDelayMs ?? 250;
-  const record: NotificationRecord = {
-    childSessionId: meta.childSessionId,
-    parentSessionId,
-    kind: meta.kind,
-    delivered: false,
-    attempts: 0,
-    at: Date.now(),
+  const record = opts.record ?? recordNotification;
+  const dedupKey = opts.dedupKey ?? opts.kind;
+  const emit = (delivered: boolean, attempts: number) =>
+    record({ at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message, attempts, delivered });
+  if (gateLedger.duplicate(opts.childSessionId, dedupKey)) {
+    emit(false, 0);
+    return Promise.resolve(false);
+  }
+  const attempt = () =>
+    client.session.prompt({
+      path: { id: parentSessionId },
+      body: { parts: [{ type: "text", text: message }] },
+    });
+  const commit = (delivered: boolean, attempts: number) => {
+    if (delivered) gateLedger.record(opts.childSessionId, dedupKey);
+    emit(delivered, attempts);
+    return delivered;
   };
-
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    record.attempts = attempt;
-    try {
-      await client.session.prompt({
-        path: { id: parentSessionId },
-        body: { parts: [{ type: "text", text: message }] },
-      });
-      record.delivered = true;
-      break;
-  } catch (error: unknown) {
-    record.error = errorMessage(error) || String(error);
-    if (attempt < 2) await sleep(delayMs);
-  }
-  }
-
-  ledger.push(record);
-  while (ledger.length > MAX_NOTIFICATION_RECORDS) ledger.shift();
-  return record;
+  return attempt()
+    .then(() => commit(true, 1))
+    .catch(async () => {
+      await sleep(NOTIFY_RETRY_DELAY_MS);
+      try {
+        await attempt();
+        return commit(true, 2);
+      } catch {
+        return commit(false, 2);
+      }
+    });
 }
 
-// ─── safeLog ───────────────────────────────────────────────────────
-// Best-effort client log that never throws — prevents secondary failures
-// in error paths (including host probes of exported functions outside the
-// plugin lifecycle, where the client itself may be unusable).
-type LogLevel = "debug" | "error" | "info" | "warn";
+// Wire format the parent actually sees. Notification text is owned by the
+// gate; task-formatting only renders store reads. One renderer, params
+// everywhere the kinds differ: header, body label, tail hint.
 
-export async function safeLog(client: OpenCodeClient, level: LogLevel, message: string): Promise<void> {
-  try {
-    await client.app.log({
-      body: { service: "dynamic-task", level, message },
-    });
-  } catch {
-    // best-effort: logging must never break control flow
-  }
+const NOTIFICATION_KINDS: Record<NotifyKind, { header: string; bodyLabel: string; tail: string }> = {
+  completed: { header: "Background task completed successfully.", bodyLabel: "Latest output", tail: "" },
+  error: { header: "Background task ended with an error.", bodyLabel: "Latest output", tail: "Use task_result or task_continue to inspect or recover." },
+  notice: { header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
+};
+
+export function formatParentNotification(
+  state: {
+    childSessionId: string;
+    description: string;
+  },
+  kind: NotifyKind,
+  resultText = "",
+): string {
+  const shape = NOTIFICATION_KINDS[kind];
+  const safeResult = truncateText(resultText.trim() ? resultText : "(No text output)");
+  const body = shape.bodyLabel ? `${shape.bodyLabel}: ${safeResult}` : safeResult;
+  return [
+    "[dynamic-task-notify]",
+    shape.header,
+    `Session: ${state.childSessionId}`,
+    `Description: ${state.description}`,
+    body,
+    ...(shape.tail ? [shape.tail] : []),
+  ].join("\n");
+}
+
+export function truncateText(text: string, maxChars = 1200): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}...`;
 }

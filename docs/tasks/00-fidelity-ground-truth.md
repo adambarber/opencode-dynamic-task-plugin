@@ -16,7 +16,7 @@
 
 - **Primitive:** the documented capability set.
 - **Funnel:** `README.md` + `docs/` describe exactly what `src/` registers. No capability is documented twice.
-- **Enforcement:** a CI check that fails on drift — every `tool({` registration in `src/index.ts` has a matching README row; every README tool row has a registration; every accepted arg (`depends_on`, `model`, `timeout_ms`) has an enforcement site or is marked unimplemented. Newcomer adding a tool without docs (or docs without a tool) turns the build red.
+- **Enforcement:** a CI check that fails on drift — every `tool({` registration in `src/index.ts` has a matching README row; every README tool row has a registration; every accepted arg (`depends_on`, `model`) has an enforcement site or is marked unimplemented. Newcomer adding a tool without docs (or docs without a tool) turns the build red.
 - **Contract test:** doc-inventory test, not a mock — walks the real source tree.
 - **Degradation:** unimplemented args are rejected with an explicit error, never silently accepted.
 

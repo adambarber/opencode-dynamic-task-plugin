@@ -34,11 +34,17 @@ export function safeDebugPayload(payload: Record<string, unknown>): Record<strin
 
 export function debugLog(parentSessionId: string, childSessionId: string, eventName: string, payload: Record<string, unknown> = {}): void {
   if (process.env.DYNAMIC_TASK_DEBUG !== "1") return;
-  mkdirSync(debugRoot, { recursive: true });
-  const line = JSON.stringify({
-    ts: new Date().toISOString(),
-    eventName,
-    ...safeDebugPayload(payload),
-  });
-  appendFileSync(getDebugLogPath(parentSessionId, childSessionId), `${line}\n`, "utf8");
+  // Best-effort: a failing fs write (permissions, disk) must never break the
+  // event handler that calls it — debug output is never worth a dropped event.
+  try {
+    mkdirSync(debugRoot, { recursive: true });
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      eventName,
+      ...safeDebugPayload(payload),
+    });
+    appendFileSync(getDebugLogPath(parentSessionId, childSessionId), `${line}\n`, "utf8");
+  } catch {
+    // debug logging degrades to silence
+  }
 }

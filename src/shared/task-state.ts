@@ -1,39 +1,38 @@
-// src/shared/task-state.ts
-// Active task store + retained history store + idempotent state transitions.
-// The active/retained split ensures timed-out tasks do not occupy concurrency slots.
-// Both maps are ephemeral — they do not survive plugin or OpenCode restart.
-// Retained tasks are bounded by TTL/max-entries lazy pruning.
+// Shared task-state machine (Task 01 amendment): the single owner of task
+// records and every lifecycle mutation. States: active until a settlement
+// event arrives — the plugin arms no timers, so nothing else can settle a
+// task, and terminal states never regress.
+//
+// Late-error escalation: noteLateOutcome() is the only edge that rewrites a
+// retained state (completed -> error).
+//
+// The transition result is deliberately plain — callers branch on
+// `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import type { DynamicTaskConfig } from "./config.js";
-import type { TimeoutController } from "./bound.js";
+import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
 
-// ─── TaskLifecycleState ────────────────────────────────────────────
-
-export type TaskLifecycleState =
+export type TaskState =
   | "active"
-  | "timeout_interrupting"
-  | "timed_out_retained"
   | "completed"
-  | "completed_after_timeout"
   | "error"
   | "interrupted";
 
-// ─── Task State Types ──────────────────────────────────────────────
+export type LineageStep = string;
+export type LineagePath = LineageStep[];
 
 export interface ActiveTaskState {
   childSessionId: string;
   parentSessionId: string;
   agentName: string;
   description: string;
-  lineage: string[];
-  state: TaskLifecycleState;
-  isBackground: boolean;
+  state: "active";
   startedAt: number;
-  timeoutNotified: boolean;
-  completed: boolean;
-  requestedModel?: string | undefined;        // model override for the child session
-  dependsOn?: string[] | undefined;           // task dependencies (session IDs)
-  timeoutHandle?: TimeoutController; // owned by the bound funnel; cancel, never clearTimeout
+  lineage: LineagePath;
+  requestedModel?: { providerID: string; modelID: string } | undefined;
+  dependsOn?: string[] | undefined;
+  // Latest mid-flight notice from the child (advisory metadata, not a lifecycle field).
+  lastNotice?: { message: string; at: number } | undefined;
 }
 
 export interface RetainedTaskState {
@@ -41,426 +40,255 @@ export interface RetainedTaskState {
   parentSessionId: string;
   agentName: string;
   description: string;
-  lineage: string[];
-  state: TaskLifecycleState;
-  isBackground: boolean;
+  state: Exclude<TaskState, "active">;
   startedAt: number;
   retainedAt: number;
-  timeoutNotified: boolean;
-  completed: boolean;
-  requestedModel?: string | undefined;
+  lineage: LineagePath;
+  requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
-  previousSessionId?: string | undefined; // set when this entry was created by task_continue
-  abortError?: string | undefined;         // populated when client.session.abort() fails
+  abortError?: string | undefined;
 }
 
-// ─── Valid Transition Matrix ───────────────────────────────────────
-// Valid transitions: key → [allowed target states]
-// Invalid transitions throw.
-
-const VALID_TRANSITIONS: Record<TaskLifecycleState, TaskLifecycleState[]> = {
-  // completed_after_timeout from active: the timeout fired (noteTimeoutFired
-  // flags the task, still "active") and the completion event lands before
-  // handleTimeout retains it. Without this edge the transition throws, the
-  // outer catch swallows it, and the parent never learns the real outcome.
-  "active": ["completed", "timeout_interrupting", "timed_out_retained", "error", "interrupted", "completed_after_timeout"],
-  "timeout_interrupting": ["timed_out_retained", "completed_after_timeout", "completed"],
-  "timed_out_retained": [],  // terminal — no further transitions (must go via task_continue which spawns new)
-  "completed": [],           // terminal
-  "completed_after_timeout": [], // terminal
-  "error": [],               // terminal
-  "interrupted": [],         // terminal
-};
-
-// ─── RetainedBounds + TaskStore ─────────────────────────────────────
-// Bounds drive internal pruning; onRetainedChange fires after every
-// retained mutation so the ledger (Task 06) stays current without any
-// caller remembering to persist. Both optional: bare stores behave exactly
-// as before (no pruning, no callback).
-
-export interface RetainedBounds {
-  retainedTaskTtlMs: number;
-  retainedTaskMaxEntries: number;
-}
+export type TaskRecord = ActiveTaskState | RetainedTaskState;
 
 export interface TaskStore {
   activeTasks: Map<string, ActiveTaskState>;
   retainedTasks: Map<string, RetainedTaskState>;
-  bounds?: RetainedBounds;
-  onRetainedChange?: () => void;
+  // Durable-state observer (Task 06): invoked after retained entries change.
+  onRetainedChange?: (() => void) | undefined;
 }
 
-// ─── createStateStore ──────────────────────────────────────────────
+// State machine (the one true lifecycle matrix). Active tasks move to a terminal
+// state exactly once; terminal states never regress. Late error escalation
+// (completed -> error) is a SEPARATE, explicitly-marked edge handled by
+// noteLateOutcome, NOT by transitionState — this keeps the primary "does a
+// transition happen at all" question decidable from this matrix alone.
+const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
+  "active": ["completed", "error", "interrupted"],
+  "completed": [],
+  "error": [],
+  "interrupted": [],
+};
 
-export function createStateStore(bounds?: RetainedBounds): TaskStore {
+export function createTaskStore(): TaskStore {
   return {
     activeTasks: new Map(),
     retainedTasks: new Map(),
-    ...(bounds ? { bounds } : {}),
+    onRetainedChange: undefined,
   };
 }
 
-// ─── registerActiveTask ────────────────────────────────────────────
-// Registers a task in the active store. Throws if background count exceeds maxConcurrent.
-// Returns the registered task state on success.
-
-// Single source for the background count — the spawn pre-check and the
-// authoritative register gate below must agree, or the advisory check lies.
-export function countActiveBackgroundTasks(store: TaskStore): number {
-  let bgCount = 0;
-  for (const task of store.activeTasks.values()) {
-    if (task.isBackground) bgCount++;
-  }
-  return bgCount;
-}
-
+// Register a task and claim the session id atomically. The maxConcurrent
+// check lives inside the choke point (Task 07) — no call site can forget it,
+// and every active task holds a slot regardless of who awaits it.
 export function registerActiveTask(
   store: TaskStore,
-  params: {
-    childSessionId: string;
-    parentSessionId: string;
-    agentName: string;
-    description: string;
-    lineage: string[];
-    isBackground: boolean;
-    requestedModel?: string | undefined;
-    dependsOn?: string[] | undefined;
-  },
-  config: DynamicTaskConfig,
+  task: Omit<ActiveTaskState, "state" | "startedAt">,
+  config: Pick<DynamicTaskConfig, "maxConcurrent">,
 ): ActiveTaskState {
-  // Count background tasks toward concurrency (sync tasks excluded)
-  if (params.isBackground) {
-    const bgCount = countActiveBackgroundTasks(store);
-    if (bgCount >= config.maxConcurrent) {
-      throw new Error(
-        `ConcurrencyLimitExceeded: Cannot register more than ${config.maxConcurrent} ` +
-        `active background tasks (current: ${bgCount}). ` +
-        `Wait for tasks to complete or increase maxConcurrent in config.`,
-      );
-    }
+  const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
+  if (limitError) {
+    throw new Error(limitError);
   }
-
-  const task: ActiveTaskState = {
-    childSessionId: params.childSessionId,
-    parentSessionId: params.parentSessionId,
-    agentName: params.agentName,
-    description: params.description,
-    lineage: params.lineage,
+  const record: ActiveTaskState = {
+    ...task,
     state: "active",
-    isBackground: params.isBackground,
     startedAt: Date.now(),
-    timeoutNotified: false,
-    completed: false,
-    requestedModel: params.requestedModel,
-    dependsOn: params.dependsOn,
   };
-
-  pruneIfBounded(store);
-  store.activeTasks.set(params.childSessionId, task);
-  return task;
+  store.activeTasks.set(task.childSessionId, record);
+  return record;
 }
 
-// ─── transitionState ───────────────────────────────────────────────
-// Moves a task from one lifecycle state to another.
-// Validates against the transition matrix.
-// On terminal transitions from active, moves to retainedTasks.
-// Returns the updated state object.
-
+// Lifecycle mutation choke point. The from-state is read from the store under
+// the single-winner claim. Returns the post-move record (active: the entry;
+// terminal: the retained entry). Throws on any rejected transition:
+//  - no task for the id,
+//  - a terminal state that cannot regress,
+//  - a from/to pair absent from VALID_TRANSITIONS.
+// Callers branch on `.completed` (first terminal reporter wins) — the
+// rejected-transition shape is not the caller's problem.
 export function transitionState(
   store: TaskStore,
   childSessionId: string,
-  toState: TaskLifecycleState,
-): ActiveTaskState | RetainedTaskState {
+  to: Exclude<TaskState, "active">,
+  _config?: DynamicTaskConfig,
+): { state: TaskState; completed: boolean; task?: ActiveTaskState | RetainedTaskState } {
   const active = store.activeTasks.get(childSessionId);
-  let fromState: TaskLifecycleState;
-
   if (active) {
-    fromState = active.state;
-  } else {
-    // Check retained tasks
-    const retained = store.retainedTasks.get(childSessionId);
-    if (!retained) {
-      throw new Error(`Task "${childSessionId}" not found in active or retained tasks.`);
+    const allowed: TaskState[] = VALID_TRANSITIONS[active.state] ?? [];
+    if (!allowed.includes(to)) {
+      throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-    throw new Error(`Invalid transition: task "${childSessionId}" is in terminal state "${retained.state}".`);
-  }
-
-  // Validate transition
-  const allowed = VALID_TRANSITIONS[fromState];
-  if (!allowed.includes(toState)) {
-    throw new Error(
-      `Invalid state transition: "${fromState}" → "${toState}" for task "${childSessionId}". ` +
-      `Allowed transitions from "${fromState}": ${allowed.join(", ")}`,
-    );
-  }
-
-  // Check transition destination — if terminal (timed_out_retained, completed, error), move from active to retained
-  const isTerminal = ["timed_out_retained", "completed", "completed_after_timeout", "error", "interrupted"].includes(toState);
-
-  if (isTerminal && active) {
-    // Move from active to retained
+    const { lastNotice: _notice, ...settled } = active;
     const retained: RetainedTaskState = {
-      ...active,
-      state: toState,
+      ...settled,
+      state: to,
       retainedAt: Date.now(),
     };
     store.activeTasks.delete(childSessionId);
     store.retainedTasks.set(childSessionId, retained);
-    pruneIfBounded(store);
     emitRetainedChange(store);
-    return retained;
+    return { state: to, completed: true, task: retained };
   }
 
-  // Non-terminal transition (e.g., active → timeout_interrupting)
-  if (active) {
-    active.state = toState;
-    return active;
+  // No active entry — reject based on the retained state, if any.
+  const retained = store.retainedTasks.get(childSessionId);
+  if (retained) {
+    throw new Error(`Invalid transition: terminal state (${retained.state})`);
   }
-
-  // Should not reach here — but safe fallback
-  throw new Error(`Unexpected transition state for task "${childSessionId}".`);
+  throw new Error(`Invalid transition: not found (no task for ${childSessionId})`);
 }
 
-// ─── noteTimeoutFired ──────────────────────────────────────────────
-// Marks an active task as timeout-fired (timeoutNotified + completed flags).
-// The task stays active until transitioned — the flags record that the
-// timeout path won the race. Throws if the task is not active.
-
-export function noteTimeoutFired(
-  store: TaskStore,
-  childSessionId: string,
-): ActiveTaskState {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) {
-    throw new Error(`Task "${childSessionId}" is not active.`);
-  }
-  active.timeoutNotified = true;
-  active.completed = true;
-  return active;
-}
-
-// ─── markActiveCompleted ───────────────────────────────────────────
-// Atomically reads and sets the completed flag on an active task.
-// Returns the previous value (true when the timeout path already fired).
-
-export function markActiveCompleted(
-  store: TaskStore,
-  childSessionId: string,
-): boolean {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) {
-    throw new Error(`Task "${childSessionId}" is not active.`);
-  }
-  const was = active.completed;
-  active.completed = true;
-  return was;
-}
-
-// ─── forceRetain ───────────────────────────────────────────────────
-// Last-resort move into retained for races where the matrix rejects the
-// transition (e.g. completion lands during the abort await). Bases on
-// whatever is known (active preferred, else retained) and applies the patch.
-
-export function forceRetain(
-  store: TaskStore,
-  childSessionId: string,
-  patch: {
-    state: TaskLifecycleState;
-    timeoutNotified?: boolean;
-    completed?: boolean;
-    abortError?: string | undefined;
-  },
-): RetainedTaskState {
-  const base = store.activeTasks.get(childSessionId)
-    ?? store.retainedTasks.get(childSessionId);
-  if (!base) {
-    throw new Error(`Task "${childSessionId}" not found in active or retained tasks.`);
-  }
-  const retained: RetainedTaskState = {
-    childSessionId: base.childSessionId,
-    parentSessionId: base.parentSessionId,
-    agentName: base.agentName,
-    description: base.description,
-    lineage: base.lineage,
-    isBackground: base.isBackground,
-    startedAt: base.startedAt,
-    requestedModel: base.requestedModel,
-    dependsOn: base.dependsOn,
-    previousSessionId: "previousSessionId" in base ? base.previousSessionId : undefined,
-    timeoutNotified: patch.timeoutNotified ?? base.timeoutNotified,
-    completed: patch.completed ?? base.completed,
-    retainedAt: Date.now(),
-    state: patch.state,
-  };
-  if (patch.abortError !== undefined) {
-    retained.abortError = patch.abortError;
-  }
-  pruneIfBounded(store);
-  store.activeTasks.delete(childSessionId);
-  store.retainedTasks.set(childSessionId, retained);
+// Late-error escalation — the ONE edge that rewrites a retained state.
+// Only a recorded success can be corrected to error: an interrupted or
+// errored task's own abort aftermath must never re-notify the parent.
+export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, "active">): boolean {
+  const retained = store.retainedTasks.get(childSessionId);
+  if (!retained) return false;
+  const allowed: Exclude<TaskState, "active">[] = retained.state === "completed" ? ["error"] : [];
+  if (!allowed.includes(outcome)) return false;
+  retained.state = outcome;
   emitRetainedChange(store);
-  return retained;
+  return true;
 }
 
-// ─── stealTimeoutHandle ────────────────────────────────────────────
-// Detaches the armed timeout from an active task and returns it so the
-// caller (interrupt path, completion path) can cancel it. Returns undefined
-// when the task is unknown or has no handle — both are benign.
-
-export function stealTimeoutHandle(
+// Continuation revival: a settled task earns a live turn by moving back to
+// active through this gate — the same slot accounting as a fresh spawn, the
+// same single-winner settlement when its next idle event lands. The old
+// retained history is replaced by the revived record, not duplicated.
+export function reviveRetainedTask(
   store: TaskStore,
   childSessionId: string,
-): TimeoutController | undefined {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active?.timeoutHandle) return undefined;
-  const handle = active.timeoutHandle;
-  delete active.timeoutHandle;
-  return handle;
-}
-
-// ─── noteLateOutcome ───────────────────────────────────────────────
-// Records a late terminal observation on a retained task without moving it.
-// Permitted edges: timed_out_retained → completed_after_timeout | error
-// (late completion), and any retained state → error (late failure).
-// Anything else throws — terminal states do not regress.
-
-export function noteLateOutcome(
-  store: TaskStore,
-  childSessionId: string,
-  toState: "completed_after_timeout" | "error",
-): RetainedTaskState {
+  config?: Pick<DynamicTaskConfig, "maxConcurrent">,
+): ActiveTaskState {
   const retained = store.retainedTasks.get(childSessionId);
   if (!retained) {
-    throw new Error(`Task "${childSessionId}" is not retained.`);
+    throw new Error(`Invalid transition: not found (no task for ${childSessionId})`);
   }
-  const allowed: TaskLifecycleState[] =
-    retained.state === "timed_out_retained"
-      ? ["completed_after_timeout", "error"]
-      : ["error"];
-  if (!allowed.includes(toState)) {
-    throw new Error(
-      `Invalid late outcome: "${retained.state}" → "${toState}" for task "${childSessionId}".`,
-    );
+  if (retained.state === "interrupted") {
+    throw new Error(`Task ${childSessionId} was interrupted by request; interrupted children are not revived — spawn a fresh dynamic_task instead.`);
   }
-  retained.state = toState;
+  if (config) {
+    const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
+    if (limitError) throw new Error(limitError);
+  }
+  const { state: _terminal, retainedAt: _at, abortError: _err, ...core } = retained;
+  const revived: ActiveTaskState = { ...core, state: "active", startedAt: Date.now() };
+  store.retainedTasks.delete(childSessionId);
+  store.activeTasks.set(childSessionId, revived);
   emitRetainedChange(store);
-  return retained;
+  return revived;
 }
 
-// ─── restoreRetained ───────────────────────────────────────────────
-// Crash-recovery bulk load: inserts ledger entries the store does not
-// already track. Live state always wins over the ledger; unknown ids with
-// valid records are retained, then pruned to bounds. Returns the count
-// restored. Entries are pre-validated by loadTaskLedger.
-
-export function restoreRetained(
-  store: TaskStore,
-  entries: Iterable<readonly [string, RetainedTaskState]>,
-): number {
-  let restored = 0;
-  for (const [id, task] of entries) {
-    if (store.activeTasks.has(id) || store.retainedTasks.has(id)) continue;
-    store.retainedTasks.set(id, task);
-    restored++;
-  }
-  if (restored > 0) {
-    pruneIfBounded(store);
-    emitRetainedChange(store);
-  }
-  return restored;
-}
-
-// ─── discardRetained ───────────────────────────────────────────────
-// Removes a retained entry (e.g. on interrupt). Returns true when present.
-
-export function discardRetained(store: TaskStore, childSessionId: string): boolean {
-  const removed = store.retainedTasks.delete(childSessionId);
-  if (removed) emitRetainedChange(store);
-  return removed;
-}
-
-// ─── findTask ──────────────────────────────────────────────────────
-// Looks up a task in active first, then retained. Returns the state or null.
-
-export function findTask(
-  store: TaskStore,
-  childSessionId: string,
-): ActiveTaskState | RetainedTaskState | null {
-  // Read hygiene: evictions on read keep the ledger honest for recovery.
-  if (pruneIfBounded(store) > 0) emitRetainedChange(store);
+// Notice announcements are recorded on the active entry by the gate module —
+// advisory metadata, never a lifecycle mutation.
+export function annotateNotice(store: TaskStore, childSessionId: string, message: string): boolean {
   const active = store.activeTasks.get(childSessionId);
-  if (active) return active;
-  const retained = store.retainedTasks.get(childSessionId);
-  if (retained) return retained;
-  return null;
+  if (!active) return false;
+  active.lastNotice = { message, at: Date.now() };
+  return true;
 }
 
-// ─── listTasks ─────────────────────────────────────────────────────
-// Read-only fleet snapshot for task_list. Prunes to bounds first so the
-// view matches what recovery would see. Returns live references — views
-// format immediately and never mutate.
+// Read-path TTL pruning (Task 06): expired retained entries are dropped
+// lazily, so every reader (including the test harness, which injects short
+// TTLs) sees a consistent view without needing a scheduler. The entry cap is
+// enforced on the same pass — the cap cannot be escaped by any state path.
+export function pruneRetainedTasks(
+  store: TaskStore,
+  config: Pick<DynamicTaskConfig, "retainedTaskTtlMs" | "retainedTaskMaxEntries">,
+): number {
+  const now = Date.now();
+  let dropped = 0;
+  for (const [id, task] of store.retainedTasks) {
+    if (now - task.retainedAt >= config.retainedTaskTtlMs) {
+      store.retainedTasks.delete(id);
+      dropped++;
+    }
+  }
+  while (store.retainedTasks.size > config.retainedTaskMaxEntries) {
+    const oldest = oldestRetainedId(store);
+    if (oldest === null) break;
+    store.retainedTasks.delete(oldest);
+    dropped++;
+  }
+  if (dropped > 0) emitRetainedChange(store);
+  return dropped;
+}
 
 export function listTasks(store: TaskStore): {
   active: ActiveTaskState[];
   retained: RetainedTaskState[];
 } {
-  if (pruneIfBounded(store) > 0) emitRetainedChange(store);
   return {
     active: [...store.activeTasks.values()],
     retained: [...store.retainedTasks.values()],
   };
 }
 
-// ─── pruneRetainedTasks ────────────────────────────────────────────
-// Lazy pruning: removes expired retained tasks by TTL and max entries.
-// Runs internally on every store op when bounds are set; direct calls
-// remain supported (existing callers pass full config — structurally
-// compatible with RetainedBounds). Returns number of pruned entries.
-
-export function pruneRetainedTasks(
-  store: TaskStore,
-  limits: RetainedBounds,
-): number {
-  const now = Date.now();
-  let pruned = 0;
-
-  // Remove expired by TTL
-  for (const [id, entry] of store.retainedTasks) {
-    if (now - entry.retainedAt > limits.retainedTaskTtlMs) {
-      store.retainedTasks.delete(id);
-      pruned++;
-    }
-  }
-
-  // Remove oldest entries if over max
-  if (store.retainedTasks.size > limits.retainedTaskMaxEntries) {
-    const entries = [...store.retainedTasks.entries()]
-      .sort((a, b) => a[1].retainedAt - b[1].retainedAt); // oldest first
-    const toRemove = store.retainedTasks.size - limits.retainedTaskMaxEntries;
-    for (let i = 0; i < toRemove; i++) {
-      const entry = entries[i];
-      if (!entry) break;
-      store.retainedTasks.delete(entry[0]);
-      pruned++;
-    }
-  }
-
-  return pruned;
+export function findTask(store: TaskStore, childSessionId: string): TaskRecord | null {
+  return store.activeTasks.get(childSessionId) ?? store.retainedTasks.get(childSessionId) ?? null;
 }
 
-// ─── pruneIfBounded + emitRetainedChange ───────────────────────────
-// Internal plumbing: prune on bounded stores; notify (never throwing, so
-// persistence can never break control flow) after retained mutations.
-
-function pruneIfBounded(store: TaskStore): number {
-  if (!store.bounds) return 0;
-  return pruneRetainedTasks(store, store.bounds);
+// Transient abort failures are recorded on the retained entry: an
+// interrupted-but-still-live child must be visible, not silently stranded.
+export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
+  const retained = store.retainedTasks.get(childSessionId);
+  if (!retained) return; // already pruned — nothing to annotate
+  retained.abortError = error;
+  emitRetainedChange(store);
 }
 
 function emitRetainedChange(store: TaskStore): void {
-  try {
-    store.onRetainedChange?.();
-  } catch {
-    // Persistence must never break control flow.
+  store.onRetainedChange?.();
+}
+
+// Durability boundary: hydrate entries already validated by the ledger
+// reader (session-lifecycle) into the live retained map. The reader owns
+// shape truth; this module owns placement and the cap.
+export function restoreRetained(
+  store: TaskStore,
+  records: Map<string, RetainedTaskState>,
+  maxEntries: number = DEFAULT_CONFIG.retainedTaskMaxEntries,
+): number {
+  let restored = 0;
+  for (const [id, record] of records) {
+    if (store.activeTasks.has(id)) continue; // live wins over restored history
+    store.retainedTasks.set(id, pruneIfBounded(store, record, maxEntries));
+    restored++;
+    emitRetainedChange(store);
   }
+  return restored;
+}
+
+// Restored entries bypass the runtime mutation choke points, so the cap is
+// enforced here (tenet: the cap cannot be escaped by any state path).
+function pruneIfBounded(store: TaskStore, record: RetainedTaskState, maxEntries: number): RetainedTaskState {
+  if (store.retainedTasks.size >= maxEntries) {
+    const oldestId = oldestRetainedId(store);
+    if (oldestId) store.retainedTasks.delete(oldestId);
+  }
+  return record;
+}
+
+export function oldestRetainedId(store: TaskStore): string | null {
+  let oldest: string | null = null;
+  let oldestAt = Infinity;
+  for (const [id, t] of store.retainedTasks) {
+    if (t.retainedAt < oldestAt) {
+      oldest = id;
+      oldestAt = t.retainedAt;
+    }
+  }
+  return oldest;
+}
+
+// Shared age formatting for task summaries and fleet rows.
+export function formatAge(startedAt: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes > 0 ? `${hours}h ${restMinutes}m` : `${hours}h`;
 }

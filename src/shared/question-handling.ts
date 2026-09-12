@@ -1,227 +1,164 @@
 // src/shared/question-handling.ts
-// Question gate (Task 04) — the ONLY module that attributes child questions
-// to tracked tasks and settles them. Resolve-then-validate: candidate owner
-// ids are resolved from the event first, then checked against the task
-// store in the same place. Fail-closed scoping: unattributable questions
-// (including the operator's own) are never touched.
-// ref:opencode-sdk-question — client.question API method signatures
-// ref:opencode-sdk-events — event type definitions and property shapes
-// ref:runtime-observation — production event payloads from session logs
+// Question auto-answer policy (Task 04). Background children must never sit
+// on a human prompt: an active child's question is answered with the first
+// suggestion, a settled child's question is rejected, and an unattributable
+// question is never touched. The SDK `question` namespace lives beyond the
+// generated client surface — it is typed via OpenCodeClient, not cast here.
 
-import type { TaskStore } from "./task-state.js";
+import { eventField, eventString, errorMessage, isEventRecord, type SessionContext } from "./session-lifecycle.js";
 import type { OpenCodeClient } from "./client.js";
-import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
+import type { TaskStore } from "./task-state.js";
 
-export interface QuestionEvent {
-  type: "question.created" | "question.replied" | "question.rejected";
-  properties?: {
-    id?: string;
-    request_id?: string;
-    task_id?: string;
-    session_id?: string;
-    answers?: Array<{ text?: string; value?: string }>;
-    /** @deprecated Use `id` instead — kept for backward compatibility */
-    requestID?: string;
-    [key: string]: unknown;
-  };
+export interface QuestionTarget {
+  questionId: string;
+  childSessionId: string | null;
 }
 
-/**
- * Extract request ID from a Question event.
- * Priority chain: event.properties.id (primary) -> request_id -> task_id -> requestID (legacy)
- *
- * The `id` field is preferred because it uniquely identifies the question instance
- * for reply/reject API calls, while `request_id` may be a broader correlation scope.
- */
-export function getRequestIdFromQuestion(event: unknown): string | null {
+export type QuestionDecision =
+  | { action: "reply"; answer: string }
+  | { action: "reject"; reason: string };
+
+export interface QuestionResult {
+  succeeded: boolean;
+  reason?: string;
+}
+
+const NO_ANSWER = "No suggestion available - background task cannot answer; steer with task_continue when it resumes";
+
+// Pure decision: active children keep moving (first suggestion, recorded);
+// settled children cannot answer and are closed explicitly.
+export function decideQuestion(
+  taskState: "active" | "retained",
+  answers: string[],
+): QuestionDecision {
+  if (taskState === "retained") {
+    return { action: "reject", reason: "This task has already settled. No response will be provided." };
+  }
+  const answer = answers[0];
+  if (!answer) return { action: "reject", reason: NO_ANSWER };
+  return { action: "reply", answer };
+}
+
+// SDK payloads vary: answers arrive as strings or single-field objects;
+// accept non-empty values, drop the rest.
+export function normalizeQuestionAnswers(raw: unknown): string[] {
+  const answers: string[] = [];
+  if (!Array.isArray(raw)) return answers;
+  for (const item of raw) {
+    if (typeof item === "string") {
+      if (item.length > 0) answers.push(item);
+    } else if (isEventRecord(item)) {
+      const value = eventString(item, ["text"])
+        ?? eventString(item, ["value"])
+        ?? eventString(item, ["answer"])
+        ?? eventString(item, ["label"]);
+      if (value) answers.push(value);
+    }
+  }
+  return answers;
+}
+
+// Question ids arrive under varying field names across SDK payload shapes.
+// Accepts either the full event (drills into properties) or bare properties.
+export function getRequestIdFromQuestion(eventOrProperties: unknown): string | null {
+  const properties = eventField(eventOrProperties, "properties") ?? eventOrProperties;
+  return eventString(properties, ["id"])
+    ?? eventString(properties, ["request_id"])
+    ?? eventString(properties, ["task_id"])
+    ?? eventString(properties, ["requestID"])
+    ?? null;
+}
+
+export function isValidQuestionEvent(event: unknown): boolean {
+  const type = eventString(event, ["type"]) ?? "";
+  return type === "question.created" || type === "question.replied" || type === "question.rejected";
+}
+
+export function resolveQuestionSession(event: unknown, store: TaskStore): QuestionTarget | null {
   const properties = eventField(event, "properties");
   if (!isEventRecord(properties)) return null;
-  for (const key of ["id", "request_id", "task_id", "requestID"]) {
-    const value = properties[key];
-    if (typeof value === "string" && value) return value;
+
+  const questionId = getRequestIdFromQuestion(event);
+  if (!questionId) return null;
+  // Remembered linkage first: the question id was tied to a child when the
+  // created event arrived, so later events resolve even without session ids.
+  const remembered = questionSessions.get(questionId);
+  if (remembered) return { questionId, childSessionId: remembered };
+  const candidate = eventString(properties, ["sessionID"])
+    ?? eventString(properties, ["sessionId"])
+    ?? eventString(properties, ["session_id"])
+    // task_id doubles as an owner hint when a different field carried the
+    // question id (see getRequestIdFromQuestion's priority chain).
+    ?? (questionId !== eventString(properties, ["task_id"]) ? eventString(properties, ["task_id"]) : null)
+    ?? null;
+  // Attribution is bounded to this plugin's own tasks: a question from any
+  // other session (including the operator's) passes through untouched.
+  const tracked = candidate !== null
+    && (store.activeTasks.has(candidate) || store.retainedTasks.has(candidate));
+  return { questionId, childSessionId: tracked ? candidate : null };
+}
+
+// Settlement transport: guards on inputs, and an "already resolved" answer
+// (or a 409/404 race with a human) counts as success — the question closed,
+// which is all the background task wanted. Linkage is forgotten once the
+// question no longer exists.
+function settleQuestionError(questionId: string, error: unknown): QuestionResult {
+  const status = isEventRecord(error) ? (error as Record<string, unknown>).status : undefined;
+  const message = errorMessage(error);
+  if (status === 409 || /already (resolved|answered)|question not found|not found/i.test(message)) {
+    forgetQuestionSession(questionId);
+    return { succeeded: true, reason: "already_resolved" };
   }
-  return null;
-}
-
-/**
- * Verify that a raw event matches expected question event shape.
- * This is a runtime guard against SDK shape drift.
- */
-export function isValidQuestionEvent(event: unknown): event is QuestionEvent {
-  if (!event || typeof event !== "object") return false;
-  const e = event as Record<string, unknown>;
-  return (
-    e.type === "question.created" ||
-    e.type === "question.replied" ||
-    e.type === "question.rejected"
-  );
-}
-
-/**
- * Normalize question answers to a flat string array.
- * Handles: string items, { text, value } objects, null, undefined, and non-array inputs.
- */
-export function normalizeQuestionAnswers(answers: unknown): string[] {
-  if (!Array.isArray(answers)) return [];
-  return answers
-    .map((a: unknown): string => {
-      if (typeof a === "string") return a;
-      if (isEventRecord(a)) {
-        const text = typeof a.text === "string" ? a.text : "";
-        const value = typeof a.value === "string" ? a.value : "";
-        return text || value;
-      }
-      return "";
-    })
-    .filter(Boolean);
-}
-
-/**
- * Shared idempotent-call core: runs the API call, absorbs already-resolved
- * (409 Conflict) as success, and never throws. Both reply and reject funnel
- * through here — one place owns the settlement semantics.
- */
-async function invokeQuestionApi(
-  call: () => Promise<unknown>,
-): Promise<{ succeeded: boolean; reason?: string }> {
-  try {
-    await call();
-    return { succeeded: true };
-  } catch (err: unknown) {
-    const reason = errorMessage(err);
-    if (reason.includes("already resolved") || eventField(err, "status") === 409) {
-      return { succeeded: true, reason: "already_resolved" };
-    }
-    return { succeeded: false, reason: reason || String(err) };
+  if (status === 404 || /no such question|missing/i.test(message)) {
+    forgetQuestionSession(questionId);
+    return { succeeded: true, reason: "already_resolved" };
   }
+  return { succeeded: false, reason: message };
 }
 
-// ─── Question→session linkage ──────────────────────────────────────
-// Owned here (Tenet 5): resolution remembers it, replied/rejected forgets
-// it. Never accessed directly outside this module.
+export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
+  if (!questionId || !answer) {
+    return Promise.resolve({ succeeded: false, reason: "missing question id or answer" });
+  }
+  return client.question
+    .reply({ path: { id: questionId }, body: { answer } })
+    .then(() => ({ succeeded: true }))
+    .catch((error: unknown) => settleQuestionError(questionId, error));
+}
 
+export function rejectQuestion(client: OpenCodeClient, questionId: string, reason: string): Promise<QuestionResult> {
+  if (!questionId) {
+    return Promise.resolve({ succeeded: false, reason: "missing question id" });
+  }
+  return client.question
+    .reject({ path: { id: questionId }, body: { reason } })
+    .then(() => ({ succeeded: true }))
+    .catch((error: unknown) => settleQuestionError(questionId, error));
+}
+
+// question.asked carries no session id; correlate asked → replied.
+// FIFO-capped: questions that never resolve (operator abandons the child)
+// must not grow the map unboundedly; the oldest correlations are least
+// likely to receive a late settlement event.
+const QUESTION_CORRELATION_MAX = 256;
 const questionSessions = new Map<string, string>();
 
 export function rememberQuestionSession(questionId: string, childSessionId: string): void {
   questionSessions.set(questionId, childSessionId);
+  if (questionSessions.size > QUESTION_CORRELATION_MAX) {
+    const oldest = questionSessions.keys().next();
+    if (!oldest.done) questionSessions.delete(oldest.value);
+  }
 }
 
 export function forgetQuestionSession(questionId: string): void {
   questionSessions.delete(questionId);
 }
 
-// ─── resolveQuestionSession ──────────────────────────────────────────
-// Resolve-then-validate gate. The question id uses the same priority chain
-// as the API calls; owner candidates cover both casings, both nestings,
-// and task ids — each validated against tracked tasks before use.
-// Returns null only when the event carries no question id at all.
-// A resolved-but-unknown childSessionId means "leave untouched".
-
-export interface ResolvedQuestion {
-  questionId: string;
-  childSessionId: string | null;
+export function resolveQuestionSessionId(ctx: SessionContext): string | null {
+  return ctx.sessionID ?? ctx.sessionId ?? ctx.session_id ?? null;
 }
 
-const OWNER_KEYS = [
-  "sessionID",
-  "sessionId",
-  "session_id",
-  "task_id",
-  "taskId",
-] as const;
-
-export function resolveQuestionSession(event: unknown, store: TaskStore): ResolvedQuestion | null {
-  const questionId = getRequestIdFromQuestion(event);
-  if (!questionId) return null;
-  const properties = eventField(event, "properties");
-  const data = eventField(event, "data");
-  const props = isEventRecord(properties) ? properties : {};
-  const payload = isEventRecord(data) ? data : {};
-
-  const remembered = questionSessions.get(questionId);
-  if (remembered) return { questionId, childSessionId: remembered };
-
-  const candidates = [
-    ...OWNER_KEYS.map((key) => props[key]),
-    ...OWNER_KEYS.map((key) => payload[key]),
-  ];
-  for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim()) {
-      if (store.activeTasks.has(candidate) || store.retainedTasks.has(candidate)) {
-        return { questionId, childSessionId: candidate };
-      }
-    }
-  }
-
-  return { questionId, childSessionId: null };
-}
-
-// ─── decideQuestion ──────────────────────────────────────────────────
-// Deliberate degradation (Tenet 11), recorded per kind. Active children
-// keep moving (first suggestion, recorded); nothing answerable or already
-// gone gets a rejection with the recovery path; the caller never guesses.
-
-export type QuestionDecision =
-  | { action: "reply"; answer: string }
-  | { action: "reject"; reason: string };
-
-export function decideQuestion(kind: "active" | "retained", answers: string[]): QuestionDecision {
-  if (kind === "retained") {
-    return {
-      action: "reject",
-      reason: "This task timed out in the parent session. No response will be provided.",
-    };
-  }
-  if (answers.length > 0) {
-    const [first] = answers;
-    if (first !== undefined) {
-      return { action: "reply", answer: first };
-    }
-  }
-  return {
-    action: "reject",
-    reason: "Background task — use task_continue for follow-up",
-  };
-}
-
-/**
- * Idempotent reply to a question.
- * Silently succeeds if question is already resolved (409 Conflict).
- * Never throws — returns a result object.
- */
-export async function replyToQuestion(
-  client: OpenCodeClient,
-  questionId: string,
-  answer: string
-): Promise<{ succeeded: boolean; reason?: string }> {
-  if (!questionId || !answer) {
-    return { succeeded: false, reason: "Missing questionId or answer" };
-  }
-  return invokeQuestionApi(() =>
-    client.question.reply({
-      path: { id: questionId },
-      body: { answer },
-    })
-  );
-}
-
-/**
- * Idempotent rejection of a question.
- * Silently succeeds if question is already resolved.
- * Never throws — returns a result object.
- */
-export async function rejectQuestion(
-  client: OpenCodeClient,
-  questionId: string,
-  reason: string
-): Promise<{ succeeded: boolean; reason?: string }> {
-  if (!questionId) {
-    return { succeeded: false, reason: "Missing questionId" };
-  }
-  return invokeQuestionApi(() =>
-    client.question.reject({
-      path: { id: questionId },
-      body: { reason },
-    })
-  );
+export function _clearQuestionSessionsForTests(): void {
+  questionSessions.clear();
 }

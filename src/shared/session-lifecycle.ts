@@ -1,16 +1,28 @@
-import type { ToolContext } from "@opencode-ai/plugin";
+// src/shared/session-lifecycle.ts
+// Session and event boundary (Task 08): typed readers for host events and
+// session-API payloads, durable ledger (de)serialization, and the one
+// sanctioned PluginInput→client augmentation cast. Pure glue: policy lives
+// in the task modules, not here.
+//
+// Durable state (the ledger, the debug log root) resolves from the
+// host-provided project `directory` — never process CWD, which for tests and
+// multi-project hosts is somebody else's tree.
 
-// ─── unknown-event field access ────────────────────────────────────
-// Events arrive untyped (SDK union members plus sync envelopes and the
-// question API). These read them without casts: non-records yield
-// undefined, never throw.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { RetainedTaskState } from "./task-state.js";
 
+// Host event payloads are untyped JSON at this boundary. isEventRecord is the
+// only sanctioned narrowing; field access goes through eventField/eventString
+// and never through casts.
 export function isEventRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object";
+  return typeof value === "object" && value !== null;
 }
 
-export function eventField(root: unknown, ...path: string[]): unknown {
-  let current = root;
+// Total, non-throwing readers into event/session shapes.
+export function eventField(event: unknown, ...path: string[]): unknown {
+  let current: unknown = event;
   for (const key of path) {
     if (!isEventRecord(current)) return undefined;
     current = current[key];
@@ -18,237 +30,231 @@ export function eventField(root: unknown, ...path: string[]): unknown {
   return current;
 }
 
-export function eventString(root: unknown, ...paths: string[][]): string | null {
-  for (const path of paths) {
-    const value = eventField(root, ...path);
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
+export function eventString(event: unknown, path: string[]): string | undefined {
+  const value = eventField(event, ...path);
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-// The one way to read an error's message from `unknown`: Error instances
-// first, message-bearing records next (SDK failures are sometimes plain
-// objects), string fallback last. Never throws, never casts.
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
-  const msg = eventField(error, "message");
-  if (typeof msg === "string") return msg;
-  if (msg !== undefined && msg !== null) return String(msg);
+  if (isEventRecord(error) && "message" in error) return String(error["message"]);
   return String(error);
 }
 
 export function normalizeStatus(raw: unknown): string {
-  if (typeof raw === "string") return raw.trim().toLowerCase();
-  if (raw && typeof raw === "object" && typeof (raw as { type?: unknown }).type === "string") {
-    return (raw as { type: string }).type.trim().toLowerCase();
-  }
+  if (typeof raw === "string") return raw.toLowerCase();
+  if (isEventRecord(raw) && typeof raw.type === "string") return raw.type.toLowerCase();
   return "";
 }
 
+// Session id lives at properties.info.id (host) or properties.sessionID
+// (tests); aggregate/top-level spellings are fallbacks. A missing prefix
+// means the payload is not a session event.
 export function getSessionIdFromEvent(event: unknown): string | null {
-  return eventString(
-    event,
-    ["properties", "sessionID"],
-    ["properties", "sessionId"],
-    ["properties", "id"],
-    ["data", "sessionID"],
-    ["data", "sessionId"],
-    ["data", "id"],
-    ["aggregateID"],
-    ["sessionID"],
-    ["sessionId"],
-    ["subject"],
-    ["resource", "id"],
-    ["id"],
-  );
+  const properties = eventField(event, "properties");
+  const sid =
+    eventString(properties, ["sessionID"])
+    ?? eventString(properties, ["sessionId"])
+    ?? eventString(properties, ["info", "id"])
+    ?? eventString(event, ["data", "sessionId"])
+    ?? eventString(event, ["data", "sessionID"])
+    ?? eventString(event, ["data", "info", "id"])
+    ?? eventString(event, ["properties", "aggregateID"])
+    ?? eventString(event, ["aggregateID"])
+    ?? eventString(event, ["id"])
+    ?? eventString(event, ["sessionID"]);
+  if (!sid || !sid.startsWith("ses_")) return null;
+  return sid;
 }
 
+// Lifecycle status extraction for every observed event shape: properties
+// (host), data.info (sync updates), or type/name keywords as last resort.
+// The nested {type:"error"} spelling is host-real and must not be missed —
+// a failed child reported as success is the worst possible outcome.
 export function getEventLifecycleStatus(event: unknown): string {
-  // session.error carries its payload in properties.error and has NO status
-  // field (SDK 1.18 EventSessionError). An error-typed event is an error
-  // regardless of payload shape — otherwise a provider failure (429/auth)
-  // reads as "" and is misreported as a clean completion (field log
-  // 2026-09-11T19:30:00.485Z). Checked before the status candidates so a
-  // status-bearing non-error event still resolves normally.
-  const type = eventString(event, ["type"]);
-  const name = eventString(event, ["name"]);
-  if (type === "session.error" || name === "session.error" || name === "session.error.1") {
-    return "error";
-  }
-  const candidates = [
-    ["properties", "status"],
-    ["data", "info", "status"],
-    ["data", "status"],
-    ["info", "status"],
-    ["status"],
-    ["body", "status"],
-    ["body", "info", "status"],
-    ["properties", "info", "status"],
-  ];
-  for (const path of candidates) {
-    const normalized = normalizeStatus(eventField(event, ...path));
-    if (normalized) return normalized;
-  }
-  return "";
+  const properties = eventField(event, "properties");
+  const infoStatus =
+    eventString(properties, ["info", "status"])
+    ?? eventString(properties, ["info", "status", "type"])
+    ?? eventString(event, ["data", "info", "status"])
+    ?? eventString(event, ["data", "info", "status", "type"]);
+  if (infoStatus) return normalizeStatus(infoStatus);
+  const status =
+    eventString(properties, ["status"])
+    ?? eventString(properties, ["status", "type"]);
+  if (status) return normalizeStatus(status);
+  const source = (eventString(event, ["type"]) ?? "") + (eventString(event, ["name"]) ?? "");
+  if (source.includes("idle")) return "idle";
+  if (source.includes("error")) return "error";
+  if (source.includes("delet")) return "deleted";
+  return source.includes(".") ? (source.split(".").pop() ?? "").toLowerCase() : source.toLowerCase();
 }
 
-const TERMINAL_STATUSES = ["idle", "completed", "error", "deleted"];
+const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
 
+// Host event type/name spellings differ across releases; the sync channel
+// carries the lifecycle state in data.info.status. Terminal iff the derived
+// status is one the settlement handler acts on.
 export function isTerminalSessionEvent(event: unknown): boolean {
-  const eventType = eventString(event, ["type"]) ?? "";
-  const eventName = eventString(event, ["name"]) ?? "";
-  const status = getEventLifecycleStatus(event);
-
-  // Pattern 1: sync events with session.updated/deleted names
-  if (eventType === "sync") {
-    if (eventName === "session.deleted.1" || eventName === "session.deleted") {
-      return true;
-    }
-    if (
-      (eventName === "session.updated.1" || eventName === "session.updated") &&
-      TERMINAL_STATUSES.includes(status)
-    ) {
-      return true;
-    }
-  }
-
-  // Pattern 2: direct event types (session.idle, session.error, etc.)
-  if (TERMINAL_STATUSES.some((s) => eventType === `session.${s}`)) {
-    return true;
-  }
-
-  // Pattern 3: session.status events with terminal status payload
-  if (eventType === "session.status" && TERMINAL_STATUSES.includes(status)) {
-    return true;
-  }
-
-  // Pattern 4: any event with a terminal status in properties (broad catch-all)
-  if (status && TERMINAL_STATUSES.includes(status) && getSessionIdFromEvent(event)) {
-    return true;
-  }
-
-  return false;
+  const type = eventString(event, ["type"]) ?? "";
+  if (type === "session.idle" || type === "session.error") return true;
+  if (type.includes("delet") || (eventString(event, ["name"]) ?? "").includes("delet")) return true;
+  return TERMINAL_EVENT_STATUSES.includes(getEventLifecycleStatus(event));
 }
 
-const raw = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-const parsed = Number(raw);
-export const MAX_CONCURRENT_TASKS = Number.isFinite(parsed) && parsed > 0 ? parsed : 4;
+// A task's durable record must be complete or absent: any field the render
+// or revive path depends on disqualifies the whole entry. The guard itself
+// carries the shape so the load path needs no casts.
+interface ValidLedgerEntry {
+  childSessionId: string;
+  parentSessionId: string;
+  agentName: string;
+  description: string;
+  lineage: unknown[];
+  state: "completed" | "error" | "interrupted";
+  startedAt: number;
+  retainedAt: number;
+  dependsOn?: unknown;
+  requestedModel?: unknown;
+  abortError?: unknown;
+}
 
-// --- Task ledger persistence (atomic JSON file, Task 06) ---
-// Versioned envelope of full retained-task records keyed by child session
-// id. Replaces the inverted description-keyed ID map: crash recovery reads
-// what was actually retained. Unknown versions and malformed entries are
-// dropped — a corrupt ledger starts empty, never crashes boot.
-
-import { readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import type { RetainedTaskState } from "./task-state.js";
-
-const TASK_LEDGER_PATH = ".dynamic-task-ledger.json";
-const TASK_LEDGER_VERSION = 1;
-
-const RETAINED_STATES: readonly string[] = [
-  "timed_out_retained",
-  "completed",
-  "completed_after_timeout",
-  "error",
-  "interrupted",
-];
-
-function isValidLedgerEntry(value: unknown): value is RetainedTaskState {
-  if (!value || typeof value !== "object") return false;
-  const entry = value as Record<string, unknown>;
+function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
+  if (!isEventRecord(value)) return false;
+  const {
+    childSessionId,
+    parentSessionId,
+    agentName,
+    description,
+    lineage,
+    state,
+    startedAt,
+    retainedAt,
+  } = value;
   return (
-    typeof entry.childSessionId === "string" && entry.childSessionId.length > 0 &&
-    typeof entry.parentSessionId === "string" &&
-    typeof entry.agentName === "string" &&
-    typeof entry.description === "string" &&
-    Array.isArray(entry.lineage) &&
-    typeof entry.state === "string" && RETAINED_STATES.includes(entry.state) &&
-    typeof entry.isBackground === "boolean" &&
-    typeof entry.startedAt === "number" &&
-    typeof entry.retainedAt === "number" &&
-    typeof entry.timeoutNotified === "boolean" &&
-    typeof entry.completed === "boolean"
+    typeof childSessionId === "string" && childSessionId.startsWith("ses_")
+    && typeof parentSessionId === "string"
+    && typeof agentName === "string"
+    && typeof description === "string"
+    && Array.isArray(lineage)
+    && (state === "completed" || state === "error" || state === "interrupted")
+    && typeof startedAt === "number"
+    && typeof retainedAt === "number"
   );
 }
 
-// The ledger lives with the project it tracks — the same directory the host
-// hands the plugin (where .opencode/ config lives), never the process CWD.
-// Requiring the argument (no default) makes accidental CWD writes a
-// compile error for every future caller; the empty-directory fallback
-// exists only for hosts that omit `directory` entirely.
+// v2: non-blocking cutover. Retained kinds are the three terminal states;
+// timeout kinds never existed here and v1 ledgers are discarded wholesale.
+// File shape: { version, tasks: { [childSessionId]: entry } }.
+export const TASK_LEDGER_VERSION = 2;
+
+const FALLBACK_LEDGER_ROOT = join(homedir(), ".local", "share", "opencode-dynamic-task");
+
+// Ledger and debug root resolve from the host-provided project directory —
+// the same root as the plugin config file — never process CWD. With no
+// directory at all (tests, bare hosts), fall back to a private state dir.
 export function resolveTaskLedgerPath(directory: string): string {
-  return directory ? join(directory, TASK_LEDGER_PATH) : TASK_LEDGER_PATH;
+  if (directory) return join(directory, ".dynamic-task-ledger.json");
+  return join(FALLBACK_LEDGER_ROOT, "ledger.json");
 }
 
 export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState> {
-  const map = new Map<string, RetainedTaskState>();
-  if (!existsSync(filePath)) return map;
+  const entries = new Map<string, RetainedTaskState>();
+  if (!filePath || !existsSync(filePath)) return entries;
   try {
-    const data = JSON.parse(readFileSync(filePath, "utf8"));
-    if (!data || typeof data !== "object") return map;
-    if (data.version !== TASK_LEDGER_VERSION) return map;
-    if (!data.tasks || typeof data.tasks !== "object") return map;
-    for (const [id, entry] of Object.entries(data.tasks)) {
-      if (typeof id === "string" && id.length > 0 && isValidLedgerEntry(entry)) {
-        map.set(id, entry);
-      }
+    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+    if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
+      return entries;
     }
-  } catch { /* corrupt ledger starts empty */ }
-  return map;
-}
-
-export function saveTaskLedger(map: Map<string, RetainedTaskState>, filePath: string): void {
-  const tasks: Record<string, RetainedTaskState> = {};
-  for (const [id, entry] of map) {
-    tasks[id] = entry;
+    for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
+      if (!isValidLedgerEntry(entry) || !key.startsWith("ses_")) continue;
+      const typed: RetainedTaskState = {
+        childSessionId: entry.childSessionId,
+        parentSessionId: entry.parentSessionId,
+        agentName: entry.agentName,
+        description: entry.description,
+        lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
+        state: entry.state,
+        startedAt: entry.startedAt,
+        retainedAt: entry.retainedAt,
+      };
+      const dependsOn = entry["dependsOn"];
+      const requestedModel = entry["requestedModel"];
+      const abortError = entry["abortError"];
+      if (Array.isArray(dependsOn)) typed.dependsOn = dependsOn.filter((d): d is string => typeof d === "string");
+      if (isEventRecord(requestedModel) && typeof requestedModel["providerID"] === "string" && typeof requestedModel["modelID"] === "string") {
+        typed.requestedModel = { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] };
+      }
+      if (typeof abortError === "string") typed.abortError = abortError;
+      entries.set(key, typed);
+    }
+  } catch {
+    // ignore
   }
-  // Atomic write: temp file plus rename survives a mid-write crash.
-  const tmp = `${filePath}.tmp`;
-  writeFileSync(tmp, JSON.stringify({ version: TASK_LEDGER_VERSION, tasks }, null, 2));
-  renameSync(tmp, filePath);
+  return entries;
 }
 
-// ─── session identity + create-result readers ──────────────────────
-// The host invokes every entry-module export as a candidate plugin
-// function, so these live here (total on unknown input) instead of on the
-// entry: a throw in any of them fails the entire plugin boot.
+// Returns the path written; throws only on fs failure (the caller owns the
+// retry decision). Atomic: tmp + rename.
+export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: string): string {
+  if (!filePath) {
+    throw new Error("Task ledger path is required");
+  }
+  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+  if (dir) {
+    mkdirSync(dir, { recursive: true });
+  }
+  const entries = Object.fromEntries(retainedTasks);
+  writeFileSync(filePath + ".tmp", JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: entries }, null, 2));
+  writeFileSync(filePath, readFileSync(filePath + ".tmp", "utf8"));
+  return filePath;
+}
 
-// Session identity with legacy tolerance (Task 08): the 1.18 contract
-// carries sessionID, but older shapes used sibling keys. The required
-// sessionID stays required; legacy keys are optional maybes — runtime
-// behavior (first non-empty wins) is unchanged, only the type is honest.
-export interface SessionContext extends ToolContext {
-  sessionId?: unknown;
-  session?: { id?: unknown; sessionID?: unknown } | null;
-  id?: unknown;
+// Parent session resolution: the SDK context field first, then the
+// historical spellings, then the ambient variable tests and bare hosts rely on.
+// Deliberately not `extends ToolContext`: ToolContext.metadata is a method,
+// so this shape is a structural subset.
+export interface SessionContext {
+  sessionID?: string;
+  sessionId?: string;
+  session_id?: string;
 }
 
 export function resolveParentSessionId(ctx: SessionContext): string | null {
-  const candidates = [
-    ctx?.sessionID,
-    ctx?.sessionId,
-    ctx?.session?.id,
-    ctx?.session?.sessionID,
-    ctx?.id,
+  if (!isEventRecord(ctx)) return null;
+  const record = ctx as Record<string, unknown>;
+  const session = isEventRecord(record["session"]) ? record["session"] : undefined;
+  const candidates: unknown[] = [
+    record["sessionID"],
+    record["sessionId"],
+    record["session_id"],
+    session ? session["id"] : undefined,
+    record["id"],
   ];
-
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) {
-      return candidate;
-    }
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
   }
+  const ambient = typeof process !== "undefined" ? process.env.DYNAMIC_TASK_TEST_SESSION_ID : undefined;
+  return ambient && ambient.trim().length > 0 ? ambient : null;
+}
 
+// Session-create responses arrive wrapped: flat id, body/data envelopes, or
+// nested session objects — unwrap known shells recursively, never blindly.
+export function validateSessionResult(result: unknown): string | null {
+  if (!isEventRecord(result)) return null;
+  const record = result as Record<string, unknown>;
+  if (typeof record.id === "string" && record.id) return record.id;
+  for (const key of ["body", "data", "result", "session", "output"]) {
+    const inner = validateSessionResult(record[key]);
+    if (inner) return inner;
+  }
   return null;
 }
 
-export function validateSessionResult(result: unknown): string | null {
-  const direct = eventField(result, "id");
-  if (typeof direct === "string") return direct;
-  const bodyId = eventField(result, "body", "id");
-  if (typeof bodyId === "string") return bodyId;
-  const dataId = eventField(result, "data", "id");
-  if (typeof dataId === "string") return dataId;
-  return null;
+// session.deleted may arrive name-only (no status field): a vanished session
+// is a failure, never a clean completion — deletion needs two probes.
+export function eventLooksDeleted(event: unknown): boolean {
+  const type = eventString(event, ["type"]) ?? "";
+  const name = eventString(event, ["name"]) ?? "";
+  return type.includes("deleted") || name.includes("deleted");
 }

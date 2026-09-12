@@ -129,26 +129,3 @@ export function validateLineage(
 export function buildTaskLineage(parentLineage: string[], childAgent: string): string[] {
   return [...parentLineage, childAgent];
 }
-
-// ─── resolveAwaitResponse ─────────────────────────────────────────
-// Determines whether a tool call should await synchronously.
-// Falls back to config.defaultAwaitResponse when not explicitly set.
-
-export function resolveAwaitResponse(
-  value: unknown,
-  config: DynamicTaskConfig,
-): boolean {
-  if (typeof value === "boolean") return value;
-  // OpenCode tool args may arrive as strings from LLM parsing
-  if (typeof value === "string") {
-    const lower = value.trim().toLowerCase();
-    if (lower === "true") return true;
-    if (lower === "false") return false;
-  }
-  // Numeric fallbacks (1 = true, 0 = false)
-  if (typeof value === "number") {
-    return value !== 0;
-  }
-  // value is null, undefined, or unparseable → use config default
-  return config.defaultAwaitResponse;
-}

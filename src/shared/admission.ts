@@ -72,16 +72,12 @@ export function resolveAdmission(
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
-// Readiness gate: every dependency must have completed — straightforwardly
-// or after an earlier timeout. Running, failed, timed-out, and interrupted
-// deps block with the pending set. Unknown ids pass: they may have
-// completed and aged out of the bounded retained history, and blocking
-// forever on garbage-collected history would deadlock planners.
+// Readiness gate: every dependency must have completed. Running, failed,
+// and interrupted deps block with the pending set. Unknown ids pass: they
+// may have completed and aged out of the bounded retained history, and
+// blocking forever on garbage-collected history would deadlock planners.
 
-const SATISFIED_DEPENDENCY_STATES: readonly string[] = [
-  "completed",
-  "completed_after_timeout",
-];
+const SATISFIED_DEPENDENCY_STATES: readonly string[] = ["completed"];
 
 export function resolveDependencies(
   store: TaskStore,
@@ -157,8 +153,7 @@ export interface RegistrationParams {
   agentName: string;
   description: string;
   lineage: string[];
-  isBackground: boolean;
-  requestedModel?: string | undefined;
+  requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
 }
 
@@ -192,9 +187,9 @@ export function buildAgentList(agents: unknown): string {
   return names.join(", ");
 }
 
-export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]> {
+export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
   const now = Date.now();
-  if (now - lastCacheTime < CACHE_TTL && cachedAgents.length > 0) {
+  if (now - lastCacheTime < cacheTtlMs && cachedAgents.length > 0) {
     return cachedAgents;
   }
 
@@ -202,19 +197,19 @@ export async function fetchAgents(client: OpenCodeClient): Promise<AgentRecord[]
   // re-dial; persistent failure keeps the warn-and-stale behavior below.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-       const result: unknown = await client.app.agents();
-       cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
+      const result: unknown = await client.app.agents();
+      cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
 
-       lastCacheTime = now;
-       break;
-      } catch (error: unknown) {
-        if (attempt === 1 && error instanceof Error) {
-          // safeLog, not a raw app.log: the client itself may be unusable
-          // (host probes entry exports outside the plugin lifecycle) and a
-          // throw here fails the entire plugin boot.
-          await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
-        }
+      lastCacheTime = Date.now();
+      break;
+    } catch (error: unknown) {
+      if (attempt === 1 && error instanceof Error) {
+        // safeLog, not a raw app.log: the client itself may be unusable
+        // (host probes entry exports outside the plugin lifecycle) and a
+        // throw here fails the entire plugin boot.
+        await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
       }
+    }
   }
 
   return cachedAgents;

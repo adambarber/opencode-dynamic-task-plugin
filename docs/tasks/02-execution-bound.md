@@ -1,5 +1,11 @@
 # 02 — Execution Bound
 
+> **SUPERSEDED by cycle 09 (`09-non-blocking-settlement.md`), 2026-09-12.**
+> The TimerProvider funnel this cycle built was deleted: per-call clocks raced
+> on one session and the first expiry deafened the ledger to the child's real
+> outcome. Settlement now lives solely at the notification layer. Kept as the
+> record of what was bound and why the bound itself was the bug.
+
 **Doctrine:** Tenets 2, 7, 11. Bound execution, not inputs. Every bound has one named place and one deliberate, observable outcome.
 
 ## Evidence

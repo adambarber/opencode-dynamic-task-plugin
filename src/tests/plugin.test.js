@@ -16,7 +16,7 @@ import {
   invokePrompt,
   classifyPromptError,
   extractTextFromParts,
-  extractTextFromPromptResult,
+
   getLatestAssistantText,
   hydrateLatestOutcome,
   parseModelOverride,
@@ -256,7 +256,7 @@ import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
   isTerminalSessionEvent,
-  MAX_CONCURRENT_TASKS,
+
 } from "../../dist/shared/session-lifecycle.js";
 
 describe("normalizeStatus", () => {
@@ -430,9 +430,9 @@ describe("extractSessionStatus: message-level error", () => {
   });
 });
 
-describe("MAX_CONCURRENT_TASKS", () => {
-  it("defaults to 4 when env var is not set", () => {
-    assert.strictEqual(MAX_CONCURRENT_TASKS, 4);
+describe("maxConcurrent default", () => {
+  it("defaults to 4 when env is not set", () => {
+    assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
   });
 });
 
@@ -494,12 +494,11 @@ describe("isTerminalSessionEvent", () => {
 // --- Shared Task Formatting Helpers (Task 2) ---
 import {
   buildBackgroundPrompt,
-  formatParentNotification,
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
-  truncateText,
 } from "../../dist/shared/task-formatting.js";
+import { formatParentNotification, truncateText } from "../../dist/shared/notify.js";
 
 describe("buildBackgroundPrompt", () => {
   it("adds explicit background instructions before user prompt", () => {
@@ -511,81 +510,67 @@ describe("buildBackgroundPrompt", () => {
 });
 
 describe("formatParentNotification", () => {
-  it("formats timeout with next-step guidance", () => {
-    const message = formatParentNotification(
-      { childSessionId: "ses_1", description: "Quick task", timeoutMs: 30000 },
-      "timeout"
-    );
-    assert.match(message, /Background task did not report completion before timeout/);
-    assert.match(message, /Use task_result to inspect the latest state\./);
+  const state = { childSessionId: "ses_1", description: "Quick task" };
+
+  it("formats completion with the wire marker and output", () => {
+    const message = formatParentNotification(state, "completed", "COMPLETED_OK");
+    assert.match(message, /^\[dynamic-task-notify\]/);
+    assert.match(message, /Background task completed successfully\./);
+    assert.match(message, /Session: ses_1/);
+    assert.match(message, /Latest output: COMPLETED_OK/);
   });
 
   it("formats error with recovery guidance", () => {
-    const message = formatParentNotification(
-      { childSessionId: "ses_1", description: "Quick task", timeoutMs: 30000 },
-      "error",
-      "Something failed"
-    );
+    const message = formatParentNotification(state, "error", "Something failed");
     assert.match(message, /Background task ended with an error\./);
-    assert.match(message, /Use task_result or task_continue to inspect or recover\./);
+    assert.match(message, /Something failed/);
+    assert.match(message, /task_result or task_continue/);
   });
 
-  it("formats completed_after_timeout explicitly", () => {
-    const message = formatParentNotification(
-      { childSessionId: "ses_1", description: "Quick task", timeoutMs: 30000 },
-      "completed_after_timeout",
-      "Done late"
-    );
-    assert.match(message, /Background task completed after an earlier timeout notification\./);
+  it("formats a child notice with the reply path", () => {
+    const message = formatParentNotification(state, "notice", "blocked on credentials");
+    assert.match(message, /Message from a running child task:/);
+    assert.match(message, /blocked on credentials/);
+    assert.match(message, /task_continue/);
   });
 
-  it("formats successful completion", () => {
-    const message = formatParentNotification(
-      { childSessionId: "ses_1", description: "Quick task", timeoutMs: 30000 },
-      "completed",
-      "COMPLETED_OK"
-    );
-    assert.match(message, /Background task completed successfully\./);
-    assert.match(message, /Latest output: COMPLETED_OK/);
+  it("renders the empty-output placeholder", () => {
+    assert.match(formatParentNotification(state, "completed", "   "), /\(No text output\)/);
+  });
+
+  it("truncates long payloads", () => {
+    const message = formatParentNotification(state, "completed", "x".repeat(3000));
+    assert.ok(message.length < 3000);
+    assert.match(message, /\.\.\./);
   });
 });
 
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
     const result = formatTaskResultSummary({
-      sessionId: "ses_123",
-      status: "busy",
-      messageCount: 4,
-      latestText: "Still working",
-      tracked: true,
-      timeoutNotified: false,
+      sessionId: "ses_123", status: "busy", messageCount: 4,
+      latestText: "Still working", tracked: true,
     });
     assert.match(result, /Recommended next action: use task_result again later\./);
+    assert.match(result, /Tracked: yes/);
   });
 
   it("includes recovery guidance for error status", () => {
     const result = formatTaskResultSummary({
-      sessionId: "ses_123",
-      status: "error",
-      messageCount: 4,
-      latestText: "Failed",
-      tracked: true,
-      timeoutNotified: false,
+      sessionId: "ses_123", status: "error", messageCount: 4,
+      latestText: "Failed", tracked: false,
     });
     assert.match(result, /Recommended next action: inspect latest output/);
+    assert.match(result, /Tracked: no/);
   });
 
-  it("includes tracked and timeout metadata", () => {
+  it("surfaces delivery attempts when provided", () => {
     const result = formatTaskResultSummary({
-      sessionId: "ses_123",
-      status: "idle",
-      messageCount: 4,
-      latestText: "Done",
-      tracked: true,
-      timeoutNotified: true,
+      sessionId: "ses_123", status: "idle", messageCount: 4,
+      latestText: "Done", tracked: true,
+      notification: { kind: "completed", delivered: true, attempts: 2 },
     });
-    assert.match(result, /Tracked background task: yes/);
-    assert.match(result, /Timeout notification sent: yes/);
+    assert.match(result, /Last notification: completed \(delivered in 2 attempt/);
   });
 });
 
@@ -647,11 +632,9 @@ function retainedEntry(overrides = {}) {
     description: "t",
     lineage: [],
     state: "completed",
-    isBackground: true,
     startedAt: 1,
     retainedAt: 2,
-    timeoutNotified: false,
-    completed: true,
+    timeoutNotified: true,
     ...overrides,
   };
 }
@@ -669,6 +652,7 @@ describe("task ledger persistence", () => {
       assert.strictEqual(loaded.size, 1);
       assert.strictEqual(loaded.get("ses_1").agentName, "explore");
       assert.strictEqual(loaded.get("ses_1").state, "completed");
+      assert.strictEqual(loaded.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
     } finally {
       if (existsSync(file)) unlinkSync(file);
     }
@@ -695,7 +679,7 @@ describe("task ledger persistence", () => {
   it("drops entries with unknown states or invalid ids", () => {
     const file = tmpLedgerPath();
     writeFileSync(file, JSON.stringify({
-      version: 1,
+      version: 2,
       tasks: {
         ses_ok: retainedEntry(),
         ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
@@ -712,222 +696,153 @@ describe("task ledger persistence", () => {
   });
 });
 
-// ============================================================
-// === Task 0 Step 1: Config Normalization Tests ===
-// Expected: FAIL because src/shared/config.ts does not exist yet
-// ============================================================
+// ═════════════════════════════════════════════════════════════════════
+// src/tests/plugin.test.js — Task 01-08 + cutover-era units:
+// config precedence, policy, session/prompt/notify/state contracts.
+// ═════════════════════════════════════════════════════════════════════
 
 import {
   normalizeDynamicTaskConfig,
-  resolveTimeoutMs,
   parseDynamicTaskJsonc,
 } from "../../dist/shared/config.js";
 
 describe("normalizeDynamicTaskConfig", () => {
   it("returns safe defaults when given empty options", () => {
     const config = normalizeDynamicTaskConfig({});
-    assert.strictEqual(config.defaultTimeoutMs, 120000);
-    assert.strictEqual(config.maxTimeoutMs, 3600000);
-    assert.strictEqual(config.minTimeoutMs, 1000);
     assert.strictEqual(config.maxDepth, 2);
     assert.strictEqual(config.maxConcurrent, 4);
     assert.deepStrictEqual(config.blockedAgents, ["general"]);
     assert.strictEqual(config.allowSameAgentRecursion, false);
-    assert.strictEqual(config.defaultAwaitResponse, false);
-    assert.strictEqual(config.timeoutBehavior, "interrupt");
+    assert.ok(config.agentCacheTtlMs > 0);
+    assert.ok(config.retainedTaskTtlMs > 0);
+    assert.ok(config.retainedTaskMaxEntries > 0);
   });
 
   it("returns safe defaults when given null/undefined options", () => {
-    const configNull = normalizeDynamicTaskConfig(null);
-    assert.strictEqual(configNull.defaultTimeoutMs, 120000);
-    const configUndef = normalizeDynamicTaskConfig(undefined);
-    assert.strictEqual(configUndef.defaultTimeoutMs, 120000);
+    assert.strictEqual(normalizeDynamicTaskConfig(null).maxDepth, 2);
+    assert.strictEqual(normalizeDynamicTaskConfig(undefined).maxDepth, 2);
   });
 
   it("respects plugin tuple options overriding defaults", () => {
     const config = normalizeDynamicTaskConfig({
-      defaultTimeoutMs: 60000,
+      maxDepth: 3,
       maxConcurrent: 8,
       blockedAgents: ["general", "coder"],
-      timeoutBehavior: "notify",
     });
-    assert.strictEqual(config.defaultTimeoutMs, 60000);
+    assert.strictEqual(config.maxDepth, 3);
     assert.strictEqual(config.maxConcurrent, 8);
     assert.deepStrictEqual(config.blockedAgents, ["general", "coder"]);
-    assert.strictEqual(config.timeoutBehavior, "notify");
   });
 
-  it("respects env vars overriding file config", () => {
-    const originalTimeout = process.env.DYNAMIC_TASK_TIMEOUT;
-    process.env.DYNAMIC_TASK_TIMEOUT = "300000";
+  it("ignores unknown, malformed, or hostile option fields", () => {
+    const config = normalizeDynamicTaskConfig({ unknownField: "ignored", maxConcurrent: "8" });
+    assert.strictEqual(config.maxConcurrent, 4, "string numbers must not slip in");
+    assert.ok(!("unknownField" in config));
+  });
+
+  it("lets env override tuple options", () => {
+    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
+    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "7";
     try {
-      // Pass file config as second arg (fileConfig), env should override
-      const config = normalizeDynamicTaskConfig({}, {
-        defaultTimeoutMs: 120000, // from "file"
-      });
-      assert.strictEqual(config.defaultTimeoutMs, 300000); // env wins over file
+      assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 2 }).maxConcurrent, 7);
     } finally {
-      if (originalTimeout !== undefined) {
-        process.env.DYNAMIC_TASK_TIMEOUT = originalTimeout;
-      } else {
-        delete process.env.DYNAMIC_TASK_TIMEOUT;
-      }
+      if (prev !== undefined) process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
+      else delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
     }
   });
 
-  it("treats empty-string env var as 'not set' — falls through to next level", () => {
-    const originalTimeout = process.env.DYNAMIC_TASK_TIMEOUT;
-    process.env.DYNAMIC_TASK_TIMEOUT = "";
+  it("treats empty-string env var as 'not set' and falls through to the next level", () => {
+    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
+    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "";
     try {
-      const config = normalizeDynamicTaskConfig({
-        defaultTimeoutMs: 45000, // from "file"
-      });
-      // empty env string must fall through to file value, not default
-      assert.strictEqual(config.defaultTimeoutMs, 45000);
+      assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 5 }).maxConcurrent, 5);
     } finally {
-      if (originalTimeout !== undefined) {
-        process.env.DYNAMIC_TASK_TIMEOUT = originalTimeout;
-      } else {
-        delete process.env.DYNAMIC_TASK_TIMEOUT;
-      }
+      if (prev !== undefined) process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
+      else delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
     }
   });
 
-  it("empty env forbidden agents does NOT unblock general", () => {
-    const original = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+  it("empty env forbidden agents does NOT unblock 'general'", () => {
+    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
     process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = "";
     try {
       const config = normalizeDynamicTaskConfig({});
-      // general must STAY blocked — empty env is treated as 'not set'
       assert.ok(config.blockedAgents.includes("general"));
     } finally {
-      if (original !== undefined) {
-        process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = original;
-      } else {
-        delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-      }
+      if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
+      else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
     }
   });
 
   it("explicit env forbidden agents overrides blockedAgents", () => {
-    const original = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
     process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = "coder,reviewer";
     try {
       const config = normalizeDynamicTaskConfig({});
       assert.deepStrictEqual(config.blockedAgents, ["coder", "reviewer"]);
     } finally {
-      if (original !== undefined) {
-        process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = original;
-      } else {
-        delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-      }
+      if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
+      else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
     }
-  });
-
-  it("does not read custom root-level opencode.jsonc keys", () => {
-    // The function signature accepts plugin options, not opencode.jsonc root keys.
-    // Custom root keys are never passed to the plugin — this is enforced at the
-    // OpenCode schema level (additionalProperties: false).
-    // Test that the function gracefully handles unknown config shapes.
-    const config = normalizeDynamicTaskConfig({ unknownField: "should be ignored" });
-    assert.strictEqual(config.defaultTimeoutMs, 120000, "Unknown fields must not corrupt defaults");
   });
 });
 
-describe("resolveTimeoutMs", () => {
-  it("returns the value when within bounds", () => {
-    const config = normalizeDynamicTaskConfig({});
-    const resolved = resolveTimeoutMs(30000, config);
-    assert.strictEqual(resolved, 30000);
+describe("config file layer", () => {
+  it("file config fills gaps below tuple options", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 3 }, { maxDepth: 5, maxConcurrent: 9 });
+    assert.strictEqual(config.maxDepth, 5, "file value survives");
+    assert.strictEqual(config.maxConcurrent, 3, "tuple options win over file");
   });
 
-  it("clamps to minTimeoutMs when value is too low", () => {
-    const config = normalizeDynamicTaskConfig({});
-    const resolved = resolveTimeoutMs(500, config);
-    assert.strictEqual(resolved, 1000); // clamped to minTimeoutMs
-  });
-
-  it("clamps to maxTimeoutMs when value is too high", () => {
-    const config = normalizeDynamicTaskConfig({});
-    const resolved = resolveTimeoutMs(9999999, config);
-    assert.strictEqual(resolved, 3600000); // clamped to maxTimeoutMs
-  });
-
-  it("falls back to defaultTimeoutMs for invalid values", () => {
-    const config = normalizeDynamicTaskConfig({ defaultTimeoutMs: 120000 });
-    assert.strictEqual(resolveTimeoutMs(NaN, config), 120000, "NaN → default");
-    assert.strictEqual(resolveTimeoutMs(0, config), 120000, "0 → default");
-    assert.strictEqual(resolveTimeoutMs(-1, config), 120000, "-1 → default");
-    assert.strictEqual(resolveTimeoutMs(Infinity, config), 120000, "Infinity → default");
-    assert.strictEqual(resolveTimeoutMs(-Infinity, config), 120000, "-Infinity → default");
-    assert.strictEqual(resolveTimeoutMs("30s", config), 120000, "non-numeric string → default");
-    assert.strictEqual(resolveTimeoutMs(null, config), 120000, "null → default");
-    assert.strictEqual(resolveTimeoutMs(undefined, config), 120000, "undefined → default");
-    assert.strictEqual(resolveTimeoutMs(0.5, config), 120000, "float < 1 → default");
-  });
-
-  it("handles minTimeoutMs > maxTimeoutMs inversion gracefully", () => {
-    const config = normalizeDynamicTaskConfig({
-      minTimeoutMs: 5000,
-      maxTimeoutMs: 1000, // inverted
-    });
-    // Must not NaN or throw; use min(max,min) for safe bounds
-    const resolved = resolveTimeoutMs(2000, config);
-    assert.ok(Number.isFinite(resolved), "Must return finite number");
-    assert.ok(resolved >= 1000 && resolved <= 5000,
-      `Expected ${resolved} to be within [1000, 5000]`);
+  it("garbage file config is ignored", () => {
+    for (const junk of [null, undefined, "nope", 42, [1], {}]) {
+      assert.strictEqual(normalizeDynamicTaskConfig({}, junk).maxDepth, 2);
+    }
   });
 });
 
 describe("parseDynamicTaskJsonc", () => {
-  it("exists as an exported function", () => {
-    assert.strictEqual(typeof parseDynamicTaskJsonc, "function");
+  it("returns null for a missing file", () => {
+    assert.strictEqual(parseDynamicTaskJsonc("/nonexistent/path/config.jsonc"), null);
   });
 
-  it("returns null for non-existent file path", () => {
-    const result = parseDynamicTaskJsonc("/nonexistent/path/config.jsonc");
-    assert.strictEqual(result, null);
-  });
-
-  it("returns null for undefined/empty path", () => {
+  it("returns null for empty or non-object payloads", () => {
     assert.strictEqual(parseDynamicTaskJsonc(""), null);
-    assert.strictEqual(parseDynamicTaskJsonc(null), null);
-    assert.strictEqual(parseDynamicTaskJsonc(undefined), null);
+    const file = `${tmpdir()}/dt-array-${Date.now()}.jsonc`;
+    writeFileSync(file, "[1, 2]");
+    try {
+      assert.strictEqual(parseDynamicTaskJsonc(file), null);
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  it("strips comments and parses objects", () => {
+    const file = `${tmpdir()}/dt-ok-${Date.now()}.jsonc`;
+    writeFileSync(file, '{ /* block */ "maxDepth": 3 } // trailing\n');
+    try {
+      assert.deepStrictEqual(parseDynamicTaskJsonc(file), { maxDepth: 3 });
+    } finally {
+      unlinkSync(file);
+    }
   });
 });
 
-describe("normalizeDynamicTaskConfig — edge case parsing fields", () => {
-  it("sets retainedTaskMaxEntries from plugin options", () => {
-    const config = normalizeDynamicTaskConfig({ retainedTaskMaxEntries: 50 });
-    assert.strictEqual(config.retainedTaskMaxEntries, 50);
+describe("config field parsing edges", () => {
+  it("agentCacheTtlMs comes from options", () => {
+    const config = normalizeDynamicTaskConfig({ agentCacheTtlMs: 1500 });
+    assert.strictEqual(config.agentCacheTtlMs, 1500);
   });
 
-  it("sets allowSameAgentRecursion when boolean true", () => {
-    const config = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true });
-    assert.strictEqual(config.allowSameAgentRecursion, true);
+  it("rejects non-positive numbers everywhere", () => {
+    const config = normalizeDynamicTaskConfig({ maxDepth: 0, maxConcurrent: -3, agentCacheTtlMs: NaN });
+    assert.strictEqual(config.maxDepth, 2);
+    assert.strictEqual(config.maxConcurrent, 4);
   });
 
   it("ignores non-boolean allowSameAgentRecursion", () => {
-    const config = normalizeDynamicTaskConfig({ allowSameAgentRecursion: "yes" });
-    assert.strictEqual(config.allowSameAgentRecursion, false);
-  });
-
-  it("accepts valid timerProvider", () => {
-    const timerProvider = { setTimeout: () => 1, clearTimeout: () => {} };
-    const config = normalizeDynamicTaskConfig({ timerProvider });
-    assert.strictEqual(config.timerProvider, timerProvider);
-  });
-
-  it("rejects invalid timerProvider (missing clearTimeout)", () => {
-    const config = normalizeDynamicTaskConfig({ timerProvider: { setTimeout: () => 1 } });
-    // Should fall back to default (REAL_TIMERS or undefined)
-    assert.ok(config.timerProvider, "TimerProvider should be set");
-  });
-
-  it("handles all timeoutBehavior values", () => {
-    assert.strictEqual(normalizeDynamicTaskConfig({ timeoutBehavior: "notify" }).timeoutBehavior, "notify");
-    assert.strictEqual(normalizeDynamicTaskConfig({ timeoutBehavior: "notify_untrack" }).timeoutBehavior, "notify_untrack");
-    assert.strictEqual(normalizeDynamicTaskConfig({ timeoutBehavior: "interrupt" }).timeoutBehavior, "interrupt");
+    assert.strictEqual(normalizeDynamicTaskConfig({ allowSameAgentRecursion: "yes" }).allowSameAgentRecursion, false);
+    assert.strictEqual(normalizeDynamicTaskConfig({ allowSameAgentRecursion: true }).allowSameAgentRecursion, true);
   });
 });
 
@@ -942,7 +857,7 @@ import {
   isSameAgent,
   validateLineage,
   buildTaskLineage,
-  resolveAwaitResponse,
+
 } from "../../dist/shared/task-policy.js";
 
 describe("normalizeAgentName", () => {
@@ -1051,53 +966,7 @@ describe("buildTaskLineage", () => {
   });
 });
 
-describe("resolveAwaitResponse", () => {
-  const config = normalizeDynamicTaskConfig({ defaultAwaitResponse: false });
 
-  it("defaults to config.defaultAwaitResponse when arg is undefined", () => {
-    assert.strictEqual(resolveAwaitResponse(undefined, config), false);
-    assert.strictEqual(resolveAwaitResponse(null, config), false);
-  });
-
-  it("return true for explicit true", () => {
-    assert.strictEqual(resolveAwaitResponse(true, config), true);
-  });
-
-  it("return false for explicit false", () => {
-    assert.strictEqual(resolveAwaitResponse(false, config), false);
-  });
-
-  it("honors config.defaultAwaitResponse when set to true", () => {
-    const syncConfig = normalizeDynamicTaskConfig({ defaultAwaitResponse: true });
-    assert.strictEqual(resolveAwaitResponse(undefined, syncConfig), true);
-  });
-
-  it("coerces string 'true' to boolean true", () => {
-    assert.strictEqual(resolveAwaitResponse("true", config), true);
-    assert.strictEqual(resolveAwaitResponse("True", config), true);
-    assert.strictEqual(resolveAwaitResponse("TRUE", config), true);
-    assert.strictEqual(resolveAwaitResponse("  true  ", config), true);
-  });
-
-  it("coerces string 'false' to boolean false", () => {
-    assert.strictEqual(resolveAwaitResponse("false", config), false);
-    assert.strictEqual(resolveAwaitResponse("False", config), false);
-    assert.strictEqual(resolveAwaitResponse("FALSE", config), false);
-    assert.strictEqual(resolveAwaitResponse("  false  ", config), false);
-  });
-
-  it("unrecognized strings fall back to config default", () => {
-    assert.strictEqual(resolveAwaitResponse("yes", config), false); // falls to default
-    assert.strictEqual(resolveAwaitResponse("maybe", config), false);
-  });
-
-  it("coerces numbers: non-zero = true, 0 = false", () => {
-    assert.strictEqual(resolveAwaitResponse(1, config), true);
-    assert.strictEqual(resolveAwaitResponse(42, config), true);
-    assert.strictEqual(resolveAwaitResponse(0, config), false);
-    assert.strictEqual(resolveAwaitResponse(-1, config), true); // non-zero = true
-  });
-});
 
 // ============================================================
 // === Task 0 Step 5: State Tests ===
@@ -1105,18 +974,18 @@ describe("resolveAwaitResponse", () => {
 // ============================================================
 
 import {
-  createStateStore,
+  createTaskStore,
   registerActiveTask,
   transitionState,
   findTask,
+  listTasks,
   pruneRetainedTasks,
-  noteTimeoutFired,
-  markActiveCompleted,
-  forceRetain,
-  discardRetained,
-  stealTimeoutHandle,
   noteLateOutcome,
   restoreRetained,
+  reviveRetainedTask,
+  annotateNotice,
+  recordAbortError,
+  oldestRetainedId,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1139,9 +1008,9 @@ import {
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 
-describe("task-state: createStateStore", () => {
+describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     assert.strictEqual(store.activeTasks.size, 0);
     assert.strictEqual(store.retainedTasks.size, 0);
   });
@@ -1152,7 +1021,7 @@ function fillBackgroundTasks(store, config, ids) {
   for (const id of ids) {
     registerActiveTask(store, {
       childSessionId: id, parentSessionId: "parent_1",
-      agentName: id, description: id, lineage: [], isBackground: true,
+      agentName: id, description: id, lineage: [],
     }, config);
   }
 }
@@ -1160,53 +1029,46 @@ function fillBackgroundTasks(store, config, ids) {
 function seedSesActive(store, config) {
   registerActiveTask(store, {
     childSessionId: "ses_active", parentSessionId: "parent_1",
-    agentName: "reviewer", description: "test", lineage: [], isBackground: true,
+    agentName: "reviewer", description: "test", lineage: [],
   }, config);
 }
 
 describe("task-state: registerActiveTask", () => {
   const config = normalizeDynamicTaskConfig({ maxConcurrent: 3 });
 
-  it("increments active count when registering", () => {
-    const store = createStateStore();
+  it("registers an active record for the session", () => {
+    const store = createTaskStore();
     const task = registerActiveTask(store, {
       childSessionId: "ses_1",
       parentSessionId: "parent_1",
       agentName: "reviewer",
       description: "test task",
       lineage: ["explore"],
-      isBackground: true,  // counts toward concurrency
     }, config);
-    assert.ok(task, "Should return the task state");
+    assert.strictEqual(task.state, "active");
     assert.strictEqual(store.activeTasks.size, 1);
   });
 
-  it("throws ConcurrencyLimitExceededError when at limit (background tasks only)", () => {
-    const store = createStateStore();
-    // Fill up with 3 background tasks
+  it("throws ConcurrencyLimitExceeded when at the limit", () => {
+    const store = createTaskStore();
     fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
-
-    // 4th background task should throw
     assert.throws(() => {
       registerActiveTask(store, {
         childSessionId: "ses_4", parentSessionId: "parent_1",
-        agentName: "a4", description: "t4", lineage: [], isBackground: true,
+        agentName: "a4", description: "t4", lineage: [],
       }, config);
-    }, /Concurrency|concurrency|exceeded/);
+    }, /Concurrency/);
   });
 
-  it("sync tasks (isBackground=false) do NOT count toward concurrency limit", () => {
-    const store = createStateStore();
-    // Fill to limit with background
+  it("settlement frees the slot for the next registration", () => {
+    const store = createTaskStore();
     fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
-
-    // Sync task should succeed even though at background limit
-    const syncTask = registerActiveTask(store, {
-      childSessionId: "ses_sync", parentSessionId: "parent_1",
-      agentName: "sync", description: "sync task", lineage: [], isBackground: false,
+    transitionState(store, "ses_1", "completed", config);
+    const task = registerActiveTask(store, {
+      childSessionId: "ses_4", parentSessionId: "parent_1",
+      agentName: "a4", description: "t4", lineage: [],
     }, config);
-    assert.ok(syncTask);
-    assert.strictEqual(store.activeTasks.size, 4); // 3 bg + 1 sync
+    assert.strictEqual(task.state, "active");
   });
 });
 
@@ -1215,119 +1077,120 @@ describe("task-state: transitionState", () => {
   let store;
 
   beforeEach(() => {
-    store = createStateStore();
+    store = createTaskStore();
     seedSesActive(store, config);
   });
 
-  it("transitions active → completed", () => {
+  it("settles active → completed into retention", () => {
     const result = transitionState(store, "ses_active", "completed", config);
     assert.strictEqual(result.state, "completed");
-    assert.strictEqual(store.activeTasks.has("ses_active"), false);
-  });
-
-  it("transitions active → timeout_interrupting → timed_out_retained", () => {
-    transitionState(store, "ses_active", "timeout_interrupting", config);
-    const result = transitionState(store, "ses_active", "timed_out_retained", config);
-    assert.strictEqual(result.state, "timed_out_retained");
+    assert.strictEqual(result.completed, true);
     assert.strictEqual(store.activeTasks.has("ses_active"), false);
     assert.strictEqual(store.retainedTasks.has("ses_active"), true);
   });
 
-  it("transitions active → error", () => {
-    const result = transitionState(store, "ses_active", "error", config);
-    assert.strictEqual(result.state, "error");
-    assert.strictEqual(store.activeTasks.has("ses_active"), false);
+  it("transitions active → error and active → interrupted", () => {
+    assert.strictEqual(transitionState(store, "ses_active", "error", config).state, "error");
+    const store2 = createTaskStore();
+    seedSesActive(store2, config);
+    assert.strictEqual(transitionState(store2, "ses_active", "interrupted", config).state, "interrupted");
   });
 
-  it("idempotent: same transition twice throws on terminal state", () => {
+  it("settle is exactly-once: a second settlement throws and cannot regress retention", () => {
     transitionState(store, "ses_active", "completed", config);
-    // A second transition from completed (terminal state) must throw
-    assert.throws(() => {
-      transitionState(store, "ses_active", "completed", config);
-    }, /terminal|invalid|transition/i);
+    assert.throws(() => transitionState(store, "ses_active", "error", config), /terminal|invalid|not found/i);
+    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
   });
 
-  it("rejects invalid transition (completed → active)", () => {
+  it("settlement strips advisory notice metadata", () => {
+    annotateNotice(store, "ses_active", "interim");
     transitionState(store, "ses_active", "completed", config);
-    assert.throws(() => {
-      transitionState(store, "ses_active", "active", config);
-    }, /invalid|transition/i);
+    assert.ok(!("lastNotice" in store.retainedTasks.get("ses_active")));
   });
 
   it("retained task remains visible to findTask", () => {
-    transitionState(store, "ses_active", "timed_out_retained", config);
+    transitionState(store, "ses_active", "completed", config);
     const found = findTask(store, "ses_active");
     assert.ok(found, "Retained task must be findable");
-    assert.strictEqual(found?.state, "timed_out_retained");
+    assert.strictEqual(found?.state, "completed");
   });
 
   it("unknown session ID transition throws", () => {
-    assert.throws(() => {
-      transitionState(store, "nonexistent", "completed", config);
-    }, /not found|unknown/i);
+    assert.throws(() => transitionState(store, "nonexistent", "completed", config), /not found|invalid|not active/i);
   });
 });
 
-describe("task-state: flag operations (funnel for Task 01 bypasses)", () => {
+describe("task-state: revival and annotations", () => {
   const config = normalizeDynamicTaskConfig({});
-  let store;
 
-  beforeEach(() => {
-    store = createStateStore();
+  function retained(store, state = "completed") {
     seedSesActive(store, config);
-  });
+    transitionState(store, "ses_active", state, config);
+  }
 
-  it("noteTimeoutFired sets flags and keeps the task active", () => {
-    const task = noteTimeoutFired(store, "ses_active");
-    assert.strictEqual(task.timeoutNotified, true);
-    assert.strictEqual(task.completed, true);
+  it("reviveRetainedTask moves a settled task back to active", () => {
+    const store = createTaskStore();
+    retained(store);
+    const revived = reviveRetainedTask(store, "ses_active", config);
+    assert.strictEqual(revived.state, "active");
     assert.strictEqual(store.activeTasks.has("ses_active"), true);
-  });
-
-  it("noteTimeoutFired throws for unknown session", () => {
-    assert.throws(() => noteTimeoutFired(store, "ses_nope"), /not active/);
-  });
-
-  it("markActiveCompleted returns previous value and sets the flag", () => {
-    assert.strictEqual(markActiveCompleted(store, "ses_active"), false);
-    assert.strictEqual(markActiveCompleted(store, "ses_active"), true);
-  });
-
-  it("markActiveCompleted throws for unknown session", () => {
-    assert.throws(() => markActiveCompleted(store, "ses_nope"), /not active/);
-  });
-
-  it("forceRetain moves an active task to retained with the patch", () => {
-    const retained = forceRetain(store, "ses_active", {
-      state: "timed_out_retained",
-      timeoutNotified: true,
-      completed: true,
-    });
-    assert.strictEqual(retained.state, "timed_out_retained");
-    assert.strictEqual(store.activeTasks.has("ses_active"), false);
-    assert.strictEqual(store.retainedTasks.get("ses_active").description, "test");
-  });
-
-  it("forceRetain overwrites an already-retained entry (timeout/completion race)", () => {
-    transitionState(store, "ses_active", "completed", config);
-    const retained = forceRetain(store, "ses_active", {
-      state: "timed_out_retained",
-      timeoutNotified: true,
-      completed: true,
-    });
-    assert.strictEqual(retained.state, "timed_out_retained");
-    assert.strictEqual(retained.completed, true);
-  });
-
-  it("forceRetain throws for unknown session", () => {
-    assert.throws(() => forceRetain(store, "ses_nope", { state: "timed_out_retained" }), /not found/);
-  });
-
-  it("discardRetained removes retained entries and reports presence", () => {
-    transitionState(store, "ses_active", "completed", config);
-    assert.strictEqual(discardRetained(store, "ses_active"), true);
     assert.strictEqual(store.retainedTasks.has("ses_active"), false);
-    assert.strictEqual(discardRetained(store, "ses_active"), false);
+  });
+
+  it("interrupted tasks are not revived — that takes a fresh spawn", () => {
+    const store = createTaskStore();
+    retained(store, "interrupted");
+    assert.throws(() => reviveRetainedTask(store, "ses_active", config), /interrupt/i);
+  });
+
+  it("revival passes through the concurrency gate", () => {
+    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+    const store = createTaskStore();
+    seedSesActive(store, limited);
+    transitionState(store, "ses_active", "completed", limited);
+    registerActiveTask(store, {
+      childSessionId: "ses_other", parentSessionId: "parent_1",
+      agentName: "a2", description: "t2", lineage: [],
+    }, limited);
+    assert.throws(() => reviveRetainedTask(store, "ses_active", limited), /Concurrency/);
+    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed", "rejected revival leaves the record untouched");
+  });
+
+  it("annotateNotice records the latest child message on active tasks only", () => {
+    const store = createTaskStore();
+    seedSesActive(store, config);
+    assert.strictEqual(annotateNotice(store, "ses_active", "blocked on credentials"), true);
+    assert.strictEqual(store.activeTasks.get("ses_active").lastNotice.message, "blocked on credentials");
+    assert.strictEqual(annotateNotice(store, "ses_nope", "x"), false);
+    transitionState(store, "ses_active", "completed", config);
+    assert.strictEqual(annotateNotice(store, "ses_active", "late"), false, "settled tasks take no notices");
+  });
+
+  it("recordAbortError annotates retained records and is silent otherwise", () => {
+    const store = createTaskStore();
+    retained(store, "interrupted");
+    recordAbortError(store, "ses_active", "boom");
+    assert.strictEqual(store.retainedTasks.get("ses_active").abortError, "boom");
+    recordAbortError(store, "ses_nope", "boom"); // no throw
+  });
+
+  it("oldestRetainedId reads retention order", () => {
+    const store = createTaskStore();
+    assert.strictEqual(oldestRetainedId(store), null);
+    retained(store);
+    assert.strictEqual(oldestRetainedId(store), "ses_active");
+  });
+
+  it("listTasks splits the fleet by state", () => {
+    const store = createTaskStore();
+    retained(store);
+    registerActiveTask(store, {
+      childSessionId: "ses_run", parentSessionId: "parent_1",
+      agentName: "a", description: "d", lineage: [],
+    }, config);
+    const { active, retained: settled } = listTasks(store);
+    assert.deepStrictEqual(active.map((t) => t.childSessionId), ["ses_run"]);
+    assert.deepStrictEqual(settled.map((t) => t.childSessionId), ["ses_active"]);
   });
 });
 
@@ -1403,10 +1266,10 @@ describe("admission gate: resolveDependencies", () => {
   const config = normalizeDynamicTaskConfig({});
 
   function storeWith(childSessionId, state) {
-    const store = createStateStore();
+    const store = createTaskStore();
     registerActiveTask(store, {
       childSessionId, parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], isBackground: true,
+      description: "d", lineage: [],
     }, config);
     if (state !== "active") transitionState(store, childSessionId, state, config);
     return store;
@@ -1414,14 +1277,14 @@ describe("admission gate: resolveDependencies", () => {
 
   it("admits with no dependencies", () => {
     assert.deepStrictEqual(
-      resolveDependencies(createStateStore(), undefined),
+      resolveDependencies(createTaskStore(), undefined),
       { ok: true }
     );
   });
 
-  it("admits when deps completed (including after timeout)", () => {
+  it("admits when deps completed", () => {
     const store = storeWith("s1", "completed");
-    const s2 = createStateStore();
+    const s2 = createTaskStore();
     for (const [id, task] of store.retainedTasks) s2.retainedTasks.set(id, task);
     assert.deepStrictEqual(resolveDependencies(s2, ["s1"]), { ok: true });
   });
@@ -1434,7 +1297,7 @@ describe("admission gate: resolveDependencies", () => {
   });
 
   it("treats unknown ids as satisfied (aged-out tolerance)", () => {
-    assert.deepStrictEqual(resolveDependencies(createStateStore(), ["ses_gone"]), { ok: true });
+    assert.deepStrictEqual(resolveDependencies(createTaskStore(), ["ses_gone"]), { ok: true });
   });
 });
 
@@ -1495,15 +1358,15 @@ describe("admission gate: registerAdmittedTask", () => {
 
   it("registers through the funnel and enforces the concurrency limit", () => {
     const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
-    const store = createStateStore();
+    const store = createTaskStore();
     const task = registerAdmittedTask(store, {
       childSessionId: "ses_1", parentSessionId: "parent_1",
-      agentName: "explore", description: "t1", lineage: [], isBackground: true,
+      agentName: "explore", description: "t1", lineage: [],
     }, limited);
     assert.strictEqual(task.agentName, "explore");
     assert.throws(() => registerAdmittedTask(store, {
       childSessionId: "ses_2", parentSessionId: "parent_1",
-      agentName: "explore", description: "t2", lineage: [], isBackground: true,
+      agentName: "explore", description: "t2", lineage: [],
     }, limited), /Concurrency/);
   });
 });
@@ -1613,21 +1476,7 @@ describe("message/part family guards (Task 08)", () => {
   });
 });
 
-describe("prompt dance: extractTextFromPromptResult", () => {
-  it("extracts text from parts shapes", () => {
-    const result = { parts: [{ type: "text", text: "hello" }] };
-    assert.strictEqual(extractTextFromPromptResult(result), "hello");
-  });
 
-  it("extracts text from message-content shapes", () => {
-    assert.strictEqual(extractTextFromPromptResult({ content: "world" }), "world");
-  });
-
-  it("returns empty string when no text is present", () => {
-    assert.strictEqual(extractTextFromPromptResult({}), "");
-    assert.strictEqual(extractTextFromPromptResult(null), "");
-  });
-});
 
 describe("question gate: reply/reject settlement", () => {
   function questionClient(behavior) {
@@ -1716,7 +1565,7 @@ describe("task formatting: truncate + debug shape", () => {
   it("formatTaskResultSummary surfaces delivery records", () => {
     const base = {
       sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true, timeoutNotified: false,
+      latestText: "hi", tracked: true,
     };
     assert.ok(
       formatTaskResultSummary({ ...base, notification: { kind: "completed", delivered: true, attempts: 1 } })
@@ -1732,7 +1581,7 @@ describe("task formatting: truncate + debug shape", () => {
   it("formatTaskResultSummary includes debug shape when provided", () => {
     const summary = formatTaskResultSummary({
       sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true, timeoutNotified: false, debugShape: "SHAPE",
+      latestText: "hi", tracked: true, debugShape: "SHAPE",
     });
     assert.ok(summary.includes("SHAPE"));
   });
@@ -1757,41 +1606,19 @@ describe("task policy: invalid inputs", () => {
     assert.strictEqual(validateLineage([], "", config).ok, false);
   });
 
-  it("allows active -> completed_after_timeout when the timeout fired first", () => {
-    // The timeout-vs-completion race: noteTimeoutFired keeps the task active
-    // (flags only), so a completion event landing before handleTimeout
-    // retains it must transition active -> completed_after_timeout. This edge
-    // was absent, the transition threw, the outer catch swallowed it, and the
-    // parent never learned the real outcome.
-    const store = createStateStore();
+  it("a second settlement attempt cannot regress the first outcome", () => {
+    // The timeout-era races are structurally gone: settlement is exactly once
+    // (active -> terminal), so a late error after a reported completion can
+    // only arrive through noteLateOutcome, never through transitionState.
+    const store = createTaskStore();
     seedSesActive(store, config);
-    noteTimeoutFired(store, "ses_active");
-    const retained = transitionState(store, "ses_active", "completed_after_timeout", config);
-    assert.strictEqual(retained.state, "completed_after_timeout");
-    assert.strictEqual(store.activeTasks.has("ses_active"), false);
-    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed_after_timeout");
-  });
-
-  it("forceRetain records abort errors", () => {
-    const store = createStateStore();
-    seedSesActive(store, config);
-    const retained = forceRetain(store, "ses_active", {
-      state: "timed_out_retained",
-      abortError: "boom",
-    });
-    assert.strictEqual(retained.abortError, "boom");
+    transitionState(store, "ses_active", "completed");
+    assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid/i);
+    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
   });
 });
 
 describe("prompt dance: extractor shape coverage", () => {
-  it("reads data/body/message wrapper variants", () => {
-    const text = [{ type: "text", text: "v" }];
-    assert.strictEqual(extractTextFromPromptResult({ data: { parts: text } }), "v");
-    assert.strictEqual(extractTextFromPromptResult({ body: { message: { parts: text } } }), "v");
-    assert.strictEqual(extractTextFromPromptResult({ message: { parts: text } }), "v");
-    assert.strictEqual(extractTextFromPromptResult({ body: { text: "bt" } }), "bt");
-    assert.strictEqual(extractTextFromPromptResult({ data: { content: "dc" } }), "dc");
-  });
 
   it("classifyPromptError handles odd shapes", () => {
     assert.strictEqual(classifyPromptError({ message: 42 }).message, "42");
@@ -1833,29 +1660,7 @@ describe("config: file and env edges", () => {
   });
 });
 
-describe("task-state: stealTimeoutHandle", () => {
-  const config = normalizeDynamicTaskConfig({});
 
-  it("removes and returns the armed handle", () => {
-    const store = createStateStore();
-    seedSesActive(store, config);
-    const task = store.activeTasks.get("ses_active");
-    let cancelled = false;
-    task.timeoutHandle = { cancel: () => { cancelled = true; } };
-    const stolen = stealTimeoutHandle(store, "ses_active");
-    assert.ok(stolen, "must return the handle");
-    assert.strictEqual(task.timeoutHandle, undefined, "must detach from the task");
-    stolen.cancel();
-    assert.strictEqual(cancelled, true);
-  });
-
-  it("returns undefined when absent or unknown", () => {
-    const store = createStateStore();
-    seedSesActive(store, config);
-    assert.strictEqual(stealTimeoutHandle(store, "ses_active"), undefined);
-    assert.strictEqual(stealTimeoutHandle(store, "ses_nope"), undefined);
-  });
-});
 
 describe("prompt dance: getLatestAssistantText", () => {
   const assistant = (text) => ({ role: "assistant", parts: [{ type: "text", text }] });
@@ -1907,41 +1712,31 @@ describe("prompt dance: hydrateLatestOutcome", () => {
 describe("task-state: noteLateOutcome", () => {
   const config = normalizeDynamicTaskConfig({});
 
-  function seedTimedOut(store) {
+  function seedCompleted(store) {
     seedSesActive(store, config);
-    return forceRetain(store, "ses_active", { state: "timed_out_retained" });
+    transitionState(store, "ses_active", "completed");
   }
 
-  it("advances timed_out_retained to completed_after_timeout", () => {
-    const store = createStateStore();
-    seedTimedOut(store);
-    const updated = noteLateOutcome(store, "ses_active", "completed_after_timeout");
-    assert.strictEqual(updated.state, "completed_after_timeout");
+  it("escalates a completed record to error — the one retained rewrite edge", () => {
+    const store = createTaskStore();
+    seedCompleted(store);
+    assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), true);
+    assert.strictEqual(store.retainedTasks.get("ses_active").state, "error");
     assert.ok(store.retainedTasks.has("ses_active"), "stays retained");
   });
 
-  it("advances timed_out_retained to error", () => {
-    const store = createStateStore();
-    seedTimedOut(store);
-    assert.strictEqual(noteLateOutcome(store, "ses_active", "error").state, "error");
+  it("refuses to rewrite interrupted or errored records", () => {
+    const store = createTaskStore();
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "interrupted");
+    assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), false);
   });
 
-  it("allows error observations on other terminal states", () => {
-    const store = createStateStore();
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "completed", config);
-    assert.strictEqual(noteLateOutcome(store, "ses_active", "error").state, "error");
-  });
-
-  it("rejects non-edges and unknown sessions", () => {
-    const store = createStateStore();
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "completed", config);
-    assert.throws(
-      () => noteLateOutcome(store, "ses_active", "completed_after_timeout"),
-      /Invalid late outcome/
-    );
-    assert.throws(() => noteLateOutcome(store, "ses_nope", "error"), /not retained/);
+  it("refuses non-edges and unknown sessions", () => {
+    const store = createTaskStore();
+    seedCompleted(store);
+    assert.strictEqual(noteLateOutcome(store, "ses_active", "completed"), false);
+    assert.strictEqual(noteLateOutcome(store, "ses_nope", "error"), false);
   });
 });
 
@@ -1949,10 +1744,10 @@ describe("question gate: resolveQuestionSession", () => {
   const config = normalizeDynamicTaskConfig({});
 
   function trackedStore() {
-    const store = createStateStore();
+    const store = createTaskStore();
     registerActiveTask(store, {
       childSessionId: "ses_child", parentSessionId: "parent_1",
-      agentName: "explore", description: "t", lineage: [], isBackground: true,
+      agentName: "explore", description: "t", lineage: [],
     }, config);
     return store;
   }
@@ -2013,25 +1808,25 @@ describe("question gate: decideQuestion", () => {
     assert.ok(decision.reason.includes("task_continue"));
   });
 
-  it("retained rejects with timeout guidance", () => {
+  it("retained rejects with settled guidance", () => {
     const decision = decideQuestion("retained", ["yes"]);
     assert.strictEqual(decision.action, "reject");
-    assert.ok(decision.reason.includes("timed out"));
+    assert.ok(decision.reason.includes("settled"));
   });
 });
 
-describe("task store: retained-change callback and bounds", () => {
+describe("task store: retained-change callback", () => {
   const config = normalizeDynamicTaskConfig({});
 
   function seedActive(store, id) {
     registerActiveTask(store, {
       childSessionId: id, parentSessionId: "p",
-      agentName: "a", description: "d", lineage: [], isBackground: true,
+      agentName: "a", description: "d", lineage: [],
     }, config);
   }
 
   it("notifies on retained writes, silent on active-only writes", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     let calls = 0;
     store.onRetainedChange = () => { calls++; };
     seedActive(store, "s1");
@@ -2040,36 +1835,19 @@ describe("task store: retained-change callback and bounds", () => {
     assert.strictEqual(calls, 1);
     noteLateOutcome(store, "s1", "error");
     assert.strictEqual(calls, 2);
-    discardRetained(store, "s1");
-    assert.strictEqual(calls, 3);
+    reviveRetainedTask(store, "s1", config);
+    assert.strictEqual(calls, 3, "revival leaves the retained ledger");
   });
 
-  it("forceRetain notifies", () => {
-    const store = createStateStore();
+  it("pruning emits the change signal when entries expire", () => {
+    const store = createTaskStore();
     let calls = 0;
     store.onRetainedChange = () => { calls++; };
     seedActive(store, "s1");
-    forceRetain(store, "s1", { state: "timed_out_retained" });
-    assert.strictEqual(calls, 1);
-  });
-
-  it("prunes internally when bounds are set", () => {
-    const store = createStateStore({ retainedTaskTtlMs: 3600000, retainedTaskMaxEntries: 1 });
-    seedActive(store, "s1");
     transitionState(store, "s1", "completed", config);
-    seedActive(store, "s2");
-    transitionState(store, "s2", "completed", config);
-    assert.strictEqual(store.retainedTasks.size, 1);
-    assert.ok(store.retainedTasks.has("s2"));
-  });
-
-  it("skips internal pruning without bounds (backward compatible)", () => {
-    const store = createStateStore();
-    seedActive(store, "s1");
-    transitionState(store, "s1", "completed", config);
-    seedActive(store, "s2");
-    transitionState(store, "s2", "completed", config);
-    assert.strictEqual(store.retainedTasks.size, 2);
+    store.retainedTasks.get("s1").retainedAt = 0;
+    assert.strictEqual(pruneRetainedTasks(store, { retainedTaskTtlMs: 1000, retainedTaskMaxEntries: 100 }), 1);
+    assert.strictEqual(calls, 2);
   });
 });
 
@@ -2079,17 +1857,17 @@ describe("task formatting: fleet views", () => {
     const summary = formatTaskListSummary({
       active: [{
         childSessionId: "ses_a", agentName: "explore", description: "A task",
-        state: "active", isBackground: true, startedAt: now - 65000,
+        state: "active", startedAt: now - 45000,
       }],
       retained: [{
         childSessionId: "ses_r", agentName: "reviewer", description: "R task",
-        state: "completed", isBackground: true, startedAt: now - 5000,
+        state: "completed", startedAt: now - 5000,
       }],
       maxConcurrent: 4,
     });
-    assert.ok(summary.includes("Active background: 1/4"), `got: ${summary}`);
+    assert.ok(summary.includes("Active: 1/4"), `got: ${summary}`);
     assert.ok(summary.includes("ses_a") && summary.includes("ses_r"));
-    assert.ok(summary.includes("65s"), `ages render. got: ${summary}`);
+    assert.ok(summary.includes("45s"), `ages render. got: ${summary}`);
   });
 
   it("formatTaskListSummary names empty states", () => {
@@ -2105,23 +1883,24 @@ describe("task formatting: fleet views", () => {
       description: "Deep dive",
       lineage: ["planner"],
       state: "active",
-      isBackground: true,
       startedAt: 1,
-      timeoutNotified: false,
-      completed: false,
-      requestedModel: "prov/model",
+      requestedModel: { providerID: "prov", modelID: "model" },
+      dependsOn: ["ses_dep"],
+      lastNotice: { message: "blocked on credentials", at: Date.now() },
     }, null);
     assert.ok(detail.includes("ses_1"));
     assert.ok(detail.includes("planner"));
     assert.ok(detail.includes("prov/model"));
+    assert.ok(detail.includes("ses_dep"));
+    assert.ok(detail.includes("blocked on credentials"));
   });
 
   it("formatTaskStatusDetail surfaces delivery records", () => {
     const detail = formatTaskStatusDetail({
       childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state: "completed", isBackground: true,
-      startedAt: 1, retainedAt: 2, timeoutNotified: true, completed: true,
-    }, { kind: "timeout", delivered: false, attempts: 2 });
+      description: "d", lineage: [], state: "completed",
+      startedAt: 1, retainedAt: 2,
+    }, { kind: "error", delivered: false, attempts: 2 });
     assert.ok(detail.includes("FAILED"), `got: ${detail}`);
   });
 });
@@ -2132,13 +1911,13 @@ describe("task-state: restoreRetained", () => {
   function ledgerEntry(id, state = "completed") {
     return {
       childSessionId: id, parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state, isBackground: true,
-      startedAt: 1, retainedAt: 2, timeoutNotified: false, completed: true,
+      description: "d", lineage: [], state,
+      startedAt: 1, retainedAt: 2,
     };
   }
 
   it("restores unknown ids and skips live state", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     seedSesActive(store, config);
     const restored = restoreRetained(store, [
       ["ses_ledger", ledgerEntry("ses_ledger")],
@@ -2150,7 +1929,7 @@ describe("task-state: restoreRetained", () => {
   });
 
   it("returns zero for empty input", () => {
-    assert.strictEqual(restoreRetained(createStateStore(), []), 0);
+    assert.strictEqual(restoreRetained(createTaskStore(), []), 0);
   });
 });
 
@@ -2164,7 +1943,7 @@ describe("task-state: concurrency helper", () => {
 
   it("returns error message when at limit", () => {
     const result = checkConcurrencyLimit(2, config);
-    assert.ok(result.includes("Cannot register"));
+    assert.ok(result.includes("Cannot run more than"));
     assert.ok(result.includes("2"));
   });
 
@@ -2183,13 +1962,12 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
   const config = normalizeDynamicTaskConfig({ retainedTaskTtlMs: 50, retainedTaskMaxEntries: 2 });
 
   it("removes expired retained tasks by TTL", async () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     // Add a retained task with a past retainedAt
     const oldTask = {
       childSessionId: "ses_old", parentSessionId: "parent_1", agentName: "reviewer",
-      description: "old", lineage: [], isBackground: true, completed: false,
-      timeoutNotified: false, timeoutHandle: null, startedAt: 0,
-      state: "timed_out_retained" , retainedAt: Date.now() - 100000,
+      description: "old", lineage: [], timeoutHandle: null, startedAt: 0,
+      state: "completed" , retainedAt: Date.now() - 100000,
     };
     store.retainedTasks.set("ses_old", oldTask );
 
@@ -2199,23 +1977,23 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
   });
 
   it("evicts oldest entries when over max", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     // Add 3 retained tasks (max is 2) — all within TTL window (retainedAt near now)
     const now = Date.now();
     store.retainedTasks.set("ses_a", {
       childSessionId: "ses_a", parentSessionId: "p", agentName: "a",
-      description: "a", lineage: [], isBackground: false,
-      state: "timed_out_retained", retainedAt: now - 5,
+      description: "a", lineage: [],
+      state: "completed", retainedAt: now - 5,
     });
     store.retainedTasks.set("ses_b", {
       childSessionId: "ses_b", parentSessionId: "p", agentName: "b",
-      description: "b", lineage: [], isBackground: false,
-      state: "timed_out_retained", retainedAt: now - 3,
+      description: "b", lineage: [],
+      state: "completed", retainedAt: now - 3,
     });
     store.retainedTasks.set("ses_c", {
       childSessionId: "ses_c", parentSessionId: "p", agentName: "c",
-      description: "c", lineage: [], isBackground: false,
-      state: "timed_out_retained", retainedAt: now,
+      description: "c", lineage: [],
+      state: "completed", retainedAt: now,
     });
 
     const pruned = pruneRetainedTasks(store, config);
@@ -2226,12 +2004,12 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
   });
 
   it("prunes nothing when under limits", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     const now = Date.now();
     store.retainedTasks.set("ses_1", {
       childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "1", lineage: [], isBackground: false,
-      state: "timed_out_retained", retainedAt: now,
+      description: "1", lineage: [],
+      state: "completed", retainedAt: now,
     } );
 
     const pruned = pruneRetainedTasks(store, config);
@@ -2242,22 +2020,22 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
 
 describe("findTask — edge cases", () => {
   it("returns null for unknown session ID", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     const result = findTask(store, "nonexistent");
     assert.strictEqual(result, null);
   });
 
   it("finds active task before retained task", () => {
-    const store = createStateStore();
+    const store = createTaskStore();
     registerActiveTask(store, {
       childSessionId: "ses_dup", parentSessionId: "p",
-      agentName: "a", description: "t", lineage: [], isBackground: true,
+      agentName: "a", description: "t", lineage: [],
     }, normalizeDynamicTaskConfig({}));
     // Add same key to retained (should not happen in practice but test priority)
     store.retainedTasks.set("ses_dup", {
       childSessionId: "ses_dup", parentSessionId: "p", agentName: "a",
-      description: "t", lineage: [], isBackground: false,
-      state: "timed_out_retained", retainedAt: Date.now(),
+      description: "t", lineage: [],
+      state: "completed", retainedAt: Date.now(),
     } );
 
     const result = findTask(store, "ses_dup");

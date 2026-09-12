@@ -1,7 +1,7 @@
 /**
- * Notification gate contract (Task 05) — kind matrix, delivery with one
- * retry, and a bounded record ledger. Fast by construction: retry delay is
- * injectable, real timers only where firing is asserted.
+ * Notification gate contract — kind mapping, exactly-once delivery with one
+ * retry, and a bounded record ledger. Fast by construction: the retry sleep
+ * is injectable; real timers are never awaited.
  */
 
 import { describe, it, beforeEach } from "node:test";
@@ -10,9 +10,11 @@ import {
   resolveNotifyKind,
   notifyParent,
   getLatestNotification,
-  resetNotificationLog,
-  MAX_NOTIFICATION_RECORDS,
+  clearNotifyLedger,
+  gateLedger,
 } from "../../dist/shared/notify.js";
+
+const NO_SLEEP = async () => {};
 
 function promptClient(script) {
   // script: Array<"ok"|Error> consumed per prompt call.
@@ -33,78 +35,124 @@ function promptClient(script) {
 }
 
 describe("notify gate: resolveNotifyKind", () => {
-  it("timeout trigger always maps to timeout", () => {
-    assert.strictEqual(resolveNotifyKind("timeout", "", false), "timeout");
-    assert.strictEqual(resolveNotifyKind("timeout", "error", true), "timeout");
+  it("errors and vanished sessions are failures", () => {
+    assert.strictEqual(resolveNotifyKind("error"), "error");
+    assert.strictEqual(resolveNotifyKind("deleted"), "error");
   });
 
-  it("event trigger maps status and race state", () => {
-    assert.strictEqual(resolveNotifyKind("event", "error", false), "error");
-    assert.strictEqual(resolveNotifyKind("event", "idle", true), "completed_after_timeout");
-    assert.strictEqual(resolveNotifyKind("event", "idle", false), "completed");
+  it("idle completes; anything else has no kind", () => {
+    assert.strictEqual(resolveNotifyKind("idle"), "completed");
+    assert.strictEqual(resolveNotifyKind("busy"), null);
+    assert.strictEqual(resolveNotifyKind(""), null);
   });
 });
 
 describe("notify gate: notifyParent", () => {
   beforeEach(() => {
-    resetNotificationLog();
+    clearNotifyLedger();
   });
 
   it("delivers on first attempt and records success", async () => {
     const { client, calls } = promptClient([]);
-    const record = await notifyParent(
-      client, "parent_1", "hello",
-      { childSessionId: "ses_1", kind: "completed" },
-      { retryDelayMs: 0 },
-    );
+    const delivered = await notifyParent(client, "parent_1", "hello", {
+      childSessionId: "ses_a1",
+      kind: "completed",
+      sleep: NO_SLEEP,
+    });
+    assert.strictEqual(delivered, true);
     assert.strictEqual(calls.length, 1);
+    const record = getLatestNotification("ses_a1");
     assert.deepStrictEqual(
       { delivered: record.delivered, attempts: record.attempts, kind: record.kind },
       { delivered: true, attempts: 1, kind: "completed" },
     );
-    assert.deepStrictEqual(getLatestNotification("ses_1"), record);
   });
 
-  it("retries once, then records failure with the cause", async () => {
+  it("retries once, then records failure", async () => {
     const { client, calls } = promptClient([new Error("down"), new Error("still down")]);
-    const record = await notifyParent(
-      client, "parent_1", "hello",
-      { childSessionId: "ses_1", kind: "timeout" },
-      { retryDelayMs: 0 },
-    );
+    const delivered = await notifyParent(client, "parent_1", "hello", {
+      childSessionId: "ses_b1",
+      kind: "error",
+      sleep: NO_SLEEP,
+    });
+    assert.strictEqual(delivered, false);
     assert.strictEqual(calls.length, 2, "exactly one retry");
-    assert.strictEqual(record.delivered, false);
-    assert.strictEqual(record.attempts, 2);
-    assert.ok(record.error.includes("still down"), `last error kept. got: ${record.error}`);
+    const record = getLatestNotification("ses_b1");
+    assert.deepStrictEqual({ delivered: record.delivered, attempts: record.attempts }, { delivered: false, attempts: 2 });
   });
 
   it("second-attempt success records delivered with attempts=2", async () => {
     const { client } = promptClient([new Error("blip")]);
-    const record = await notifyParent(
-      client, "parent_1", "hello",
-      { childSessionId: "ses_1", kind: "completed" },
-      { retryDelayMs: 0 },
-    );
-    assert.strictEqual(record.delivered, true);
-    assert.strictEqual(record.attempts, 2);
+    const delivered = await notifyParent(client, "parent_1", "hello", {
+      childSessionId: "ses_c1",
+      kind: "completed",
+      sleep: NO_SLEEP,
+    });
+    assert.strictEqual(delivered, true);
+    assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
+  });
+
+  it("settles deliver exactly once per kind", async () => {
+    const { client, calls } = promptClient([]);
+    const first = await notifyParent(client, "parent_1", "hello", {
+      childSessionId: "ses_d1",
+      kind: "completed",
+      sleep: NO_SLEEP,
+    });
+    const second = await notifyParent(client, "parent_1", "hello again", {
+      childSessionId: "ses_d1",
+      kind: "completed",
+      sleep: NO_SLEEP,
+    });
+    assert.strictEqual(first, true);
+    assert.strictEqual(second, false);
+    assert.strictEqual(calls.length, 1, "duplicate never reaches the parent");
+    const record = getLatestNotification("ses_d1");
+    assert.strictEqual(record.delivered, false);
+    assert.strictEqual(record.attempts, 0, "suppressed before dialing");
+  });
+
+  it("a distinct error can follow a delivered completion", async () => {
+    const { client, calls } = promptClient([]);
+    await notifyParent(client, "parent_1", "done", { childSessionId: "ses_e1", kind: "completed", sleep: NO_SLEEP });
+    const escalated = await notifyParent(client, "parent_1", "actually failed", { childSessionId: "ses_e1", kind: "error", sleep: NO_SLEEP });
+    assert.strictEqual(escalated, true);
+    assert.strictEqual(calls.length, 2);
+  });
+
+  it("notices dedup by message-derived key, not by kind", async () => {
+    const { client, calls } = promptClient([]);
+    const opts = (message) => ({
+      childSessionId: "ses_f1",
+      kind: "notice",
+      dedupKey: `notice:${message}`,
+      sleep: NO_SLEEP,
+    });
+    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), true);
+    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on Y", opts("blocked on Y")), true);
+    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), false);
+    assert.strictEqual(calls.length, 2);
+  });
+
+  it("revival clears settle-dedup so the next completion can deliver", async () => {
+    const { client, calls } = promptClient([]);
+    await notifyParent(client, "parent_1", "turn 1", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
+    gateLedger.forgetChild("ses_g1");
+    const second = await notifyParent(client, "parent_1", "turn 2", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
+    assert.strictEqual(second, true);
+    assert.strictEqual(calls.length, 2);
   });
 
   it("ledger is bounded and latest-wins per child", async () => {
-    assert.ok(MAX_NOTIFICATION_RECORDS > 0, "bound is named");
     const { client } = promptClient([]);
-    for (let i = 0; i < MAX_NOTIFICATION_RECORDS + 5; i++) {
-      await notifyParent(
-        client, "parent_1", `msg ${i}`,
-        { childSessionId: `ses_${i}`, kind: "completed" },
-        { retryDelayMs: 0 },
-      );
+    for (let i = 0; i < 205; i++) {
+      await notifyParent(client, "parent_1", `msg ${i}`, { childSessionId: `ses_${i}`, kind: "completed", sleep: NO_SLEEP });
     }
-    const latest = getLatestNotification(`ses_${MAX_NOTIFICATION_RECORDS + 4}`);
-    assert.ok(latest, "newest retained");
-    assert.strictEqual(getLatestNotification("ses_0"), undefined, "oldest evicted");
+    assert.ok(getLatestNotification("ses_204"), "newest retained");
+    assert.strictEqual(getLatestNotification("ses_0"), null, "oldest evicted");
   });
 
   it("unknown children have no record", () => {
-    assert.strictEqual(getLatestNotification("ses_missing"), undefined);
+    assert.strictEqual(getLatestNotification("ses_missing"), null);
   });
 });

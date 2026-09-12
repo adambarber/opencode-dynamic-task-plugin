@@ -1,6 +1,12 @@
-// Dynamic Task Plugin - async subagent orchestration with parent notifications
+// Dynamic Task Plugin — non-blocking subagent orchestration with parent notifications
 // Location: ~/.config/opencode/plugins/dynamic-task.ts (auto-scanned)
 // Docs: https://opencode.ai/docs/plugins
+//
+// The contract: tools never wait. Every prompt is fired and owned at the gate;
+// every settlement (completed/error) rides a lifecycle event through the
+// single-winner ledger; children speak mid-flight through task_notify. The
+// plugin arms no timers — settlement lives at the notification layer, and the
+// only bound on a child is operator intent (task_interrupt).
 
 import { tool } from "@opencode-ai/plugin";
 import type { PluginInput, PluginOptions, ToolContext } from "@opencode-ai/plugin";
@@ -8,22 +14,18 @@ import type { OpenCodeClient } from "./shared/client.js";
 import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
-  isTerminalSessionEvent,
   isEventRecord,
   eventField,
   eventString,
+  eventLooksDeleted,
   errorMessage,
+  isTerminalSessionEvent,
   resolveParentSessionId,
   validateSessionResult,
-  type SessionContext,
+  loadTaskLedger,
+  saveTaskLedger,
+  resolveTaskLedgerPath,
 } from "./shared/session-lifecycle.js";
-import {
-  buildBackgroundPrompt,
-  formatParentNotification,
-  formatTaskResultSummary,
-  formatTaskListSummary,
-  formatTaskStatusDetail,
-} from "./shared/task-formatting.js";
 import { debugLog, configureDebugRoot } from "./debug-logger.js";
 import {
   normalizeQuestionAnswers,
@@ -36,14 +38,10 @@ import {
 } from "./shared/question-handling.js";
 import {
   normalizeDynamicTaskConfig,
-  resolveTimeoutMs,
   parseDynamicTaskJsonc,
   checkConcurrencyLimit,
   type DynamicTaskConfig,
 } from "./shared/config.js";
-import {
-  resolveAwaitResponse,
-} from "./shared/task-policy.js";
 import {
   resolveAdmission,
   registerAdmittedTask,
@@ -55,7 +53,6 @@ import {
 import {
   invokePrompt,
   classifyPromptError,
-  extractTextFromPromptResult,
   extractMessages,
   getLatestAssistantText,
   hydrateLatestOutcome,
@@ -63,44 +60,40 @@ import {
   parseModelOverride,
 } from "./shared/prompt.js";
 import {
-  startTimeout,
-  withBound,
-  ABORT_TIMEOUT_MS,
-  type BoundOutcome,
-} from "./shared/bound.js";
-import {
   notifyParent,
   resolveNotifyKind,
-  getLatestNotification,
   safeLog,
+  formatParentNotification,
+  getLatestNotification,
+  gateLedger,
+  type NotifyKind,
 } from "./shared/notify.js";
 import {
-  createStateStore,
+  buildBackgroundPrompt,
+  formatTaskResultSummary,
+  formatTaskListSummary,
+  formatTaskStatusDetail,
+} from "./shared/task-formatting.js";
+import {
+  createTaskStore,
   transitionState,
+  pruneRetainedTasks,
   findTask,
   listTasks,
-  noteTimeoutFired,
-  markActiveCompleted,
-  forceRetain,
-  discardRetained,
-  stealTimeoutHandle,
   noteLateOutcome,
+  annotateNotice,
+  reviveRetainedTask,
+  recordAbortError,
   restoreRetained,
-  countActiveBackgroundTasks,
   type TaskStore,
-  type TaskLifecycleState,
+  type TaskState,
 } from "./shared/task-state.js";
 
 // Plugin-level state store (ephemeral — lost on restart)
 interface PluginState {
   store: TaskStore;
   config: DynamicTaskConfig;
-  deprecationWarned: boolean;
 }
-
-let pluginState: PluginState | null = null;
-
-import { loadTaskLedger, saveTaskLedger, resolveTaskLedgerPath } from "./shared/session-lifecycle.js";
 
 function initPluginState(directory: string, options?: PluginOptions): PluginState {
   // Load dedicated config file if it exists
@@ -110,10 +103,7 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
   const fileConfig = configPath ? parseDynamicTaskJsonc(configPath) : null;
 
   const config = normalizeDynamicTaskConfig(options, fileConfig);
-  const store = createStateStore({
-    retainedTaskTtlMs: config.retainedTaskTtlMs,
-    retainedTaskMaxEntries: config.retainedTaskMaxEntries,
-  });
+  const store = createTaskStore();
 
   // State is scoped to the project directory the host provides (the same
   // root as the config file above) — never the process CWD, which for
@@ -121,20 +111,21 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
   configureDebugRoot(directory);
   const ledgerPath = resolveTaskLedgerPath(directory);
 
-  // Ledger sync: every retained mutation persists (never throws — the
-  // store swallows callback errors so persistence can't break control flow).
+  // Ledger sync: every retained mutation persists. Errors are swallowed
+  // here so a durable-state failure can never break control flow.
   store.onRetainedChange = () => {
-    saveTaskLedger(store.retainedTasks, ledgerPath);
+    try {
+      saveTaskLedger(store.retainedTasks, ledgerPath);
+    } catch {
+      // best-effort persistence; the next mutation retries
+    }
   };
 
   // Crash recovery: rehydrate retained tasks from the ledger.
   restoreRetained(store, loadTaskLedger(ledgerPath));
+  pruneRetainedTasks(store, config);
 
-  return {
-    store,
-    config,
-    deprecationWarned: false,
-  };
+  return { store, config };
 }
 
 // Shared arg guard: every session-scoped tool rejects empty ids identically.
@@ -150,247 +141,153 @@ function unknownSessionResult(sessionId: string): string {
   return JSON.stringify({ status: "unknown", session_id: sessionId });
 }
 
-// Shared bound waiter for live-session prompts (Tasks 02/07): one timer
-// owns abort + transition + race for every prompt that must settle bounded.
-// Callers pass already-started work; prompt construction stays at the site.
-function awaitContinuation(
-  store: TaskStore,
-  config: DynamicTaskConfig,
+// One delivery helper for every settlement path (event, prompt failure):
+// notification is fire-and-forget by contract — the gate owns retries, the
+// ledger owns history, and a failed delivery is visible via the notification
+// record, never a reason to disturb the caller's control flow.
+function deliverParent(
   client: OpenCodeClient,
-  sessionId: string,
-  work: Promise<unknown>,
-  timeoutMs: number,
-): Promise<BoundOutcome<unknown>> {
-  return withBound(config.timerProvider, timeoutMs, work, () => {
-    if (config.timeoutBehavior === "interrupt") {
-      client.session.abort({ path: { id: sessionId } }).catch(() => {});
-    }
-    try { transitionState(store, sessionId, "timed_out_retained"); } catch { /* ok */ }
-  });
-}
-
-// Shared shell for session-scoped read tools: identical arg schema and
-// empty-id guard. Handlers receive raw args and focus on their read.
-function sessionReadTool(
+  parentSessionId: string,
+  childSessionId: string,
   description: string,
-  handler: (args: { session_id: string }) => Promise<string> | string,
-) {
-  return tool({
-    description,
-    args: {
-      session_id: tool.schema.string(),
-    },
-    async execute(args) {
-      const missing = missingSessionId(args);
-      if (missing) return missing;
-      return handler(args);
-    },
-  });
+  kind: NotifyKind,
+  text: string,
+): void {
+  if (!parentSessionId || parentSessionId === "unknown") return; // nowhere to deliver
+  const message = formatParentNotification({ childSessionId, description }, kind, text);
+  void notifyParent(client, parentSessionId, message, { childSessionId, kind });
 }
 
+interface ChildRef {
+  childSessionId: string;
+  parentSessionId: string;
+  agentName: string;
+  description: string;
+  requestedModel?: { providerID: string; modelID: string } | undefined;
+}
+
+// Fire a child prompt and own its failure path. The prompt resolving is NOT
+// how a task settles — lifecycle events are. This catch exists only for
+// delivery failures where no event will ever arrive (session vanished,
+// transport rejected): without it a fired prompt leaves the ledger active
+// and the parent silently deaf.
+function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: ChildRef, prompt: string): void {
+  const routing: { agent: string; model?: { providerID: string; modelID: string } } = {
+    agent: task.agentName,
+    ...(task.requestedModel !== undefined ? { model: task.requestedModel } : {}),
+  };
+  // A delivery failure — rejection or synchronous throw — settles exactly
+  // once through the same gate the async path uses.
+  const onPromptFailure = (error: unknown): void => {
+    const classified = classifyPromptError(error);
+    void safeLog(client, "warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
+    let settled = false;
+    try {
+      transitionState(store, task.childSessionId, "error");
+      settled = true;
+    } catch { /* a lifecycle event won the settlement */ }
+    if (settled) {
+      deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", classified.message);
+    }
+  };
+  try {
+    invokePrompt(client, task.childSessionId, prompt, routing).catch(onPromptFailure);
+  } catch (error: unknown) {
+    onPromptFailure(error);
+  }
+}
+
+async function handleChildLifecycleEvent(
+  client: OpenCodeClient,
+  store: TaskStore,
+  event: unknown,
+): Promise<void> {
+  const childSessionId = getSessionIdFromEvent(event);
+  if (!childSessionId) return;
+
+  const active = store.activeTasks.get(childSessionId);
+  if (active) {
+    // Synchronous claim — no awaits before this. transitionState is the one
+    // settlement gate: the winner replaces the active entry, so every
+    // competing writer's transition throws and bows out.
+    const status = getEventLifecycleStatus(event);
+    const failed = status === "error" || status === "deleted" || eventLooksDeleted(event);
+    const provisional: TaskState = failed ? "error" : "completed";
+    const parentSessionId = active.parentSessionId;
+    const childDescription = active.description;
+    try {
+      transitionState(store, childSessionId, provisional);
+    } catch {
+      void safeLog(client, "info", `Event handler: lost settlement race for ${childSessionId}, dropping`);
+      return;
+    }
+    void safeLog(client, "info", `Event handler: settled ${childSessionId} as ${provisional}`);
+
+    const outcome = await hydrateLatestOutcome(client, childSessionId);
+    let kind: NotifyKind = resolveNotifyKind(status) ?? provisional;
+    if (kind === "completed" && outcome.errorDetail) {
+      kind = "error";
+      try {
+        noteLateOutcome(store, childSessionId, "error");
+      } catch { /* already escalated */ }
+    }
+    const latestText = outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+    const message = formatParentNotification({ childSessionId, description: childDescription }, kind, latestText);
+    const delivered = await notifyParent(client, parentSessionId, message, { childSessionId, kind });
+    debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered });
+    return;
+  }
+
+  const retained = store.retainedTasks.get(childSessionId);
+  if (retained) {
+    // Late failures are the only amendment a settled record accepts: an event
+    // contradicting a reported success escalates completed→error. Interrupted
+    // and errored records are final — post-interrupt errors are our own
+    // abort's echo, not a discovery, and escalating them would notify the
+    // parent of a "failure" it deliberately caused.
+    const status = getEventLifecycleStatus(event);
+    if (status !== "error" && status !== "deleted") return;
+    if (retained.state !== "completed") return;
+    const outcome = await hydrateLatestOutcome(client, childSessionId);
+    const current = store.retainedTasks.get(childSessionId);
+    if (!current || current.state !== "completed") return; // lost the escalation race
+    noteLateOutcome(store, childSessionId, "error");
+    const errorDetail = outcome.errorDetail || "(session vanished before output was readable)";
+    const message = formatParentNotification({ childSessionId, description: retained.description }, "error", errorDetail);
+    void notifyParent(client, retained.parentSessionId, message, { childSessionId, kind: "error" });
+    debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error" });
+  }
+}
+
+// Read-only session message fetch shared by the session readers.
 async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
 }
 
-function truncateText(text: string, maxChars: number = 1200): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}...`;
-}
-
-async function handleTimeout(store: TaskStore, childSessionId: string, client: OpenCodeClient, config: DynamicTaskConfig): Promise<void> {
-  const task = store.activeTasks.get(childSessionId);
-  if (!task || task.completed) return;
-
-  noteTimeoutFired(store, childSessionId);
-
-  const timeoutKind = resolveNotifyKind("timeout", "", false);
-  const timeoutMessage = formatParentNotification({
-    childSessionId: task.childSessionId,
-    description: task.description,
-    timeoutMs: config.defaultTimeoutMs,
-  }, timeoutKind);
-
-  let abortError: string | undefined;
-
-  if (config.timeoutBehavior === "interrupt") {
-    // Await the abort and track its outcome — prevents silent failure
-    try {
-      const result: { aborted: boolean; error?: string } = await Promise.race([
-        client.session.abort({ path: { id: childSessionId } }).then(() => ({ aborted: true })),
-        new Promise<{ aborted: false; error: string }>((_, reject) =>
-          config.timerProvider.setTimeout(() => reject(new Error("abort timeout")), ABORT_TIMEOUT_MS)
-        ),
-      ]);
-       if (!result.aborted) {
-         abortError = result.error;
-       }
-     } catch (error: unknown) {
-       abortError = error instanceof Error ? error.message : "abort failed";
-     }
-  }
-
-  // Guard: event handler may have processed completion during the abort await
-  if (!store.activeTasks.has(childSessionId)) {
-    return;
-  }
-
-  // Always transition to retained — preserves state regardless of abort outcome
-  try {
-    transitionState(store, childSessionId, "timed_out_retained");
-   } catch {
-     // Race: completion landed during the abort await — force the move
-     forceRetain(store, childSessionId, {
-       state: "timed_out_retained",
-       timeoutNotified: true,
-       completed: true,
-       abortError,
-     });
-   }
-
-  // Attach abort error to retained entry if applicable
-  if (abortError) {
-    const retained = store.retainedTasks.get(childSessionId);
-    if (retained) {
-      retained.abortError = abortError;
-    }
-  }
-
-  await notifyParent(client, task.parentSessionId, timeoutMessage, {
-    childSessionId: task.childSessionId,
-    kind: timeoutKind,
-  });
-
-  // Release the stored bound (it already fired — cancel is a no-op now)
-  stealTimeoutHandle(store, childSessionId)?.cancel();
-
-  debugLog(task.parentSessionId, childSessionId, "timeout-fired", {
-    timeoutBehavior: config.timeoutBehavior,
-    childSessionId,
-    abortError,
+function sessionReadTool(
+  description: string,
+  handler: (args: Record<string, unknown>) => Promise<string>,
+) {
+  return tool({
+    description,
+    args: {
+      session_id: tool.schema.string().describe("Background task session ID (ses_...)"),
+    },
+    execute: async (args: Record<string, unknown>) => handler(args),
   });
 }
 
-async function handleChildLifecycleEvent(client: OpenCodeClient, event: unknown): Promise<void> {
-  if (!pluginState) return;
-  const { store, config } = pluginState;
-
-  if (!isTerminalSessionEvent(event)) return;
-
-  const childSessionId = getSessionIdFromEvent(event);
-  if (!childSessionId) return;
-
-  // Check active tasks first.
-  const active = store.activeTasks.get(childSessionId);
-  if (active) {
-    // Synchronous claim — nothing may await before it. The 2026-09-11 field
-    // burst (session.error + session.status + session.idle within 1ms) proved
-    // an await here lets every event pass the active check and storm the
-    // parent. transitionState is the single-winner gate: it replaces the
-    // active entry, so a competing writer's transition throws and it bails.
-    stealTimeoutHandle(store, childSessionId)?.cancel();
-    const alreadyCompleted = markActiveCompleted(store, childSessionId);
-    const status = getEventLifecycleStatus(event);
-    const timeoutFlagged = active.timeoutNotified || alreadyCompleted;
-    const provisional: TaskLifecycleState =
-      status === "error" ? "error"
-        : timeoutFlagged ? "completed_after_timeout"
-        : "completed";
-    try {
-      transitionState(store, childSessionId, provisional);
-    } catch {
-      void safeLog(client, "info", `Event handler: lost settlement race for ${childSessionId}`);
-      return;
-    }
-    void safeLog(client, "info", `Event handler: settled ${childSessionId} as ${provisional}`);
-
-    // One hydration feeds both the decision and the content: a provider
-    // failure can end as a bare idle event with the cause only in the message
-    // info (Task 03's content-first principle).
-    const outcome = await hydrateLatestOutcome(client, childSessionId);
-    let kind = resolveNotifyKind("event", status, timeoutFlagged);
-    if (kind !== "error" && outcome.errorDetail) {
-      kind = "error";
-      noteLateOutcome(store, childSessionId, "error");
-    }
-    const latestText =
-      outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
-    const parentMessage = formatParentNotification({
-      childSessionId: active.childSessionId,
-      description: active.description,
-      timeoutMs: config.defaultTimeoutMs,
-    }, kind, latestText);
-    await notifyParent(client, active.parentSessionId, parentMessage, {
-      childSessionId: active.childSessionId,
-      kind,
-    });
-
-    debugLog(active.parentSessionId, childSessionId, "child-lifecycle-event", {
-      status,
-      kind,
-      errorDetail: outcome.errorDetail || undefined,
-      timeoutNotified: active.timeoutNotified,
-      alreadyCompleted,
-    });
-    return;
+// Lineage from current session (for nested dynamic_task calls).
+function createDummyLineage(ctx: ToolContext, store: TaskStore): string[] {
+  const callerSessionId = resolveParentSessionId(ctx);
+  if (!callerSessionId || callerSessionId === "unknown") return [];
+  const callerTask = findTask(store, callerSessionId);
+  if (callerTask) {
+    // The stored lineage already ends with the caller's own agent (it was
+    // built as admission.newLineage) — re-appending it would double-count.
+    return [...callerTask.lineage];
   }
-
-  // Check retained tasks — update state and notify parent of a late outcome.
-  const retained = store.retainedTasks.get(childSessionId);
-  if (retained) {
-    const status = getEventLifecycleStatus(event);
-    if (status !== "error" && retained.state !== "timed_out_retained") {
-      // For other states (completed, error, interrupted), no update needed.
-      return;
-    }
-    const outcome = await hydrateLatestOutcome(client, childSessionId);
-    const isError = status === "error" || Boolean(outcome.errorDetail);
-    const newState: "completed_after_timeout" | "error" = isError ? "error" : "completed_after_timeout";
-    if (retained.state === newState) return; // already reported — dedupe the burst
-    noteLateOutcome(store, childSessionId, newState);
-
-    const kind = resolveNotifyKind("event", isError ? "error" : status, true);
-    const latestText =
-      outcome.text || (isError ? outcome.errorDetail || "(error — no detail)" : "(completed after timeout)");
-    const parentMessage = formatParentNotification({
-      childSessionId: retained.childSessionId,
-      description: retained.description,
-      timeoutMs: config.defaultTimeoutMs,
-    }, kind, latestText);
-    await notifyParent(client, retained.parentSessionId, parentMessage, {
-      childSessionId: retained.childSessionId,
-      kind,
-    });
-
-    debugLog(retained.parentSessionId, childSessionId, "retained-lifecycle-event", {
-      status,
-      newState,
-      errorDetail: outcome.errorDetail || undefined,
-      previousState: retained.state,
-    });
-  }
-}
-
-// Lineage inheritance: a nested caller's session is itself a tracked child
-// whose stored lineage already ends with its own agent — inherit verbatim
-// (a copy). Re-appending would double-count the parent and collapse depth.
-function createDummyLineage(ctx: SessionContext, store: TaskStore): string[] {
-  const parentSessionId = resolveParentSessionId(ctx);
-  if (!parentSessionId) return [];
-
-  // Check if the parent session is itself a child task (i.e., this is a nested call)
-  const parentTask = store.activeTasks.get(parentSessionId);
-  if (parentTask) {
-    return [...parentTask.lineage];
-  }
-
-  // Also check retained tasks for the parent
-  const parentRetained = store.retainedTasks.get(parentSessionId);
-  if (parentRetained) {
-    return [...parentRetained.lineage];
-  }
-
-  // Root-level call — no lineage constraints
   return [];
 }
 
@@ -405,167 +302,140 @@ export default async function dynamicTaskPlugin(
   const client = input.client as OpenCodeClient;
 
   if (!client?.app?.agents || !client?.session?.create || !client?.session?.prompt) {
-    try {
-      await client.app?.log?.({
-        body: {
-          service: "dynamic-task",
-          level: "warn",
-          message: "Missing required client APIs, plugin disabled",
-        },
-      });
-    } catch { /* silent failure */ }
+    await safeLog(client, "warn", "Missing required client APIs, plugin disabled");
     return {};
   }
 
-  // Initialize state at plugin load time
-  pluginState = initPluginState(directory, options);
-  const state = pluginState;
-  const { config, store } = state;
+  // Initialize state at plugin load time — captured per instance: a second
+  // init (multi-workspace) must never reroute this instance's events into
+  // another project's store.
+  const { config, store } = initPluginState(directory, options);
 
-  await client.app.log({
-    body: {
-      service: "dynamic-task",
-      level: "info",
-      message: "Plugin loaded with dynamic_task, task_continue, task_result, and task_interrupt tools",
-    },
-  });
+  await safeLog(client, "info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
 
   return {
     event: async ({ event }: { event: unknown }) => {
       const eventType = eventString(event, ["type"]) ?? "(none)";
       const eventName = eventString(event, ["name"]) ?? "(none)";
       const evtSessionId = getSessionIdFromEvent(event);
-      const evtStatus = getEventLifecycleStatus(event);
       const topKeys = isEventRecord(event) ? Object.keys(event).slice(0, 8).join(",") : "(null)";
 
-      await client.app.log({
-        body: {
-          service: "dynamic-task",
-          level: "info",
-          message: `event: type=${eventType} name=${eventName} sid=${evtSessionId} status=${evtStatus} keys=[${topKeys}]`,
-        },
-      });
-
-      debugLog("event-handler", "event-handler", "event-received", {
-        type: eventType,
-        name: eventName,
-        sessionId: evtSessionId,
-        status: evtStatus,
-      });
+      // The head is guarded too: a dead log call must never skip the question
+      // gate or lifecycle handling for every subsequent event.
+      try {
+        await safeLog(client, "info", `event: type=${eventType} name=${eventName} sid=${evtSessionId ?? "(none)"} keys=[${topKeys}]`);
+        debugLog("event-handler", "event-handler", "event-received", {
+          type: eventType,
+          name: eventName,
+          sessionId: evtSessionId,
+        });
+      } catch { /* best-effort visibility */ }
 
       // --- Question gate (Task 04): attribute through the gate, then settle.
       // Unattributable questions (including the operator's own) are never
       // touched — the gate fails closed on ambiguity. ---
       try {
-        if (eventString(event, ["type"]) === "question.created") {
-          const resolved = resolveQuestionSession(event, store);
-          if (!resolved) {
-            debugLog("unknown", "unknown", "question-missing-id", { type: eventString(event, ["type"]) });
-          } else {
-            const { questionId, childSessionId } = resolved;
-            if (childSessionId === null) {
-              debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
-            } else {
-              const active = store.activeTasks.get(childSessionId);
-              const retained = active ? undefined : store.retainedTasks.get(childSessionId);
-
-              if (active) {
-                rememberQuestionSession(questionId, childSessionId);
-                const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
-                const decision = decideQuestion("active", answers);
-                if (decision.action === "reply") {
-                  const result = await replyToQuestion(client, questionId, decision.answer);
-                  if (result.succeeded) {
-                    debugLog(active.parentSessionId, childSessionId, "question-auto-answered", {
-                      questionId,
-                      answer: decision.answer,
-                    });
-                  } else {
-                    debugLog(active.parentSessionId, childSessionId, "question-auto-answer-failed", {
-                      questionId,
-                      reason: result.reason,
-                    });
-                    const rejectResult = await rejectQuestion(client, questionId,
-                      "Background task question auto-answer failed");
-                    if (!rejectResult.succeeded) {
-                      debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
-                        questionId,
-                        reason: rejectResult.reason,
-                      });
-                    }
-                  }
-                } else {
-                  const result = await rejectQuestion(client, questionId, decision.reason);
-                  if (!result.succeeded) {
-                    debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
-                      questionId,
-                      reason: result.reason,
-                    });
-                  } else {
-                    debugLog(active.parentSessionId, childSessionId, "question-auto-rejected", {
-                      questionId,
-                    });
-                  }
-                }
-              } else if (retained) {
-                rememberQuestionSession(questionId, childSessionId);
-                const decision = decideQuestion("retained", []);
-                if (decision.action === "reject") {
-                  await rejectQuestion(client, questionId, decision.reason);
-                }
-                debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
-              } else {
-                debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventString(event, ["type"]) });
-              }
-            }
-          }
-        }
-
-        if (eventString(event, ["type"]) === "question.replied" || eventString(event, ["type"]) === "question.rejected") {
+        if (eventType === "question.replied" || eventType === "question.rejected") {
           const questionId = eventString(event, ["properties", "id"]);
           if (questionId) {
             forgetQuestionSession(questionId);
           }
+          return;
+        }
+        if (eventType === "question.created") {
+          const resolved = resolveQuestionSession(event, store);
+          if (!resolved) {
+            debugLog("unknown", "unknown", "question-missing-id", { type: eventType });
+            return;
+          }
+          const { questionId, childSessionId } = resolved;
+          if (childSessionId === null) {
+            debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventType });
+            return;
+          }
+          const active = store.activeTasks.get(childSessionId);
+          const retained = active ? undefined : store.retainedTasks.get(childSessionId);
+
+          if (active) {
+            rememberQuestionSession(questionId, childSessionId);
+            const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
+            const decision = decideQuestion("active", answers);
+            if (decision.action === "reply") {
+              const result = await replyToQuestion(client, questionId, decision.answer);
+              if (result.succeeded) {
+                debugLog(active.parentSessionId, childSessionId, "question-auto-answered", {
+                  questionId,
+                  answer: decision.answer,
+                });
+              } else {
+                debugLog(active.parentSessionId, childSessionId, "question-auto-answer-failed", {
+                  questionId,
+                  reason: result.reason,
+                });
+                const rejectResult = await rejectQuestion(client, questionId,
+                  "Background task question auto-answer failed");
+                if (!rejectResult.succeeded) {
+                  debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
+                    questionId,
+                    reason: rejectResult.reason,
+                  });
+                }
+              }
+            } else {
+              const result = await rejectQuestion(client, questionId, decision.reason);
+              if (!result.succeeded) {
+                debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
+                  questionId,
+                  reason: result.reason,
+                });
+              } else {
+                debugLog(active.parentSessionId, childSessionId, "question-auto-rejected", {
+                  questionId,
+                });
+              }
+            }
+          } else if (retained) {
+            rememberQuestionSession(questionId, childSessionId);
+            const decision = decideQuestion("retained", []);
+            if (decision.action === "reject") {
+              const result = await rejectQuestion(client, questionId, decision.reason);
+              if (!result.succeeded) {
+                debugLog(retained.parentSessionId, childSessionId, "question-retained-reject-failed", {
+                  questionId,
+                  reason: result.reason,
+                });
+              }
+            }
+            debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
+          } else {
+            debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventType });
+          }
+          return;
         }
       } catch (qerr: unknown) {
         debugLog("unknown", "unknown", "question-handler-error", { error: errorMessage(qerr) });
       }
 
       // --- Session lifecycle event handler ---
-       try {
-         await handleChildLifecycleEvent(client, event);
-       } catch (error: unknown) {
-         if (error instanceof Error) {
-           await client.app.log({
-             body: {
-               service: "dynamic-task",
-               level: "warn",
-               message: `event handler error: ${error.message}`,
-             },
-           });
-           debugLog("event-handler", "event-handler", "event-handler-error", {
-             error: error.message,
-           });
-         }
-       }
+      if (!isTerminalSessionEvent(event)) return;
+      try {
+        await handleChildLifecycleEvent(client, store, event);
+      } catch (error: unknown) {
+        await safeLog(client, "warn", `event handler error: ${errorMessage(error)}`);
+        debugLog("event-handler", "event-handler", "event-handler-error", {
+          error: errorMessage(error),
+        });
+      }
     },
 
     tool: {
       dynamic_task: tool({
         description:
-          "Spawn a subagent task. Set await_response=false to run in background with async parent notifications.",
+          "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight notices with task_notify. Inspect with task_result/task_status/task_list; steer a settled task with task_continue; stop it with task_interrupt.",
         args: {
-          description: tool.schema.string().describe("Brief task description"),
-          subagent_type: tool.schema.string().describe("Subagent name to invoke"),
+          description: tool.schema.string().describe("Short human-readable task label"),
+          subagent_type: tool.schema.string().describe("Agent to invoke"),
           prompt: tool.schema.string().describe("Instructions for the child session"),
-          await_response: tool.schema
-            .boolean()
-            .optional()
-            .describe("If true, wait for response. If false (default), return immediately."),
-          timeout_ms: tool.schema
-            .number()
-            .optional()
-            .describe("Max wait in ms for awaiting mode or timeout notification in background mode."),
           model: tool.schema
             .string()
             .optional()
@@ -576,25 +446,7 @@ export default async function dynamicTaskPlugin(
             .describe("Task dependencies — session IDs this task depends on."),
         },
         async execute(args, ctx: ToolContext) {
-          // Debug logging for await_response
-          await safeLog(client, "info", `dynamic_task called with await_response=${JSON.stringify(args.await_response)} (type: ${typeof args.await_response})`);
-          
-          // Deprecation warning for missing await_response
-          if (state.config.defaultAwaitResponse === false && args.await_response === undefined) {
-            if (!state.deprecationWarned) {
-              state.deprecationWarned = true;
-              await client.app.log({
-                body: {
-                  service: "dynamic-task",
-                  level: "warn",
-                  message: "Deprecation: dynamic_task now runs async by default. Pass await_response: true for sync behavior.",
-                },
-              });
-            }
-          }
-
-          // Pruning is internal to the store (bounds set at init).
-          const agents = await fetchAgents(client);
+          const agents = await fetchAgents(client, config.agentCacheTtlMs);
 
           // Admission gate: resolve + policy-check before session.create.
           // Fail-fast ordering: unknown callers are rejected before payload validation.
@@ -613,11 +465,8 @@ export default async function dynamicTaskPlugin(
             return `ERROR: Prompt too long (${args.prompt.length} chars). Max: 100000.`;
           }
 
-          // Resolve config values
-          const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-          const shouldAwait = resolveAwaitResponse(args.await_response, config);
-
           // Dependency readiness (temporal — after all static validation).
+          pruneRetainedTasks(store, config);
           const readiness = resolveDependencies(store, args.depends_on);
           if (!readiness.ok) {
             return [
@@ -626,19 +475,18 @@ export default async function dynamicTaskPlugin(
             ].join("\n");
           }
 
-          // Background concurrency is checked BEFORE create: rejecting after
-          // the session exists orphans an untracked child on the server (no
-          // timeout, no parent notification). registerActiveTask re-checks as
-          // the authoritative gate against a same-tick race; the catch below
-          // aborts any session that slips past this advisory check.
-          if (!shouldAwait) {
-            const limitError = checkConcurrencyLimit(countActiveBackgroundTasks(store), config);
-            // Same voice as the authoritative re-check below (its throw is
-            // prefixed ConcurrencyLimitExceeded) — one rejection, one wording.
-            if (limitError) return `ERROR: ConcurrencyLimitExceeded: ${limitError}`;
+          // Concurrency is checked BEFORE create: rejecting after the session
+          // exists orphans an untracked child on the server. registerActiveTask
+          // re-checks as the authoritative gate against a same-tick race; the
+          // catch below aborts any session that slips past this advisory check.
+          const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
+          if (limitError) {
+            // Same voice as the authoritative re-check (its throw is the
+            // builder's message) — one rejection, one wording.
+            return `ERROR: ${limitError}`;
           }
 
-          let createdSessionId: string | undefined;
+          let createdSessionId: string | null = null;
           try {
             // 1.18 contract: sessions carry title/parentID only — agent and
             // model ride on each prompt via PromptRouting.
@@ -663,99 +511,39 @@ export default async function dynamicTaskPlugin(
             }
             createdSessionId = childSessionId;
 
-            // Register in active state via the admission gate
-            const isBg = !shouldAwait;
-
+            // Register in active state via the admission gate.
             const activeTask = registerAdmittedTask(store, {
               childSessionId,
               parentSessionId: parentSessionId || "unknown",
               agentName: agent.name,
               description: args.description || `Task: ${agent.name}`,
               lineage: admission.newLineage,
-              isBackground: isBg,
-              requestedModel: args.model || undefined,
-              dependsOn: args.depends_on,
+              ...(modelOverride !== undefined ? { requestedModel: modelOverride } : {}),
+              ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
             }, config);
 
-            if (shouldAwait) {
-              // Bounded prompt (Tasks 02/07): abort + transition on timeout.
-              const outcome = await awaitContinuation(
-                store, config, client, childSessionId,
-                invokePrompt(client, childSessionId, args.prompt, {
-                  agent: agent.name,
-                  ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-                }),
-                timeoutMs,
-              );
+            // Fire-and-forget: the lifecycle event owns settlement, the
+            // catch owns delivery failure.
+            fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(args.prompt));
 
-              if (outcome.timedOut) {
-                return `## @${agent.name} Response\n\n(Timed out after ${timeoutMs / 1000}s. Session: ${childSessionId}. Use task_continue to resume.)\n\n---\n*Session: ${childSessionId}*`;
-              }
+            debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
+              description: args.description || `Task: ${agent.name}`,
+            });
 
-              const responseText = extractTextFromPromptResult(outcome.value);
-              try {
-                transitionState(store, childSessionId, "completed");
-              } catch { /* already terminal or not tracked */ }
-              return `## @${agent.name} Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${childSessionId}*`;
-            }
-
-            if (!shouldAwait) {
-              const childPrompt = buildBackgroundPrompt(args.prompt);
-              invokePrompt(client, childSessionId, childPrompt, {
-                agent: agent.name,
-                ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-              }).catch((error: unknown) => {
-                const classified = classifyPromptError(error);
-                safeLog(client, "warn", `Background prompt failed for ${childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
-                // First-class failure: record and notify now instead of
-                // stalling to timeout. Only the first terminal reporter wins.
-                stealTimeoutHandle(store, childSessionId)?.cancel();
-                let recorded = false;
-                try {
-                  transitionState(store, childSessionId, "error");
-                  recorded = true;
-                } catch { /* already settled */ }
-                if (recorded && parentSessionId) {
-                  const errorKind = resolveNotifyKind("event", "error", false);
-                  const parentMessage = formatParentNotification({
-                    childSessionId,
-                    description: args.description || `Task: ${agent.name}`,
-                    timeoutMs: config.defaultTimeoutMs,
-                  }, errorKind, classified.message);
-                  void notifyParent(client, parentSessionId, parentMessage, { childSessionId, kind: errorKind });
-                }
-              });
-
-              // Fire-and-forget background mode: one bound owns the timeout.
-              // Stored on the task so completion and interrupt paths can cancel it.
-              activeTask.timeoutHandle = startTimeout(config.timerProvider, timeoutMs, () =>
-                handleTimeout(store, childSessionId, client, config),
-              );
-
-              debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
-                timeoutMs,
-                description: args.description || `Task: ${agent.name}`,
-                shouldAwait: false,
-              });
-
-              if (parentSessionId) {
-                return [
-                  `Spawned @${agent.name} in background.`,
-                  `Session: ${childSessionId}`,
-                  `Async notification: enabled (parent ${parentSessionId})`,
-                  "Use task_result(session_id=...) to inspect progress while it runs.",
-                ].join("\n");
-              }
-
+            if (parentSessionId) {
               return [
                 `Spawned @${agent.name} in background.`,
                 `Session: ${childSessionId}`,
-                "Async notification: disabled (parent session ID not available in tool context)",
+                `Async notification: enabled (parent ${parentSessionId})`,
+                "The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile.",
               ].join("\n");
             }
 
-            return "ERROR: Unreachable dynamic_task state.";
-
+            return [
+              `Spawned @${agent.name} in background.`,
+              `Session: ${childSessionId}`,
+              "Async notification: disabled (parent session ID not available in tool context)",
+            ].join("\n");
           } catch (error: unknown) {
             const message = errorMessage(error);
             // Post-create failure must never strand a child: a registered task
@@ -781,237 +569,148 @@ export default async function dynamicTaskPlugin(
       }),
 
       task_continue: tool({
-        description: "Send a follow-up prompt to a child session and wait for its new response.",
+        description:
+          "Send a follow-up prompt to a tracked child session and return immediately. A settled task is revived for a fresh turn and its next outcome arrives as a new dynamic-task-notify message. A still-running task is not interruptible by follow-ups — wait for its notification (or task_interrupt first).",
         args: {
-          session_id: tool.schema.string(),
-          prompt: tool.schema.string(),
-          timeout_ms: tool.schema.number().optional().describe("Default: 120000"),
+          session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
+          prompt: tool.schema.string().describe("Follow-up instructions"),
         },
         async execute(args) {
-          if (!args.session_id || !args.prompt) {
-            return "ERROR: session_id and prompt are required.";
+          const missing = missingSessionId(args);
+          if (missing) return missing;
+          if (!args.prompt || typeof args.prompt !== "string") {
+            return "ERROR: prompt is required and must be a non-empty string.";
           }
 
           if (args.prompt.length > 100000) {
-            return `ERROR: Prompt too long (${args.prompt.length} chars).`;
+            return `ERROR: Prompt too long (${args.prompt.length} chars). Max: 100000.`;
           }
 
-          // Pruning is internal to the store (bounds set at init).
+          pruneRetainedTasks(store, config);
+          const sessionId = String(args.session_id ?? "");
 
-          // Check if this is a retained task — spawn new session
-          const retained = store.retainedTasks.get(args.session_id);
-          if (retained) {
-            // Try existing session first — send prompt and await response directly.
-            // A genuine timeout reports as such; a dead session falls through
-            // to re-admission below.
-             try {
-               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-               const modelOverride = parseModelOverride(retained.requestedModel);
-
-               // Bounded prompt (Tasks 02/07): abort + transition on timeout.
-               const outcome = await awaitContinuation(
-                 store, config, client, args.session_id,
-                 invokePrompt(client, args.session_id, args.prompt, {
-                   agent: retained.agentName,
-                   ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-                 }).catch(() => null),
-                 timeoutMs,
-               );
-
-              if (outcome.timedOut) {
-                return `(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id}. Use task_continue to resume.)`;
-              }
-
-              if (outcome.value !== null) {
-                const responseText = extractTextFromPromptResult(outcome.value);
-                try { transitionState(store, args.session_id, "completed"); } catch { }
-                return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
-              }
-              // Async-dead session (prompt rejected): fall through to re-admission.
-            } catch {
-              // Synchronously dead session — fall through to re-admission below.
-            }
-
-            // Continuation policy (Task 07): a dead session earns a fresh
-            // continuation only through the admission gate. Ancestors-only
-            // lineage: resuming is not re-delegating, so the task's own tail
-            // does not count against it.
-            const agents = await fetchAgents(client);
-            const readmission = resolveAdmission(
-              agents,
-              retained.agentName,
-              retained.lineage.slice(0, -1),
-              config,
-            );
-            if (!readmission.ok) {
-              return [
-                formatAdmissionError(readmission.reason, buildAgentList(agents), retained.agentName),
-                `(Previous session ${args.session_id} did not respond and cannot be continued.)`,
-              ].join("\n\n");
-            }
-
-            // Spawn a new child session with the same agent
-            try {
-              const sessionBody: { title: string; parentID?: string } = {
-                title: `Continuation: ${retained.description}`,
-              };
-              if (retained.parentSessionId) {
-                sessionBody.parentID = retained.parentSessionId;
-              }
-
-              const sessionResult = await client.session.create({
-                body: sessionBody,
-                query: { directory: directory || "" },
-              });
-
-              const newSessionId = validateSessionResult(sessionResult);
-              if (!newSessionId) {
-                return `ERROR: Failed to create continuation session. Response: ${JSON.stringify(sessionResult)}`;
-              }
-
-               // Register new active task for the continuation
-               registerAdmittedTask(store, {
-                 childSessionId: newSessionId,
-                 parentSessionId: retained.parentSessionId,
-                 agentName: retained.agentName,
-                 description: `Continue: ${retained.description}`,
-                 lineage: retained.lineage,
-                 isBackground: false,
-               }, config);
-
-               const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-               const modelOverride = parseModelOverride(retained.requestedModel);
-
-               // Single-wait (Task 03): the prompt result IS the response,
-               // settled through the shared bound waiter.
-               const outcome = await awaitContinuation(
-                 store, config, client, newSessionId,
-                 invokePrompt(client, newSessionId, args.prompt, {
-                   agent: retained.agentName,
-                   ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-                 }),
-                 timeoutMs,
-               );
-
-              const response = outcome.timedOut
-                ? `(Timed out after ${timeoutMs / 1000}s. Continuation session: ${newSessionId})`
-                : extractTextFromPromptResult(outcome.value) || "(Subagent completed)";
-
-              return `## Follow-up Response (new session)\n\n${response}\n\n---\n*Previous session: ${args.session_id}*  *New session: ${newSessionId}*`;
-             } catch (error: unknown) {
-               return `ERROR: ${errorMessage(error)}`;
-             }
-           }
-
-           // Not a retained task — check if it's active
-          const active = store.activeTasks.get(args.session_id);
-           if (active) {
-            // Send prompt to existing active session
-            const timeoutMs = resolveTimeoutMs(args.timeout_ms, config);
-            const modelOverride = parseModelOverride(active.requestedModel);
-            try {
-              // Single-wait (Task 03): the prompt result IS the response,
-              // settled through the shared bound waiter.
-              const outcome = await awaitContinuation(
-                store, config, client, args.session_id,
-                invokePrompt(client, args.session_id, args.prompt, {
-                  agent: active.agentName,
-                  ...(modelOverride !== undefined ? { model: modelOverride } : {}),
-                }),
-                timeoutMs,
-              );
-
-              if (outcome.timedOut) {
-                return `## Follow-up Response\n\n(Timed out after ${timeoutMs / 1000}s. Session: ${args.session_id})\n\n---\n*Session: ${args.session_id}*`;
-              }
-
-              const responseText = extractTextFromPromptResult(outcome.value);
-              return `## Follow-up Response\n\n${responseText || "(Subagent completed)"}\n\n---\n*Session: ${args.session_id}*`;
-            } catch (error: unknown) {
-              const message = errorMessage(error);
-              if (message.includes("not found")) {
-                return `ERROR: Session "${args.session_id}" not found.`;
-              }
-              return `ERROR: ${message}`;
-            }
+          const active = store.activeTasks.get(sessionId);
+          if (active) {
+            return `ERROR: Task ${sessionId} is still running. Follow-ups go to a task after it reports in — its completion notification arrives shortly. Use task_result to watch progress, or task_interrupt to stop it.`;
           }
 
-          // Unknown session — query the API
+          let task;
           try {
-            const sessionInfo = await client.session.get({ path: { id: args.session_id } });
-            const messages = await readSessionMessages(client, args.session_id);
-            const status = extractSessionStatus(sessionInfo, messages);
-            return formatTaskResultSummary({
-              sessionId: args.session_id,
-              status,
-              messageCount: messages.length,
-              latestText: getLatestAssistantText(messages, 0) || "(No assistant text found)",
-              tracked: false,
-              timeoutNotified: false,
-            });
-          } catch {
-            return unknownSessionResult(args.session_id);
+            task = reviveRetainedTask(store, sessionId, config);
+            // A revived task is a fresh settlement subject: clear its
+            // settle-dedup so the next completion can be delivered.
+            gateLedger.forgetChild(sessionId);
+          } catch (error: unknown) {
+            if (!store.retainedTasks.has(sessionId)) {
+              return `ERROR: Session "${sessionId}" is not a tracked task. Use task_list to see tracked sessions, or dynamic_task to start a new one.`;
+            }
+            return `ERROR: ${errorMessage(error)}`;
           }
+
+          fireChildPrompt(client, store, task, args.prompt);
+          return `Follow-up sent to ${task.childSessionId} (@${task.agentName}). The reply arrives as a dynamic-task-notify message.`;
+        },
+      }),
+
+      task_notify: tool({
+        description:
+          "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. (Children spawned by dynamic_task only.)",
+        args: {
+          message: tool.schema.string().describe("What the parent needs to know"),
+        },
+        async execute(args, ctx: ToolContext) {
+          const callerId = resolveParentSessionId(ctx);
+          if (!callerId || callerId === "unknown") {
+            return "ERROR: Unable to resolve the calling session.";
+          }
+          if (!isEventRecord(args) || typeof args.message !== "string" || !args.message.trim()) {
+            return "ERROR: message is required.";
+          }
+          const message = args.message.trim();
+          if (message.length > 4000) {
+            return `ERROR: message too long (${message.length} chars). Max: 4000 — this goes into the parent's conversation; summarize.`;
+          }
+
+          pruneRetainedTasks(store, config);
+          const task = findTask(store, callerId);
+          if (!task) {
+            return "ERROR: Not a tracked task. Child-to-parent messages route through the task ledger; only sessions spawned by dynamic_task can notify.";
+          }
+          if (task.state !== "active") {
+            return `Message not sent: the task already settled (${task.state}).`;
+          }
+
+          annotateNotice(store, callerId, message);
+          if (task.parentSessionId === "unknown") {
+            return "Message recorded locally; this task has no parent session to deliver to.";
+          }
+          const parentMessage = formatParentNotification(
+            { childSessionId: task.childSessionId, description: task.description },
+            "notice",
+            message,
+          );
+          const delivered = await notifyParent(client, task.parentSessionId, parentMessage, {
+            childSessionId: task.childSessionId,
+            kind: "notice",
+            dedupKey: `notice:${message.slice(0, 200)}`,
+          });
+          return delivered
+            ? "Message sent to parent."
+            : "Message not sent: an identical notice was already delivered (duplicate suppressed), or the parent was unreachable.";
         },
       }),
 
       task_result: sessionReadTool(
         "Fetch latest known child session result/status without sending a new prompt.",
         async (args) => {
-          // Search active first, then retained
-          const task = findTask(store, args.session_id);
+          const missing = missingSessionId(args);
+          if (missing) return missing;
+          const sessionId = String(args.session_id ?? "");
+
+          pruneRetainedTasks(store, config);
+          const task = findTask(store, sessionId);
           if (task) {
-            // Check if it's still in active and may need API query for latest output
             try {
-              const sessionInfo = await client.session.get({ path: { id: args.session_id } });
-              const messages = await readSessionMessages(client, args.session_id);
+              const sessionInfo = await client.session.get({ path: { id: sessionId } });
+              const messages = await readSessionMessages(client, sessionId);
               const status = task.state === "active"
                 ? extractSessionStatus(sessionInfo, messages)
                 : task.state;
 
-              const latest = getLatestAssistantText(messages, 0) || "(No assistant text found)";
-
-              const isTracked = store.activeTasks.has(args.session_id) ||
-                store.retainedTasks.has(args.session_id);
-
               return formatTaskResultSummary({
-                sessionId: args.session_id,
+                sessionId,
                 status,
                 messageCount: messages.length,
-                latestText: truncateText(latest),
-                tracked: isTracked,
-                timeoutNotified: "timeoutNotified" in task ? Boolean(task.timeoutNotified) : false,
-                notification: getLatestNotification(args.session_id),
+                latestText: getLatestAssistantText(messages) || "(No assistant text found)",
+                tracked: true,
+                notification: getLatestNotification(sessionId),
               });
             } catch {
               // API error — return what we know from state
               return formatTaskResultSummary({
-                sessionId: args.session_id,
+                sessionId,
                 status: task.state,
                 messageCount: 0,
                 latestText: "(API unavailable)",
                 tracked: true,
-                timeoutNotified: "timeoutNotified" in task ? Boolean(task.timeoutNotified) : false,
-                notification: getLatestNotification(args.session_id),
+                notification: getLatestNotification(sessionId),
               });
             }
           }
 
           // Not in our state — query API, gracefully handle errors
           try {
-            const sessionInfo = await client.session.get({ path: { id: args.session_id } });
-            const messages = await readSessionMessages(client, args.session_id);
+            const sessionInfo = await client.session.get({ path: { id: sessionId } });
+            const messages = await readSessionMessages(client, sessionId);
             const status = extractSessionStatus(sessionInfo, messages);
-            const latest = getLatestAssistantText(messages, 0) || "(No assistant text found)";
 
             return formatTaskResultSummary({
-              sessionId: args.session_id,
+              sessionId,
               status,
               messageCount: messages.length,
-              latestText: truncateText(latest),
+              latestText: getLatestAssistantText(messages) || "(No assistant text found)",
               tracked: false,
-              timeoutNotified: false,
-              notification: getLatestNotification(args.session_id),
+              notification: getLatestNotification(sessionId),
             });
           } catch (err: unknown) {
             // 404 or network error → return unknown state
@@ -1019,11 +718,11 @@ export default async function dynamicTaskPlugin(
             const status = eventField(err, "status");
             const code = eventField(err, "code");
             if (status === 404 || message.includes("not found")) {
-              return unknownSessionResult(args.session_id);
+              return unknownSessionResult(sessionId);
             }
             return JSON.stringify({
               status: "error",
-              session_id: args.session_id,
+              session_id: sessionId,
               error: message || "Network error querying session",
               retryable: code === "ECONNREFUSED" || code === "ETIMEDOUT",
             });
@@ -1032,60 +731,66 @@ export default async function dynamicTaskPlugin(
       ),
 
       task_interrupt: tool({
-        description: "Interrupt/abort a running child session.",
+        description:
+          "Terminate a child session by request. The task settles as interrupted synchronously; its history is preserved. An interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.",
         args: {
           session_id: tool.schema.string(),
         },
         async execute(args) {
           const missing = missingSessionId(args);
           if (missing) return missing;
+          const sessionId = String(args.session_id ?? "");
 
+          // Claim first, then touch the server: settling the task synchronously
+          // means the idle/error events our own abort provokes can never be
+          // misclaimed as a fresh completion by the lifecycle handler.
+          const active = store.activeTasks.get(sessionId);
+          if (active) {
+            try { transitionState(store, sessionId, "interrupted"); } catch { /* settled concurrently */ }
+          }
+
+          let abortMessage: string | undefined;
           let serverGone = false;
           try {
-            await client.session.abort({ path: { id: args.session_id } });
+            await client.session.abort({ path: { id: sessionId } });
           } catch (error: unknown) {
             const message = errorMessage(error);
-            if (!message.includes("not found")) {
-              // Transient abort failure — leave tracked state for a retry.
-              return `ERROR: ${message}`;
-            }
-            serverGone = true;
+            serverGone = message.includes("not found");
+            abortMessage = serverGone ? undefined : message;
           }
 
-          // Cleanup runs on success AND on a confirmed 404: a vanished server
-          // session must not strand a tracked task as permanently active.
-          // Cancel the armed bound first — the handle must not outlive the task.
-          stealTimeoutHandle(store, args.session_id)?.cancel();
-
-          // Clean up from active tasks if present
-          const active = store.activeTasks.get(args.session_id);
-          if (active) {
-            try {
-              transitionState(store, args.session_id, "interrupted");
-            } catch { /* settled concurrently */ }
+          if (!active && !store.retainedTasks.has(sessionId)) {
+            // Untracked: transient abort failures are simply the caller's
+            // transport error; nothing of ours is at stake.
+            if (abortMessage) return `ERROR: ${abortMessage}`;
+            if (serverGone) return `ERROR: Session "${sessionId}" not found.`;
+            return `Session ${sessionId} aborted (not a tracked task).`;
           }
 
-          // Clean up from retained tasks if present
-          discardRetained(store, args.session_id);
-
+          if (abortMessage) {
+            // The claim stands (interrupt was the intent); record the gap so
+            // the ledger admits the child may still be live.
+            recordAbortError(store, sessionId, abortMessage);
+            return `ERROR: abort failed (${abortMessage}) — task is marked interrupted; retry task_interrupt to abort again.`;
+          }
           if (serverGone) {
-            return `ERROR: Session "${args.session_id}" not found.`;
+            return `ERROR: Session "${sessionId}" not found — history preserved.`;
           }
-          return `Session ${args.session_id} interrupted.`;
+          return `Session ${sessionId} interrupted.`;
         },
       }),
 
       task_list: tool({
-        description: "List all tracked background tasks with their lifecycle states.",
+        description: "List all tracked tasks with their lifecycle states.",
         args: {},
         async execute() {
+          pruneRetainedTasks(store, config);
           const { active, retained } = listTasks(store);
-          const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; isBackground: boolean; startedAt: number }) => ({
+          const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; startedAt: number }) => ({
             childSessionId: t.childSessionId,
             agentName: t.agentName,
             description: t.description,
             state: t.state,
-            isBackground: t.isBackground,
             startedAt: t.startedAt,
           });
           return formatTaskListSummary({
@@ -1099,11 +804,16 @@ export default async function dynamicTaskPlugin(
       task_status: sessionReadTool(
         "Detailed tracked state for one task without calling the API.",
         async (args) => {
-          const task = findTask(store, args.session_id);
+          const missing = missingSessionId(args);
+          if (missing) return missing;
+          const sessionId = String(args.session_id ?? "");
+
+          pruneRetainedTasks(store, config);
+          const task = findTask(store, sessionId);
           if (!task) {
-            return unknownSessionResult(args.session_id);
+            return unknownSessionResult(sessionId);
           }
-          return formatTaskStatusDetail(task, getLatestNotification(args.session_id) ?? null);
+          return formatTaskStatusDetail(task, getLatestNotification(sessionId) ?? null);
         },
       ),
     },

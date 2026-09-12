@@ -1,10 +1,11 @@
 /**
- * Tools integration — dynamic_task validation, task_continue branches,
- * task_result/task_interrupt paths, timeout-abort and init guards.
+ * Tools integration — the non-blocking contract end to end.
  *
- * Drives the REAL plugin (tool + event) with a hookable mock client.
- * Each test pins production behavior its path implements today; paths
- * scheduled for redesign say so in their names (Tasks 03/04 own them).
+ * Drives the REAL plugin (tools + event handler) with a hookable mock
+ * client. Settlement is event-driven: tests settle children by firing the
+ * lifecycle events the server would fire, never by waiting on clocks.
+ * Every spawn returns immediately; every notification arrives exactly
+ * once per settled turn; task_notify is the child's general channel.
  */
 
 import { describe, it, beforeEach, afterEach } from "node:test";
@@ -13,6 +14,12 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/shared/admission.js";
+import { clearNotifyLedger } from "../../dist/shared/notify.js";
+
+// The notify gate is process-global by design (exactly-once delivery). Tests
+// reuse deterministic child session ids across harnesses, so isolation resets
+// it between tests — production never does.
+beforeEach(() => clearNotifyLedger());
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -27,11 +34,14 @@ function tmpProjectDir() {
 // hooks: {
 //   createThrowsOnce?: boolean,
 //   promptFailIds?: Set<string>,         // async rejections
-//   promptHangIds?: Set<string>,         // never-settling prompts (timeout branch)
-//   promptSyncThrowIds?: Set<string>,    // synchronous throws (dead-session fork)
+//   promptHangIds?: Set<string>,         // never-settling prompts (non-blocking proof)
+//   promptSyncThrowIds?: Set<string>,    // synchronous throws
 //   abortThrowsOnce?: boolean,
 //   abortFailIds?: Set<string>,
 //   getThrows?: Error,
+//   questionReplyThrows?: boolean,
+//   agentsList?: unknown[],
+//   messages?: (args) => unknown[],
 // }
 // Hook sets are read live: mutate them after setup to arm later phases.
 
@@ -132,7 +142,7 @@ function createToolsMock(hooks = {}) {
 async function interruptSpawned(harness, spawned) {
   for (const id of spawned) {
     try {
-      await ctx.harness.tool.task_interrupt.execute({ session_id: id });
+      await harness.tool.task_interrupt.execute({ session_id: id });
     } catch {
       // Already settled.
     }
@@ -159,12 +169,25 @@ async function setupTools(hooks = {}, options = {}, directory = tmpProjectDir())
   resetAgentCache();
   const mod = await import("../../dist/index.js");
   const pluginFn = mod.default || mod;
-  const result = await pluginFn(
-    { client, directory },
-    { minTimeoutMs: 20, ...options },
-  );
+  const result = await pluginFn({ client, directory }, options);
   assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
   return { client, tool: result.tool, fireEvent: (event) => result.event({ event }) };
+}
+
+// Spawn funnel: every test gets its child the same way and parses the id
+// from the same line the parent reads.
+async function spawn(harness, args = {}, ctx = { sessionID: "p1" }) {
+  const out = await harness.tool.dynamic_task.execute(
+    { description: "bg task", subagent_type: "explore", prompt: "hi", ...args },
+    ctx,
+  );
+  return { out, id: /Session: (\S+)/.exec(out)?.[1] };
+}
+
+// Settlement funnel: the only way a task settles in tests — the event the
+// server would emit, delivered straight to the handler.
+function settle(harness, id, type = "session.idle") {
+  return harness.fireEvent({ type, properties: { sessionID: id, status: "idle" } });
 }
 
 // --- Tests -----------------------------------------------------------------
@@ -174,7 +197,7 @@ describe("dynamic_task validation", () => {
 
   it("rejects missing subagent_type with the available list", async () => {
     const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "task t", prompt: "hi", await_response: false },
+      { description: "task t", prompt: "hi" },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("No subagent_type"), `got: ${out}`);
@@ -183,7 +206,7 @@ describe("dynamic_task validation", () => {
 
   it("rejects unknown agents", async () => {
     const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "task t", subagent_type: "nope", prompt: "hi", await_response: false },
+      { description: "task t", subagent_type: "nope", prompt: "hi" },
       { sessionID: "p1" },
     );
     assert.ok(out.includes('Agent "nope" not found'), `got: ${out}`);
@@ -191,13 +214,13 @@ describe("dynamic_task validation", () => {
 
   it("rejects missing and oversized prompts", async () => {
     const missing = await ctx.harness.tool.dynamic_task.execute(
-      { description: "task t", subagent_type: "explore", await_response: false },
+      { description: "task t", subagent_type: "explore" },
       { sessionID: "p1" },
     );
     assert.ok(missing.includes("Invalid prompt"), `got: ${missing}`);
 
     const long = await ctx.harness.tool.dynamic_task.execute(
-      { description: "task t", subagent_type: "explore", prompt: "x".repeat(100001), await_response: false },
+      { description: "task t", subagent_type: "explore", prompt: "x".repeat(100001) },
       { sessionID: "p1" },
     );
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
@@ -205,7 +228,7 @@ describe("dynamic_task validation", () => {
 
   it("rejects blocked agents", async () => {
     const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "task t", subagent_type: "general", prompt: "hi", await_response: false },
+      { description: "task t", subagent_type: "general", prompt: "hi" },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("blocked"), `got: ${out}`);
@@ -213,53 +236,42 @@ describe("dynamic_task validation", () => {
 
   it("rejects over the concurrency limit", async () => {
     const limited = await setupTools({}, { maxConcurrent: 1 });
-    const first = await limited.tool.dynamic_task.execute(
-      { description: "task one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
-      { sessionID: "p1" },
-    );
-    assert.ok(first.includes("in background"), `first must spawn. got: ${first}`);
+    const first = await spawn(limited, { description: "task one" });
+    assert.ok(first.out.includes("in background"), `first must spawn. got: ${first.out}`);
 
     const second = await limited.tool.dynamic_task.execute(
-      { description: "task two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 300 },
+      { description: "task two", subagent_type: "explore", prompt: "hi" },
       { sessionID: "p1" },
     );
-    assert.ok(second.includes("ConcurrencyLimitExceeded"), `got: ${second}`);
-    await limited.tool.task_interrupt.execute({ session_id: "ses_tools_1" });
+    assert.ok(second.includes("Cannot run more than"), `got: ${second}`);
+    await limited.tool.task_interrupt.execute({ session_id: first.id });
   });
 
   it("surfaces session.create failures", async () => {
     const failing = await setupTools({ createThrowsOnce: true });
     const out = await failing.tool.dynamic_task.execute(
-      { description: "task t", subagent_type: "explore", prompt: "hi", await_response: false },
+      { description: "task t", subagent_type: "explore", prompt: "hi" },
       { sessionID: "p1" },
     );
     assert.ok(out.includes("ERROR"), `got: ${out}`);
     assert.ok(out.includes("create failed"), `got: ${out}`);
   });
 
-  it("warns once about async-by-default", async () => {
-    // Short timeout: stray background handles must not outlive the suite.
-    // await_response omitted: the deprecation path only fires on the default.
-    const args = { description: "task t", subagent_type: "explore", prompt: "hi", timeout_ms: 300 };
-    await ctx.harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
-    await ctx.harness.tool.dynamic_task.execute(args, { sessionID: "p1" });
-    const warnings = ctx.harness.client._state.logs.filter((l) => l.message.includes("Deprecation"));
-    assert.strictEqual(warnings.length, 1, "exactly one deprecation warning");
+  it("returns immediately even while the child prompt never settles", async () => {
+    // The non-blocking promise, falsifiable: a hung child prompt must not
+    // hold the spawn call. No clock can rescue this — there is no clock.
+    const hooks = { promptHangIds: new Set() };
+    const h = await setupTools(hooks);
+    hooks.promptHangIds.add("ses_tools_1");
+    const { out, id } = await spawn(h);
+    assert.ok(out.includes("in background"), `got: ${out}`);
+    assert.ok(id, "session id returned synchronously with the spawn line");
+    assert.strictEqual(h.client._state.notifications.length, 0, "nothing settles without an event");
   });
 });
 
 describe("task_continue branches", () => {
   const ctx = useTrackedHarness();
-
-  async function spawnBg(timeoutMs = 5000) {
-    const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: timeoutMs },
-      { sessionID: "p1" },
-    );
-    const id = out.match(/Session: (\S+)/)[1];
-    ctx.spawned.push(id);
-    return id;
-  }
 
   it("rejects missing args and oversized prompts", async () => {
     assert.ok((await ctx.harness.tool.task_continue.execute({})).includes("required"));
@@ -270,125 +282,109 @@ describe("task_continue branches", () => {
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
   });
 
-  it("active continue returns the prompt result without waiting for events (single-wait)", async () => {
-    const childId = await spawnBg();
+  it("refuses a still-running task — follow-ups wait for settlement", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
     const out = await ctx.harness.tool.task_continue.execute({
-      session_id: childId,
+      session_id: id,
       prompt: "follow up",
-      timeout_ms: 5000,
     });
-    assert.ok(out.includes("Follow-up Response"), `got: ${out}`);
-    assert.ok(out.includes("PROMPT_OK"), `uses the prompt result directly. got: ${out}`);
-  });
-
-  it("active continue times out when the child never answers", async () => {
-    // Arm the hang AFTER spawn: the spawn-time prompt must succeed.
-    const hooks = { promptHangIds: new Set() };
-    const hanging = await setupTools(hooks);
-    const out1 = await hanging.tool.dynamic_task.execute(
-      { description: "hang task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
+    assert.ok(out.includes("still running"), `got: ${out}`);
+    assert.strictEqual(
+      ctx.harness.client._state.promptBodies.filter((p) => p.to === id && p.body.parts[0].text.includes("follow up")).length,
+      0,
+      "no follow-up prompt reaches a running child",
     );
-    const childId = out1.match(/Session: (\S+)/)[1];
-    hooks.promptHangIds.add(childId);
-    const out = await hanging.tool.task_continue.execute({
-      session_id: childId,
-      prompt: "follow up",
-      timeout_ms: 60,
-    });
-    assert.ok(out.includes("Timed out"), `got: ${out}`);
-    await hanging.tool.task_interrupt.execute({ session_id: childId });
   });
 
-  it("retained continue reuses the live session", async () => {
-    const childId = await spawnBg(60);
-    await sleep(200);
+  it("revives a settled task and the new turn settles again", async () => {
+    const { id } = await spawn(ctx.harness);
+    await settle(ctx.harness, id);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 1, "first turn settles");
+
     const out = await ctx.harness.tool.task_continue.execute({
-      session_id: childId,
+      session_id: id,
       prompt: "summarize",
-      timeout_ms: 5000,
     });
-    assert.ok(out.includes("Follow-up Response"), `got: ${out}`);
-    assert.ok(out.includes("PROMPT_OK"), `reuses live session output. got: ${out}`);
-  });
-
-  async function continueDeadAndSettle(dead, oldId) {
-    const pending = dead.tool.task_continue.execute({
-      session_id: oldId,
-      prompt: "try again",
-      timeout_ms: 5000,
-    });
-    await sleep(50);
-    const sessions = [...dead.client._state.sessions];
-    const newId = sessions.find((id) => id !== oldId);
-    assert.ok(newId, "a continuation session must exist");
-    await dead.fireEvent({
-      type: "session.idle",
-      properties: { sessionID: newId, status: "idle" },
-    });
-    const out = await pending;
-    assert.ok(out.includes("new session"), `got: ${out}`);
-    assert.ok(out.includes(oldId) && out.includes(newId), `links both sessions. got: ${out}`);
-    return { out, newId };
-  }
-
-  it("retained continue on an async-dead session re-admits and spawns anew", async () => {
-    const dead = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
-    const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
+    assert.ok(out.includes("Follow-up sent"), `got: ${out}`);
+    const followUps = ctx.harness.client._state.promptBodies.filter(
+      (p) => p.to === id && p.body.parts[0].text.includes("summarize"),
     );
-    const oldId = out1.match(/Session: (\S+)/)[1];
-    await sleep(200);
-    const { newId } = await continueDeadAndSettle(dead, oldId);
-    await dead.tool.task_interrupt.execute({ session_id: newId });
+    assert.strictEqual(followUps.length, 1, "the same session is revived, not replaced");
+
+    await settle(ctx.harness, id);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 2, "revival earns a fresh settlement");
+    assert.ok(ctx.harness.client._state.notifications[1].message.includes("completed successfully"));
   });
 
-  it("dead continuation with a vanished agent is refused, not spawned", async () => {
-    const hooks = { promptFailIds: new Set(["ses_tools_1"]), agentsList: undefined };
-    const dead = await setupTools(hooks);
-    const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const oldId = out1.match(/Session: (\S+)/)[1];
-    await sleep(200);
-    // Registry drift: the agent is gone and the cache is cleared.
-    hooks.agentsList = [];
-    resetAgentCache();
-    const out = await dead.tool.task_continue.execute({
-      session_id: oldId,
-      prompt: "try again",
-      timeout_ms: 5000,
-    });
-    assert.ok(out.includes("not found"), `refusal names the cause. got: ${out}`);
-    assert.ok(out.includes(oldId), `names the dead session. got: ${out}`);
-    assert.strictEqual(dead.client._state.sessions.size, 1, "no continuation spawned");
+  it("interrupted children are not revived — the guidance says spawn fresh", async () => {
+    const { id } = await spawn(ctx.harness);
+    await ctx.harness.tool.task_interrupt.execute({ session_id: id });
+    const out = await ctx.harness.tool.task_continue.execute({ session_id: id, prompt: "again" });
+    assert.ok(out.includes("not revived"), `got: ${out}`);
+    assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`);
   });
 
-  it("retained continue spawns a fresh session when prompt throws synchronously", async () => {
-    const hooks = { promptSyncThrowIds: new Set() };
-    const dead = await setupTools(hooks);
-    const out1 = await dead.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const oldId = out1.match(/Session: (\S+)/)[1];
-    await sleep(200);
-    hooks.promptSyncThrowIds.add(oldId);
-
-    const { out, newId } = await continueDeadAndSettle(dead, oldId);
-    assert.ok(out.includes("PROMPT_OK"), `uses the prompt result directly. got: ${out}`);
-    assert.ok(out.includes(oldId) && out.includes(newId), `links both sessions. got: ${out}`);
-    await dead.tool.task_interrupt.execute({ session_id: newId });
-  });
-
-  it("unknown sessions resolve to unknown state", async () => {
+  it("unknown sessions are refused as untracked", async () => {
     const out = await ctx.harness.tool.task_continue.execute({
       session_id: "ses_missing",
       prompt: "hello?",
     });
-    assert.ok(out.includes("unknown"), `got: ${out}`);
+    assert.ok(out.includes("not a tracked task"), `got: ${out}`);
+  });
+});
+
+describe("task_notify: the child-to-parent channel", () => {
+  const ctx = useTrackedHarness();
+
+  it("delivers a mid-flight notice and leaves the task active", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    const out = await ctx.harness.tool.task_notify.execute(
+      { message: "blocked: need DB credentials" },
+      { sessionID: id },
+    );
+    assert.ok(out.includes("Message sent to parent"), `got: ${out}`);
+    const notes = ctx.harness.client._state.notifications;
+    assert.strictEqual(notes.length, 1);
+    assert.ok(notes[0].to === "p1", "notice routes to the parent session");
+    assert.ok(notes[0].message.includes("running child task"), `notice kind. got: ${notes[0].message}`);
+    assert.ok(notes[0].message.includes("blocked: need DB credentials"));
+
+    // A notice is not a settlement: the child still completes and reports.
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("active"), `task stays active. got: ${status}`);
+    assert.ok(status.includes("need DB credentials"), `notice recorded on the task. got: ${status}`);
+
+    await settle(ctx.harness, id);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 2, "settlement still reports");
+  });
+
+  it("suppresses an identical repeated notice", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    await ctx.harness.tool.task_notify.execute({ message: "still working" }, { sessionID: id });
+    const again = await ctx.harness.tool.task_notify.execute({ message: "still working" }, { sessionID: id });
+    assert.ok(again.includes("duplicate suppressed") || again.includes("not sent"), `got: ${again}`);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 1);
+  });
+
+  it("refuses untracked callers and settled tasks", async () => {
+    const stranger = await ctx.harness.tool.task_notify.execute({ message: "hi" }, { sessionID: "ses_stranger" });
+    assert.ok(stranger.includes("Not a tracked task"), `got: ${stranger}`);
+
+    const { id } = await spawn(ctx.harness);
+    await settle(ctx.harness, id);
+    const late = await ctx.harness.tool.task_notify.execute({ message: "too late" }, { sessionID: id });
+    assert.ok(/settled/i.test(late), `got: ${late}`);
+  });
+
+  it("validates message shape and length", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    assert.ok((await ctx.harness.tool.task_notify.execute({ message: "  " }, { sessionID: id })).includes("required"));
+    const long = await ctx.harness.tool.task_notify.execute({ message: "x".repeat(4001) }, { sessionID: id });
+    assert.ok(long.includes("too long"), `got: ${long}`);
   });
 });
 
@@ -400,15 +396,11 @@ describe("task_result and task_interrupt paths", () => {
   });
 
   it("task_result reports tracked active tasks", async () => {
-    const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    ctx.spawned.push(childId);
-    const summary = await ctx.harness.tool.task_result.execute({ session_id: childId });
-    assert.ok(summary.includes(childId), `got: ${summary}`);
-    assert.ok(summary.includes("Tracked background task: yes"), `got: ${summary}`);
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
+    assert.ok(summary.includes(id), `got: ${summary}`);
+    assert.ok(summary.includes("Tracked: yes"), `got: ${summary}`);
   });
 
   it("task_result maps API 404 to unknown", async () => {
@@ -422,19 +414,17 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(summary.includes('"error"') || summary.includes("error"), `got: ${summary}`);
   });
 
-  it("task_interrupt aborts, reports, and untracks", async () => {
-    const out = await ctx.harness.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    ctx.spawned.push(childId);
-    const done = await ctx.harness.tool.task_interrupt.execute({ session_id: childId });
+  it("task_interrupt settles as interrupted, preserves history, and reaches the API", async () => {
+    const { id } = await spawn(ctx.harness);
+    const done = await ctx.harness.tool.task_interrupt.execute({ session_id: id });
     assert.ok(done.includes("interrupted"), `got: ${done}`);
-    assert.ok(ctx.harness.client._state.aborted.includes(childId), "abort must reach the API");
-    // Interrupt removes the retained entry: the task is no longer tracked.
-    const summary = await ctx.harness.tool.task_result.execute({ session_id: childId });
-    assert.ok(summary.includes("Tracked background task: no"), `got: ${summary}`);
+    assert.ok(ctx.harness.client._state.aborted.includes(id), "abort must reach the API");
+    // P1a contract: the record survives (history preserved) and no event can
+    // re-settle it — the synchronous claim happened BEFORE the abort.
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("interrupted"), `history preserved. got: ${status}`);
+    await settle(ctx.harness, id);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 0, "the abort's own idle event must not notify");
   });
 
   it("task_interrupt requires a session id and names missing sessions", async () => {
@@ -443,36 +433,41 @@ describe("task_result and task_interrupt paths", () => {
     const out = await missing.tool.task_interrupt.execute({ session_id: "ses_ghost" });
     assert.ok(out.includes("not found"), `got: ${out}`);
   });
+
+  it("a failed abort still settles the task and records the gap", async () => {
+    const h = await setupTools({ abortThrowsOnce: true });
+    const { id } = await spawn(h);
+    const out = await h.tool.task_interrupt.execute({ session_id: id });
+    assert.ok(out.includes("abort failed"), `reports the abort gap. got: ${out}`);
+    assert.ok(out.includes("interrupted"), `the intent stands. got: ${out}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("interrupted"), `settled regardless. got: ${status}`);
+  });
 });
 
-describe("timeout, question and init guards", () => {
-  it("background prompt failure notifies error promptly", async () => {
-    // Arm the failure BEFORE spawn: the spawn id is deterministic per harness.
+describe("settlement: the notification layer owns outcomes", () => {
+  it("background prompt failure settles as error and notifies once", async () => {
     const hooks = { promptFailIds: new Set(["ses_tools_1"]) };
     const failing = await setupTools(hooks);
-    const out = await failing.tool.dynamic_task.execute(
-      { description: "doomed task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await sleep(100);
+    const { id } = await spawn(failing, { description: "doomed task" });
+    await sleep(50); // the fire-and-forget catch schedules the settlement
     const notes = failing.client._state.notifications;
     assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
     assert.match(notes[0].message, /ended with an error/i, "error-kind notification");
-    const summary = await failing.tool.task_result.execute({ session_id: childId });
+    const summary = await failing.tool.task_result.execute({ session_id: id });
     assert.ok(summary.includes("error"), `task must be retained as error. got: ${summary}`);
+    // The lifecycle event that follows must not double-settle.
+    await settle(failing, id);
+    assert.strictEqual(notes.length, 1, "exactly-once survives a late idle");
   });
 
-  it("timeout still notifies when abort fails", async () => {
-    const h = await setupTools({ abortThrowsOnce: true });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await sleep(250);
-    assert.strictEqual(h.client._state.notifications.length, 1, "timeout must notify despite abort failure");
-    await h.tool.task_interrupt.execute({ session_id: childId });
+  it("repeated terminal events notify exactly once", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h);
+    await settle(h, id);
+    await settle(h, id);
+    await settle(h, id, "session.status");
+    assert.strictEqual(h.client._state.notifications.length, 1, "one settled turn, one notice");
   });
 
   it("unmatched question events are left untouched (fail-closed scoping)", async () => {
@@ -508,21 +503,12 @@ describe("question gate: child questions settle", () => {
     await interruptSpawned(harness, spawned);
   });
 
-  async function spawnChild(timeoutMs = 5000) {
-    const out = await harness.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: timeoutMs },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    spawned.push(childId);
-    return childId;
-  }
-
   it("answers from an active child are auto-answered with the first option", async () => {
-    const childId = await spawnChild();
+    const { id } = await spawn(harness);
+    spawned.push(id);
     await harness.fireEvent({
       type: "question.created",
-      properties: { id: "q1", sessionID: childId, answers: [{ text: "yes" }, { text: "no" }] },
+      properties: { id: "q1", sessionID: id, answers: [{ text: "yes" }, { text: "no" }] },
     });
     const calls = harness.client._state.questionCalls;
     assert.strictEqual(calls.length, 1, "exactly one settlement");
@@ -532,10 +518,11 @@ describe("question gate: child questions settle", () => {
   });
 
   it("answerless questions are rejected with follow-up guidance", async () => {
-    const childId = await spawnChild();
+    const { id } = await spawn(harness);
+    spawned.push(id);
     await harness.fireEvent({
       type: "question.created",
-      properties: { id: "q2", sessionID: childId, answers: [] },
+      properties: { id: "q2", sessionID: id, answers: [] },
     });
     const calls = harness.client._state.questionCalls;
     assert.strictEqual(calls.length, 1);
@@ -543,33 +530,30 @@ describe("question gate: child questions settle", () => {
     assert.ok(calls[0].reason.includes("task_continue"), `got: ${calls[0].reason}`);
   });
 
-  it("retained task questions are rejected with timeout guidance", async () => {
-    const childId = await spawnChild(60);
-    await sleep(200);
+  it("settled task questions are rejected with settled guidance", async () => {
+    const { id } = await spawn(harness);
+    spawned.push(id);
+    await settle(harness, id);
     await harness.fireEvent({
       type: "question.created",
-      properties: { id: "q3", sessionID: childId, answers: [{ text: "yes" }] },
+      properties: { id: "q3", sessionID: id, answers: [{ text: "yes" }] },
     });
     const calls = harness.client._state.questionCalls;
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].method, "reject");
-    assert.ok(calls[0].reason.includes("timed out"), `got: ${calls[0].reason}`);
+    assert.ok(calls[0].reason.includes("settled"), `got: ${calls[0].reason}`);
   });
 
   it("reply failure falls back to rejection", async () => {
     const failing = await setupTools({ questionReplyThrows: true });
-    const out = await failing.tool.dynamic_task.execute(
-      { description: "bg task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
+    const { id } = await spawn(failing);
     await failing.fireEvent({
       type: "question.created",
-      properties: { id: "q4", sessionID: childId, answers: [{ text: "yes" }] },
+      properties: { id: "q4", sessionID: id, answers: [{ text: "yes" }] },
     });
     const calls = failing.client._state.questionCalls;
     assert.ok(calls.some((c) => c.method === "reject"), "fallback rejection must fire");
-    await failing.tool.task_interrupt.execute({ session_id: childId });
+    await failing.tool.task_interrupt.execute({ session_id: id });
   });
 });
 
@@ -577,243 +561,157 @@ describe("notification delivery records", () => {
   it("failed parent delivery is recorded and surfaced", async () => {
     const hooks = { promptFailIds: new Set(["p1"]) };
     const h = await setupTools(hooks);
-    const out = await h.tool.dynamic_task.execute(
-      { description: "doomed parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await sleep(700);
+    const { id } = await spawn(h, { description: "doomed parent task" });
+    await settle(h, id);
     assert.strictEqual(h.client._state.notifications.length, 0, "nothing delivered");
-    const summary = await h.tool.task_result.execute({ session_id: childId });
+    const summary = await h.tool.task_result.execute({ session_id: id });
     assert.ok(summary.includes("FAILED"), `delivery failure surfaced. got: ${summary}`);
-    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 
-  it("late completion yields exactly one completed_after_timeout record", async () => {
+  it("a failed delivery does not consume the settlement — redelivery can succeed", async () => {
+    // p1's prompt fails ONLY on the first attempt (child prompt ok, parent
+    // notify attempt 1 fails, attempt 2 succeeds): the record is a history,
+    // not a veto — exactly-once is about successful deliveries.
+    let parentAttempts = 0;
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "late task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await sleep(200);
-    await h.fireEvent({
-      type: "session.idle",
-      properties: { sessionID: childId, status: "idle" },
-    });
-    const notes = h.client._state.notifications;
-    assert.strictEqual(notes.length, 2, "timeout + late completion, exactly once each");
-    assert.match(notes[1].message, /after an earlier timeout/);
-    await h.tool.task_interrupt.execute({ session_id: childId });
+    const realPrompt = h.client.session.prompt;
+    h.client.session.prompt = (args) => {
+      if (args.path.id === "p1" && args.body?.parts?.[0]?.text.includes("[dynamic-task-notify]")) {
+        parentAttempts++;
+        if (parentAttempts === 1) return Promise.reject(new Error("parent busy"));
+      }
+      return realPrompt(args);
+    };
+    const { id } = await spawn(h);
+    await settle(h, id);
+    await sleep(500); // one retry cycle at the gate's fixed backoff
+    assert.strictEqual(h.client._state.notifications.length, 1, "the retry delivered");
+    const summary = await h.tool.task_result.execute({ session_id: id });
+    assert.ok(summary.includes("completed"), `final record is a success. got: ${summary}`);
   });
 });
 
 describe("task fleet views", () => {
   it("task_list shows active and retained tasks", async () => {
     const h = await setupTools();
-    const out1 = await h.tool.dynamic_task.execute(
-      { description: "fleet one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const id1 = out1.match(/Session: (\S+)/)[1];
-    const out2 = await h.tool.dynamic_task.execute(
-      { description: "fleet two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const id2 = out2.match(/Session: (\S+)/)[1];
-    await sleep(200);
+    const one = await spawn(h, { description: "fleet one" });
+    const two = await spawn(h, { description: "fleet two" });
+    await settle(h, two.id);
     const list = await h.tool.task_list.execute({});
-    assert.ok(list.includes(id1) && list.includes(id2), `both fleets visible. got: ${list}`);
-    assert.ok(list.includes("Active background"), `got: ${list}`);
-    await h.tool.task_interrupt.execute({ session_id: id1 });
-    await h.tool.task_interrupt.execute({ session_id: id2 });
+    assert.ok(list.includes(one.id) && list.includes(two.id), `both fleets visible. got: ${list}`);
+    assert.ok(list.includes("Active: 1/4"), `got: ${list}`);
+    assert.ok(list.includes("Retained: 1"), `got: ${list}`);
+    await h.tool.task_interrupt.execute({ session_id: one.id });
   });
 
   it("task_status details tracked tasks and unknowns", async () => {
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "status probe", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    const detail = await h.tool.task_status.execute({ session_id: childId });
-    assert.ok(detail.includes(childId), `got: ${detail}`);
+    const { id } = await spawn(h, { description: "status probe" });
+    const detail = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(detail.includes(id), `got: ${detail}`);
     assert.ok(detail.includes("explore"), `got: ${detail}`);
     const missing = await h.tool.task_status.execute({ session_id: "ses_ghost" });
     assert.ok(missing.includes("unknown"), `got: ${missing}`);
     assert.ok((await h.tool.task_status.execute({})).includes("required"));
-    await h.tool.task_interrupt.execute({ session_id: childId });
+    await h.tool.task_interrupt.execute({ session_id: id });
   });
 });
 
 describe("admission dependencies", () => {
   it("refuses until deps complete, admits after", async () => {
     const h = await setupTools();
-    const outA = await h.tool.dynamic_task.execute(
-      { description: "dep task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const idA = outA.match(/Session: (\S+)/)[1];
+    const a = await spawn(h, { description: "dep task" });
 
     const refused = await h.tool.dynamic_task.execute(
-      { description: "blocked task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: [idA] },
+      { description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] },
       { sessionID: "p1" },
     );
     assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
-    assert.ok(refused.includes(idA));
+    assert.ok(refused.includes(a.id));
 
-    await h.fireEvent({ type: "session.idle", properties: { sessionID: idA, status: "idle" } });
-    const admitted = await h.tool.dynamic_task.execute(
-      { description: "ready task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: [idA] },
-      { sessionID: "p1" },
-    );
-    assert.ok(admitted.includes("in background"), `got: ${admitted}`);
-    await h.tool.task_interrupt.execute({ session_id: idA });
-    await h.tool.task_interrupt.execute({ session_id: admitted.match(/Session: (\S+)/)[1] });
+    await settle(h, a.id);
+    const admitted = await spawn(h, { description: "ready task", depends_on: [a.id] });
+    assert.ok(admitted.out.includes("in background"), `got: ${admitted.out}`);
+    await h.tool.task_interrupt.execute({ session_id: admitted.id });
   });
 
   it("unknown deps are treated as satisfied", async () => {
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "lone task", subagent_type: "explore", prompt: "hi", await_response: false, depends_on: ["ses_gone"] },
-      { sessionID: "p1" },
-    );
+    const { out, id } = await spawn(h, { description: "lone task", depends_on: ["ses_gone"] });
     assert.ok(out.includes("in background"), `got: ${out}`);
-    await h.tool.task_interrupt.execute({ session_id: out.match(/Session: (\S+)/)[1] });
+    await h.tool.task_interrupt.execute({ session_id: id });
   });
 });
 
 describe("admission lineage", () => {
   it("nested spawns inherit the parent lineage", async () => {
     const h = await setupTools({}, { blockedAgents: [] });
-    const out1 = await h.tool.dynamic_task.execute(
-      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const id1 = out1.match(/Session: (\S+)/)[1];
-    const out2 = await h.tool.dynamic_task.execute(
-      { description: "nested task", subagent_type: "general", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: id1 },
-    );
-    assert.ok(out2.includes("in background"), `nested spawn admitted. got: ${out2}`);
-    const id2 = out2.match(/Session: (\S+)/)[1];
-    const status = await h.tool.task_status.execute({ session_id: id2 });
+    const one = await spawn(h, { description: "parent task" });
+    const two = await spawn(h, { description: "nested task", subagent_type: "general" }, { sessionID: one.id });
+    assert.ok(two.out.includes("in background"), `nested spawn admitted. got: ${two.out}`);
+    const status = await h.tool.task_status.execute({ session_id: two.id });
     assert.ok(status.includes("explore \u2192 general"), `parent chain visible. got: ${status}`);
-    await h.tool.task_interrupt.execute({ session_id: id1 });
-    await h.tool.task_interrupt.execute({ session_id: id2 });
+    await h.tool.task_interrupt.execute({ session_id: one.id });
+    await h.tool.task_interrupt.execute({ session_id: two.id });
   });
 
   it("same-agent nesting is admitted only with the recursion flag", async () => {
     const strict = await setupTools();
-    const out1 = await strict.tool.dynamic_task.execute(
-      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const id1 = out1.match(/Session: (\S+)/)[1];
+    const one = await spawn(strict, { description: "parent task" });
     const denied = await strict.tool.dynamic_task.execute(
-      { description: "nested task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: id1 },
+      { description: "nested task", subagent_type: "explore", prompt: "hi" },
+      { sessionID: one.id },
     );
     assert.ok(denied.includes("Recursive delegation blocked"), `got: ${denied}`);
-    await strict.tool.task_interrupt.execute({ session_id: id1 });
+    await strict.tool.task_interrupt.execute({ session_id: one.id });
 
     const lenient = await setupTools({}, { allowSameAgentRecursion: true });
-    const out2 = await lenient.tool.dynamic_task.execute(
-      { description: "parent task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
+    const two = await spawn(lenient, { description: "parent task" });
+    const admitted = await spawn(
+      lenient,
+      { description: "nested task", subagent_type: "explore" },
+      { sessionID: two.id },
     );
-    const id3 = out2.match(/Session: (\S+)/)[1];
-    const admitted = await lenient.tool.dynamic_task.execute(
-      { description: "nested task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: id3 },
-    );
-    assert.ok(admitted.includes("in background"), `flag honored. got: ${admitted}`);
-    await lenient.tool.task_interrupt.execute({ session_id: id3 });
-    await lenient.tool.task_interrupt.execute({ session_id: admitted.match(/Session: (\S+)/)[1] });
+    assert.ok(admitted.out.includes("in background"), `flag honored. got: ${admitted.out}`);
+    await lenient.tool.task_interrupt.execute({ session_id: two.id });
+    await lenient.tool.task_interrupt.execute({ session_id: admitted.id });
   });
 });
 
 describe("prompt routing contract", () => {
   it("model override travels on the prompt, not the create call", async () => {
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "model task", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 5000, model: "prov/model-x" },
-      { sessionID: "p1" },
-    );
-    assert.ok(out.includes("PROMPT_OK"), `got: ${out}`);
-    const childId = out.match(/Session: ([\w-]+)/)[1];
-    const created = h.client._state.sessionBodies.get(childId);
+    const { id } = await spawn(h, { description: "model task", model: "prov/model-x" });
+    await sleep(0); // the fire-and-forget prompt records one microtask later
+    const created = h.client._state.sessionBodies.get(id);
     assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
-    const bodies = h.client._state.promptBodies.filter((p) => p.to === childId);
+    const bodies = h.client._state.promptBodies.filter((p) => p.to === id);
     assert.ok(bodies.length >= 1, "child prompt recorded");
     assert.strictEqual(bodies[0].body.agent, "explore");
     assert.deepStrictEqual(bodies[0].body.model, { providerID: "prov", modelID: "model-x" });
-    await h.tool.task_interrupt.execute({ session_id: childId });
+    await h.tool.task_interrupt.execute({ session_id: id });
   });
 
   it("prompts without override carry the agent and no model", async () => {
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "plain task", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: ([\w-]+)/)[1];
-    const bodies = h.client._state.promptBodies.filter((p) => p.to === childId);
+    const { id } = await spawn(h, { description: "plain task" });
+    await sleep(0);
+    const bodies = h.client._state.promptBodies.filter((p) => p.to === id);
     assert.ok(bodies.length >= 1);
     assert.strictEqual(bodies[0].body.agent, "explore");
     assert.ok(!("model" in bodies[0].body), `no model key. got: ${JSON.stringify(bodies[0].body)}`);
-    await h.tool.task_interrupt.execute({ session_id: childId });
-  });
-});
-
-describe("timeout behavior modes", () => {
-  function recordingDelegatingTimers() {
-    const created = [];
-    const cleared = [];
-    return {
-      created,
-      cleared,
-      provider: {
-        setTimeout: (fn, ms, ...rest) => {
-          const handle = setTimeout(fn, ms, ...rest);
-          created.push(handle);
-          return handle;
-        },
-        clearTimeout: (handle) => {
-          cleared.push(handle);
-          clearTimeout(handle);
-        },
-      },
-    };
-  }
-
-  it("interrupt cancels the armed timeout", async () => {
-    const rec = recordingDelegatingTimers();
-    const h = await setupTools({}, { timerProvider: rec.provider });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "timed task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 5000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    assert.ok(rec.created.length >= 1, "arm must be observable");
-    await h.tool.task_interrupt.execute({ session_id: childId });
-    assert.ok(
-      rec.created.every((handle) => rec.cleared.includes(handle)),
-      "every armed handle must be cancelled on interrupt",
-    );
+    await h.tool.task_interrupt.execute({ session_id: id });
   });
 
-  it("notify mode skips abort and still notifies", async () => {
-    const h = await setupTools({}, { timeoutBehavior: "notify", minTimeoutMs: 20 });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "notify task", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await sleep(250);
-    assert.strictEqual(h.client._state.notifications.length, 1);
-    assert.strictEqual(h.client._state.aborted.length, 0, "notify mode must not abort");
-    await h.tool.task_interrupt.execute({ session_id: childId });
+  it("child prompts carry the background-task wrapper instructions", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h, { prompt: "Review for bugs" });
+    await sleep(0);
+    const text = h.client._state.promptBodies.find((p) => p.to === id).body.parts[0].text;
+    assert.ok(text.includes("background child task"), `wrapped. got: ${text}`);
+    assert.ok(text.includes("task_notify"), `teaches the notify channel. got: ${text}`);
+    assert.ok(text.includes("Review for bugs"), `carries the payload. got: ${text}`);
+    await h.tool.task_interrupt.execute({ session_id: id });
   });
 });
 
@@ -828,23 +726,17 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
     const cwdBefore = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
 
     const h = await setupTools({}, {}, dir);
-    const out = await h.tool.dynamic_task.execute(
-      { description: "scoped", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } });
+    const { id } = await spawn(h, { description: "scoped" });
+    await settle(h, id);
     await sleep(30); // onRetainedChange fires synchronously; sleep is for CI, not the contract.
 
     const ledgerFile = join(dir, ".dynamic-task-ledger.json");
     assert.ok(existsSync(ledgerFile), "ledger must be written inside the plugin directory");
     const ledger = JSON.parse(readFileSync(ledgerFile, "utf8"));
-    assert.ok(ledger.tasks?.[childId], "completed task must be retained in the project ledger");
+    assert.ok(ledger.tasks?.[id], "completed task must be retained in the project ledger");
 
     const cwdAfter = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
     assert.strictEqual(cwdAfter, cwdBefore, "the suite must never create or mutate the cwd ledger");
-
-    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 });
 
@@ -866,12 +758,8 @@ describe("outcome correctness: failed turns never report success", () => {
 
   it("idle terminal event over an errored message stream notifies error, not success", async () => {
     const h = await setupTools({ messages: erroredMessages });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "A1 success-status axis", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId } });
+    const { id } = await spawn(h, { description: "A1 success-status axis" });
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: id } });
     await sleep(30);
 
     assert.strictEqual(h.client._state.notifications.length, 1, "exactly one parent notification");
@@ -880,83 +768,75 @@ describe("outcome correctness: failed turns never report success", () => {
     assert.ok(note.includes("Too Many Requests"), `must carry provider detail. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
 
-    const status = await h.tool.task_status.execute({ session_id: childId });
+    const status = await h.tool.task_status.execute({ session_id: id });
     assert.ok(status.includes("error"), `task_status must show error. got: ${status}`);
-    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await setupTools({ messages: () => [] });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "err evt", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
+    const { id } = await spawn(h, { description: "err evt" });
     await h.fireEvent({
       type: "session.error",
-      properties: { sessionID: childId, error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      properties: { sessionID: id, error: { name: "APIError", data: { message: "Too Many Requests" } } },
     });
     await sleep(30);
 
     assert.strictEqual(h.client._state.notifications.length, 1);
     const note = h.client._state.notifications[0].message;
     assert.ok(note.includes("ended with an error"), `got: ${note}`);
-    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 
   it("a burst of terminal events notifies the parent exactly once", async () => {
     const h = await setupTools({ messages: erroredMessages });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "burst", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
+    const { id } = await spawn(h, { description: "burst" });
     // The field log showed three terminal events within 1ms for one failure.
     await Promise.all([
-      h.fireEvent({ type: "session.error", properties: { sessionID: childId, error: { name: "APIError", data: { message: "Too Many Requests" } } } }),
-      h.fireEvent({ type: "session.status", properties: { sessionID: childId, status: "idle" } }),
-      h.fireEvent({ type: "session.idle", properties: { sessionID: childId } }),
+      h.fireEvent({ type: "session.error", properties: { sessionID: id, error: { name: "APIError", data: { message: "Too Many Requests" } } } }),
+      h.fireEvent({ type: "session.status", properties: { sessionID: id, status: "idle" } }),
+      h.fireEvent({ type: "session.idle", properties: { sessionID: id } }),
     ]);
     await sleep(30);
 
     assert.strictEqual(h.client._state.notifications.length, 1, "single winner must notify once");
     assert.ok(h.client._state.notifications[0].message.includes("ended with an error"));
-    await h.tool.task_interrupt.execute({ session_id: childId });
   });
 
   it("clean completions still report success unchanged", async () => {
     const h = await setupTools();
-    const out = await h.tool.dynamic_task.execute(
-      { description: "clean", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
-    await h.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } });
+    const { id } = await spawn(h, { description: "clean" });
+    await settle(h, id);
     await sleep(30);
 
     assert.strictEqual(h.client._state.notifications.length, 1);
     const note = h.client._state.notifications[0].message;
     assert.ok(note.includes("completed successfully"), `got: ${note}`);
     assert.ok(note.includes("COMPLETED_OK"), `carries assistant text. got: ${note}`);
-    await h.tool.task_interrupt.execute({ session_id: childId });
+  });
+
+  it("a deleted session settles as error, never as success", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h, { description: "deleted child" });
+    await h.fireEvent({ type: "session.deleted", properties: { sessionID: id } });
+    await sleep(30);
+
+    assert.strictEqual(h.client._state.notifications.length, 1);
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("ended with an error"), `deletion is a failure. got: ${note}`);
+    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
   });
 });
 
 describe("spawn resilience: no untracked child survives a failure", () => {
   it("a concurrency rejection leaves no orphan session behind", async () => {
     const h = await setupTools({}, { maxConcurrent: 1 });
-    const first = await h.tool.dynamic_task.execute(
-      { description: "one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const firstId = first.match(/Session: (\S+)/)[1];
+    const first = await spawn(h, { description: "one" });
     const before = new Set(h.client._state.sessions);
 
     const second = await h.tool.dynamic_task.execute(
-      { description: "two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { description: "two", subagent_type: "explore", prompt: "hi" },
       { sessionID: "p1" },
     );
-    assert.ok(/cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
+    assert.ok(/cannot run more than|cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
 
     // Orphan-free invariant: any session the rejection created must be
     // aborted. (A pre-create check that never creates also passes.)
@@ -964,33 +844,30 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     for (const id of created) {
       assert.ok(h.client._state.aborted.includes(id), `orphan ${id} must be aborted`);
     }
-    await h.tool.task_interrupt.execute({ session_id: firstId });
+    await h.tool.task_interrupt.execute({ session_id: first.id });
   });
 
-  it("task_interrupt cleans local state when the server session is gone", async () => {
+  it("task_interrupt reports the server 404 without lingering active state", async () => {
     const h = await setupTools({ abortFailIds: new Set(["ses_tools_1"]) });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "ghost", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    const childId = out.match(/Session: (\S+)/)[1];
+    const { id } = await spawn(h, { description: "ghost" });
 
-    const res = await h.tool.task_interrupt.execute({ session_id: childId });
+    const res = await h.tool.task_interrupt.execute({ session_id: id });
     assert.ok(/not found/i.test(res), `reports the server 404. got: ${res}`);
 
-    // Local state must not stay "active" forever after a 404.
-    const status = await h.tool.task_status.execute({ session_id: childId });
-    assert.ok(!/\bactive\b/.test(status), `must not linger active. got: ${status}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("interrupted"), `settled as intended. got: ${status}`);
   });
 
-  it("a sync-mode prompt failure does not leave the task permanently active", async () => {
-    const h = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
-    const out = await h.tool.dynamic_task.execute(
-      { description: "sync fail", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 60000 },
-      { sessionID: "p1" },
-    );
-    assert.ok(/ERROR/i.test(out), `surfaces the failure. got: ${out}`);
+  it("a sync-throwing prompt failure settles the task out of active", async () => {
+    const hooks = { promptSyncThrowIds: new Set(["ses_tools_1"]) };
+    const h = await setupTools(hooks);
+    // The spawn line still returns — create succeeded; the prompt throws
+    // synchronously inside the fire-and-forget path, which owns the settle.
+    const { out } = await spawn(h, { description: "sync fail" });
+    assert.ok(out.includes("in background"), `spawn reports success first. got: ${out}`);
+    await sleep(50);
     const status = await h.tool.task_status.execute({ session_id: "ses_tools_1" });
-    assert.ok(!/\bactive\b/.test(status), `must not linger active. got: ${status}`);
+    assert.ok(!/\[active\]|state: active|Status: active/.test(status), `must not linger active. got: ${status}`);
+    assert.ok(status.includes("error"), `settled as error. got: ${status}`);
   });
 });

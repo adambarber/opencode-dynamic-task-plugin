@@ -941,3 +941,56 @@ describe("outcome correctness: failed turns never report success", () => {
     await h.tool.task_interrupt.execute({ session_id: childId });
   });
 });
+
+describe("spawn resilience: no untracked child survives a failure", () => {
+  it("a concurrency rejection leaves no orphan session behind", async () => {
+    const h = await setupTools({}, { maxConcurrent: 1 });
+    const first = await h.tool.dynamic_task.execute(
+      { description: "one", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const firstId = first.match(/Session: (\S+)/)[1];
+    const before = new Set(h.client._state.sessions);
+
+    const second = await h.tool.dynamic_task.execute(
+      { description: "two", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    assert.ok(/cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
+
+    // Orphan-free invariant: any session the rejection created must be
+    // aborted. (A pre-create check that never creates also passes.)
+    const created = [...h.client._state.sessions].filter((id) => !before.has(id));
+    for (const id of created) {
+      assert.ok(h.client._state.aborted.includes(id), `orphan ${id} must be aborted`);
+    }
+    await h.tool.task_interrupt.execute({ session_id: firstId });
+  });
+
+  it("task_interrupt cleans local state when the server session is gone", async () => {
+    const h = await setupTools({ abortFailIds: new Set(["ses_tools_1"]) });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "ghost", subagent_type: "explore", prompt: "hi", await_response: false, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    const childId = out.match(/Session: (\S+)/)[1];
+
+    const res = await h.tool.task_interrupt.execute({ session_id: childId });
+    assert.ok(/not found/i.test(res), `reports the server 404. got: ${res}`);
+
+    // Local state must not stay "active" forever after a 404.
+    const status = await h.tool.task_status.execute({ session_id: childId });
+    assert.ok(!/\bactive\b/.test(status), `must not linger active. got: ${status}`);
+  });
+
+  it("a sync-mode prompt failure does not leave the task permanently active", async () => {
+    const h = await setupTools({ promptFailIds: new Set(["ses_tools_1"]) });
+    const out = await h.tool.dynamic_task.execute(
+      { description: "sync fail", subagent_type: "explore", prompt: "hi", await_response: true, timeout_ms: 60000 },
+      { sessionID: "p1" },
+    );
+    assert.ok(/ERROR/i.test(out), `surfaces the failure. got: ${out}`);
+    const status = await h.tool.task_status.execute({ session_id: "ses_tools_1" });
+    assert.ok(!/\bactive\b/.test(status), `must not linger active. got: ${status}`);
+  });
+});

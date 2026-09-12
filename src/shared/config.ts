@@ -250,7 +250,10 @@ export function parseDynamicTaskJsonc(filePath: string): Record<string, unknown>
 
 // ─── config tuple helpers —───────────
 /**
- * @deprecated Check if maxConcurrent is exceeded. Returns error string or null.
+ * Advisory pre-create concurrency check. Returns an error string when the
+ * background limit is reached, else null. Used BEFORE session.create so a
+ * rejection never orphans a session on the server; registerActiveTask
+ * re-checks as the authoritative gate against a same-tick race.
  */
 export function checkConcurrencyLimit(activeBgCount: number, config: DynamicTaskConfig): string | null {
   if (activeBgCount >= config.maxConcurrent) {

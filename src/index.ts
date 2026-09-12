@@ -36,6 +36,7 @@ import {
   normalizeDynamicTaskConfig,
   resolveTimeoutMs,
   parseDynamicTaskJsonc,
+  checkConcurrencyLimit,
   type DynamicTaskConfig,
 } from "./shared/config.js";
 import {
@@ -83,6 +84,7 @@ import {
   stealTimeoutHandle,
   noteLateOutcome,
   restoreRetained,
+  countActiveBackgroundTasks,
   type TaskStore,
   type TaskLifecycleState,
 } from "./shared/task-state.js";
@@ -754,6 +756,19 @@ export default async function dynamicTaskPlugin(
             ].join("\n");
           }
 
+          // Background concurrency is checked BEFORE create: rejecting after
+          // the session exists orphans an untracked child on the server (no
+          // timeout, no parent notification). registerActiveTask re-checks as
+          // the authoritative gate against a same-tick race; the catch below
+          // aborts any session that slips past this advisory check.
+          if (!shouldAwait) {
+            const limitError = checkConcurrencyLimit(countActiveBackgroundTasks(store), config);
+            // Same voice as the authoritative re-check below (its throw is
+            // prefixed ConcurrencyLimitExceeded) — one rejection, one wording.
+            if (limitError) return `ERROR: ConcurrencyLimitExceeded: ${limitError}`;
+          }
+
+          let createdSessionId: string | undefined;
           try {
             // 1.18 contract: sessions carry title/parentID only — agent and
             // model ride on each prompt via PromptRouting.
@@ -776,6 +791,7 @@ export default async function dynamicTaskPlugin(
             if (!childSessionId) {
               return `ERROR: Failed to create session. Response: ${JSON.stringify(sessionResult)}`;
             }
+            createdSessionId = childSessionId;
 
             // Register in active state via the admission gate
             const isBg = !shouldAwait;
@@ -872,6 +888,17 @@ export default async function dynamicTaskPlugin(
 
           } catch (error: unknown) {
             const message = errorMessage(error);
+            // Post-create failure must never strand a child: a registered task
+            // is settled through the transition choke point; a created-but-
+            // untracked session (e.g. the authoritative re-check threw) is
+            // aborted so it cannot run unmonitored on the server.
+            if (createdSessionId) {
+              if (store.activeTasks.has(createdSessionId)) {
+                try { transitionState(store, createdSessionId, "error"); } catch { /* already terminal */ }
+              } else {
+                try { await client.session.abort({ path: { id: createdSessionId } }); } catch { /* best-effort */ }
+              }
+            }
             if (message.includes("not found")) {
               return `ERROR: Agent "${agent.name}" not found.`;
             }
@@ -1143,29 +1170,38 @@ export default async function dynamicTaskPlugin(
           const missing = missingSessionId(args);
           if (missing) return missing;
 
+          let serverGone = false;
           try {
             await client.session.abort({ path: { id: args.session_id } });
-
-            // Cancel the armed bound first — the handle must not outlive the task.
-            stealTimeoutHandle(store, args.session_id)?.cancel();
-
-            // Clean up from active tasks if present
-            const active = store.activeTasks.get(args.session_id);
-            if (active) {
-              transitionState(store, args.session_id, "interrupted");
-            }
-
-            // Clean up from retained tasks if present
-            discardRetained(store, args.session_id);
-
-            return `Session ${args.session_id} interrupted.`;
           } catch (error: unknown) {
             const message = errorMessage(error);
-            if (message.includes("not found")) {
-              return `ERROR: Session "${args.session_id}" not found.`;
+            if (!message.includes("not found")) {
+              // Transient abort failure — leave tracked state for a retry.
+              return `ERROR: ${message}`;
             }
-            return `ERROR: ${message}`;
+            serverGone = true;
           }
+
+          // Cleanup runs on success AND on a confirmed 404: a vanished server
+          // session must not strand a tracked task as permanently active.
+          // Cancel the armed bound first — the handle must not outlive the task.
+          stealTimeoutHandle(store, args.session_id)?.cancel();
+
+          // Clean up from active tasks if present
+          const active = store.activeTasks.get(args.session_id);
+          if (active) {
+            try {
+              transitionState(store, args.session_id, "interrupted");
+            } catch { /* settled concurrently */ }
+          }
+
+          // Clean up from retained tasks if present
+          discardRetained(store, args.session_id);
+
+          if (serverGone) {
+            return `ERROR: Session "${args.session_id}" not found.`;
+          }
+          return `Session ${args.session_id} interrupted.`;
         },
       }),
 

@@ -36,3 +36,6 @@ dynamic-task-plugin-fixes-implementation-plan.md
 .tmp/
 .yolo.json
 coverage/
+
+# Local opencode config (machine-local agent policy, plugin file-config)
+.opencode/

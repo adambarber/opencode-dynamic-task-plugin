@@ -10,7 +10,7 @@
 
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/shared/admission.js";
@@ -938,6 +938,106 @@ describe("outcome correctness: failed turns never report success", () => {
 
     assert.strictEqual(h.client._state.notifications.length, 1, "single winner must notify once");
     assert.ok(h.client._state.notifications[0].message.includes("ended with an error"));
+  });
+
+  it("deleted session with stale idle status notifies error, never success", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h, { description: "vanishing child" });
+    await h.fireEvent({ type: "session.deleted", properties: { sessionID: id, info: { status: "idle" } } });
+    await sleep(30);
+    assert.strictEqual(h.client._state.notifications.length, 1);
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("ended with an error"), `vanished session is a failure. got: ${note}`);
+    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("error"), `state settles error. got: ${status}`);
+  });
+
+  it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
+    let msgCalls = 0;
+    const h = await setupTools({
+      messages: () => {
+        msgCalls++;
+        const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
+        return [{ info: { role: "assistant" }, parts: [{ type: "text", text }] }];
+      },
+    });
+    const origPrompt = h.client.session.prompt;
+    let parentCalls = 0;
+    h.client.session.prompt = (args) => {
+      const text = args.body?.parts?.[0]?.text || "";
+      if (text.includes("[dynamic-task-notify]")) {
+        parentCalls++;
+        if (parentCalls === 1) return Promise.reject(new Error("parent busy"));
+      }
+      return origPrompt(args);
+    };
+    const { id } = await spawn(h, { prompt: "turn one" });
+    await settle(h, id);
+    const cont = await h.tool.task_continue.execute({ session_id: id, prompt: "turn two" });
+    assert.ok(cont.includes("Follow-up sent"));
+    await settle(h, id);
+    await sleep(600);
+    const notes = h.client._state.notifications;
+    assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
+    assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `turn order preserved. first: ${notes[0]?.message}`);
+    assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `second: ${notes[1]?.message}`);
+  });
+
+  it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
+    let releaseAbort1;
+    const gate = new Promise((resolve) => { releaseAbort1 = resolve; });
+    let calls = 0;
+    const h = await setupTools();
+    h.client.session.abort = async () => {
+      calls++;
+      if (calls === 1) { await gate; throw new Error("ECONNREFUSED"); }
+      return { ok: true };
+    };
+    const { id } = await spawn(h);
+    const p1 = h.tool.task_interrupt.execute({ session_id: id });
+    await new Promise((r) => setTimeout(r, 10));
+    const r2 = await h.tool.task_interrupt.execute({ session_id: id });
+    releaseAbort1();
+    await p1;
+    assert.ok(!r2.includes("not a tracked task"), `second interrupt sees the tracked task. got: ${r2}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("interrupted"), `converges interrupted. got: ${status}`);
+  });
+
+  it("boot restore honors the configured retention cap", async () => {
+    const dir = tmpProjectDir();
+    const prev = process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES;
+    process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES = "2";
+    try {
+      const now = Date.now();
+      const tasks = {};
+      for (let i = 1; i <= 4; i++) {
+        tasks[`ses_boot${i}`] = {
+          childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
+          description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
+        };
+      }
+      writeFileSync(join(dir, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks }));
+      const h = await setupTools({}, {}, dir);
+      const list = await h.tool.task_list.execute({});
+      assert.ok(list.includes("Retained: 2"), `configured cap honored. got: ${list}`);
+    } finally {
+      if (prev !== undefined) process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES = prev;
+      else delete process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES;
+    }
+  });
+
+  it("abort failure on a completed task reports the gap without annotating success", async () => {
+    const h = await setupTools();
+    h.client.session.abort = async () => { throw new Error("ECONNREFUSED"); };
+    const { id } = await spawn(h);
+    await settle(h, id);
+    const out = await h.tool.task_interrupt.execute({ session_id: id });
+    assert.ok(out.includes("already settled as completed"), `got: ${out}`);
+    assert.ok(out.includes("ECONNREFUSED"), `gap reported. got: ${out}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(!status.includes("Abort error"), `success record stays clean. got: ${status}`);
   });
 
   it("clean completions still report success unchanged", async () => {

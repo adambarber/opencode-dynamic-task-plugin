@@ -5,7 +5,7 @@
 // question is never touched. The SDK `question` namespace lives beyond the
 // generated client surface — it is typed via OpenCodeClient, not cast here.
 
-import { eventField, eventString, errorMessage, isEventRecord, type SessionContext } from "./session-lifecycle.js";
+import { eventField, eventString, errorMessage, isEventRecord } from "./session-lifecycle.js";
 import type { OpenCodeClient } from "./client.js";
 import type { TaskStore } from "./task-state.js";
 
@@ -67,11 +67,6 @@ export function getRequestIdFromQuestion(eventOrProperties: unknown): string | n
     ?? eventString(properties, ["task_id"])
     ?? eventString(properties, ["requestID"])
     ?? null;
-}
-
-export function isValidQuestionEvent(event: unknown): boolean {
-  const type = eventString(event, ["type"]) ?? "";
-  return type === "question.created" || type === "question.replied" || type === "question.rejected";
 }
 
 export function resolveQuestionSession(event: unknown, store: TaskStore): QuestionTarget | null {
@@ -153,12 +148,4 @@ export function rememberQuestionSession(questionId: string, childSessionId: stri
 
 export function forgetQuestionSession(questionId: string): void {
   questionSessions.delete(questionId);
-}
-
-export function resolveQuestionSessionId(ctx: SessionContext): string | null {
-  return ctx.sessionID ?? ctx.sessionId ?? ctx.session_id ?? null;
-}
-
-export function _clearQuestionSessionsForTests(): void {
-  questionSessions.clear();
 }

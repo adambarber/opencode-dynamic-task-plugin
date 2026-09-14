@@ -149,6 +149,12 @@ function createGateLedger(): GateLedger {
 
 export const gateLedger = createGateLedger();
 
+// Per-child serialization: detached deliveries of one child execute in claim
+// order, so a stale retry can never land after a newer turn's message. Only
+// transport is serialized — claims stay synchronous, and the chain is dropped
+// once its tail settles so child ids never leak.
+const notifyChains = new Map<string, Promise<unknown>>();
+
 // The gate: every parent-directed write goes through here. One retry (a busy
 // parent prompt can transiently fail), honest failure, recorded either way.
 export async function notifyParent(
@@ -178,9 +184,11 @@ export async function notifyParent(
     emit(delivered, attempts);
     return delivered;
   };
-  return attempt()
-    .then(() => commit(true, 1))
-    .catch(async () => {
+  const run = async (): Promise<boolean> => {
+    try {
+      await attempt();
+      return commit(true, 1);
+    } catch {
       await sleep(NOTIFY_RETRY_DELAY_MS);
       try {
         await attempt();
@@ -188,7 +196,16 @@ export async function notifyParent(
       } catch {
         return commit(false, 2);
       }
-    });
+    }
+  };
+  const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();
+  const cur: Promise<boolean> = prev.then(run, run);
+  notifyChains.set(opts.childSessionId, cur);
+  void cur.then(
+    () => { if (notifyChains.get(opts.childSessionId) === cur) notifyChains.delete(opts.childSessionId); },
+    () => { if (notifyChains.get(opts.childSessionId) === cur) notifyChains.delete(opts.childSessionId); },
+  );
+  return cur;
 }
 
 // Notice dedup keys hash the FULL message: a fixed prefix slice collides

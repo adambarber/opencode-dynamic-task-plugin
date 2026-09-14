@@ -1060,7 +1060,6 @@ import {
   replyToQuestion,
   rejectQuestion,
   getRequestIdFromQuestion,
-  isValidQuestionEvent,
   normalizeQuestionAnswers,
   resolveQuestionSession,
   decideQuestion,
@@ -1125,7 +1124,7 @@ describe("task-state: registerActiveTask", () => {
   it("settlement frees the slot for the next registration", () => {
     const store = createTaskStore();
     fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
-    transitionState(store, "ses_1", "completed", config);
+    transitionState(store, "ses_1", "completed");
     const task = registerActiveTask(store, {
       childSessionId: "ses_4", parentSessionId: "parent_1",
       agentName: "a4", description: "t4", lineage: [],
@@ -1144,7 +1143,7 @@ describe("task-state: transitionState", () => {
   });
 
   it("settles active → completed into retention", () => {
-    const result = transitionState(store, "ses_active", "completed", config);
+    const result = transitionState(store, "ses_active", "completed");
     assert.strictEqual(result.state, "completed");
     assert.strictEqual(result.completed, true);
     assert.strictEqual(store.activeTasks.has("ses_active"), false);
@@ -1152,33 +1151,33 @@ describe("task-state: transitionState", () => {
   });
 
   it("transitions active → error and active → interrupted", () => {
-    assert.strictEqual(transitionState(store, "ses_active", "error", config).state, "error");
+    assert.strictEqual(transitionState(store, "ses_active", "error").state, "error");
     const store2 = createTaskStore();
     seedSesActive(store2, config);
-    assert.strictEqual(transitionState(store2, "ses_active", "interrupted", config).state, "interrupted");
+    assert.strictEqual(transitionState(store2, "ses_active", "interrupted").state, "interrupted");
   });
 
   it("settle is exactly-once: a second settlement throws and cannot regress retention", () => {
-    transitionState(store, "ses_active", "completed", config);
-    assert.throws(() => transitionState(store, "ses_active", "error", config), /terminal|invalid|not found/i);
+    transitionState(store, "ses_active", "completed");
+    assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid|not found/i);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
   });
 
   it("settlement strips advisory notice metadata", () => {
     annotateNotice(store, "ses_active", "interim");
-    transitionState(store, "ses_active", "completed", config);
+    transitionState(store, "ses_active", "completed");
     assert.ok(!("lastNotice" in store.retainedTasks.get("ses_active")));
   });
 
   it("retained task remains visible to findTask", () => {
-    transitionState(store, "ses_active", "completed", config);
+    transitionState(store, "ses_active", "completed");
     const found = findTask(store, "ses_active");
     assert.ok(found, "Retained task must be findable");
     assert.strictEqual(found?.state, "completed");
   });
 
   it("unknown session ID transition throws", () => {
-    assert.throws(() => transitionState(store, "nonexistent", "completed", config), /not found|invalid|not active/i);
+    assert.throws(() => transitionState(store, "nonexistent", "completed"), /not found|invalid|not active/i);
   });
 });
 
@@ -1187,22 +1186,56 @@ describe("task-state: revival and annotations", () => {
 
   function retained(store, state = "completed") {
     seedSesActive(store, config);
-    transitionState(store, "ses_active", state, config);
+    transitionState(store, "ses_active", state);
   }
+
+  it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
+    const store = createTaskStore();
+    let calls = 0;
+    store.onRetainedChange = () => { calls++; };
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "interrupted");
+    const before = calls;
+    withdrawInterruptClaim(store, "ses_active", Date.now(), config);
+    assert.strictEqual(calls, before + 1, "withdraw is a retained mutation and must persist");
+    assert.strictEqual(store.activeTasks.get("ses_active")?.state, "active");
+  });
+
+  it("withdrawInterruptClaim refuses when full or superseded", () => {
+    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+    const store = createTaskStore();
+    seedSesActive(store, limited);
+    transitionState(store, "ses_active", "interrupted", limited);
+    fillBackgroundTasks(store, limited, ["ses_other"]);
+    assert.strictEqual(
+      withdrawInterruptClaim(store, "ses_active", Date.now(), limited), false,
+      "no slot accounting bypass past maxConcurrent",
+    );
+    assert.ok(store.retainedTasks.has("ses_active"), "stays retained when full");
+
+    const store2 = createTaskStore();
+    seedSesActive(store2, config);
+    transitionState(store2, "ses_active", "interrupted");
+    store2.retainedTasks.get("ses_active").lastAbortAt = Date.now();
+    assert.strictEqual(
+      withdrawInterruptClaim(store2, "ses_active", 0, config), false,
+      "a newer abort landing supersedes the stale claim",
+    );
+  });
 
   it("withdrawInterruptClaim returns a fresh speculative claim to active", () => {
     const store = createTaskStore();
     assert.strictEqual(withdrawInterruptClaim(store, "ses_nope"), false);
     seedSesActive(store, config);
-    transitionState(store, "ses_active", "completed", config);
+    transitionState(store, "ses_active", "completed");
     assert.strictEqual(withdrawInterruptClaim(store, "ses_active"), false, "only interrupted claims withdraw");
     const store2 = createTaskStore();
     seedSesActive(store2, config);
-    transitionState(store2, "ses_active", "interrupted", config);
-    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active"), true);
+    transitionState(store2, "ses_active", "interrupted");
+    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active", Date.now(), config), true);
     assert.strictEqual(store2.activeTasks.get("ses_active")?.state, "active");
     assert.strictEqual(store2.retainedTasks.has("ses_active"), false);
-    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active"), false, "second withdrawal refuses");
+    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active", Date.now(), config), false, "second withdrawal refuses");
   });
 
   it("reviveRetainedTask moves a settled task back to active", () => {
@@ -1239,7 +1272,7 @@ describe("task-state: revival and annotations", () => {
     assert.strictEqual(annotateNotice(store, "ses_active", "blocked on credentials"), true);
     assert.strictEqual(store.activeTasks.get("ses_active").lastNotice.message, "blocked on credentials");
     assert.strictEqual(annotateNotice(store, "ses_nope", "x"), false);
-    transitionState(store, "ses_active", "completed", config);
+    transitionState(store, "ses_active", "completed");
     assert.strictEqual(annotateNotice(store, "ses_active", "late"), false, "settled tasks take no notices");
   });
 
@@ -1348,7 +1381,7 @@ describe("admission gate: resolveDependencies", () => {
       childSessionId, parentSessionId: "p", agentName: "a",
       description: "d", lineage: [],
     }, config);
-    if (state !== "active") transitionState(store, childSessionId, state, config);
+    if (state !== "active") transitionState(store, childSessionId, state);
     return store;
   }
 
@@ -1613,14 +1646,6 @@ describe("question handling: event helpers", () => {
     assert.strictEqual(getRequestIdFromQuestion(props({})), null);
   });
 
-  it("isValidQuestionEvent guards shapes", () => {
-    assert.strictEqual(isValidQuestionEvent({ type: "question.created" }), true);
-    assert.strictEqual(isValidQuestionEvent({ type: "question.replied" }), true);
-    assert.strictEqual(isValidQuestionEvent({ type: "question.rejected" }), true);
-    assert.strictEqual(isValidQuestionEvent({ type: "nope" }), false);
-    assert.strictEqual(isValidQuestionEvent(null), false);
-  });
-
   it("normalizeQuestionAnswers flattens answer shapes", () => {
     assert.deepStrictEqual(
       normalizeQuestionAnswers(["a", { text: "b" }, { value: "c" }, "", null]),
@@ -1766,8 +1791,8 @@ describe("prompt dance: getLatestAssistantText", () => {
     );
   });
 
-  it("skips messages before startIndex and empty parts", () => {
-    assert.strictEqual(getLatestAssistantText([assistant("old"), assistant("new")], 1), "new");
+  it("reads the latest assistant text, skipping empties", () => {
+    assert.strictEqual(getLatestAssistantText([assistant("old"), assistant("new")]), "new");
     assert.strictEqual(getLatestAssistantText([assistant(""), user("q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
     assert.strictEqual(getLatestAssistantText(null), "");
@@ -1869,7 +1894,7 @@ describe("question gate: resolveQuestionSession", () => {
 
   it("resolves task ids validated against retained tasks", () => {
     const store = trackedStore();
-    transitionState(store, "ses_child", "completed", config);
+    transitionState(store, "ses_child", "completed");
     const resolved = resolveQuestionSession(
       { type: "question.created", properties: { id: "q3", task_id: "ses_child" } },
       store
@@ -1924,7 +1949,7 @@ describe("task store: retained-change callback", () => {
     store.onRetainedChange = () => { calls++; };
     seedActive(store, "s1");
     assert.strictEqual(calls, 0, "active-only writes stay silent");
-    transitionState(store, "s1", "completed", config);
+    transitionState(store, "s1", "completed");
     assert.strictEqual(calls, 1);
     noteLateOutcome(store, "s1", "error");
     assert.strictEqual(calls, 2);
@@ -1937,7 +1962,7 @@ describe("task store: retained-change callback", () => {
     let calls = 0;
     store.onRetainedChange = () => { calls++; };
     seedActive(store, "s1");
-    transitionState(store, "s1", "completed", config);
+    transitionState(store, "s1", "completed");
     store.retainedTasks.get("s1").retainedAt = 0;
     assert.strictEqual(pruneRetainedTasks(store, { retainedTaskTtlMs: 1000, retainedTaskMaxEntries: 100 }), 1);
     assert.strictEqual(calls, 2);

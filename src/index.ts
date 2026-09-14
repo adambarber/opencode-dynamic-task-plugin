@@ -87,6 +87,7 @@ import {
   annotateNotice,
   reviveRetainedTask,
   withdrawInterruptClaim,
+  noteAbortLanded,
   recordAbortError,
   restoreRetained,
   type TaskStore,
@@ -126,7 +127,7 @@ function initPluginState(directory: string, options?: PluginOptions): PluginStat
   };
 
   // Crash recovery: rehydrate retained tasks from the ledger.
-  restoreRetained(store, loadTaskLedger(ledgerPath));
+  restoreRetained(store, loadTaskLedger(ledgerPath), config.retainedTaskMaxEntries);
   pruneRetainedTasks(store, config);
 
   return { store, config };
@@ -241,12 +242,14 @@ async function handleChildLifecycleEvent(
     void safeLog(client, "info", `Event handler: settled ${childSessionId} as ${provisional}`);
 
     const outcome = await hydrateLatestOutcome(client, childSessionId);
-    let kind: NotifyKind = resolveNotifyKind(status) ?? provisional;
+    // Kind follows the SETTLED outcome, not the raw status text: a deleted
+    // session whose stale status still reads idle notifies error (F-R3).
+    let kind: NotifyKind = failed ? "error" : (resolveNotifyKind(status) ?? provisional);
     if (kind === "completed" && outcome.errorDetail) {
       kind = "error";
-      try {
-        noteLateOutcome(store, childSessionId, "error");
-      } catch { /* already escalated */ }
+      if (!noteLateOutcome(store, childSessionId, "error")) {
+        void safeLog(client, "info", `Event handler: late error already recorded for ${childSessionId}`);
+      }
     }
     const latestText = outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
     // Detached: the synchronous claim above is the settlement guarantee;
@@ -783,6 +786,7 @@ export default async function dynamicTaskPlugin(
           // misclaimed as a fresh completion by the lifecycle handler.
           const active = store.activeTasks.get(sessionId);
           let claimed = false;
+          const claimTime = Date.now();
           if (active) {
             try { transitionState(store, sessionId, "interrupted"); claimed = true; } catch { /* settled concurrently */ }
           }
@@ -811,11 +815,20 @@ export default async function dynamicTaskPlugin(
             // the server, so a claimed live child is withdrawn back to active
             // — its genuine terminal event still settles it. A 404 means dead
             // and never withdraws. Settled history is recorded, not disturbed.
+            // Withdrawal additionally requires no newer abort to have landed
+            // since the claim (F-R4: success is knowledge, failure is
+            // ignorance — the newer success wins).
             if (claimed && store.retainedTasks.get(sessionId)?.state === "interrupted") {
-              withdrawInterruptClaim(store, sessionId);
-              return `ERROR: abort failed (${abortMessage}) — task left active; its lifecycle events will still settle it. Retry task_interrupt to abort again.`;
+              if (withdrawInterruptClaim(store, sessionId, claimTime, config)) {
+                void safeLog(client, "warn", `Interrupt: abort failed for ${sessionId} (${abortMessage}); speculative claim withdrawn, child may still be live.`);
+                return `ERROR: abort failed (${abortMessage}) — task left active; its lifecycle events will still settle it. Retry task_interrupt to abort again.`;
+              }
+              recordAbortError(store, sessionId, abortMessage);
+              return `ERROR: abort failed (${abortMessage}) — task retained as interrupted; history preserved. Retry task_interrupt to abort again.`;
             }
-            if (retained) recordAbortError(store, sessionId, abortMessage);
+            // A success record is never annotated with abort noise — the gap
+            // belongs in the operator-visible report, not on the outcome.
+            if (retained && retained.state !== "completed") recordAbortError(store, sessionId, abortMessage);
             const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
             return `ERROR: abort failed (${abortMessage}) — task already settled as ${state}; history preserved.`;
           }
@@ -823,8 +836,14 @@ export default async function dynamicTaskPlugin(
             return `ERROR: Session "${sessionId}" not found — history preserved.`;
           }
           if (!claimed && retained) {
+            // A successful abort landing on settled history is stamped: a
+            // concurrent interruptor's stale withdraw must observe it (F-R4).
+            noteAbortLanded(store, sessionId);
             return `Session ${sessionId} already settled as ${retained.state}; abort sent to the server, history preserved.`;
           }
+          // Successful abort on our own fresh claim: stamp it so a concurrent
+          // stale withdraw cannot resurrect a dead child.
+          noteAbortLanded(store, sessionId);
           return `Session ${sessionId} interrupted.`;
         },
       }),

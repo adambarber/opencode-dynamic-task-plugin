@@ -47,6 +47,11 @@ export interface RetainedTaskState {
   requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
   abortError?: string | undefined;
+  // Last successful abort landing on this record. Guards withdrawInterruptClaim
+  // against concurrent interrupts (F-R4): a stale claim never resurrects a
+  // child a newer abort already killed. Transient bookkeeping, not ledger
+  // truth — the reader drops it on load.
+  lastAbortAt?: number | undefined;
 }
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
@@ -73,15 +78,37 @@ const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
 // Withdraw a speculative interrupt claim after an abort transport failure
 // (F2): the abort may never have reached the server, so the child may still
 // be live — it returns to active and stays settable by its genuine terminal
-// event. A 404 means dead and never withdraws; operator revival of
-// interrupted tasks stays forbidden (reviveRetainedTask still throws) — this
-// edge is internal to task_interrupt's failure path, not a policy change.
-export function withdrawInterruptClaim(store: TaskStore, childSessionId: string): boolean {
+// event. Refuses when the slot is gone (no over-subscription past
+// maxConcurrent) or when a newer abort already landed (F-R4: success is
+// knowledge, failure is ignorance — the newer success wins). A 404 means
+// dead and never withdraws; operator revival of interrupted tasks stays
+// forbidden (reviveRetainedTask still throws) — this edge is internal to
+// task_interrupt's failure path, not a policy change. Persists via the
+// ledger observer like every other retained mutation.
+export function withdrawInterruptClaim(
+  store: TaskStore,
+  childSessionId: string,
+  claimTimeMs: number,
+  bounds?: Pick<DynamicTaskConfig, "maxConcurrent">,
+): boolean {
   const retained = store.retainedTasks.get(childSessionId);
   if (!retained || retained.state !== "interrupted") return false;
-  const { retainedAt: _retainedAt, abortError: _abortError, ...active } = retained;
+  if ((retained.lastAbortAt ?? 0) > claimTimeMs) return false;
+  if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
+  const { retainedAt: _retainedAt, abortError: _abortError, lastAbortAt: _lastAbortAt, ...active } = retained;
   store.retainedTasks.delete(childSessionId);
   store.activeTasks.set(childSessionId, { ...active, state: "active" });
+  emitRetainedChange(store);
+  return true;
+}
+
+// Stamp a successful abort landing on a retained record (F-R4): concurrent
+// interruptors observe it through withdrawInterruptClaim's guard.
+export function noteAbortLanded(store: TaskStore, childSessionId: string): boolean {
+  const retained = store.retainedTasks.get(childSessionId);
+  if (!retained) return false;
+  retained.lastAbortAt = Date.now();
+  emitRetainedChange(store);
   return true;
 }
 
@@ -126,7 +153,6 @@ export function transitionState(
   store: TaskStore,
   childSessionId: string,
   to: Exclude<TaskState, "active">,
-  _config?: DynamicTaskConfig,
 ): { state: TaskState; completed: boolean; task?: ActiveTaskState | RetainedTaskState } {
   const active = store.activeTasks.get(childSessionId);
   if (active) {

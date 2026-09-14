@@ -92,6 +92,28 @@ describe("notify gate: notifyParent", () => {
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
   });
 
+  it("same-child deliveries serialize in claim order", async () => {
+    const order = [];
+    const client = {
+      session: {
+        prompt: async ({ body }) => {
+          const text = body.parts[0].text;
+          order.push(`start:${text}`);
+          await new Promise((r) => setTimeout(r, 20));
+          order.push(`end:${text}`);
+          return { ok: true };
+        },
+      },
+    };
+    const opts = (kind) => ({ childSessionId: "ses_chain1", kind, sleep: NO_SLEEP });
+    const [ra, rb] = await Promise.all([
+      notifyParent(client, "p", "first", opts("completed")),
+      notifyParent(client, "p", "second", opts("error")),
+    ]);
+    assert.strictEqual(ra && rb, true, "both deliver");
+    assert.deepStrictEqual(order, ["start:first", "end:first", "start:second", "end:second"]);
+  });
+
   it("concurrent same-key writes deliver once — in-flight claims close the race", async () => {
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
@@ -108,6 +130,7 @@ describe("notify gate: notifyParent", () => {
     const opts = { childSessionId: "ses_race1", kind: "completed", sleep: NO_SLEEP };
     const first = notifyParent(client, "parent_1", "hello", opts);
     const second = notifyParent(client, "parent_1", "hello", opts);
+    await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
     release();
     assert.deepStrictEqual((await Promise.all([first, second])).sort(), [false, true]);

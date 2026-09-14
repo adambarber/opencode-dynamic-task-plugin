@@ -102,8 +102,9 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
 // is unrepresentable by invariance, and the deleted vocabulary may not return.
 describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", () => {
   it("no bare wall-clock waits outside the notification retry", () => {
-    // Negative lookbehind exempts timerProvider.* and globalThis.* call shapes.
-    const pattern = /(?<!timerProvider\.)(?<!globalThis\.)\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/;
+    // No lookbehind exemptions: notify.ts is whitelisted by file, so any
+    // setTimeout-shaped call anywhere else fails — including globalThis.*.
+    const pattern = /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/;
     const hits = listProdFiles()
       .filter((f) => !f.endsWith("notify.ts"))
       .flatMap((f) => scanLines(f, pattern));
@@ -335,7 +336,7 @@ describe("invariant: spawn admission flows through one gate (Task 07)", () => {
 // the eed3a04 dispatchability fix it should pin.
 describe("invariant: tests import production, never redefine it (Tenet 12)", () => {
   it("no production-function copies in test files", () => {
-    const pattern = /^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|extractTextFromPromptResult|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText|registerBackgroundTask|handleChildLifecycleEvent)\s*\(/;
+    const pattern = /^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText|registerBackgroundTask|handleChildLifecycleEvent)\s*\(/;
     const hits = listTestFiles().flatMap((f) => scanLines(f, pattern));
     assert.strictEqual(
       hits.length,

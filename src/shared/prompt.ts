@@ -133,40 +133,6 @@ export function extractTextFromParts(parts: unknown): string {
   return out.join("\n");
 }
 
-// ─── extractTextFromPromptResult ───────────────────────────────────
-// (Moved verbatim from index.ts.)
-
-export function extractTextFromPromptResult(result: unknown): string {
-  const candidates = [
-    eventField(result, "parts"),
-    eventField(result, "data", "parts"),
-    eventField(result, "body", "parts"),
-    eventField(result, "message", "parts"),
-    eventField(result, "data", "message", "parts"),
-    eventField(result, "body", "message", "parts"),
-  ];
-
-  for (const parts of candidates) {
-    const text = extractTextFromParts(parts);
-    if (text.trim()) return text;
-  }
-
-  const messageCandidates = [
-    eventField(result, "text"),
-    eventField(result, "data", "text"),
-    eventField(result, "body", "text"),
-    eventField(result, "content"),
-    eventField(result, "data", "content"),
-    eventField(result, "body", "content"),
-  ];
-
-  for (const text of messageCandidates) {
-    if (typeof text === "string" && text.trim()) return text;
-  }
-
-  return "";
-}
-
 // ─── extractMessages ───────────────────────────────────────────────
 // (Moved verbatim from index.ts — message-shape handling belongs here.)
 
@@ -182,11 +148,10 @@ export function extractMessages(result: unknown): unknown[] {
 // ─── getLatestAssistantText ────────────────────────────────────────
 // (Moved verbatim from index.ts.)
 
-export function getLatestAssistantText(messages: unknown, startIndex: number = 0): string {
+export function getLatestAssistantText(messages: unknown): string {
   if (!Array.isArray(messages) || messages.length === 0) return "";
-  const from = Math.max(0, startIndex);
 
-  for (let i = messages.length - 1; i >= from; i--) {
+  for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (!isMessage(msg)) continue;
     if (messageRoleOf(msg) !== ASSISTANT_ROLE) continue;
@@ -250,13 +215,12 @@ export interface HydratedOutcome {
 export async function hydrateLatestOutcome(
   client: OpenCodeClient,
   sessionId: string,
-  startIndex = 0,
 ): Promise<HydratedOutcome> {
   try {
     const messagesResult = await client.session.messages({ path: { id: sessionId } });
     const messages = extractMessages(messagesResult);
     return {
-      text: getLatestAssistantText(messages, startIndex),
+      text: getLatestAssistantText(messages),
       errorDetail: latestMessageErrorDetail(messages),
     };
   } catch {

@@ -116,7 +116,9 @@ export function formatTaskResultSummary(input: {
   lines.push(
     "",
     "### Latest Assistant Output",
-    truncateText(input.latestText) || "(No assistant text found)",
+    // Pull path: the operator asked for this output, so it is delivered
+    // whole. Only the push path (parent notification) is bounded.
+    input.latestText || "(No assistant text found)",
     "",
     action,
   );

@@ -184,7 +184,10 @@ export function formatParentNotification(
   resultText = "",
 ): string {
   const shape = NOTIFICATION_KINDS[kind];
-  const safeResult = truncateText(resultText.trim() ? resultText : "(No text output)");
+  const full = resultText.trim() ? resultText : "(No text output)";
+  const safeResult = full.length > NOTIFICATION_MAX_CHARS
+    ? `${full.slice(0, NOTIFICATION_MAX_CHARS)}... [truncated — full output via task_result(session_id=${state.childSessionId})]`
+    : full;
   const body = shape.bodyLabel ? `${shape.bodyLabel}: ${safeResult}` : safeResult;
   return [
     "[dynamic-task-notify]",
@@ -200,3 +203,8 @@ export function truncateText(text: string, maxChars = 1200): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}...`;
 }
+
+// Push-path bound: the notification is injected into the parent's
+// conversation, so it stays bounded — but truncation is never silent: the
+// tail names the full-text recovery path (the pull path is untruncated).
+export const NOTIFICATION_MAX_CHARS = 8000;

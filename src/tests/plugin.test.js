@@ -538,10 +538,17 @@ describe("formatParentNotification", () => {
     assert.match(formatParentNotification(state, "completed", "   "), /\(No text output\)/);
   });
 
-  it("truncates long payloads", () => {
-    const message = formatParentNotification(state, "completed", "x".repeat(3000));
-    assert.ok(message.length < 3000);
-    assert.match(message, /\.\.\./);
+  it("passes mid-size payloads through whole — no silent cliff", () => {
+    const body = "x".repeat(3000);
+    const message = formatParentNotification(state, "completed", body);
+    assert.ok(message.includes(body), "3000-char output must survive the push path intact");
+  });
+
+  it("bounds huge payloads but points at task_result for the rest", () => {
+    const message = formatParentNotification(state, "completed", "x".repeat(9000));
+    assert.ok(message.length < 9000, "push path stays bounded");
+    assert.match(message, /task_result/, "truncation names the full-text recovery path");
+    assert.match(message, /ses_1/, "pointer names the session");
   });
 });
 
@@ -1560,6 +1567,15 @@ describe("task formatting: truncate + debug shape", () => {
     assert.strictEqual(out.length, 1203);
     assert.ok(out.endsWith("..."));
     assert.strictEqual(truncateText("short"), "short");
+  });
+
+  it("formatTaskResultSummary never truncates latest output — pull path is full text", () => {
+    const body = "y".repeat(5000);
+    const result = formatTaskResultSummary({
+      sessionId: "s", status: "completed", messageCount: 1,
+      latestText: body, tracked: true,
+    });
+    assert.ok(result.includes(body), "operator-pulled output must be complete");
   });
 
   it("formatTaskResultSummary surfaces delivery records", () => {

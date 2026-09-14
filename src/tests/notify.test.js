@@ -12,6 +12,7 @@ import {
   getLatestNotification,
   clearNotifyLedger,
   gateLedger,
+  notifyChainCount,
 } from "../../dist/shared/notify.js";
 
 const NO_SLEEP = async () => {};
@@ -154,6 +155,7 @@ describe("notify gate: notifyParent", () => {
     const record = getLatestNotification("ses_d1");
     assert.strictEqual(record.delivered, false);
     assert.strictEqual(record.attempts, 0, "suppressed before dialing");
+    assert.strictEqual(record.suppressed, true, "suppression is visible, distinct from failure");
   });
 
   it("a distinct error can follow a delivered completion", async () => {
@@ -185,6 +187,55 @@ describe("notify gate: notifyParent", () => {
     const second = await notifyParent(client, "parent_1", "turn 2", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
     assert.strictEqual(second, true);
     assert.strictEqual(calls.length, 2);
+  });
+
+  it("a late commit from before revival cannot reserve the revived turn's key", async () => {
+    // The poisoning window: an in-flight delivery claimed before forgetChild
+    // succeeds after it. Its commit belongs to the previous generation — it
+    // may emit history but must not reserve the key the revived turn needs.
+    let releaseRetry;
+    const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+    let calls = 0;
+    const client = {
+      session: {
+        prompt: async () => {
+          calls++;
+          if (calls === 1) throw new Error("parent busy");
+          await retryGate;
+          return { ok: true };
+        },
+      },
+    };
+    const opts = { childSessionId: "ses_gen1", kind: "completed", sleep: NO_SLEEP };
+    const first = notifyParent(client, "parent_1", "turn 1", opts);
+    await new Promise((r) => setTimeout(r, 10)); // the retry has dialed and is held
+    gateLedger.forgetChild("ses_gen1");          // revival: new generation, cleared pending
+    releaseRetry();
+    const firstDelivered = await first;          // stale-generation commit lands (transport succeeded)
+    assert.strictEqual(firstDelivered, true, "the retry genuinely delivered — history says so");
+
+    const second = await notifyParent(client, "parent_1", "turn 2", opts);
+    assert.strictEqual(second, true, "the revived turn must not be poisoned by the stale commit");
+  });
+
+  it("delivery chains are FIFO-bounded like the dedup gate", async () => {
+    let release;
+    const transportGate = new Promise((resolve) => { release = resolve; });
+    const client = {
+      session: { prompt: async () => { await transportGate; return { ok: true }; } },
+    };
+    const pending = [];
+    for (let i = 0; i < 1005; i++) {
+      pending.push(notifyParent(client, "p", `m${i}`, {
+        childSessionId: `ses_ch${i}`, kind: "completed", sleep: NO_SLEEP,
+      }));
+    }
+    assert.strictEqual(notifyChainCount(), 1000, `chain map FIFO-capped. got ${notifyChainCount()}`);
+    release();
+    await Promise.all(pending);
+    await new Promise((r) => setTimeout(r, 0)); // chain-drop handlers are detached
+    await new Promise((r) => setTimeout(r, 0));
+    assert.strictEqual(notifyChainCount(), 0, "settled chains never leak");
   });
 
   it("ledger is bounded and latest-wins per child", async () => {

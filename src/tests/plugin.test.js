@@ -234,6 +234,65 @@ describe("fetchAgents", () => {
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].name, "review");
   });
+
+  // The cache is process-global state; scoping it per client means one
+  // plugin instance (or the host's entry-export probes) can never serve
+  // another client's agent list.
+  it("caches per client: two clients keep distinct agent lists", async () => {
+    let aCalls = 0;
+    let bCalls = 0;
+    const clientA = {
+      app: {
+        agents: async () => { aCalls++; return [{ name: "alpha", mode: "subagent" }]; },
+        log: async () => {},
+      },
+    };
+    const clientB = {
+      app: {
+        agents: async () => { bCalls++; return [{ name: "beta", mode: "subagent" }]; },
+        log: async () => {},
+      },
+    };
+
+    assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
+    assert.deepStrictEqual((await fetchAgents(clientB)).map((a) => a.name), ["beta"]);
+    assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
+    assert.strictEqual(aCalls, 1, "client A's second read is served from its own cache");
+    assert.strictEqual(bCalls, 1, "client B's fetch never touched client A's cache");
+  });
+
+  it("stale entries refetch — TTL still bounds each client's cache", async () => {
+    let calls = 0;
+    const mockClient = {
+      app: {
+        agents: async () => {
+          calls++;
+          return calls === 1
+            ? [{ name: "first", mode: "subagent" }]
+            : [{ name: "second", mode: "subagent" }];
+        },
+        log: async () => {},
+      },
+    };
+
+    assert.strictEqual((await fetchAgents(mockClient, 60000))[0].name, "first");
+    assert.strictEqual((await fetchAgents(mockClient, 0))[0].name, "second", "expired TTL forces a fresh fetch");
+    assert.strictEqual(calls, 2);
+  });
+
+  it("resetAgentCache invalidates every client's cache", async () => {
+    let calls = 0;
+    const mockClient = {
+      app: {
+        agents: async () => { calls++; return [{ name: "explore", mode: "subagent" }]; },
+        log: async () => {},
+      },
+    };
+    await fetchAgents(mockClient, 60000);
+    resetAgentCache();
+    await fetchAgents(mockClient, 60000);
+    assert.strictEqual(calls, 2, "reset must not leave any client's entry fresh");
+  });
 });
 
 // The host invokes every entry-module export as a candidate plugin
@@ -1223,6 +1282,21 @@ describe("task-state: revival and annotations", () => {
     );
   });
 
+  it("withdrawInterruptClaim refuses when the abort landed in the same millisecond", () => {
+    // Same-ms success is still knowledge: a withdraw stamped at the instant of
+    // a successful abort must lose to it (>=, not >).
+    const store = createTaskStore();
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "interrupted");
+    const sameInstant = Date.now();
+    store.retainedTasks.get("ses_active").lastAbortAt = sameInstant;
+    assert.strictEqual(
+      withdrawInterruptClaim(store, "ses_active", sameInstant, config), false,
+      "a same-millisecond successful abort supersedes the withdraw",
+    );
+    assert.ok(store.retainedTasks.has("ses_active"), "refused withdraw leaves the record retained");
+  });
+
   it("withdrawInterruptClaim returns a fresh speculative claim to active", () => {
     const store = createTaskStore();
     assert.strictEqual(withdrawInterruptClaim(store, "ses_nope"), false);
@@ -1656,7 +1730,7 @@ describe("question handling: event helpers", () => {
   });
 });
 
-describe("task formatting: truncate + debug shape", () => {
+describe("task formatting: truncate + delivery records", () => {
   it("noticeDedupKey separates distinct long messages sharing a prefix", () => {
     const first = noticeDedupKey("a".repeat(200) + "1");
     const second = noticeDedupKey("a".repeat(200) + "2");
@@ -1696,12 +1770,30 @@ describe("task formatting: truncate + debug shape", () => {
     assert.ok(!formatTaskResultSummary(base).includes("notification:"));
   });
 
-  it("formatTaskResultSummary includes debug shape when provided", () => {
-    const summary = formatTaskResultSummary({
+  it("formatTaskResultSummary renders a suppressed duplicate as Suppressed, never FAILED", () => {
+    const base = {
       sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true, debugShape: "SHAPE",
+      latestText: "hi", tracked: true,
+    };
+    const out = formatTaskResultSummary({
+      ...base,
+      notification: { kind: "notice", parentSessionId: "p1", delivered: false, attempts: 0, suppressed: true },
     });
-    assert.ok(summary.includes("SHAPE"));
+    assert.ok(out.includes("Suppressed (duplicate — already delivered)"), `got: ${out}`);
+    assert.ok(!out.includes("FAILED"), `suppression is not failure. got: ${out}`);
+  });
+
+  it("formatTaskResultSummary renders a parentless non-delivery honestly", () => {
+    const base = {
+      sessionId: "s", status: "completed", messageCount: 1,
+      latestText: "hi", tracked: true,
+    };
+    const out = formatTaskResultSummary({
+      ...base,
+      notification: { kind: "completed", parentSessionId: "unknown", delivered: false, attempts: 0 },
+    });
+    assert.ok(out.includes("Not delivered (no parent session)"), `got: ${out}`);
+    assert.ok(!out.includes("FAILED"), `nowhere to dial is not a failed dial. got: ${out}`);
   });
 
   it("isTerminalSessionEvent matches the broad catch-all", () => {

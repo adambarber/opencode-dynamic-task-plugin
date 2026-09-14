@@ -45,7 +45,16 @@ export function formatTaskListSummary(input: {
   return lines.join("\n");
 }
 
+// Three honest outcomes: a delivered notice, a suppressed verbatim repeat
+// (never dialed), and a parentless non-delivery (nowhere to dial). Only a
+// real attempt that failed may read as FAILED.
 function formatNotificationLine(notification: NotificationRecord): string {
+  if (notification.suppressed) {
+    return `Last notification: ${notification.kind} — Suppressed (duplicate — already delivered)`;
+  }
+  if (!notification.delivered && notification.attempts === 0 && notification.parentSessionId === "unknown") {
+    return `Last notification: ${notification.kind} — Not delivered (no parent session)`;
+  }
   return notification.delivered
     ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`
     : `Last notification: ${notification.kind} (FAILED after ${notification.attempts} attempt(s))`;
@@ -91,7 +100,6 @@ export function formatTaskResultSummary(input: {
   latestText: string;
   tracked: boolean;
   notification?: NotificationRecord | null | undefined;
-  debugShape?: string;
 }): string {
   const action =
     input.status === "busy"
@@ -122,10 +130,6 @@ export function formatTaskResultSummary(input: {
     "",
     action,
   );
-
-  if (input.debugShape) {
-    lines.push("", "### Debug: Raw Session Response Shape", "```", input.debugShape, "```");
-  }
 
   return lines.join("\n");
 }

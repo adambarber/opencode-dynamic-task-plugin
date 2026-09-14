@@ -79,7 +79,9 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
   it("no raw store/flag mutation outside task-state.ts", () => {
     const sanctioned = `task-state.ts`;
     // (?!=) excludes == / === reads: only real assignments are bypasses.
-    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)/;
+    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice) belong to the
+    // state machine alone: outside task-state.ts they may be read, never written.
+    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice)\s*=(?!=)/;
     const hits = listProdFiles()
       .filter((f) => !f.endsWith(sanctioned))
       .flatMap((f) => scanLines(f, pattern));
@@ -114,6 +116,23 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
       formatViolations(
         "docs/tasks/09-non-blocking-settlement.md",
         "A wall-clock wait returned outside the notification gate.",
+        hits,
+      ),
+    );
+  });
+
+  it("the notify gate keeps exactly one timer-shaped call site", () => {
+    // The file whitelist grants notify.ts one exemption, not an open door:
+    // the retry backoff's sleep. A second setTimeout-shaped call means a new
+    // clock entered the settlement layer.
+    const gate = path.join(SRC_DIR, "shared", "notify.ts");
+    const hits = scanLines(gate, /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/);
+    assert.strictEqual(
+      hits.length,
+      1,
+      formatViolations(
+        "docs/tasks/09-non-blocking-settlement.md",
+        `Expected exactly 1 timer-shaped call in notify.ts (defaultSleep), found ${hits.length}.`,
         hits,
       ),
     );

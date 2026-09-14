@@ -30,6 +30,9 @@ export interface NotificationRecord {
   message: string;
   attempts: number;
   delivered: boolean;
+  // Set only on the duplicate-suppression path: a verbatim repeat that never
+  // dialed. Distinct from a failed delivery — nothing was attempted.
+  suppressed?: boolean;
 }
 
 const notifyLedger: NotificationRecord[] = [];
@@ -78,17 +81,21 @@ interface NotifyParentOptions {
 }
 
 interface GateLedger {
-  record(childSessionId: string, dedupKey: string): boolean;
+  record(childSessionId: string, dedupKey: string, generation: number): boolean;
   // Revival resets settle-dedup: a continued task is a fresh settlement
   // subject, so its next completed/error must be deliverable even though the
   // prior turn's kind was recorded. Delivery history stays in the ledger.
+  // Bumping the generation is what makes that safe against in-flight work:
+  // claims/commits from before the bump can no longer reserve keys.
   forgetChild(childSessionId: string): void;
   // In-flight claim: closes the check-then-act race between concurrent
   // same-key writers. A claim is synchronous; the winner dials, losers are
-  // suppressed before touching transport. Released on delivery failure so a
-  // failed settlement stays redeliverable — only success reserves the key.
-  claim(childSessionId: string, dedupKey: string): boolean;
-  release(childSessionId: string, dedupKey: string): void;
+  // suppressed before touching transport. Returns the generation the claim
+  // was bound to (null = refused), so the later commit can prove it still
+  // belongs to the current turn. Released on delivery failure so a failed
+  // settlement stays redeliverable — only success reserves the key.
+  claim(childSessionId: string, dedupKey: string): number | null;
+  release(childSessionId: string, dedupKey: string, generation: number): void;
   // Test-only isolation: the gate is process-global by design.
   clear(): void;
 }
@@ -99,15 +106,23 @@ interface GateLedger {
 // Session ids are globally unique, so entries outlive their usefulness once a
 // child leaves the retained ledger — the gate is FIFO-bounded to stay honest
 // about exactly-once without growing without limit.
+// Every key is bound to a per-child generation: forgetChild (revival) bumps it
+// and clears the child's pending claims, so an in-flight commit from a
+// previous turn emits history but can never reserve the revived turn's key.
 const GATE_MAX_CHILDREN = 1000;
 
 function duplicateOf(map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): boolean {
   return map.get(childSessionId)?.has(dedupKey) ?? false;
 }
 
+function currentGeneration(generations: Map<string, number>, childSessionId: string): number {
+  return generations.get(childSessionId) ?? 0;
+}
+
 function createGateLedger(): GateLedger {
   const delivered = new Map<string, Set<string>>();
   const inFlight = new Map<string, Set<string>>();
+  const generations = new Map<string, number>();
   const drop = (map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): void => {
     const keys = map.get(childSessionId);
     if (!keys) return;
@@ -115,7 +130,8 @@ function createGateLedger(): GateLedger {
     if (keys.size === 0) map.delete(childSessionId);
   };
   return {
-    record(childSessionId, dedupKey) {
+    record(childSessionId, dedupKey, generation) {
+      if (currentGeneration(generations, childSessionId) !== generation) return false;
       const kinds = delivered.get(childSessionId) ?? new Set();
       if (kinds.has(dedupKey)) return false;
       kinds.add(dedupKey);
@@ -127,22 +143,32 @@ function createGateLedger(): GateLedger {
       return true;
     },
     claim(childSessionId, dedupKey) {
-      if (duplicateOf(delivered, childSessionId, dedupKey) || duplicateOf(inFlight, childSessionId, dedupKey)) return false;
+      if (duplicateOf(delivered, childSessionId, dedupKey) || duplicateOf(inFlight, childSessionId, dedupKey)) return null;
       const pending = inFlight.get(childSessionId) ?? new Set();
       pending.add(dedupKey);
       inFlight.set(childSessionId, pending);
-      return true;
+      return currentGeneration(generations, childSessionId);
     },
-    release(childSessionId, dedupKey) {
+    release(childSessionId, dedupKey, generation) {
+      // A stale generation's pending entry was already cleared by forgetChild;
+      // dropping here could only hit the current generation's claim.
+      if (currentGeneration(generations, childSessionId) !== generation) return;
       drop(inFlight, childSessionId, dedupKey);
     },
     forgetChild(childSessionId) {
+      const next = currentGeneration(generations, childSessionId) + 1;
+      generations.set(childSessionId, next);
+      if (generations.size > GATE_MAX_CHILDREN) {
+        const oldest = generations.keys().next();
+        if (!oldest.done) generations.delete(oldest.value);
+      }
       delivered.delete(childSessionId);
       inFlight.delete(childSessionId);
     },
     clear() {
       delivered.clear();
       inFlight.clear();
+      generations.clear();
     },
   };
 }
@@ -152,7 +178,10 @@ export const gateLedger = createGateLedger();
 // Per-child serialization: detached deliveries of one child execute in claim
 // order, so a stale retry can never land after a newer turn's message. Only
 // transport is serialized — claims stay synchronous, and the chain is dropped
-// once its tail settles so child ids never leak.
+// once its tail settles so child ids never leak. The map is FIFO-bounded to
+// the same 1000-child window as the dedup gate: an evicted child keeps
+// delivery (claims are synchronous) but loses ordering against a re-spawn
+// after 1000 other children chained first — bounded memory, documented window.
 const notifyChains = new Map<string, Promise<unknown>>();
 
 // The gate: every parent-directed write goes through here. One retry (a busy
@@ -167,10 +196,14 @@ export async function notifyParent(
   const sleep = opts.sleep ?? defaultSleep;
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
-  const emit = (delivered: boolean, attempts: number) =>
-    record({ at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message, attempts, delivered });
-  if (!gateLedger.claim(opts.childSessionId, dedupKey)) {
-    emit(false, 0);
+  const emit = (delivered: boolean, attempts: number, suppressed = false): void =>
+    record({
+      at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message, attempts, delivered,
+      ...(suppressed ? { suppressed: true } : {}),
+    });
+  const generation = gateLedger.claim(opts.childSessionId, dedupKey);
+  if (generation === null) {
+    emit(false, 0, true);
     return Promise.resolve(false);
   }
   const attempt = () =>
@@ -179,8 +212,11 @@ export async function notifyParent(
       body: { parts: [{ type: "text", text: message }] },
     });
   const commit = (delivered: boolean, attempts: number) => {
-    gateLedger.release(opts.childSessionId, dedupKey);
-    if (delivered) gateLedger.record(opts.childSessionId, dedupKey);
+    // Generation-bound: a revival (forgetChild) between this claim and this
+    // commit makes the generation stale — history is emitted, the key is not
+    // reserved, and the revived turn's claim stays intact.
+    gateLedger.release(opts.childSessionId, dedupKey, generation);
+    if (delivered) gateLedger.record(opts.childSessionId, dedupKey, generation);
     emit(delivered, attempts);
     return delivered;
   };
@@ -201,11 +237,20 @@ export async function notifyParent(
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();
   const cur: Promise<boolean> = prev.then(run, run);
   notifyChains.set(opts.childSessionId, cur);
+  if (notifyChains.size > GATE_MAX_CHILDREN) {
+    const oldest = notifyChains.keys().next();
+    if (!oldest.done) notifyChains.delete(oldest.value);
+  }
   void cur.then(
     () => { if (notifyChains.get(opts.childSessionId) === cur) notifyChains.delete(opts.childSessionId); },
     () => { if (notifyChains.get(opts.childSessionId) === cur) notifyChains.delete(opts.childSessionId); },
   );
   return cur;
+}
+
+/** Test seam: current per-child delivery chain count. Production never calls this. */
+export function notifyChainCount(): number {
+  return notifyChains.size;
 }
 
 // Notice dedup keys hash the FULL message: a fixed prefix slice collides

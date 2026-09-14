@@ -93,7 +93,9 @@ export function withdrawInterruptClaim(
 ): boolean {
   const retained = store.retainedTasks.get(childSessionId);
   if (!retained || retained.state !== "interrupted") return false;
-  if ((retained.lastAbortAt ?? 0) > claimTimeMs) return false;
+  // >= not >: a successful abort landing in the same millisecond as the
+  // claim is still knowledge — the newer (or same-instant) success wins.
+  if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
   if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
   const { retainedAt: _retainedAt, abortError: _abortError, lastAbortAt: _lastAbortAt, ...active } = retained;
   store.retainedTasks.delete(childSessionId);

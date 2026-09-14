@@ -171,8 +171,20 @@ export function registerAdmittedTask(
 // entry-adjacent helpers must be total — and agent shape is this module's
 // domain. All three functions degrade instead of throwing on probe input.
 
-let cachedAgents: AgentRecord[] = [];
-let lastCacheTime = 0;
+// Agent discovery is scoped per client (WeakMap): the cache used to be
+// process-global, so a second plugin instance — or the host probing entry
+// exports with a different client — could be served another client's agent
+// list. resetAgentCache bumps an epoch instead of iterating: WeakMaps are not
+// enumerable, and an entry whose epoch is stale is treated as empty, which
+// invalidates every client's cache at once with no retained references.
+interface AgentCacheEntry {
+  agents: AgentRecord[];
+  at: number;
+  epoch: number;
+}
+
+const agentCaches = new WeakMap<object, AgentCacheEntry>();
+let agentCacheEpoch = 0;
 
 const CACHE_TTL = 300000;
 
@@ -188,9 +200,13 @@ export function buildAgentList(agents: unknown): string {
 }
 
 export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
+  // Non-object clients (the host's probes) can't key a WeakMap; they also
+  // can't serve a successful fetch, so they simply never cache.
+  const cacheKey: object | null = typeof client === "object" && client !== null ? client : null;
   const now = Date.now();
-  if (now - lastCacheTime < cacheTtlMs && cachedAgents.length > 0) {
-    return cachedAgents;
+  const cached = cacheKey ? agentCaches.get(cacheKey) : undefined;
+  if (cached && cached.epoch === agentCacheEpoch && cached.agents.length > 0 && now - cached.at < cacheTtlMs) {
+    return cached.agents;
   }
 
   // One immediate retry: setup races and transient blips often clear on
@@ -198,10 +214,13 @@ export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = C
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const result: unknown = await client.app.agents();
-      cachedAgents = parseAgentList(result).filter((a) => isDispatchableAgent(a));
-
-      lastCacheTime = Date.now();
-      break;
+      const entry: AgentCacheEntry = {
+        agents: parseAgentList(result).filter((a) => isDispatchableAgent(a)),
+        at: Date.now(),
+        epoch: agentCacheEpoch,
+      };
+      if (cacheKey) agentCaches.set(cacheKey, entry);
+      return entry.agents;
     } catch (error: unknown) {
       if (attempt === 1 && error instanceof Error) {
         // safeLog, not a raw app.log: the client itself may be unusable
@@ -212,11 +231,13 @@ export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = C
     }
   }
 
-  return cachedAgents;
+  // Persistent failure: serve this client's last known list from the current
+  // epoch — stale beats empty, another client's list never does.
+  if (cached && cached.epoch === agentCacheEpoch) return cached.agents;
+  return [];
 }
 
-/** Test seam: clears the agent-list cache. Production code never calls this. */
+/** Test seam: invalidates every client's cached agent list. Production code never calls this. */
 export function resetAgentCache(): void {
-  cachedAgents = [];
-  lastCacheTime = 0;
+  agentCacheEpoch++;
 }

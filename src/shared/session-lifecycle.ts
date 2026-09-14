@@ -172,6 +172,12 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
       // The map key is canonical identity: an entry disagreeing with its key
       // is corrupt, not merely mislabeled.
       if (entry.childSessionId !== key) continue;
+      const dependsOn = entry["dependsOn"];
+      const requestedModel = entry["requestedModel"];
+      const abortError = entry["abortError"];
+      // Built in one expression: a hydrated record is complete at birth.
+      // Post-construction field assignment would belong to the state machine
+      // (task-state), and the lifecycle scanner rightly forbids it here.
       const typed: RetainedTaskState = {
         childSessionId: entry.childSessionId,
         parentSessionId: entry.parentSessionId,
@@ -181,15 +187,14 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
         state: entry.state,
         startedAt: entry.startedAt,
         retainedAt: entry.retainedAt,
+        ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
+        ...(isEventRecord(requestedModel)
+          && typeof requestedModel["providerID"] === "string"
+          && typeof requestedModel["modelID"] === "string"
+          ? { requestedModel: { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] } }
+          : {}),
+        ...(typeof abortError === "string" ? { abortError } : {}),
       };
-      const dependsOn = entry["dependsOn"];
-      const requestedModel = entry["requestedModel"];
-      const abortError = entry["abortError"];
-      if (Array.isArray(dependsOn)) typed.dependsOn = dependsOn.filter((d): d is string => typeof d === "string");
-      if (isEventRecord(requestedModel) && typeof requestedModel["providerID"] === "string" && typeof requestedModel["modelID"] === "string") {
-        typed.requestedModel = { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] };
-      }
-      if (typeof abortError === "string") typed.abortError = abortError;
       entries.set(key, typed);
     }
   } catch {

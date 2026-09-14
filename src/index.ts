@@ -149,7 +149,9 @@ function unknownSessionResult(sessionId: string): string {
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
 // ledger owns history, and a failed delivery is visible via the notification
-// record, never a reason to disturb the caller's control flow.
+// record, never a reason to disturb the caller's control flow. Always a
+// Promise so every call site voids it the same way; the parentless path
+// resolves false immediately after recording the non-delivery.
 function deliverParent(
   client: OpenCodeClient,
   parentSessionId: string,
@@ -157,7 +159,7 @@ function deliverParent(
   description: string,
   kind: NotifyKind,
   text: string,
-): Promise<boolean> | boolean {
+): Promise<boolean> {
   const message = formatParentNotification({ childSessionId, description }, kind, text);
   if (!parentSessionId || parentSessionId === "unknown") {
     // Nowhere to deliver — but the non-delivery is recorded, so deafness is
@@ -171,7 +173,7 @@ function deliverParent(
       attempts: 0,
       delivered: false,
     });
-    return false;
+    return Promise.resolve(false);
   }
   return notifyParent(client, parentSessionId, message, { childSessionId, kind });
 }
@@ -194,18 +196,24 @@ function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: ChildRe
     agent: task.agentName,
     ...(task.requestedModel !== undefined ? { model: task.requestedModel } : {}),
   };
-  // A delivery failure — rejection or synchronous throw — settles exactly
-  // once through the same gate the async path uses.
+  // A delivery failure settles exactly once through the same gate the async
+  // path uses — but only a NON-retryable one. A transport blip (timeout,
+  // refused connection) says nothing about the child: the turn may well be
+  // running, and settling error here would deafen the ledger to the child's
+  // genuine terminal event. Retryable failures leave the task active; the
+  // only bound on a truly-dead child stays operator interruption.
   const onPromptFailure = (error: unknown): void => {
     const classified = classifyPromptError(error);
     void safeLog(client, "warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
+    if (classified.retryable) return;
     let settled = false;
     try {
       transitionState(store, task.childSessionId, "error");
       settled = true;
     } catch { /* a lifecycle event won the settlement */ }
     if (settled) {
-      deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", classified.message);
+      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", classified.message)
+        .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
     }
   };
   try {
@@ -257,10 +265,8 @@ async function handleChildLifecycleEvent(
     // Observability survives via the ledger record, logged on completion.
     // deliverParent is the single funnel for parent-directed writes: it
     // records parentless settlements instead of dialing a phantom session.
-    const delivery = deliverParent(client, parentSessionId, childSessionId, childDescription, kind, latestText);
-    if (typeof delivery !== "boolean") {
-      void delivery.then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
-    }
+    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, latestText)
+      .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
     return;
   }
 
@@ -279,8 +285,8 @@ async function handleChildLifecycleEvent(
     if (!current || current.state !== "completed") return; // lost the escalation race
     noteLateOutcome(store, childSessionId, "error");
     const errorDetail = outcome.errorDetail || "(session vanished before output was readable)";
-    deliverParent(client, retained.parentSessionId, childSessionId, retained.description, "error", errorDetail);
-    debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error" });
+    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, "error", errorDetail)
+      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error", delivered }));
   }
 }
 
@@ -361,8 +367,11 @@ export default async function dynamicTaskPlugin(
       // touched — the gate fails closed on ambiguity. ---
       try {
         if (eventType === "question.replied" || eventType === "question.rejected") {
-          // Forget under every id spelling the created path accepts — a reply
-          // carrying only request_id must release linkage keyed by request_id.
+          // Release uses getRequestIdFromQuestion's first-match spelling ladder
+          // — the same ladder the created path keyed the linkage with, so a
+          // reply carrying only request_id releases a request_id-keyed link.
+          // A reply that spells the id differently from the create event finds
+          // no entry to forget; the linkage lingers until a reply matches.
           const questionId = getRequestIdFromQuestion(event);
           if (questionId) {
             forgetQuestionSession(questionId);
@@ -580,22 +589,23 @@ export default async function dynamicTaskPlugin(
             // untracked session (e.g. the authoritative re-check threw) is
             // aborted so it cannot run unmonitored on the server.
             if (createdSessionId) {
-              if (store.activeTasks.has(createdSessionId)) {
-                try { transitionState(store, createdSessionId, "error"); } catch { /* already terminal */ }
+              const failedChildSessionId = createdSessionId;
+              if (store.activeTasks.has(failedChildSessionId)) {
+                try { transitionState(store, failedChildSessionId, "error"); } catch { /* already terminal */ }
               } else {
-                try { await client.session.abort({ path: { id: createdSessionId } }); } catch { /* best-effort */ }
+                try { await client.session.abort({ path: { id: failedChildSessionId } }); } catch { /* best-effort */ }
               }
               // The error settlement notifies like every other terminal
               // settlement — a failed spawn the parent never hears about
               // is a silent lie, registered or not.
-              deliverParent(
+              void deliverParent(
                 client,
                 parentSessionId || "unknown",
-                createdSessionId,
+                failedChildSessionId,
                 args.description || "background task",
                 "error",
                 message,
-              );
+              ).then((delivered) => debugLog(parentSessionId || "unknown", failedChildSessionId, "spawn-error-notify", { delivered }));
             }
             if (message.includes("not found")) {
               return `ERROR: Agent "${agent.name}" not found.`;

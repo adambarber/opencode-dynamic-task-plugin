@@ -191,6 +191,32 @@ function settle(harness, id, type = "session.idle") {
   return harness.fireEvent({ type, properties: { sessionID: id, status: "idle" } });
 }
 
+// Shared two-turn harness: the message stream names each turn's output, and
+// the FIRST parent notification fails so the gate's retry lands inside the
+// test's timing window. Both claim-order/revival tests pin WHEN the revival
+// lands against that retry; the harness itself is one thing.
+async function setupTwoTurnHarness() {
+  let msgCalls = 0;
+  const h = await setupTools({
+    messages: () => {
+      msgCalls++;
+      const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
+      return [{ info: { role: "assistant" }, parts: [{ type: "text", text }] }];
+    },
+  });
+  const origPrompt = h.client.session.prompt;
+  let parentNotifies = 0;
+  h.client.session.prompt = (args) => {
+    const text = args.body?.parts?.[0]?.text || "";
+    if (text.includes("[dynamic-task-notify]")) {
+      parentNotifies++;
+      if (parentNotifies === 1) return Promise.reject(new Error("parent busy"));
+    }
+    return origPrompt(args);
+  };
+  return h;
+}
+
 // --- Tests -----------------------------------------------------------------
 
 describe("dynamic_task validation", () => {
@@ -378,6 +404,19 @@ describe("task_notify: the child-to-parent channel", () => {
     const again = await ctx.harness.tool.task_notify.execute({ message: "still working" }, { sessionID: id });
     assert.ok(again.includes("duplicate suppressed") || again.includes("not sent"), `got: ${again}`);
     assert.strictEqual(ctx.harness.client._state.notifications.length, 1);
+  });
+
+  it("a suppressed duplicate shows as Suppressed in task_result, never FAILED", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    await ctx.harness.tool.task_notify.execute({ message: "status: compiling" }, { sessionID: id });
+    await ctx.harness.tool.task_notify.execute({ message: "status: compiling" }, { sessionID: id });
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
+    assert.ok(
+      summary.includes("Suppressed (duplicate — already delivered)"),
+      `the duplicate must read as suppression. got: ${summary}`,
+    );
+    assert.ok(!summary.includes("FAILED"), `suppression is not a delivery failure. got: ${summary}`);
   });
 
   it("refuses untracked callers and settled tasks", async () => {
@@ -953,25 +992,57 @@ describe("outcome correctness: failed turns never report success", () => {
     assert.ok(status.includes("error"), `state settles error. got: ${status}`);
   });
 
-  it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
-    let msgCalls = 0;
-    const h = await setupTools({
-      messages: () => {
-        msgCalls++;
-        const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
-        return [{ info: { role: "assistant" }, parts: [{ type: "text", text }] }];
-      },
-    });
-    const origPrompt = h.client.session.prompt;
-    let parentCalls = 0;
+  it("a retryable prompt failure leaves the task active — its event settles it", async () => {
+    // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
+    // well be running. Settling error here would deafen the ledger to the
+    // child's genuine terminal event, so the task stays active and waits.
+    const h = await setupTools();
+    const realPrompt = h.client.session.prompt;
+    let firstChildPrompt = true;
     h.client.session.prompt = (args) => {
       const text = args.body?.parts?.[0]?.text || "";
-      if (text.includes("[dynamic-task-notify]")) {
-        parentCalls++;
-        if (parentCalls === 1) return Promise.reject(new Error("parent busy"));
+      if (firstChildPrompt && !text.includes("[dynamic-task-notify]")) {
+        firstChildPrompt = false;
+        return Promise.reject(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
       }
-      return origPrompt(args);
+      return realPrompt(args);
     };
+    const { id } = await spawn(h, { description: "blip child" });
+    await sleep(50); // the fire-and-forget catch has run
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("active"), `retryable failure must not settle. got: ${status}`);
+    assert.strictEqual(h.client._state.notifications.length, 0, "no error notification for a retryable blip");
+
+    await settle(h, id);
+    await sleep(30);
+    assert.strictEqual(h.client._state.notifications.length, 1, "the genuine terminal event settles it");
+    assert.ok(h.client._state.notifications[0].message.includes("completed successfully"));
+    await h.tool.task_interrupt.execute({ session_id: id });
+  });
+
+  it("a revived turn is never suppressed by its predecessor's late retry", async () => {
+    // The poisoning window: turn 1's delivery fails attempt 1, the operator
+    // continues before the 250ms retry resolves, and the retry then succeeds —
+    // an in-flight commit from the old generation must not reserve the key
+    // that turn 2's settlement needs.
+    const h = await setupTwoTurnHarness();
+    const { id } = await spawn(h, { prompt: "turn one" });
+    await settle(h, id); // attempt 1 fails; the retry is armed at the fixed backoff
+    const cont = await h.tool.task_continue.execute({ session_id: id, prompt: "turn two" });
+    assert.ok(cont.includes("Follow-up sent"), `got: ${cont}`);
+    await sleep(350); // the stale retry lands and commits while the revival is live
+    await settle(h, id);
+    await sleep(30);
+    const notes = h.client._state.notifications;
+    assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
+    assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `order preserved. first: ${notes[0]?.message}`);
+    assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `revival never suppressed. second: ${notes[1]?.message}`);
+  });
+
+  it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
+    // Same harness, opposite timing: the revival lands BEFORE the retry
+    // resolves, so serialization — not generations — carries the order.
+    const h = await setupTwoTurnHarness();
     const { id } = await spawn(h, { prompt: "turn one" });
     await settle(h, id);
     const cont = await h.tool.task_continue.execute({ session_id: id, prompt: "turn two" });

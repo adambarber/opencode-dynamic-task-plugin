@@ -39,3 +39,5 @@ Follow-up 2026-09-12 (entry-contract: the host invokes every entry export as a c
 ## Known fork (found during foundation, pinned by tools.integration tests)
 
 Retained-continue on an async-dead session reports timeout; only a synchronously-throwing prompt reaches the spawn-new path. Whether a dead continuation should retry, replan, or refuse is continuation policy — decided here, in the gate, not in the tool handler.
+
+Follow-up 2026-09-14 (adversarial review F-4): the agent-list cache is scoped per client (`WeakMap` keyed on the client object, TTL unchanged). The process-global cache let one plugin instance — or a host probe with a different client — be served another client's agent list. `resetAgentCache` invalidates all clients' entries via an epoch bump; stale-on-total-failure stays per-client (a client's last known list, never another's).

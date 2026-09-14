@@ -19,7 +19,7 @@ npm install && npm run build
 |------|-------------|
 | `dynamic_task` | Spawn a background subagent session; returns immediately |
 | `task_continue` | Send a follow-up prompt to a settled task (revives it for a fresh turn) |
-| `task_notify` | Child-to-parent channel: progress, findings, or a block needing input |
+| `task_notify` | Child-to-parent channel: progress, findings, or a block needing input (requires a child agent with plugin tools, e.g. `general` — read-only agents such as `explore` cannot signal) |
 | `task_result` | Poll a session's latest status and output (live API) |
 | `task_interrupt` | Stop a running child session (abort attempted; state settled first) |
 | `task_list` | List all tracked tasks with lifecycle states |

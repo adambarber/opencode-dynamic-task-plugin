@@ -498,7 +498,7 @@ import {
   formatTaskListSummary,
   formatTaskStatusDetail,
 } from "../../dist/shared/task-formatting.js";
-import { formatParentNotification, truncateText } from "../../dist/shared/notify.js";
+import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
 
 describe("buildBackgroundPrompt", () => {
   it("adds explicit background instructions before user prompt", () => {
@@ -683,12 +683,53 @@ describe("task ledger persistence", () => {
     }
   });
 
+  it("save writes atomically via rename — no .tmp residue", () => {
+    const file = tmpLedgerPath();
+    try {
+      saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+      assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
+      assert.strictEqual(loadTaskLedger(file).size, 1, "renamed content intact");
+    } finally {
+      if (existsSync(file)) unlinkSync(file);
+      if (existsSync(`${file}.tmp`)) unlinkSync(`${file}.tmp`);
+    }
+  });
+
+  it("rejects entries disagreeing with their map key", () => {
+    const file = tmpLedgerPath();
+    writeFileSync(file, JSON.stringify({
+      version: 2,
+      tasks: { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } },
+    }));
+    try {
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.has("ses_a"), false, "a divergent entry is corrupt, not relabeled");
+    } finally {
+      unlinkSync(file);
+    }
+  });
+
+  it("rejects non-finite timestamps and mixed lineage wholesale", () => {
+    const file = tmpLedgerPath();
+    const nanEntry = { ...retainedEntry(), startedAt: NaN };
+    const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
+    saveTaskLedger(new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), file);
+    try {
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.has("ses_nan"), false, "NaN does not survive the durability boundary");
+      assert.strictEqual(loaded.has("ses_mix"), false, "mixed lineage is rejected, not silently shortened");
+    } finally {
+      if (existsSync(file)) unlinkSync(file);
+      if (existsSync(`${file}.tmp`)) unlinkSync(`${file}.tmp`);
+    }
+  });
+
   it("drops entries with unknown states or invalid ids", () => {
     const file = tmpLedgerPath();
     writeFileSync(file, JSON.stringify({
       version: 2,
       tasks: {
-        ses_ok: retainedEntry(),
+        ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
         ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
         ses_noid: { ...retainedEntry(), childSessionId: 42 },
       },
@@ -790,6 +831,19 @@ describe("normalizeDynamicTaskConfig", () => {
     } finally {
       if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
       else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+    }
+  });
+
+  it("a comma-only forbidden-agents env does not clear the blocklist", () => {
+    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+    for (const junk of [",", " , ", ",,"]) {
+      process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = junk;
+      try {
+        assert.deepStrictEqual(normalizeDynamicTaskConfig({}).blockedAgents, ["general"], `env=${JSON.stringify(junk)}`);
+      } finally {
+        if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
+        else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+      }
     }
   });
 });
@@ -990,6 +1044,7 @@ import {
   noteLateOutcome,
   restoreRetained,
   reviveRetainedTask,
+  withdrawInterruptClaim,
   annotateNotice,
   recordAbortError,
   oldestRetainedId,
@@ -1134,6 +1189,21 @@ describe("task-state: revival and annotations", () => {
     seedSesActive(store, config);
     transitionState(store, "ses_active", state, config);
   }
+
+  it("withdrawInterruptClaim returns a fresh speculative claim to active", () => {
+    const store = createTaskStore();
+    assert.strictEqual(withdrawInterruptClaim(store, "ses_nope"), false);
+    seedSesActive(store, config);
+    transitionState(store, "ses_active", "completed", config);
+    assert.strictEqual(withdrawInterruptClaim(store, "ses_active"), false, "only interrupted claims withdraw");
+    const store2 = createTaskStore();
+    seedSesActive(store2, config);
+    transitionState(store2, "ses_active", "interrupted", config);
+    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active"), true);
+    assert.strictEqual(store2.activeTasks.get("ses_active")?.state, "active");
+    assert.strictEqual(store2.retainedTasks.has("ses_active"), false);
+    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active"), false, "second withdrawal refuses");
+  });
 
   it("reviveRetainedTask moves a settled task back to active", () => {
     const store = createTaskStore();
@@ -1562,6 +1632,13 @@ describe("question handling: event helpers", () => {
 });
 
 describe("task formatting: truncate + debug shape", () => {
+  it("noticeDedupKey separates distinct long messages sharing a prefix", () => {
+    const first = noticeDedupKey("a".repeat(200) + "1");
+    const second = noticeDedupKey("a".repeat(200) + "2");
+    assert.notStrictEqual(first, second, "full content keys the dedup, not a prefix");
+    assert.strictEqual(noticeDedupKey("same"), noticeDedupKey("same"), "deterministic");
+  });
+
   it("truncateText caps long output", () => {
     const out = truncateText("x".repeat(1300));
     assert.strictEqual(out.length, 1203);

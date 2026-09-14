@@ -79,11 +79,16 @@ interface NotifyParentOptions {
 
 interface GateLedger {
   record(childSessionId: string, dedupKey: string): boolean;
-  duplicate(childSessionId: string, dedupKey: string): boolean;
   // Revival resets settle-dedup: a continued task is a fresh settlement
   // subject, so its next completed/error must be deliverable even though the
   // prior turn's kind was recorded. Delivery history stays in the ledger.
   forgetChild(childSessionId: string): void;
+  // In-flight claim: closes the check-then-act race between concurrent
+  // same-key writers. A claim is synchronous; the winner dials, losers are
+  // suppressed before touching transport. Released on delivery failure so a
+  // failed settlement stays redeliverable — only success reserves the key.
+  claim(childSessionId: string, dedupKey: string): boolean;
+  release(childSessionId: string, dedupKey: string): void;
   // Test-only isolation: the gate is process-global by design.
   clear(): void;
 }
@@ -96,8 +101,19 @@ interface GateLedger {
 // about exactly-once without growing without limit.
 const GATE_MAX_CHILDREN = 1000;
 
+function duplicateOf(map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): boolean {
+  return map.get(childSessionId)?.has(dedupKey) ?? false;
+}
+
 function createGateLedger(): GateLedger {
   const delivered = new Map<string, Set<string>>();
+  const inFlight = new Map<string, Set<string>>();
+  const drop = (map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): void => {
+    const keys = map.get(childSessionId);
+    if (!keys) return;
+    keys.delete(dedupKey);
+    if (keys.size === 0) map.delete(childSessionId);
+  };
   return {
     record(childSessionId, dedupKey) {
       const kinds = delivered.get(childSessionId) ?? new Set();
@@ -110,14 +126,23 @@ function createGateLedger(): GateLedger {
       }
       return true;
     },
-    duplicate(childSessionId, dedupKey) {
-      return delivered.get(childSessionId)?.has(dedupKey) ?? false;
+    claim(childSessionId, dedupKey) {
+      if (duplicateOf(delivered, childSessionId, dedupKey) || duplicateOf(inFlight, childSessionId, dedupKey)) return false;
+      const pending = inFlight.get(childSessionId) ?? new Set();
+      pending.add(dedupKey);
+      inFlight.set(childSessionId, pending);
+      return true;
+    },
+    release(childSessionId, dedupKey) {
+      drop(inFlight, childSessionId, dedupKey);
     },
     forgetChild(childSessionId) {
       delivered.delete(childSessionId);
+      inFlight.delete(childSessionId);
     },
     clear() {
       delivered.clear();
+      inFlight.clear();
     },
   };
 }
@@ -138,7 +163,7 @@ export async function notifyParent(
   const dedupKey = opts.dedupKey ?? opts.kind;
   const emit = (delivered: boolean, attempts: number) =>
     record({ at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message, attempts, delivered });
-  if (gateLedger.duplicate(opts.childSessionId, dedupKey)) {
+  if (!gateLedger.claim(opts.childSessionId, dedupKey)) {
     emit(false, 0);
     return Promise.resolve(false);
   }
@@ -148,6 +173,7 @@ export async function notifyParent(
       body: { parts: [{ type: "text", text: message }] },
     });
   const commit = (delivered: boolean, attempts: number) => {
+    gateLedger.release(opts.childSessionId, dedupKey);
     if (delivered) gateLedger.record(opts.childSessionId, dedupKey);
     emit(delivered, attempts);
     return delivered;
@@ -163,6 +189,18 @@ export async function notifyParent(
         return commit(false, 2);
       }
     });
+}
+
+// Notice dedup keys hash the FULL message: a fixed prefix slice collides
+// distinct long notices sharing a prefix. FNV-1a, no dependency; length is
+// folded in so equal hashes with different lengths still separate.
+export function noticeDedupKey(message: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < message.length; i++) {
+    hash ^= message.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `notice:${(hash >>> 0).toString(36)}:${message.length}`;
 }
 
 // Wire format the parent actually sees. Notification text is owned by the

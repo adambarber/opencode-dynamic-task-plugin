@@ -76,6 +76,7 @@ function createToolsMock(hooks = {}) {
         return { ok: true };
       },
       reject: async ({ path, body }) => {
+        if (hooks.questionRejectThrows) throw new Error("reject failed");
         state.questionCalls.push({ method: "reject", id: path.id, ...body });
         return { ok: true };
       },
@@ -360,6 +361,16 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.strictEqual(ctx.harness.client._state.notifications.length, 2, "settlement still reports");
   });
 
+  it("distinct long notices sharing a prefix both deliver", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    const first = await ctx.harness.tool.task_notify.execute({ message: "a".repeat(200) + "1" }, { sessionID: id });
+    const second = await ctx.harness.tool.task_notify.execute({ message: "a".repeat(200) + "2" }, { sessionID: id });
+    assert.ok(first.includes("Message sent to parent"), `got: ${first}`);
+    assert.ok(second.includes("Message sent to parent"), `prefix collision must not suppress. got: ${second}`);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 2);
+  });
+
   it("suppresses an identical repeated notice", async () => {
     const { id } = await spawn(ctx.harness);
     ctx.spawned.push(id);
@@ -414,6 +425,16 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(summary.includes('"error"') || summary.includes("error"), `got: ${summary}`);
   });
 
+  it("interrupt on a settled task reports the settled state, not a fresh interrupt", async () => {
+    const { id } = await spawn(ctx.harness);
+    await settle(ctx.harness, id);
+    const done = await ctx.harness.tool.task_interrupt.execute({ session_id: id });
+    assert.ok(done.includes("already settled as completed"), `truthful report. got: ${done}`);
+    assert.ok(!/^Session .* interrupted\.$/.test(done), `must not claim a fresh interrupt. got: ${done}`);
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("completed"), `history untouched. got: ${status}`);
+  });
+
   it("task_interrupt settles as interrupted, preserves history, and reaches the API", async () => {
     const { id } = await spawn(ctx.harness);
     const done = await ctx.harness.tool.task_interrupt.execute({ session_id: id });
@@ -434,18 +455,89 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(out.includes("not found"), `got: ${out}`);
   });
 
-  it("a failed abort still settles the task and records the gap", async () => {
+  it("a failed abort leaves a live task active — the natural event still settles it", async () => {
     const h = await setupTools({ abortThrowsOnce: true });
     const { id } = await spawn(h);
     const out = await h.tool.task_interrupt.execute({ session_id: id });
     assert.ok(out.includes("abort failed"), `reports the abort gap. got: ${out}`);
-    assert.ok(out.includes("interrupted"), `the intent stands. got: ${out}`);
+    assert.ok(out.includes("active"), `admits the child may be live. got: ${out}`);
     const status = await h.tool.task_status.execute({ session_id: id });
-    assert.ok(status.includes("interrupted"), `settled regardless. got: ${status}`);
+    assert.ok(status.includes("active"), `speculative claim withdrawn. got: ${status}`);
+    // The child's genuine terminal event still settles and notifies.
+    await settle(h, id);
+    assert.strictEqual(h.client._state.notifications.length, 1, "natural completion delivers");
+    assert.ok(h.client._state.notifications[0].message.includes("completed successfully"));
+  });
+
+  it("a failed abort on a settled task records the gap without disturbing history", async () => {
+    const h = await setupTools();
+    h.client.session.abort = async () => { throw new Error("ECONNREFUSED"); };
+    const { id } = await spawn(h);
+    await settle(h, id);
+    const out = await h.tool.task_interrupt.execute({ session_id: id });
+    assert.ok(out.includes("already settled as completed"), `got: ${out}`);
+    assert.ok(out.includes("ECONNREFUSED"), `gap recorded in the report. got: ${out}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("completed"), `got: ${status}`);
   });
 });
 
 describe("settlement: the notification layer owns outcomes", () => {
+  it("parentless settlements leave a visible non-delivery record", async () => {
+    const h = await setupTools();
+    const out = await h.tool.dynamic_task.execute(
+      { description: "orphan task", subagent_type: "explore", prompt: "hi" },
+      {},
+    );
+    assert.ok(out.includes("notification: disabled"), `got: ${out}`);
+    const id = /Session: (\S+)/.exec(out)?.[1];
+    await settle(h, id);
+    const summary = await h.tool.task_result.execute({ session_id: id });
+    assert.ok(summary.includes("FAILED") || summary.includes("delivered: false") || summary.includes("no parent"), `deafness must be distinguishable from silence. got: ${summary}`);
+    await h.tool.task_interrupt.execute({ session_id: id });
+  });
+
+  it("post-create registration failure notifies instead of stranding error", async () => {
+    // Same-tick race through the advisory check: both spawns see an empty
+    // slot, both create, the loser hits the authoritative register gate.
+    const h = await setupTools({}, { maxConcurrent: 1 });
+    const args = (description) => ({ description, subagent_type: "explore", prompt: "hi" });
+    const [r1, r2] = await Promise.all([
+      h.tool.dynamic_task.execute(args("racer one"), { sessionID: "p1" }),
+      h.tool.dynamic_task.execute(args("racer two"), { sessionID: "p1" }),
+    ]);
+    assert.strictEqual([r1, r2].filter((r) => r.includes("in background")).length, 1, "one winner");
+    assert.strictEqual([r1, r2].filter((r) => r.includes("ERROR")).length, 1, "one loser");
+    const winner = /Session: (\S+)/.exec([r1, r2].find((r) => r.includes("in background")))?.[1];
+    const loser = [...h.client._state.sessions].find((id) => id !== winner);
+    assert.ok(loser, "loser session was created");
+    assert.ok(h.client._state.aborted.includes(loser), `loser aborted, no orphan. aborted=${h.client._state.aborted}`);
+    await sleep(50); // detached error-settlement delivery
+    assert.strictEqual(h.client._state.notifications.length, 1, "the error settlement notifies");
+    const note = h.client._state.notifications[0].message;
+    assert.ok(note.includes("ended with an error"), `error kind. got: ${note}`);
+    await h.tool.task_interrupt.execute({ session_id: winner });
+  });
+
+  it("settlement does not hold the event pump on slow transport", async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const h = await setupTools();
+    const origPrompt = h.client.session.prompt;
+    h.client.session.prompt = (args) => {
+      const text = args.body?.parts?.[0]?.text || "";
+      if (text.includes("[dynamic-task-notify]")) return gate;
+      return origPrompt(args);
+    };
+    const { id } = await spawn(h);
+    const settled = settle(h, id);
+    const winner = await Promise.race([settled.then(() => "event"), sleep(500).then(() => "timeout")]);
+    assert.strictEqual(winner, "event", "event handler must not wait for delivery transport");
+    release();
+    await settled;
+    await h.tool.task_interrupt.execute({ session_id: id });
+  });
+
   it("background prompt failure settles as error and notifies once", async () => {
     const hooks = { promptFailIds: new Set(["ses_tools_1"]) };
     const failing = await setupTools(hooks);
@@ -544,6 +636,52 @@ describe("question gate: child questions settle", () => {
     assert.ok(calls[0].reason.includes("settled"), `got: ${calls[0].reason}`);
   });
 
+  it("a failed retained rejection is logged as failed, never as rejected", async () => {
+    const dir = tmpProjectDir();
+    const prevDebug = process.env.DYNAMIC_TASK_DEBUG;
+    process.env.DYNAMIC_TASK_DEBUG = "1";
+    try {
+      const h = await setupTools({ questionRejectThrows: true }, {}, dir);
+      const { id } = await spawn(h);
+      await settle(h, id);
+      await h.fireEvent({
+        type: "question.created",
+        properties: { id: "q9", sessionID: id, answers: [{ text: "yes" }] },
+      });
+      const logFile = join(dir, ".dynamic-task-logs", `parent-p1__child-${id}.log`);
+      assert.ok(existsSync(logFile), "retained question path must log");
+      const log = readFileSync(logFile, "utf8");
+      assert.ok(log.includes("question-retained-reject-failed"), `failure logged. got: ${log}`);
+      assert.ok(!log.includes('"eventName":"question-retained-rejected"'), `must not claim rejection. got: ${log}`);
+      await h.tool.task_interrupt.execute({ session_id: id });
+    } finally {
+      if (prevDebug !== undefined) process.env.DYNAMIC_TASK_DEBUG = prevDebug;
+      else delete process.env.DYNAMIC_TASK_DEBUG;
+    }
+  });
+
+  it("request_id linkage is forgotten on reply — no stale attribution", async () => {
+    const h = await setupTools();
+    const one = await spawn(h, { description: "first owner" });
+    await h.fireEvent({
+      type: "question.created",
+      properties: { request_id: "q-stale", sessionID: one.id, answers: [{ text: "yes" }] },
+    });
+    assert.strictEqual(h.client._state.questionCalls.length, 1, "first question answered");
+    // Reply arrives under request_id only (no id field).
+    await h.fireEvent({ type: "question.replied", properties: { request_id: "q-stale" } });
+    await h.tool.task_interrupt.execute({ session_id: one.id });
+    const two = await spawn(h, { description: "second owner" });
+    await h.fireEvent({
+      type: "question.created",
+      properties: { request_id: "q-stale", sessionID: two.id, answers: [{ text: "yes" }] },
+    });
+    const last = h.client._state.questionCalls[h.client._state.questionCalls.length - 1];
+    assert.strictEqual(last.method, "reply", `stale linkage must not divert to the settled owner. got: ${JSON.stringify(last)}`);
+    assert.strictEqual(last.id, "q-stale");
+    await h.tool.task_interrupt.execute({ session_id: two.id });
+  });
+
   it("reply failure falls back to rejection", async () => {
     const failing = await setupTools({ questionReplyThrows: true });
     const { id } = await spawn(failing);
@@ -564,6 +702,7 @@ describe("notification delivery records", () => {
     const { id } = await spawn(h, { description: "doomed parent task" });
     await settle(h, id);
     assert.strictEqual(h.client._state.notifications.length, 0, "nothing delivered");
+    await sleep(600); // detached delivery runs the gate's 250ms retry cycle
     const summary = await h.tool.task_result.execute({ session_id: id });
     assert.ok(summary.includes("FAILED"), `delivery failure surfaced. got: ${summary}`);
   });

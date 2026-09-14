@@ -92,6 +92,27 @@ describe("notify gate: notifyParent", () => {
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
   });
 
+  it("concurrent same-key writes deliver once — in-flight claims close the race", async () => {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const calls = [];
+    const client = {
+      session: {
+        prompt: async (args) => {
+          calls.push(args);
+          await gate;
+          return { ok: true };
+        },
+      },
+    };
+    const opts = { childSessionId: "ses_race1", kind: "completed", sleep: NO_SLEEP };
+    const first = notifyParent(client, "parent_1", "hello", opts);
+    const second = notifyParent(client, "parent_1", "hello", opts);
+    assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
+    release();
+    assert.deepStrictEqual((await Promise.all([first, second])).sort(), [false, true]);
+  });
+
   it("settles deliver exactly once per kind", async () => {
     const { client, calls } = promptClient([]);
     const first = await notifyParent(client, "parent_1", "hello", {
@@ -154,5 +175,14 @@ describe("notify gate: notifyParent", () => {
 
   it("unknown children have no record", () => {
     assert.strictEqual(getLatestNotification("ses_missing"), null);
+  });
+
+  it("recent keys still dedupe after mass delivery (bounded window documented)", async () => {
+    const { client } = promptClient([]);
+    for (let i = 0; i < 1005; i++) {
+      await notifyParent(client, "p", `m${i}`, { childSessionId: `ses_ev${i}`, kind: "completed", sleep: NO_SLEEP });
+    }
+    const again = await notifyParent(client, "p", "again", { childSessionId: "ses_ev1004", kind: "completed", sleep: NO_SLEEP });
+    assert.strictEqual(again, false, "in-window keys still dedupe; eviction only touches the oldest");
   });
 });

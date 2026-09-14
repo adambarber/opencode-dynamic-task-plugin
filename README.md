@@ -44,7 +44,7 @@ task_notify(message="blocked: need DB credentials to continue")  // from inside 
 ## How Tasks Settle
 
 The plugin arms no timers and never waits. Every task runs in the background
-and reports its outcome exactly once through a `[dynamic-task-notify]` message
+and reports each settled turn's outcome exactly once through a `[dynamic-task-notify]` message
 in the parent — completion, error, or a child's `task_notify` notice. There is
 no timeout to configure: a slow child is indistinguishable from a working one
 by design, and the only bound on a child is operator intent (`task_interrupt`).

@@ -101,9 +101,9 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
 // is the notification gate's fixed retry backoff (notify.ts). Everything else
 // is unrepresentable by invariance, and the deleted vocabulary may not return.
 describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", () => {
-  it("no bare setTimeout outside the notification retry", () => {
+  it("no bare wall-clock waits outside the notification retry", () => {
     // Negative lookbehind exempts timerProvider.* and globalThis.* call shapes.
-    const pattern = /(?<!timerProvider\.)(?<!globalThis\.)\bsetTimeout\s*\(/;
+    const pattern = /(?<!timerProvider\.)(?<!globalThis\.)\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/;
     const hits = listProdFiles()
       .filter((f) => !f.endsWith("notify.ts"))
       .flatMap((f) => scanLines(f, pattern));
@@ -113,6 +113,22 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
       formatViolations(
         "docs/tasks/09-non-blocking-settlement.md",
         "A wall-clock wait returned outside the notification gate.",
+        hits,
+      ),
+    );
+  });
+
+  it("session create/abort funnel through the entry — no side doors", () => {
+    const pattern = /client\.session\.(create|abort)\s*\(/;
+    const hits = listProdFiles()
+      .filter((f) => !f.endsWith("index.ts"))
+      .flatMap((f) => scanLines(f, pattern));
+    assert.strictEqual(
+      hits.length,
+      0,
+      formatViolations(
+        "docs/tasks/09-non-blocking-settlement.md",
+        "Child sessions must be created/aborted only via the entry's spawn/interrupt paths.",
         hits,
       ),
     );

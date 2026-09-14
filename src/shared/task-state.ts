@@ -70,6 +70,21 @@ const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   "interrupted": [],
 };
 
+// Withdraw a speculative interrupt claim after an abort transport failure
+// (F2): the abort may never have reached the server, so the child may still
+// be live — it returns to active and stays settable by its genuine terminal
+// event. A 404 means dead and never withdraws; operator revival of
+// interrupted tasks stays forbidden (reviveRetainedTask still throws) — this
+// edge is internal to task_interrupt's failure path, not a policy change.
+export function withdrawInterruptClaim(store: TaskStore, childSessionId: string): boolean {
+  const retained = store.retainedTasks.get(childSessionId);
+  if (!retained || retained.state !== "interrupted") return false;
+  const { retainedAt: _retainedAt, abortError: _abortError, ...active } = retained;
+  store.retainedTasks.delete(childSessionId);
+  store.activeTasks.set(childSessionId, { ...active, state: "active" });
+  return true;
+}
+
 export function createTaskStore(): TaskStore {
   return {
     activeTasks: new Map(),

@@ -91,7 +91,11 @@ export function normalizeDynamicTaskConfig(
     retainedTaskMaxEntries: () => parsePositiveInt(envValue("DYNAMIC_TASK_RETAINED_MAX_ENTRIES")),
     blockedAgents: () => {
       const raw = envValue("DYNAMIC_TASK_FORBIDDEN_AGENTS");
-      return raw ? trimStringList(raw) : undefined;
+      if (!raw) return undefined;
+      // A separator-only value (",", " , ") is absence, not an explicit
+      // empty blocklist — only tuple/file arrays can deliberately clear it.
+      const list = trimStringList(raw);
+      return list.length > 0 ? list : undefined;
     },
     allowSameAgentRecursion: () => parseBoolean(envValue("DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION")),
   };

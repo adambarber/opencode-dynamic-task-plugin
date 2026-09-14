@@ -8,7 +8,7 @@
 // host-provided project `directory` — never process CWD, which for tests and
 // multi-project hosts is somebody else's tree.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { RetainedTaskState } from "./task-state.js";
@@ -137,9 +137,10 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
     && typeof agentName === "string"
     && typeof description === "string"
     && Array.isArray(lineage)
+    && lineage.every((s): s is string => typeof s === "string")
     && (state === "completed" || state === "error" || state === "interrupted")
-    && typeof startedAt === "number"
-    && typeof retainedAt === "number"
+    && typeof startedAt === "number" && Number.isFinite(startedAt)
+    && typeof retainedAt === "number" && Number.isFinite(retainedAt)
   );
 }
 
@@ -168,6 +169,9 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
     }
     for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
       if (!isValidLedgerEntry(entry) || !key.startsWith("ses_")) continue;
+      // The map key is canonical identity: an entry disagreeing with its key
+      // is corrupt, not merely mislabeled.
+      if (entry.childSessionId !== key) continue;
       const typed: RetainedTaskState = {
         childSessionId: entry.childSessionId,
         parentSessionId: entry.parentSessionId,
@@ -195,7 +199,8 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the
-// retry decision). Atomic: tmp + rename.
+// retry decision). Atomic: write tmp, then rename over the target — a crash
+// between the two leaves the previous complete ledger, never a truncation.
 export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: string): string {
   if (!filePath) {
     throw new Error("Task ledger path is required");
@@ -205,8 +210,9 @@ export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: st
     mkdirSync(dir, { recursive: true });
   }
   const entries = Object.fromEntries(retainedTasks);
-  writeFileSync(filePath + ".tmp", JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: entries }, null, 2));
-  writeFileSync(filePath, readFileSync(filePath + ".tmp", "utf8"));
+  const tmpPath = `${filePath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: entries }, null, 2));
+  renameSync(tmpPath, filePath);
   return filePath;
 }
 

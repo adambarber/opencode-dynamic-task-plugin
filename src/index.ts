@@ -32,6 +32,7 @@ import {
   replyToQuestion,
   rejectQuestion,
   resolveQuestionSession,
+  getRequestIdFromQuestion,
   decideQuestion,
   rememberQuestionSession,
   forgetQuestionSession,
@@ -64,6 +65,8 @@ import {
   resolveNotifyKind,
   safeLog,
   formatParentNotification,
+  noticeDedupKey,
+  recordNotification,
   getLatestNotification,
   gateLedger,
   type NotifyKind,
@@ -83,6 +86,7 @@ import {
   noteLateOutcome,
   annotateNotice,
   reviveRetainedTask,
+  withdrawInterruptClaim,
   recordAbortError,
   restoreRetained,
   type TaskStore,
@@ -152,10 +156,23 @@ function deliverParent(
   description: string,
   kind: NotifyKind,
   text: string,
-): void {
-  if (!parentSessionId || parentSessionId === "unknown") return; // nowhere to deliver
+): Promise<boolean> | boolean {
   const message = formatParentNotification({ childSessionId, description }, kind, text);
-  void notifyParent(client, parentSessionId, message, { childSessionId, kind });
+  if (!parentSessionId || parentSessionId === "unknown") {
+    // Nowhere to deliver — but the non-delivery is recorded, so deafness is
+    // distinguishable from "no event yet" in task_result.
+    recordNotification({
+      at: Date.now(),
+      parentSessionId: parentSessionId || "unknown",
+      childSessionId,
+      kind,
+      message,
+      attempts: 0,
+      delivered: false,
+    });
+    return false;
+  }
+  return notifyParent(client, parentSessionId, message, { childSessionId, kind });
 }
 
 interface ChildRef {
@@ -232,9 +249,15 @@ async function handleChildLifecycleEvent(
       } catch { /* already escalated */ }
     }
     const latestText = outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
-    const message = formatParentNotification({ childSessionId, description: childDescription }, kind, latestText);
-    const delivered = await notifyParent(client, parentSessionId, message, { childSessionId, kind });
-    debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered });
+    // Detached: the synchronous claim above is the settlement guarantee;
+    // delivery transport must never hold the event pump head-of-line.
+    // Observability survives via the ledger record, logged on completion.
+    // deliverParent is the single funnel for parent-directed writes: it
+    // records parentless settlements instead of dialing a phantom session.
+    const delivery = deliverParent(client, parentSessionId, childSessionId, childDescription, kind, latestText);
+    if (typeof delivery !== "boolean") {
+      void delivery.then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
+    }
     return;
   }
 
@@ -253,8 +276,7 @@ async function handleChildLifecycleEvent(
     if (!current || current.state !== "completed") return; // lost the escalation race
     noteLateOutcome(store, childSessionId, "error");
     const errorDetail = outcome.errorDetail || "(session vanished before output was readable)";
-    const message = formatParentNotification({ childSessionId, description: retained.description }, "error", errorDetail);
-    void notifyParent(client, retained.parentSessionId, message, { childSessionId, kind: "error" });
+    deliverParent(client, retained.parentSessionId, childSessionId, retained.description, "error", errorDetail);
     debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error" });
   }
 }
@@ -336,7 +358,9 @@ export default async function dynamicTaskPlugin(
       // touched — the gate fails closed on ambiguity. ---
       try {
         if (eventType === "question.replied" || eventType === "question.rejected") {
-          const questionId = eventString(event, ["properties", "id"]);
+          // Forget under every id spelling the created path accepts — a reply
+          // carrying only request_id must release linkage keyed by request_id.
+          const questionId = getRequestIdFromQuestion(event);
           if (questionId) {
             forgetQuestionSession(questionId);
           }
@@ -404,9 +428,10 @@ export default async function dynamicTaskPlugin(
                   questionId,
                   reason: result.reason,
                 });
+              } else {
+                debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
               }
             }
-            debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
           } else {
             debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventType });
           }
@@ -487,6 +512,7 @@ export default async function dynamicTaskPlugin(
           }
 
           let createdSessionId: string | null = null;
+          let parentSessionId: string | null = null;
           try {
             // 1.18 contract: sessions carry title/parentID only — agent and
             // model ride on each prompt via PromptRouting.
@@ -495,7 +521,7 @@ export default async function dynamicTaskPlugin(
             };
             const modelOverride = parseModelOverride(args.model);
 
-            const parentSessionId = resolveParentSessionId(ctx);
+            parentSessionId = resolveParentSessionId(ctx);
             if (parentSessionId) {
               sessionBody.parentID = parentSessionId;
             }
@@ -556,6 +582,17 @@ export default async function dynamicTaskPlugin(
               } else {
                 try { await client.session.abort({ path: { id: createdSessionId } }); } catch { /* best-effort */ }
               }
+              // The error settlement notifies like every other terminal
+              // settlement — a failed spawn the parent never hears about
+              // is a silent lie, registered or not.
+              deliverParent(
+                client,
+                parentSessionId || "unknown",
+                createdSessionId,
+                args.description || "background task",
+                "error",
+                message,
+              );
             }
             if (message.includes("not found")) {
               return `ERROR: Agent "${agent.name}" not found.`;
@@ -652,7 +689,7 @@ export default async function dynamicTaskPlugin(
           const delivered = await notifyParent(client, task.parentSessionId, parentMessage, {
             childSessionId: task.childSessionId,
             kind: "notice",
-            dedupKey: `notice:${message.slice(0, 200)}`,
+            dedupKey: noticeDedupKey(message),
           });
           return delivered
             ? "Message sent to parent."
@@ -745,8 +782,9 @@ export default async function dynamicTaskPlugin(
           // means the idle/error events our own abort provokes can never be
           // misclaimed as a fresh completion by the lifecycle handler.
           const active = store.activeTasks.get(sessionId);
+          let claimed = false;
           if (active) {
-            try { transitionState(store, sessionId, "interrupted"); } catch { /* settled concurrently */ }
+            try { transitionState(store, sessionId, "interrupted"); claimed = true; } catch { /* settled concurrently */ }
           }
 
           let abortMessage: string | undefined;
@@ -759,7 +797,8 @@ export default async function dynamicTaskPlugin(
             abortMessage = serverGone ? undefined : message;
           }
 
-          if (!active && !store.retainedTasks.has(sessionId)) {
+          const retained = store.retainedTasks.get(sessionId);
+          if (!claimed && !retained) {
             // Untracked: transient abort failures are simply the caller's
             // transport error; nothing of ours is at stake.
             if (abortMessage) return `ERROR: ${abortMessage}`;
@@ -768,13 +807,23 @@ export default async function dynamicTaskPlugin(
           }
 
           if (abortMessage) {
-            // The claim stands (interrupt was the intent); record the gap so
-            // the ledger admits the child may still be live.
-            recordAbortError(store, sessionId, abortMessage);
-            return `ERROR: abort failed (${abortMessage}) — task is marked interrupted; retry task_interrupt to abort again.`;
+            // Transport failure (not a 404): the abort may never have reached
+            // the server, so a claimed live child is withdrawn back to active
+            // — its genuine terminal event still settles it. A 404 means dead
+            // and never withdraws. Settled history is recorded, not disturbed.
+            if (claimed && store.retainedTasks.get(sessionId)?.state === "interrupted") {
+              withdrawInterruptClaim(store, sessionId);
+              return `ERROR: abort failed (${abortMessage}) — task left active; its lifecycle events will still settle it. Retry task_interrupt to abort again.`;
+            }
+            if (retained) recordAbortError(store, sessionId, abortMessage);
+            const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
+            return `ERROR: abort failed (${abortMessage}) — task already settled as ${state}; history preserved.`;
           }
           if (serverGone) {
             return `ERROR: Session "${sessionId}" not found — history preserved.`;
+          }
+          if (!claimed && retained) {
+            return `Session ${sessionId} already settled as ${retained.state}; abort sent to the server, history preserved.`;
           }
           return `Session ${sessionId} interrupted.`;
         },

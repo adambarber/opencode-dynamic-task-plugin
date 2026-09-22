@@ -151,3 +151,9 @@ export function rememberQuestionSession(questionId: string, childSessionId: stri
 export function forgetQuestionSession(questionId: string): void {
   questionSessions.delete(questionId);
 }
+
+// Test-only isolation: the map is process-global by design (keys are
+// server-unique), so harnesses reset it between cases like the notify ledger.
+export function resetQuestionSessions(): void {
+  questionSessions.clear();
+}

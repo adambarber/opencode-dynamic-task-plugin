@@ -1194,6 +1194,7 @@ import {
   decideQuestion,
   rememberQuestionSession,
   forgetQuestionSession,
+  resetQuestionSessions,
 } from "../../dist/shared/question-handling.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
@@ -2059,6 +2060,16 @@ describe("question gate: resolveQuestionSession", () => {
     } finally {
       forgetQuestionSession("q1");
     }
+  });
+
+  it("resetQuestionSessions drops remembered linkage", () => {
+    const store = trackedStore();
+    rememberQuestionSession("q-reset-me", "ses_child");
+    resetQuestionSessions();
+    assert.deepStrictEqual(
+      resolveQuestionSession({ type: "question.created", properties: { request_id: "q-reset-me" } }, store),
+      { questionId: "q-reset-me", childSessionId: null }
+    );
   });
 
   it("resolves ownership from session id fields validated against the store", () => {

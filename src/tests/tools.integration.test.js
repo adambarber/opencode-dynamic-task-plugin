@@ -15,11 +15,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../dist/shared/notify.js";
+import { resetQuestionSessions } from "../../dist/shared/question-handling.js";
 
 // The notify gate is process-global by design (exactly-once delivery). Tests
 // reuse deterministic child session ids across harnesses, so isolation resets
 // it between tests — production never does.
-beforeEach(() => clearNotifyLedger());
+beforeEach(() => { clearNotifyLedger(); resetQuestionSessions(); });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -121,12 +122,17 @@ function createToolsMock(hooks = {}) {
           error.status = 404;
           throw error;
         }
-        return { status: "idle" };
+        // Production session.get() carries no status field — the mock must
+        // not invent one (liveness reads fall through to the messages).
+        return {};
       },
       abort: async ({ path }) => {
         if (hooks.abortThrowsOnce && !state.abortThrown) {
           state.abortThrown = true;
           throw new Error("abort failed");
+        }
+        if (!state.sessions.has(path.id)) {
+          throw new Error(`Session "${path.id}" not found.`);
         }
         if (hooks.abortFailIds?.has(path.id)) {
           throw new Error(`Session "${path.id}" not found.`);
@@ -548,6 +554,17 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(summary.includes("Live inference"), `the API read stays advisory. got: ${summary}`);
     assert.ok(summary.includes("task_status"), `points at the store read. got: ${summary}`);
     assert.ok(summary.includes("Tracked: yes"), `got: ${summary}`);
+  });
+
+  it("live inference reads the message stream — production get() carries no status field", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
+    // One default assistant message with no status field reads busy (role
+    // inference needs two) — crucially never the invented "idle" the old
+    // mock returned for a shape production never emits.
+    assert.ok(summary.includes("Session API suggests: busy"), `got: ${summary}`);
+    assert.ok(!summary.includes("suggests: idle"), `no invented status. got: ${summary}`);
   });
 
   it("task_result reports settled state with no advisory block", async () => {

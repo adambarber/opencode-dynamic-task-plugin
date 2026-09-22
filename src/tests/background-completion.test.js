@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resetAgentCache } from "../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../dist/shared/notify.js";
+import { resetQuestionSessions } from "../../dist/shared/question-handling.js";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,7 +54,7 @@ function createMockClient() {
       },
       prompt: async ({ path, body }) => {
         const text = body?.parts?.[0]?.text || "";
-        if (text.includes("[dynamic-task-notify]")) {
+        if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
           notifications.push({ to: path.id, message: text });
         } else {
           childPrompts.push({ to: path.id, message: text });
@@ -69,7 +70,8 @@ function createMockClient() {
           error.status = 404;
           throw error;
         }
-        return { status: "idle" };
+        // Production session.get() carries no status field.
+        return {};
       },
       abort: async () => ({ ok: true }),
     },
@@ -80,6 +82,7 @@ async function setupHarness() {
   const client = createMockClient();
   resetAgentCache();
   clearNotifyLedger();
+  resetQuestionSessions();
   const mod = await import("../../dist/index.js");
   const pluginFn = mod.default || mod;
   const result = await pluginFn({ client, directory: tmpProjectDir() }, {});

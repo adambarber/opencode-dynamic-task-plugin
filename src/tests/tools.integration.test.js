@@ -368,6 +368,31 @@ describe("task_continue branches", () => {
     assert.ok(ctx.harness.client._state.notifications[0].message.includes("completed successfully"));
   });
 
+  it("a task settling mid-steer never receives the replacement prompt", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h);
+    let releaseAbort;
+    const gate = new Promise((r) => { releaseAbort = r; });
+    const origAbort = h.client.session.abort;
+    let firstAbort = true;
+    h.client.session.abort = (args) => {
+      if (firstAbort) { firstAbort = false; return gate; }
+      return origAbort(args);
+    };
+    const steer = h.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    await new Promise((r) => setTimeout(r, 10));
+    await h.tool.task_interrupt.execute({ session_id: id });
+    releaseAbort();
+    const out = await steer;
+    assert.ok(!out.includes("Steer sent"), `must not claim a steer that never happened. got: ${out}`);
+    assert.ok(out.includes("interrupted"), `truthful report. got: ${out}`);
+    assert.strictEqual(
+      h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
+      0,
+      "no replacement prompt fires on a settled task",
+    );
+  });
+
   it("steer on a vanished session settles error instead of stranding", async () => {
     const h = await setupTools({ abortFailIds: new Set(["ses_tools_1"]) });
     const { id } = await spawn(h);

@@ -70,6 +70,18 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       consumeSteerPending(store, sessionId);
       return `ERROR: abort failed (${abortError}) — task left active; the running turn was not stopped, so no message was sent. Retry task_continue to steer again.`;
     }
+    // Re-validate after the await: an event or an interrupt may have
+    // settled the task while the abort was in flight. Firing the
+    // replacement prompt now would launch an untracked turn on a settled
+    // task's session and report a steer that never happened.
+    if (!store.activeTasks.has(sessionId)) {
+      consumeSteerPending(store, sessionId);
+      const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
+      const remedy = state === "interrupted"
+        ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"
+        : "use task_continue to revive it for another turn";
+      return `Message not sent: the task settled as ${state} while its turn was stopping; ${remedy}.`;
+    }
     // The turn is dead: fire the parent message as the next user turn.
     // Fire-and-forget like every prompt — the lifecycle event owns
     // settlement, and the prompt-failure path owns delivery failure.

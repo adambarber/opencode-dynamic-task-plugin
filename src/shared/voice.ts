@@ -16,7 +16,7 @@ export const DYNAMIC_TASK_DESCRIPTION =
   "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight [dynamic-task-notice] notices with task_notify. Inspect with task_result/task_status/task_list; steer a running child or revive a settled one with task_continue; stop it with task_interrupt.";
 
 export const TASK_CONTINUE_DESCRIPTION =
-  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. A steer reports truthfully when the task settles mid-steer; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers. A revived turn may override the model; steers keep the task's model.";
+  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. When the task settles mid-steer, the call revives it automatically unless interrupted; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers. A revived turn may override the model; steers keep the task's model.";
 
 export const TASK_NOTIFY_DESCRIPTION =
   "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)";
@@ -104,6 +104,10 @@ export function steerWonBySettler(sessionId: string, state: string): string {
 
 export function steerStateUnknown(sessionId: string): string {
   return `ERROR: steer failed for "${sessionId}"; task state unknown — history unavailable.`;
+}
+
+export function steerAutoRevived(sessionId: string, agentName: string, state: string): string {
+  return `The task had settled as ${state} mid-steer, so it was revived and the message sent as a fresh turn. Follow-up sent to ${sessionId} (@${agentName}). The reply arrives as a dynamic-task-notify message.`;
 }
 
 export function steerSettledMidway(state: string): string {

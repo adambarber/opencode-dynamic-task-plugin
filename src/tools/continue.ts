@@ -25,6 +25,7 @@ import {
   steerSent,
   untrackedSession,
   followupSent,
+  steerAutoRevived,
 } from "../shared/voice.js";
 
 export interface ContinueArgs {
@@ -112,8 +113,22 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     if (!store.activeTasks.has(sessionId)) {
       // No disarm needed: the flag lives on the active record and
       // transitionState strips it, so nothing is armed anymore by construction.
-      const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
-      return steerSettledMidway(state);
+      const settled = store.retainedTasks.get(sessionId);
+      if (settled && settled.state !== "interrupted") {
+        // M9: close the loop the abort-race opened. The abort landed, so the
+        // session proved live — revive in this same call instead of demanding
+        // a second round-trip. Interrupted stays terminal by doctrine.
+        let revived;
+        try {
+          revived = reviveRetainedTask(store, sessionId, config, modelOverride);
+          gateLedger.forgetChild(sessionId);
+        } catch (error: unknown) {
+          return `ERROR: ${errorMessage(error)}`;
+        }
+        fireChildPrompt(client, store, revived, args.prompt);
+        return steerAutoRevived(sessionId, revived.agentName, settled.state);
+      }
+      return steerSettledMidway(settled?.state ?? "unknown");
     }
     // The turn is dead: fire the parent message as the next user turn.
     // Fire-and-forget like every prompt — the lifecycle event owns

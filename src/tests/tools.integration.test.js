@@ -393,6 +393,32 @@ describe("task_continue branches", () => {
     assert.ok(ctx.harness.client._state.notifications[0].message.includes("completed successfully"));
   });
 
+  it("a steer racing a completed settle auto-revives instead of demanding a second call", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h);
+    let releaseAbort;
+    const gate = new Promise((r) => { releaseAbort = r; });
+    let firstAbort = true;
+    const origAbort = h.client.session.abort;
+    h.client.session.abort = (args) => {
+      if (firstAbort) { firstAbort = false; return gate; }
+      return origAbort(args);
+    };
+    const steer = h.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    await new Promise((r) => setTimeout(r, 10));
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: id, status: "idle" } });
+    await h.fireEvent({ type: "session.idle", properties: { sessionID: id, status: "idle" } });
+    releaseAbort();
+    const out = await steer;
+    assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
+    assert.strictEqual(
+      h.client._state.promptBodies.filter((p) => p.body.parts[0].text === "pivot").length,
+      1,
+      "the message fires as the fresh turn",
+    );
+    await h.tool.task_interrupt.execute({ session_id: id });
+  });
+
   it("a task settling mid-steer never receives the replacement prompt", async () => {
     const h = await setupTools();
     const { id } = await spawn(h);

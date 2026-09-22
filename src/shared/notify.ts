@@ -267,12 +267,14 @@ export function noticeDedupKey(message: string): string {
 
 // Wire format the parent actually sees. Notification text is owned by the
 // gate; task-formatting only renders store reads. One renderer, params
-// everywhere the kinds differ: header, body label, tail hint.
+// everywhere the kinds differ: tag, header, body label, tail hint.
+// Settlement (completed/error) and mid-flight voice (notice) carry distinct
+// tags so orchestrators route them without parsing prose.
 
-const NOTIFICATION_KINDS: Record<NotifyKind, { header: string; bodyLabel: string; tail: string }> = {
-  completed: { header: "Background task completed successfully.", bodyLabel: "Latest output", tail: "" },
-  error: { header: "Background task ended with an error.", bodyLabel: "Latest output", tail: "Use task_result or task_continue to inspect or recover." },
-  notice: { header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
+const NOTIFICATION_KINDS: Record<NotifyKind, { tag: string; header: string; bodyLabel: string; tail: string }> = {
+  completed: { tag: "[dynamic-task-notify]", header: "Background task completed successfully.", bodyLabel: "Latest output", tail: "" },
+  error: { tag: "[dynamic-task-notify]", header: "Background task ended with an error.", bodyLabel: "Latest output", tail: "Use task_result or task_continue to inspect or recover." },
+  notice: { tag: "[dynamic-task-notice]", header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
 };
 
 export function formatParentNotification(
@@ -290,7 +292,7 @@ export function formatParentNotification(
     : full;
   const body = shape.bodyLabel ? `${shape.bodyLabel}: ${safeResult}` : safeResult;
   return [
-    "[dynamic-task-notify]",
+    shape.tag,
     shape.header,
     `Session: ${state.childSessionId}`,
     `Description: ${state.description}`,

@@ -72,23 +72,40 @@ export function resolveAdmission(
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
-// Readiness gate: every dependency must have completed. Running, failed,
-// and interrupted deps block with the pending set. Unknown ids pass: they
-// may have completed and aged out of the bounded retained history, and
-// blocking forever on garbage-collected history would deadlock planners.
+// Readiness gate: strict dependencies must have completed; settled-wait
+// dependencies must have left active (any terminal state satisfies). Running
+// deps block under both lists. Unknown ids pass: they may have completed and
+// aged out of the bounded retained history, and blocking forever on
+// garbage-collected history would deadlock planners.
 
 const SATISFIED_DEPENDENCY_STATES: readonly string[] = ["completed"];
+const SETTLED_DEPENDENCY_STATES: readonly string[] = ["completed", "error", "interrupted"];
+
+export interface DependencyBlock {
+  id: string;
+  state: string;
+}
 
 export function resolveDependencies(
   store: TaskStore,
   dependsOn: string[] | undefined,
-): { ok: true } | { ok: false; pending: string[] } {
-  if (!dependsOn || dependsOn.length === 0) return { ok: true };
-  const pending = dependsOn.filter((id) => {
+  dependsOnSettled: string[] | undefined = [],
+): { ok: true } | { ok: false; pending: DependencyBlock[] } {
+  const strict = dependsOn ?? [];
+  const lenient = dependsOnSettled ?? [];
+  if (strict.length === 0 && lenient.length === 0) return { ok: true };
+  // Strict wins on overlap: an id in both lists must have completed.
+  const seen = new Set<string>();
+  const pending: DependencyBlock[] = [];
+  const check = (id: string, states: readonly string[]): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
     const task = findTask(store, id);
-    if (!task) return false;
-    return !SATISFIED_DEPENDENCY_STATES.includes(task.state);
-  });
+    if (!task) return;
+    if (!states.includes(task.state)) pending.push({ id, state: task.state });
+  };
+  for (const id of strict) check(id, SATISFIED_DEPENDENCY_STATES);
+  for (const id of lenient) check(id, SETTLED_DEPENDENCY_STATES);
   return pending.length === 0 ? { ok: true } : { ok: false, pending };
 }
 
@@ -155,6 +172,7 @@ export interface RegistrationParams {
   lineage: string[];
   requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
+  dependsOnSettled?: string[] | undefined;
 }
 
 export function registerAdmittedTask(

@@ -115,6 +115,7 @@ interface ValidLedgerEntry {
   startedAt: number;
   retainedAt: number;
   dependsOn?: unknown;
+  dependsOnSettled?: unknown;
   requestedModel?: unknown;
   abortError?: unknown;
 }
@@ -173,6 +174,7 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
       // is corrupt, not merely mislabeled.
       if (entry.childSessionId !== key) continue;
       const dependsOn = entry["dependsOn"];
+      const dependsOnSettled = entry["dependsOnSettled"];
       const requestedModel = entry["requestedModel"];
       const abortError = entry["abortError"];
       // Built in one expression: a hydrated record is complete at birth.
@@ -188,6 +190,7 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
         startedAt: entry.startedAt,
         retainedAt: entry.retainedAt,
         ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
+        ...(Array.isArray(dependsOnSettled) ? { dependsOnSettled: dependsOnSettled.filter((d): d is string => typeof d === "string") } : {}),
         ...(isEventRecord(requestedModel)
           && typeof requestedModel["providerID"] === "string"
           && typeof requestedModel["modelID"] === "string"

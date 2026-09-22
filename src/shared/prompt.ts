@@ -35,6 +35,21 @@ export function parseModelOverride(model: unknown): ModelOverride | undefined {
   return { providerID: trimmed.slice(0, slash), modelID: trimmed.slice(slash + 1) };
 }
 
+// Admission-time shape check: a bare id (no provider prefix) fails LOUD with
+// the qualified form. Shape only, never an allowlist — the server accepts ids
+// not literally present in config, so unknown-but-qualified ids must pass.
+// Null means admissible (absent and malformed-non-string inputs are ignored,
+// as they always were: the override simply does not ride the prompt).
+export function describeModelShapeError(model: unknown): string | null {
+  if (model === undefined) return null;
+  if (typeof model !== "string" || !model.trim()) return null;
+  const parsed = parseModelOverride(model);
+  if (parsed && !parsed.providerID) {
+    return `Invalid model "${model.trim()}": use the fully-qualified providerID/modelID form as spelled in opencode.jsonc (e.g. "nvidia/z-ai/glm-5.3"). Bare model ids are rejected at admission — the provider prefix is required.`;
+  }
+  return null;
+}
+
 export function invokePrompt(
   client: OpenCodeClient,
   sessionId: string,

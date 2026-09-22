@@ -262,7 +262,9 @@ export function extractSessionStatus(sessionInfo: unknown, messages: unknown = [
   ];
   for (const c of candidates) {
     const normalized = normalizeStatus(c);
-    if (normalized) return normalized;
+    // Idle means done: the same normalization the settlement kind reader
+    // applies, so untracked reads never report a distinct "idle" state.
+    if (normalized) return normalized === "idle" ? "completed" : normalized;
   }
 
   // client.session.get() does not return a status field — infer from messages

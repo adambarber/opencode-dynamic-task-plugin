@@ -225,9 +225,10 @@ export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: st
 }
 
 // Parent session resolution: the SDK context field first, then the
-// historical spellings, then the ambient variable tests and bare hosts rely on.
-// Deliberately not `extends ToolContext`: ToolContext.metadata is a method,
-// so this shape is a structural subset.
+// historical spellings. Deliberately not `extends ToolContext`: ToolContext.metadata is a method,
+// so this shape is a structural subset. No ambient fallback: a stray env var
+// must never route root-session prompts to a phantom parent — callers that
+// need an injected identity pass it in the context.
 export interface SessionContext {
   sessionID?: string;
   sessionId?: string;
@@ -248,8 +249,7 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
   }
-  const ambient = typeof process !== "undefined" ? process.env.DYNAMIC_TASK_TEST_SESSION_ID : undefined;
-  return ambient && ambient.trim().length > 0 ? ambient : null;
+  return null;
 }
 
 // Session-create responses arrive wrapped: flat id, body/data envelopes, or

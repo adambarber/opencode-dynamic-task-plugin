@@ -138,6 +138,17 @@ describe("resolveParentSessionId", () => {
     assert.strictEqual(resolveParentSessionId(null), null);
     assert.strictEqual(resolveParentSessionId({ sessionID: "   " }), null);
   });
+
+  it("ignores the legacy ambient test var — callers resolve explicitly", () => {
+    const prev = process.env.DYNAMIC_TASK_TEST_SESSION_ID;
+    process.env.DYNAMIC_TASK_TEST_SESSION_ID = "ses_phantom";
+    try {
+      assert.strictEqual(resolveParentSessionId({}), null);
+    } finally {
+      if (prev !== undefined) process.env.DYNAMIC_TASK_TEST_SESSION_ID = prev;
+      else delete process.env.DYNAMIC_TASK_TEST_SESSION_ID;
+    }
+  });
 });
 
 describe("fetchAgents", () => {
@@ -487,6 +498,11 @@ describe("extractSessionStatus: message-level error", () => {
       ]),
       "completed",
     );
+  });
+
+  it("normalizes idle to completed — an idle session is done", () => {
+    assert.strictEqual(extractSessionStatus({ status: "idle" }, []), "completed");
+    assert.strictEqual(extractSessionStatus({ data: { info: { status: "idle" } } }, []), "completed");
   });
 });
 

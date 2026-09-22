@@ -592,6 +592,14 @@ import {
   formatTaskStatusDetail,
 } from "../../dist/shared/task-formatting.js";
 import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
+import { TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
+
+describe("operator voice: continue description", () => {
+  it("warns that mid-steer settles and stalls are possible", () => {
+    assert.match(TASK_CONTINUE_DESCRIPTION, /mid-steer/);
+    assert.match(TASK_CONTINUE_DESCRIPTION, /stalled/);
+  });
+});
 
 describe("describeModelShapeError", () => {
   it("rejects bare ids with the qualified form", () => {
@@ -2215,6 +2223,27 @@ describe("task formatting: fleet views", () => {
   it("formatTaskListSummary names empty states", () => {
     const summary = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4 });
     assert.ok(summary.includes("(none)"));
+  });
+
+  it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {
+    const base = {
+      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
+      description: "d", lineage: [], state: "active",
+    };
+    const stale = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
+    assert.match(stale, /Last activity: 20m ago/);
+    assert.match(stale, /stalled/);
+    assert.match(stale, /task_interrupt/);
+    const fresh = formatTaskStatusDetail({ ...base, startedAt: Date.now() }, null);
+    assert.match(fresh, /Last activity:/);
+    assert.ok(!fresh.includes("stalled"), `fresh turns carry no warning. got: ${fresh}`);
+  });
+
+  it("formatTaskListSummary names pruned expiries when told", () => {
+    const pruned = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4, pruned: 1 });
+    assert.ok(pruned.includes("Pruned: 1 expired"), `got: ${pruned}`);
+    const clean = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4, pruned: 0 });
+    assert.ok(!clean.includes("Pruned:"), `silence when nothing expired. got: ${clean}`);
   });
 
   it("formatTaskStatusDetail renders tracked metadata offline", () => {

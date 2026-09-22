@@ -19,12 +19,16 @@ import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
   INVALID_PROMPT,
   promptTooLong,
+  descriptionTooLong,
   dependenciesPending,
   createFailed,
   spawnConfirmation,
   agentGone,
   PERMISSION_DENIED,
 } from "../shared/voice.js";
+
+// Labels ride every notification verbatim — bound them like prompts.
+const MAX_DESCRIPTION_CHARS = 2000;
 import { createDummyLineage, type ToolDeps } from "./context.js";
 
 export interface SpawnArgs {
@@ -55,6 +59,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
 
   if (args.prompt.length > 100000) {
     return promptTooLong(args.prompt.length);
+  }
+
+  if (typeof args.description === "string" && args.description.length > MAX_DESCRIPTION_CHARS) {
+    return descriptionTooLong(args.description.length);
   }
 
   // Model shape is admission-checked before the session exists: a bad

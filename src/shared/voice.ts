@@ -16,7 +16,7 @@ export const DYNAMIC_TASK_DESCRIPTION =
   "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight [dynamic-task-notice] notices with task_notify. Inspect with task_result/task_status/task_list; steer a running child or revive a settled one with task_continue; stop it with task_interrupt.";
 
 export const TASK_CONTINUE_DESCRIPTION =
-  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead.";
+  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. A steer reports truthfully when the task settles mid-steer; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers.";
 
 export const TASK_NOTIFY_DESCRIPTION =
   "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)";
@@ -115,7 +115,11 @@ export function steerAbortFailed(abortError: string): string {
 }
 
 export function steerSent(sessionId: string, agentName: string): string {
-  return `Steer sent to ${sessionId} (@${agentName}): the running turn was stopped and the message was sent as the next turn. The task stays active; its outcome arrives as a dynamic-task-notify message.`;
+  return `Steer sent to ${sessionId} (@${agentName}): the running turn was stopped and the message was sent as the next turn. The task stays active; its outcome arrives as a dynamic-task-notify message. If no outcome arrives, the turn stalled: check task_status, recover with task_interrupt.`;
+}
+
+export function descriptionTooLong(length: number): string {
+  return `ERROR: Description too long (${length} chars). Max: 2000 — keep the label short; put detail in prompt.`;
 }
 
 export function untrackedSession(sessionId: string): string {

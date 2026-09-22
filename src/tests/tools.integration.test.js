@@ -283,6 +283,23 @@ describe("dynamic_task validation", () => {
     assert.ok(out.includes("@general"), `got: ${out}`);
   });
 
+  it("rejects overlong descriptions at admission", async () => {
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "x".repeat(3000), subagent_type: "explore", prompt: "hi" },
+      { sessionID: "p1" },
+    );
+    assert.ok(out.includes("Description too long"), `labels stay short. got: ${out}`);
+  });
+
+  it("task_list names pruned expiries", async () => {
+    const h = await setupTools({}, { retainedTaskTtlMs: 1 });
+    const { id } = await spawn(h);
+    await settle(h, id);
+    await new Promise((r) => setTimeout(r, 5));
+    const list = await h.tool.task_list.execute({});
+    assert.ok(list.includes("Pruned: 1 expired"), `expiry is visible. got: ${list}`);
+  });
+
   it("rejects blocked agents when the operator configures the blocklist", async () => {
     const h = await setupTools({}, { blockedAgents: ["general"] });
     const out = await h.tool.dynamic_task.execute(
@@ -302,6 +319,7 @@ describe("dynamic_task validation", () => {
       { sessionID: "p1" },
     );
     assert.ok(second.includes("Cannot run more than"), `got: ${second}`);
+    assert.ok(second.includes("task_list"), `points at the slot holders. got: ${second}`);
     await limited.tool.task_interrupt.execute({ session_id: first.id });
   });
 
@@ -348,6 +366,7 @@ describe("task_continue branches", () => {
       prompt: "follow up",
     });
     assert.ok(out.includes("Steer sent"), `got: ${out}`);
+    assert.ok(out.includes("task_interrupt"), `names the stall recovery. got: ${out}`);
     assert.ok(ctx.harness.client._state.aborted.includes(id), "the running turn is stopped first");
     const followUps = ctx.harness.client._state.promptBodies.filter(
       (p) => p.to === id && p.body.parts[0].text.includes("follow up"),

@@ -110,7 +110,7 @@ export async function executeTaskStatus(deps: ToolDeps, args: ReadArgs): Promise
 
 export async function executeTaskList(deps: ToolDeps): Promise<string> {
   const { store, config } = deps;
-  pruneRetainedTasks(store, config);
+  const pruned = pruneRetainedTasks(store, config);
   const { active, retained } = listTasks(store);
   const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; startedAt: number }) => ({
     childSessionId: t.childSessionId,
@@ -123,5 +123,6 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     active: active.map(toRow),
     retained: retained.map(toRow),
     maxConcurrent: config.maxConcurrent,
+    pruned,
   });
 }

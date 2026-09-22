@@ -5,6 +5,11 @@
 import { truncateText, type NotificationRecord } from "./notify.js";
 import { formatAge } from "./task-state.js";
 
+// Stall visibility without clocks-as-decisions: past this age an active turn
+// with no activity renders a warning line. Display only — nothing branches
+// on it (Tenet 11: the degradation direction is "operator looks, then acts").
+export const STALE_TURN_AFTER_MS = 10 * 60 * 1000;
+
 export function buildBackgroundPrompt(prompt: string): string {
   return [
     "You are running as a background child task.",
@@ -34,6 +39,7 @@ export function formatTaskListSummary(input: {
   active: FleetRow[];
   retained: FleetRow[];
   maxConcurrent: number;
+  pruned: number;
 }): string {
   const lines = [
     "## Task List",
@@ -44,6 +50,9 @@ export function formatTaskListSummary(input: {
     `Retained: ${input.retained.length}`,
     ...(input.retained.length > 0 ? input.retained.map(formatFleetRow) : ["(none)"]),
   ];
+  if (input.pruned > 0) {
+    lines.push(`Pruned: ${input.pruned} expired retained task(s)`);
+  }
   return lines.join("\n");
 }
 
@@ -81,6 +90,11 @@ export function formatTaskStatusDetail(
   ];
   if (task.state === "active") {
     lines.push(`Started: ${formatAge(task.startedAt)} ago`);
+    const lastActivity = Math.max(task.startedAt, task.lastNotice?.at ?? 0);
+    lines.push(`Last activity: ${formatAge(lastActivity)} ago`);
+    if (Date.now() - lastActivity > STALE_TURN_AFTER_MS) {
+      lines.push(`Warning: no activity in ${formatAge(lastActivity)} — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`);
+    }
     if (task.lastNotice) {
       lines.push(`Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`);
     }

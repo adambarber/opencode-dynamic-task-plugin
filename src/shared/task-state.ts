@@ -3,6 +3,17 @@
 // event arrives — the plugin arms no timers, so nothing else can settle a
 // task, and terminal states never regress.
 //
+// Lifecycle map (every edge below goes through the function named on it):
+//
+//   active ──terminal event (transitionState)──▶ completed|error|interrupted ──▶ retained ──▶ pruned
+//     │                                              ▲ completed ──noteLateOutcome──▶ error (only rewrite edge)
+//     │                                              └──revive (never interrupted)──▶ active, fresh startedAt
+//     ├──interrupt: sync claim ──▶ interrupted (abort-transport failure may withdraw back to active)
+//     └──steer claim ──▶ stays active (echo consumed; re-validated after abort)
+//
+// Durable across restart: retained records only (ledger). Active turns and
+// delivery receipts are process memory.
+//
 // Late-error escalation: noteLateOutcome() is the only edge that rewrites a
 // retained state (completed -> error).
 //

@@ -30,7 +30,7 @@ export function eventField(event: unknown, ...path: string[]): unknown {
   return current;
 }
 
-export function eventString(event: unknown, path: string[]): string | undefined {
+export function eventString(event: unknown, ...path: string[]): string | undefined {
   const value = eventField(event, ...path);
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
@@ -53,16 +53,16 @@ export function normalizeStatus(raw: unknown): string {
 export function getSessionIdFromEvent(event: unknown): string | null {
   const properties = eventField(event, "properties");
   const sid =
-    eventString(properties, ["sessionID"])
-    ?? eventString(properties, ["sessionId"])
-    ?? eventString(properties, ["info", "id"])
-    ?? eventString(event, ["data", "sessionId"])
-    ?? eventString(event, ["data", "sessionID"])
-    ?? eventString(event, ["data", "info", "id"])
-    ?? eventString(event, ["properties", "aggregateID"])
-    ?? eventString(event, ["aggregateID"])
-    ?? eventString(event, ["id"])
-    ?? eventString(event, ["sessionID"]);
+    eventString(properties, "sessionID")
+    ?? eventString(properties, "sessionId")
+    ?? eventString(properties, "info", "id")
+    ?? eventString(event, "data", "sessionId")
+    ?? eventString(event, "data", "sessionID")
+    ?? eventString(event, "data", "info", "id")
+    ?? eventString(event, "properties", "aggregateID")
+    ?? eventString(event, "aggregateID")
+    ?? eventString(event, "id")
+    ?? eventString(event, "sessionID");
   if (!sid || !sid.startsWith("ses_")) return null;
   return sid;
 }
@@ -74,16 +74,16 @@ export function getSessionIdFromEvent(event: unknown): string | null {
 export function getEventLifecycleStatus(event: unknown): string {
   const properties = eventField(event, "properties");
   const infoStatus =
-    eventString(properties, ["info", "status"])
-    ?? eventString(properties, ["info", "status", "type"])
-    ?? eventString(event, ["data", "info", "status"])
-    ?? eventString(event, ["data", "info", "status", "type"]);
+    eventString(properties, "info", "status")
+    ?? eventString(properties, "info", "status", "type")
+    ?? eventString(event, "data", "info", "status")
+    ?? eventString(event, "data", "info", "status", "type");
   if (infoStatus) return normalizeStatus(infoStatus);
   const status =
-    eventString(properties, ["status"])
-    ?? eventString(properties, ["status", "type"]);
+    eventString(properties, "status")
+    ?? eventString(properties, "status", "type");
   if (status) return normalizeStatus(status);
-  const source = (eventString(event, ["type"]) ?? "") + (eventString(event, ["name"]) ?? "");
+  const source = (eventString(event, "type") ?? "") + (eventString(event, "name") ?? "");
   if (source.includes("idle")) return "idle";
   if (source.includes("error")) return "error";
   if (source.includes("delet")) return "deleted";
@@ -96,9 +96,9 @@ const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
 // carries the lifecycle state in data.info.status. Terminal iff the derived
 // status is one the settlement handler acts on.
 export function isTerminalSessionEvent(event: unknown): boolean {
-  const type = eventString(event, ["type"]) ?? "";
+  const type = eventString(event, "type") ?? "";
   if (type === "session.idle" || type === "session.error") return true;
-  if (type.includes("delet") || (eventString(event, ["name"]) ?? "").includes("delet")) return true;
+  if (type.includes("delet") || (eventString(event, "name") ?? "").includes("delet")) return true;
   return TERMINAL_EVENT_STATUSES.includes(getEventLifecycleStatus(event));
 }
 
@@ -268,7 +268,7 @@ export function validateSessionResult(result: unknown): string | null {
 // session.deleted may arrive name-only (no status field): a vanished session
 // is a failure, never a clean completion — deletion needs two probes.
 export function eventLooksDeleted(event: unknown): boolean {
-  const type = eventString(event, ["type"]) ?? "";
-  const name = eventString(event, ["name"]) ?? "";
+  const type = eventString(event, "type") ?? "";
+  const name = eventString(event, "name") ?? "";
   return type.includes("deleted") || name.includes("deleted");
 }

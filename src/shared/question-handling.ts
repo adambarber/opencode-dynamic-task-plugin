@@ -48,10 +48,10 @@ export function normalizeQuestionAnswers(raw: unknown): string[] {
     if (typeof item === "string") {
       if (item.length > 0) answers.push(item);
     } else if (isEventRecord(item)) {
-      const value = eventString(item, ["text"])
-        ?? eventString(item, ["value"])
-        ?? eventString(item, ["answer"])
-        ?? eventString(item, ["label"]);
+      const value = eventString(item, "text")
+        ?? eventString(item, "value")
+        ?? eventString(item, "answer")
+        ?? eventString(item, "label");
       if (value) answers.push(value);
     }
   }
@@ -62,10 +62,10 @@ export function normalizeQuestionAnswers(raw: unknown): string[] {
 // Accepts either the full event (drills into properties) or bare properties.
 export function getRequestIdFromQuestion(eventOrProperties: unknown): string | null {
   const properties = eventField(eventOrProperties, "properties") ?? eventOrProperties;
-  return eventString(properties, ["id"])
-    ?? eventString(properties, ["request_id"])
-    ?? eventString(properties, ["task_id"])
-    ?? eventString(properties, ["requestID"])
+  return eventString(properties, "id")
+    ?? eventString(properties, "request_id")
+    ?? eventString(properties, "task_id")
+    ?? eventString(properties, "requestID")
     ?? null;
 }
 
@@ -79,12 +79,12 @@ export function resolveQuestionSession(event: unknown, store: TaskStore): Questi
   // created event arrived, so later events resolve even without session ids.
   const remembered = questionSessions.get(questionId);
   if (remembered) return { questionId, childSessionId: remembered };
-  const candidate = eventString(properties, ["sessionID"])
-    ?? eventString(properties, ["sessionId"])
-    ?? eventString(properties, ["session_id"])
+  const candidate = eventString(properties, "sessionID")
+    ?? eventString(properties, "sessionId")
+    ?? eventString(properties, "session_id")
     // task_id doubles as an owner hint when a different field carried the
     // question id (see getRequestIdFromQuestion's priority chain).
-    ?? (questionId !== eventString(properties, ["task_id"]) ? eventString(properties, ["task_id"]) : null)
+    ?? (questionId !== eventString(properties, "task_id") ? eventString(properties, "task_id") : null)
     ?? null;
   // Attribution is bounded to this plugin's own tasks: a question from any
   // other session (including the operator's) passes through untouched.

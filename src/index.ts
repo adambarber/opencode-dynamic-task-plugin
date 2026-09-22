@@ -56,8 +56,8 @@ export default async function dynamicTaskPlugin(
 
   return {
     event: async ({ event }: { event: unknown }) => {
-      const eventType = eventString(event, ["type"]) ?? "(none)";
-      const eventName = eventString(event, ["name"]) ?? "(none)";
+      const eventType = eventString(event, "type") ?? "(none)";
+      const eventName = eventString(event, "name") ?? "(none)";
       const evtSessionId = getSessionIdFromEvent(event);
       const topKeys = isEventRecord(event) ? Object.keys(event).slice(0, 8).join(",") : "(null)";
 

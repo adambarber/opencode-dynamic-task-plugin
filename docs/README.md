@@ -16,6 +16,9 @@ Work proceeds in order. Each task doc is the spec for one unit of work — no co
 | 05 | `tasks/05-notification-gate.md` | Parent notification | Best-effort prompt injection loses the one signal the planner waits on | Complete |
 | 06 | `tasks/06-persistence-and-observability.md` | Ephemeral store + phantom reads | Restart orphans; `task_list`/`task_status` advertised but absent | Complete |
 | 07 | `tasks/07-admission-gate.md` | Spawn admission | `depends_on`, lineage, dispatch each re-approach the same gate differently | Complete |
+| 08 | `tasks/08-strong-types.md` | Untyped boundaries | `any` at four seams defeats review; close them with guard-first types | Complete |
+| 09 | `tasks/09-non-blocking-settlement.md` | Per-call clocks | Timeout-as-detector is masking; settlement is event-driven, the only bound is operator intent | Complete |
+| 10 | `tasks/10-parent-steer.md` | Parent→child steer | A queued follow-up races the running turn; stop-append-resubmit at the lifecycle gate | Complete |
 
 Each doc carries its proof (commands, results, decisions) in its Status section.
 

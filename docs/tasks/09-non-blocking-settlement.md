@@ -28,6 +28,8 @@
 
 ## Verification
 
+Follow-up 2026-09-22 (orchestration audit + parent→child steer, spec in `tasks/10-parent-steer.md`): `task_continue` on an active task no longer refuses "still running" — it steers (synchronous claim, abort, parent text as the next turn, task stays active; the lifecycle handler consumes the aborted turn's echo). The lifecycle-field scanner now also covers `steerPending` writes outside `task-state.ts`. `task_result` for tracked tasks reports store state as `Status` with the live read as an advisory block (see 05). Concurrent steers on one child are knowingly unserialized (documented in 10); the create/abort entry funnel covers spawn/interrupt/steer paths.
+
 - Suite: 294 tests green; `tools.integration.test.js` rewritten to settle children by firing lifecycle events — tests never wait on clocks, they wait on microtasks.
 - `DYNAMIC_TASK_BLOCKED_AGENTS=""` (empty env) cannot clear the default blocklist; an explicit `blockedAgents: []` in options/file can — the latter is a real setting, the former is an absent value.
 - Live gate: restart → spawn → notify → settle → continue → settle → interrupt (pending operator run).

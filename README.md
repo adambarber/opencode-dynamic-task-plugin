@@ -18,9 +18,9 @@ npm install && npm run build
 | Tool | Description |
 |------|-------------|
 | `dynamic_task` | Spawn a background subagent session; returns immediately |
-| `task_continue` | Send a follow-up prompt to a settled task (revives it for a fresh turn) |
+| `task_continue` | Steer a running child (its turn stops, the message becomes the next turn) or revive a settled one |
 | `task_notify` | Child-to-parent channel: progress, findings, or a block needing input (requires a child agent with plugin tools, e.g. `general` — read-only agents such as `explore` cannot signal) |
-| `task_result` | Poll a session's latest status and output (live API) |
+| `task_result` | Report tracked status (store state, authoritative) plus an advisory live read for active tasks |
 | `task_interrupt` | Stop a running child session (abort attempted; state settled first) |
 | `task_list` | List all tracked tasks with lifecycle states |
 | `task_status` | Detailed tracked state for one task (store read, no API calls) |
@@ -32,8 +32,9 @@ dynamic_task(
   description="Review PR",
   subagent_type="reviewer",
   prompt="Review for bugs",
-  model="opencode-go/mimo-v2.5",   // model override
+  model="opencode-go/mimo-v2.5",   // providerID/modelID as spelled in opencode.jsonc (bare ids rejected)
   depends_on=["ses_t1", "ses_t2"]  // tasks start after deps complete (unknown ids pass)
+  depends_on_settled=["ses_t3"]     // tasks start after deps settle, whatever the outcome
 )
 
 task_continue(session_id="ses_child", prompt="Also check error handling")
@@ -43,9 +44,13 @@ task_notify(message="blocked: need DB credentials to continue")  // from inside 
 
 ## How Tasks Settle
 
-The plugin arms no timers and never waits. Every task runs in the background
-and reports each settled turn's outcome exactly once through a `[dynamic-task-notify]` message
-in the parent — completion, error, or a child's `task_notify` notice. There is
+The plugin arms no timers and never waits. Every task runs in the background.
+Settled turns report exactly once through a `[dynamic-task-notify]` message
+in the parent; a child's mid-flight `task_notify` arrives separately as a
+`[dynamic-task-notice]` message, so settlement vs. spoke routes on the tag
+without parsing prose. `task_result` reports the tracked store state as
+`Status` (confirm settleability with `task_status`, a pure store read) with
+the live API read as a subordinate advisory block. There is
 no timeout to configure: a slow child is indistinguishable from a working one
 by design, and the only bound on a child is operator intent (`task_interrupt`).
 
@@ -55,8 +60,9 @@ by design, and the only bound on a child is operator intent (`task_interrupt`).
    anything worth surfacing before it converges.
 3. On the child's terminal lifecycle event, the parent is notified once with
    the latest outcome (exactly-once, deduped per settled turn).
-4. `task_continue` revives a settled task for another turn; the revived task
-   settles again through the same single gate. Interrupted children are not
+4. `task_continue` steers a running child — its current turn aborts and the
+   message becomes its next turn, staying active — or revives a settled task
+   for another turn through the same single gate. Interrupted children are not
    revived — spawn a fresh `dynamic_task` instead.
 
 ## Configuration

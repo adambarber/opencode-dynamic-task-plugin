@@ -10,6 +10,8 @@ export function buildBackgroundPrompt(prompt: string): string {
     "You are running as a background child task.",
     "Return a final, self-contained answer.",
     "Do not wait for parent follow-up.",
+    "The parent may steer you mid-run: a parent message preempts your current turn — read it first, then continue.",
+    "Answer any question yourself with your best judgment, never wait.",
     "If blocked mid-task, call task_notify with what you need; the parent may reply via task_continue.",
     "",
     prompt,
@@ -75,6 +77,7 @@ export function formatTaskStatusDetail(
     `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" → ") : "(root)"}`,
     `Model: ${task.requestedModel ? `${task.requestedModel.providerID}/${task.requestedModel.modelID}` : "(default)"}`,
     `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
+    ...(task.dependsOnSettled && task.dependsOnSettled.length > 0 ? [`Depends on (settled): ${task.dependsOnSettled.join(", ")}`] : []),
   ];
   if (task.state === "active") {
     lines.push(`Started: ${formatAge(task.startedAt)} ago`);
@@ -100,9 +103,14 @@ export function formatTaskResultSummary(input: {
   latestText: string;
   tracked: boolean;
   notification?: NotificationRecord | null | undefined;
+  // Advisory live API inference, rendered as a subordinate block only. Never
+  // overrides Status: the store is the liveness authority. Present only for
+  // tracked active tasks, where the API read can disagree with the store.
+  liveStatus?: string | undefined;
 }): string {
+  const running = input.status === "busy" || input.status === "active";
   const action =
-    input.status === "busy"
+    running
       ? "Recommended next action: use task_result again later."
       : input.status === "error"
         ? "Recommended next action: inspect latest output, then use task_continue if recovery is possible."
@@ -116,6 +124,15 @@ export function formatTaskResultSummary(input: {
     `Messages: ${input.messageCount}`,
     `Tracked: ${input.tracked ? "yes" : "no"}`,
   ];
+
+  if (input.liveStatus !== undefined) {
+    lines.push(
+      "",
+      "### Live inference (advisory — Status above is authoritative)",
+      `Session API suggests: ${input.liveStatus} across ${input.messageCount} message(s).`,
+      "This never overrides Status; confirm settleability with task_status.",
+    );
+  }
 
   if (input.notification) {
     lines.push(formatNotificationLine(input.notification));

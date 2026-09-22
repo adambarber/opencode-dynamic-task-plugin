@@ -31,8 +31,16 @@ export interface ActiveTaskState {
   lineage: LineagePath;
   requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
+  // Admission-time only: ids that needed settlement, not success, before this
+  // task spawned. Persisted so status renders the full dependency picture.
+  dependsOnSettled?: string[] | undefined;
   // Latest mid-flight notice from the child (advisory metadata, not a lifecycle field).
   lastNotice?: { message: string; at: number } | undefined;
+  // Parent steer in flight: set synchronously by task_continue before aborting
+  // the running turn, consumed by the lifecycle handler to suppress that
+  // turn's terminal echo. Advisory, never a lifecycle mutation — the task
+  // stays active either way, and settlement strips it.
+  steerPending?: boolean | undefined;
 }
 
 export interface RetainedTaskState {
@@ -46,6 +54,7 @@ export interface RetainedTaskState {
   lineage: LineagePath;
   requestedModel?: { providerID: string; modelID: string } | undefined;
   dependsOn?: string[] | undefined;
+  dependsOnSettled?: string[] | undefined;
   abortError?: string | undefined;
   // Last successful abort landing on this record. Guards withdrawInterruptClaim
   // against concurrent interrupts (F-R4): a stale claim never resurrects a
@@ -162,7 +171,7 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-    const { lastNotice: _notice, ...settled } = active;
+    const { lastNotice: _notice, steerPending: _steer, ...settled } = active;
     const retained: RetainedTaskState = {
       ...settled,
       state: to,
@@ -229,6 +238,25 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
   const active = store.activeTasks.get(childSessionId);
   if (!active) return false;
   active.lastNotice = { message, at: Date.now() };
+  return true;
+}
+
+// Steer claim (parent→child mid-flight message): armed synchronously by
+// task_continue before aborting the running turn, consumed once by the
+// lifecycle handler to suppress that turn's terminal echo. Advisory like a
+// notice — the task stays active either way — so this pair may read and
+// clear the flag but never moves a lifecycle state.
+export function markSteerPending(store: TaskStore, childSessionId: string): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) return false;
+  active.steerPending = true;
+  return true;
+}
+
+export function consumeSteerPending(store: TaskStore, childSessionId: string): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active || !active.steerPending) return false;
+  active.steerPending = false;
   return true;
 }
 

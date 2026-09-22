@@ -59,6 +59,7 @@ import {
   hydrateLatestOutcome,
   extractSessionStatus,
   parseModelOverride,
+  describeModelShapeError,
 } from "./shared/prompt.js";
 import {
   notifyParent,
@@ -85,6 +86,8 @@ import {
   listTasks,
   noteLateOutcome,
   annotateNotice,
+  markSteerPending,
+  consumeSteerPending,
   reviveRetainedTask,
   withdrawInterruptClaim,
   noteAbortLanded,
@@ -212,7 +215,11 @@ function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: ChildRe
       settled = true;
     } catch { /* a lifecycle event won the settlement */ }
     if (settled) {
-      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", classified.message)
+      // The requested model rides along so a bad id names its suspect.
+      const modelSuffix = task.requestedModel
+        ? `\nRequested model: ${task.requestedModel.providerID}/${task.requestedModel.modelID}`
+        : "";
+      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", `${classified.message}${modelSuffix}`)
         .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
     }
   };
@@ -233,6 +240,14 @@ async function handleChildLifecycleEvent(
 
   const active = store.activeTasks.get(childSessionId);
   if (active) {
+    // A steered turn's abort echo is not a settlement: task_continue armed the
+    // claim synchronously before aborting, so the pre-steer turn's terminal
+    // event is consumed here and the task stays active for its replacement
+    // turn. The next genuine terminal event settles normally.
+    if (consumeSteerPending(store, childSessionId)) {
+      void safeLog(client, "info", `Event handler: consumed steer echo for ${childSessionId}, staying active`);
+      return;
+    }
     // Synchronous claim — no awaits before this. transitionState is the one
     // settlement gate: the winner replaces the active entry, so every
     // competing writer's transition throws and bows out.
@@ -468,7 +483,7 @@ export default async function dynamicTaskPlugin(
     tool: {
       dynamic_task: tool({
         description:
-          "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight notices with task_notify. Inspect with task_result/task_status/task_list; steer a settled task with task_continue; stop it with task_interrupt.",
+          "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight [dynamic-task-notice] notices with task_notify. Inspect with task_result/task_status/task_list; steer a running child or revive a settled one with task_continue; stop it with task_interrupt.",
         args: {
           description: tool.schema.string().describe("Short human-readable task label"),
           subagent_type: tool.schema.string().describe("Agent to invoke"),
@@ -476,11 +491,15 @@ export default async function dynamicTaskPlugin(
           model: tool.schema
             .string()
             .optional()
-            .describe("Optional model override for the child session."),
+            .describe("Optional model override as providerID/modelID exactly as spelled in opencode.jsonc (e.g. \"nvidia/z-ai/glm-5.3\"). Bare ids are rejected at admission."),
           depends_on: tool.schema
             .array(tool.schema.string())
             .optional()
-            .describe("Task dependencies — session IDs this task depends on."),
+            .describe("Task dependencies — session IDs this task depends on. Each must have completed."),
+          depends_on_settled: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on."),
         },
         async execute(args, ctx: ToolContext) {
           const agents = await fetchAgents(client, config.agentCacheTtlMs);
@@ -502,13 +521,24 @@ export default async function dynamicTaskPlugin(
             return `ERROR: Prompt too long (${args.prompt.length} chars). Max: 100000.`;
           }
 
+          // Model shape is admission-checked before the session exists: a bad
+          // id otherwise fails after creation, and the failure surfaces on
+          // the lifecycle path with nothing naming the suspect.
+          const modelOverride = parseModelOverride(args.model);
+          const modelShapeError = describeModelShapeError(args.model);
+          if (modelShapeError) {
+            return `ERROR: ${modelShapeError}`;
+          }
+          const requestedModelLabel =
+            typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
+
           // Dependency readiness (temporal — after all static validation).
           pruneRetainedTasks(store, config);
-          const readiness = resolveDependencies(store, args.depends_on);
+          const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
           if (!readiness.ok) {
             return [
-              `ERROR: Dependencies pending: ${readiness.pending.join(", ")}.`,
-              "Complete them first (unknown ids are treated as satisfied).",
+              `ERROR: Dependencies pending: ${readiness.pending.map((p) => `${p.id} (${p.state})`).join(", ")}.`,
+              "Complete them first (unknown ids are treated as satisfied; depends_on_settled only waits for settlement).",
             ].join("\n");
           }
 
@@ -531,7 +561,6 @@ export default async function dynamicTaskPlugin(
             const sessionBody: { title: string; parentID?: string } = {
               title: args.description || `Task: ${agent.name}`,
             };
-            const modelOverride = parseModelOverride(args.model);
 
             parentSessionId = resolveParentSessionId(ctx);
             if (parentSessionId) {
@@ -558,6 +587,7 @@ export default async function dynamicTaskPlugin(
               lineage: admission.newLineage,
               ...(modelOverride !== undefined ? { requestedModel: modelOverride } : {}),
               ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
+              ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
             }, config);
 
             // Fire-and-forget: the lifecycle event owns settlement, the
@@ -572,6 +602,7 @@ export default async function dynamicTaskPlugin(
               return [
                 `Spawned @${agent.name} in background.`,
                 `Session: ${childSessionId}`,
+                `Model: ${requestedModelLabel ?? "(default)"}`,
                 `Async notification: enabled (parent ${parentSessionId})`,
                 "The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile.",
               ].join("\n");
@@ -580,6 +611,7 @@ export default async function dynamicTaskPlugin(
             return [
               `Spawned @${agent.name} in background.`,
               `Session: ${childSessionId}`,
+              `Model: ${requestedModelLabel ?? "(default)"}`,
               "Async notification: disabled (parent session ID not available in tool context)",
             ].join("\n");
           } catch (error: unknown) {
@@ -597,14 +629,18 @@ export default async function dynamicTaskPlugin(
               }
               // The error settlement notifies like every other terminal
               // settlement — a failed spawn the parent never hears about
-              // is a silent lie, registered or not.
+              // is a silent lie, registered or not. The requested model rides
+              // along so a bad id names its suspect in the settlement.
+              const spawnErrorText = requestedModelLabel
+                ? `${message}\nRequested model: ${requestedModelLabel}`
+                : message;
               void deliverParent(
                 client,
                 parentSessionId || "unknown",
                 failedChildSessionId,
                 args.description || "background task",
                 "error",
-                message,
+                spawnErrorText,
               ).then((delivered) => debugLog(parentSessionId || "unknown", failedChildSessionId, "spawn-error-notify", { delivered }));
             }
             if (message.includes("not found")) {
@@ -620,7 +656,7 @@ export default async function dynamicTaskPlugin(
 
       task_continue: tool({
         description:
-          "Send a follow-up prompt to a tracked child session and return immediately. A settled task is revived for a fresh turn and its next outcome arrives as a new dynamic-task-notify message. A still-running task is not interruptible by follow-ups — wait for its notification (or task_interrupt first).",
+          "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead.",
         args: {
           session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
           prompt: tool.schema.string().describe("Follow-up instructions"),
@@ -641,7 +677,57 @@ export default async function dynamicTaskPlugin(
 
           const active = store.activeTasks.get(sessionId);
           if (active) {
-            return `ERROR: Task ${sessionId} is still running. Follow-ups go to a task after it reports in — its completion notification arrives shortly. Use task_result to watch progress, or task_interrupt to stop it.`;
+            // Steer: the parent speaks to a running child as a turn
+            // replacement — stop, append, re-submit. The claim is armed
+            // synchronously (before any await) so the pre-steer turn's
+            // terminal event cannot settle the task before the abort lands;
+            // the lifecycle handler consumes it and the task stays active.
+            // This path never settles: only the replacement turn's genuine
+            // terminal event, or operator interruption, ends the task.
+            markSteerPending(store, sessionId);
+            let abortError: string | undefined;
+            let serverGone = false;
+            try {
+              await client.session.abort({ path: { id: sessionId } });
+            } catch (error: unknown) {
+              const message = errorMessage(error);
+              serverGone = message.includes("not found");
+              if (!serverGone) abortError = message;
+            }
+            if (serverGone) {
+              // Nothing left to steer: the session is gone. Settle error so
+              // the ledger never strands an active task with no server side.
+              try { transitionState(store, sessionId, "error"); } catch { /* settled concurrently */ }
+              void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", `Steer failed: session "${sessionId}" not found on the server.`)
+                .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
+              return `ERROR: Session "${sessionId}" not found — steer failed; task settled as error, history preserved.`;
+            }
+            if (abortError) {
+              // The abort may never have reached the server, so the turn may
+              // still be running — a replacement prompt now would compete
+              // with it instead of replacing it. Disarm the claim (the live
+              // turn's genuine terminal event must still settle it) and stay
+              // active without sending.
+              consumeSteerPending(store, sessionId);
+              return `ERROR: abort failed (${abortError}) — task left active; the running turn was not stopped, so no message was sent. Retry task_continue to steer again.`;
+            }
+            // The turn is dead: fire the parent message as the next user turn.
+            // Fire-and-forget like every prompt — the lifecycle event owns
+            // settlement, and the prompt-failure path owns delivery failure.
+            const steerText = [
+              "[Parent steer — read before continuing.]",
+              "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
+              "",
+              args.prompt,
+            ].join("\n");
+            fireChildPrompt(client, store, {
+              childSessionId: sessionId,
+              parentSessionId: active.parentSessionId,
+              agentName: active.agentName,
+              description: active.description,
+              ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
+            }, steerText);
+            return `Steer sent to ${sessionId} (@${active.agentName}): the running turn was stopped and the message was sent as the next turn. The task stays active; its outcome arrives as a dynamic-task-notify message.`;
           }
 
           let task;
@@ -664,7 +750,7 @@ export default async function dynamicTaskPlugin(
 
       task_notify: tool({
         description:
-          "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. (Children spawned by dynamic_task only.)",
+          "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)",
         args: {
           message: tool.schema.string().describe("What the parent needs to know"),
         },
@@ -723,17 +809,24 @@ export default async function dynamicTaskPlugin(
             try {
               const sessionInfo = await client.session.get({ path: { id: sessionId } });
               const messages = await readSessionMessages(client, sessionId);
-              const status = task.state === "active"
+              // The store is the liveness authority: Status reports the tracked
+              // state verbatim and never contradicts the task_continue gate.
+              // The live API inference is advisory only — a child that just
+              // wrote text (e.g. a task_notify) reads "completed" from the
+              // message stream while still active, so it renders as a
+              // subordinate block, computed for active tasks alone.
+              const live = task.state === "active"
                 ? extractSessionStatus(sessionInfo, messages)
-                : task.state;
+                : undefined;
 
               return formatTaskResultSummary({
                 sessionId,
-                status,
+                status: task.state,
                 messageCount: messages.length,
                 latestText: getLatestAssistantText(messages) || "(No assistant text found)",
                 tracked: true,
                 notification: getLatestNotification(sessionId),
+                liveStatus: live,
               });
             } catch {
               // API error — return what we know from state

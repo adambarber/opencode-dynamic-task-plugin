@@ -54,6 +54,15 @@ export function getLatestNotification(childSessionId: string): NotificationRecor
   return null;
 }
 
+// Turn-scoped read: a revived task is a new turn (fresh startedAt), so
+// history from before its start belongs to the previous turn and must not
+// read as the current turn's status. Same-ms records still show — harmless.
+export function getTurnNotification(childSessionId: string, turnStartedAt: number): NotificationRecord | null {
+  const latest = getLatestNotification(childSessionId);
+  if (!latest || latest.at < turnStartedAt) return null;
+  return latest;
+}
+
 export function clearNotifyLedger(): void {
   notifyLedger.length = 0;
   gateLedger.clear();

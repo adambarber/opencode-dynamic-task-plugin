@@ -481,6 +481,18 @@ describe("task_continue branches", () => {
     assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`);
   });
 
+  it("a revived turn does not wear the previous turn's notification", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    await settle(ctx.harness, id);
+    await new Promise((r) => setTimeout(r, 10));
+    await ctx.harness.tool.task_continue.execute({ session_id: id, prompt: "again" });
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(!status.includes("Last notification"), `new turn, nothing reported yet. got: ${status}`);
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
+    assert.ok(!summary.includes("Last notification"), `same for result reads. got: ${summary}`);
+  });
+
   it("unknown sessions are refused as untracked", async () => {
     const out = await ctx.harness.tool.task_continue.execute({
       session_id: "ses_missing",

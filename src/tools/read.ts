@@ -3,7 +3,7 @@
 // TTL pruning.
 import { eventField, errorMessage } from "../shared/session-lifecycle.js";
 import { getLatestAssistantText, extractSessionStatus } from "../shared/prompt.js";
-import { getLatestNotification } from "../shared/notify.js";
+import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
   formatTaskResultSummary,
   formatTaskListSummary,
@@ -43,9 +43,9 @@ export async function executeTaskResult(deps: ToolDeps, args: ReadArgs): Promise
         status: task.state,
         messageCount: messages.length,
         latestText: getLatestAssistantText(messages) || "(No assistant text found)",
-        tracked: true,
-        notification: getLatestNotification(sessionId),
-        liveStatus: live,
+                tracked: true,
+                notification: getTurnNotification(sessionId, task.startedAt),
+                liveStatus: live,
       });
     } catch {
       // API error — return what we know from state
@@ -55,7 +55,7 @@ export async function executeTaskResult(deps: ToolDeps, args: ReadArgs): Promise
         messageCount: 0,
         latestText: "(API unavailable)",
         tracked: true,
-        notification: getLatestNotification(sessionId),
+        notification: getTurnNotification(sessionId, task.startedAt),
       });
     }
   }
@@ -105,7 +105,7 @@ export async function executeTaskStatus(deps: ToolDeps, args: ReadArgs): Promise
   if (!task) {
     return unknownSessionResult(sessionId);
   }
-  return formatTaskStatusDetail(task, getLatestNotification(sessionId) ?? null);
+  return formatTaskStatusDetail(task, getTurnNotification(sessionId, task.startedAt) ?? null);
 }
 
 export async function executeTaskList(deps: ToolDeps): Promise<string> {

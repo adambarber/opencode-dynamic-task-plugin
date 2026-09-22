@@ -9,8 +9,16 @@ const DEBUG_DIR = ".dynamic-task-logs";
 // default; log paths embed server-unique session ids, so a second init
 // cannot collide — threading a root through every call site buys no safety.
 let debugRoot = DEBUG_DIR;
-const DEFAULT_DEBUG_BLOCKLIST = (process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST ?? "prompt,fullPrompt").split(",").slice(0, 4);
+// Payload cap: at most MAX_DEBUG_FIELDS fields ever leave the process.
 const MAX_DEBUG_FIELDS = 4;
+
+// Read at call time, never at import: hosts and tests set env after load,
+// like every other knob. No length cap — the cap above bounds emitted
+// FIELDS, not the operator's blocklist (truncating it would silently unblock).
+function currentBlocklist(): string[] {
+  const raw = process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST ?? "prompt,fullPrompt";
+  return raw.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
 
 export function configureDebugRoot(directory: string): void {
   debugRoot = directory ? path.join(directory, DEBUG_DIR) : DEBUG_DIR;
@@ -23,8 +31,8 @@ export function getDebugLogPath(parentSessionId: string, childSessionId: string)
 }
 
 export function safeDebugPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  if (!payload || typeof payload !== "object") return {};
-  const blocklist = DEFAULT_DEBUG_BLOCKLIST;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
+  const blocklist = currentBlocklist();
   const clone: Record<string, unknown> = {};
   const keys = Object.keys(payload).slice(0, MAX_DEBUG_FIELDS);
   for (const key of keys) {

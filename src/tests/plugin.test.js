@@ -720,6 +720,22 @@ describe("safeDebugPayload", () => {
     const result = safeDebugPayload({ prompt: "x", token: "secret", latestText: "done" });
     assert.ok(!("prompt" in result), "prompt must be blocked by default blocklist");
   });
+
+  it("reads the blocklist at call time and honors every entry", () => {
+    const prev = process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST;
+    process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST = "alpha,beta,gamma,delta,epsilon";
+    try {
+      assert.ok(!("alpha" in safeDebugPayload({ alpha: "x" })));
+      assert.ok(!("epsilon" in safeDebugPayload({ epsilon: "x", ok: 1 })), "the fifth entry must also block");
+    } finally {
+      if (prev !== undefined) process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST = prev;
+      else delete process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST;
+    }
+  });
+
+  it("rejects array payloads instead of indexing them", () => {
+    assert.deepStrictEqual(safeDebugPayload(["a", "b"]), {});
+  });
 });
 
 describe("getDebugLogPath", () => {

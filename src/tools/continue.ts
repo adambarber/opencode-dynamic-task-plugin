@@ -66,6 +66,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
         if (state) {
           return `Session "${sessionId}" is gone on the server, but the task had already settled as ${state} — history preserved.`;
         }
+        return `ERROR: steer failed for "${sessionId}"; task state unknown — history unavailable.`;
       }
       void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", `Steer failed: session "${sessionId}" not found on the server.`)
         .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
@@ -85,7 +86,8 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     // replacement prompt now would launch an untracked turn on a settled
     // task's session and report a steer that never happened.
     if (!store.activeTasks.has(sessionId)) {
-      consumeSteerPending(store, sessionId);
+      // No disarm needed: the flag lives on the active record and
+      // transitionState strips it, so nothing is armed anymore by construction.
       const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
       const remedy = state === "interrupted"
         ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"

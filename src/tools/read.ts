@@ -105,7 +105,7 @@ export async function executeTaskStatus(deps: ToolDeps, args: ReadArgs): Promise
   if (!task) {
     return unknownSessionResult(sessionId);
   }
-  return formatTaskStatusDetail(task, getTurnNotification(sessionId, task.startedAt) ?? null);
+  return formatTaskStatusDetail(task, getTurnNotification(sessionId, task.startedAt));
 }
 
 export async function executeTaskList(deps: ToolDeps): Promise<string> {

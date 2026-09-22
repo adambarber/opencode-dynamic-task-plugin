@@ -5,9 +5,12 @@ const DEBUG_DIR = ".dynamic-task-logs";
 // Same scoping rule as the ledger: logs land in the project the host gave
 // the plugin, not the process CWD. initPluginState sets this once per boot;
 // the default keeps the pure path helper usable without boot.
-// Tenet 9: process-global by design. Debug output is best-effort and off by
-// default; log paths embed server-unique session ids, so a second init
-// cannot collide — threading a root through every call site buys no safety.
+// Tenet 9: process-global by design, with the true residual stated plainly —
+// a second init reroutes ALL instances' subsequent debug lines into the
+// newest project dir (misrouting, not collision: session ids never collide,
+// directory paths do). Accepted because debug output is best-effort and off
+// by default with single-instance the norm; per-instance scoping would
+// thread a root through ~20 call sites in 5 files for diagnostics-only gain.
 let debugRoot = DEBUG_DIR;
 // Payload cap: at most MAX_DEBUG_FIELDS fields ever leave the process.
 const MAX_DEBUG_FIELDS = 4;

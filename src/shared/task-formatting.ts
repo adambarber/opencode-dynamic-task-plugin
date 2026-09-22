@@ -103,6 +103,9 @@ export function formatTaskResultSummary(input: {
   latestText: string;
   tracked: boolean;
   notification?: NotificationRecord | null | undefined;
+  // Transport/read failures render through this same funnel (never raw
+  // JSON): one voice for every read path, the error rides as data.
+  error?: string | undefined;
   // Advisory live API inference, rendered as a subordinate block only. Never
   // overrides Status: the store is the liveness authority. Present only for
   // tracked active tasks, where the API read can disagree with the store.
@@ -124,6 +127,10 @@ export function formatTaskResultSummary(input: {
     `Messages: ${input.messageCount}`,
     `Tracked: ${input.tracked ? "yes" : "no"}`,
   ];
+
+  if (input.error !== undefined) {
+    lines.push(`Error: ${input.error}`);
+  }
 
   if (input.liveStatus !== undefined) {
     lines.push(

@@ -558,9 +558,10 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(!summary.includes("Live inference"), `nothing to contradict once settled. got: ${summary}`);
   });
 
-  it("task_result maps API 404 to unknown", async () => {
+  it("task_result maps API 404 to unknown, in the same markdown voice", async () => {
     const summary = await ctx.harness.tool.task_result.execute({ session_id: "ses_gone" });
-    assert.ok(summary.includes("unknown"), `got: ${summary}`);
+    assert.ok(summary.includes("Status: unknown"), `got: ${summary}`);
+    assert.ok(summary.startsWith("## Task Result"), `one format for all reads. got: ${summary}`);
   });
 
   it("task_result maps transport errors to error state", async () => {

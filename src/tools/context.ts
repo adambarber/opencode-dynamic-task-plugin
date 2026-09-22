@@ -7,6 +7,7 @@ import type { TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
 import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { extractMessages } from "../shared/prompt.js";
+import { formatTaskResultSummary } from "../shared/task-formatting.js";
 
 export interface ToolDeps {
   client: OpenCodeClient;
@@ -23,9 +24,16 @@ export function missingSessionId(args: unknown): string | null {
   return null;
 }
 
-// Single shape for unknown sessions across all tools.
+// Single shape for unknown sessions across all tools — the same markdown
+// voice as every other read (never raw JSON).
 export function unknownSessionResult(sessionId: string): string {
-  return JSON.stringify({ status: "unknown", session_id: sessionId });
+  return formatTaskResultSummary({
+    sessionId,
+    status: "unknown",
+    messageCount: 0,
+    latestText: "(No session record found)",
+    tracked: false,
+  });
 }
 
 // Read-only session message fetch shared by the session readers.

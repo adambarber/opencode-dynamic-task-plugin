@@ -75,18 +75,21 @@ export async function executeTaskResult(deps: ToolDeps, args: ReadArgs): Promise
       notification: getLatestNotification(sessionId),
     });
   } catch (err: unknown) {
-    // 404 or network error → return unknown state
+    // 404 or network error → unknown/error states in the same markdown voice.
     const message = errorMessage(err);
     const status = eventField(err, "status");
     const code = eventField(err, "code");
     if (status === 404 || message.includes("not found")) {
       return unknownSessionResult(sessionId);
     }
-    return JSON.stringify({
+    const retryable = code === "ECONNREFUSED" || code === "ETIMEDOUT";
+    return formatTaskResultSummary({
+      sessionId,
       status: "error",
-      session_id: sessionId,
-      error: message || "Network error querying session",
-      retryable: code === "ECONNREFUSED" || code === "ETIMEDOUT",
+      messageCount: 0,
+      latestText: "(See error above)",
+      tracked: false,
+      error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
     });
   }
 }

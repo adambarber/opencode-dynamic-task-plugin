@@ -665,6 +665,16 @@ describe("formatTaskResultSummary", () => {
     assert.ok(!result.includes("Live inference"));
   });
 
+  it("renders read failures in the same voice with the error as data", () => {
+    const result = formatTaskResultSummary({
+      sessionId: "ses_gone", status: "error", messageCount: 0,
+      latestText: "(See error above)", tracked: false, error: "boom (not retryable)",
+    });
+    assert.match(result, /^## Task Result/);
+    assert.match(result, /Status: error/);
+    assert.match(result, /Error: boom \(not retryable\)/);
+  });
+
   it("includes recovery guidance for error status", () => {
     const result = formatTaskResultSummary({
       sessionId: "ses_123", status: "error", messageCount: 4,

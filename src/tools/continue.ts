@@ -2,6 +2,7 @@
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
 import { errorMessage } from "../shared/session-lifecycle.js";
+import { parseModelOverride, describeModelShapeError } from "../shared/prompt.js";
 import { debugLog } from "../debug-logger.js";
 import { gateLedger } from "../shared/notify.js";
 import {
@@ -29,6 +30,7 @@ import {
 export interface ContinueArgs {
   session_id?: string | undefined;
   prompt?: string | undefined;
+  model?: string | undefined;
 }
 
 export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): Promise<string> {
@@ -41,6 +43,15 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
 
   if (args.prompt.length > 100000) {
     return promptTooLong(args.prompt.length);
+  }
+
+  // Model shape is validated before anything moves: a bad id fails without
+  // touching the task. The override applies to revivals only — steers keep
+  // the task's model (a mid-turn model swap is a new task, not a steer).
+  const modelOverride = parseModelOverride(args.model);
+  const modelShapeError = describeModelShapeError(args.model);
+  if (modelShapeError) {
+    return `ERROR: ${modelShapeError}`;
   }
 
   pruneRetainedTasks(store, config);
@@ -125,7 +136,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
 
   let task;
   try {
-    task = reviveRetainedTask(store, sessionId, config);
+    task = reviveRetainedTask(store, sessionId, config, modelOverride);
     // A revived task is a fresh settlement subject: clear its
     // settle-dedup so the next completion can be delivered.
     gateLedger.forgetChild(sessionId);

@@ -512,6 +512,29 @@ describe("task_continue branches", () => {
     assert.ok(!summary.includes("Last notification"), `same for result reads. got: ${summary}`);
   });
 
+  it("reviving with a model override reroutes and persists it", async () => {
+    const { id } = await spawn(ctx.harness, { model: "nvidia/z-ai/glm-5.3" });
+    ctx.spawned.push(id);
+    await settle(ctx.harness, id);
+    const out = await ctx.harness.tool.task_continue.execute({ session_id: id, prompt: "again", model: "other/thing-1" });
+    assert.ok(out.includes("Follow-up sent"), `got: ${out}`);
+    const routed = ctx.harness.client._state.promptBodies.filter((p) => p.to === id);
+    assert.deepStrictEqual(routed[routed.length - 1].body.model, { providerID: "other", modelID: "thing-1" });
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("Model: other/thing-1"), `persists on the record. got: ${status}`);
+  });
+
+  it("a bare model on continue fails without touching the task", async () => {
+    const { id } = await spawn(ctx.harness);
+    await settle(ctx.harness, id);
+    const before = ctx.harness.client._state.promptBodies.length;
+    const out = await ctx.harness.tool.task_continue.execute({ session_id: id, prompt: "again", model: "bare-id" });
+    assert.ok(out.includes("Invalid model"), `got: ${out}`);
+    assert.strictEqual(ctx.harness.client._state.promptBodies.length, before, "no prompt fires");
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("completed"), `still settled. got: ${status}`);
+  });
+
   it("unknown sessions are refused as untracked", async () => {
     const out = await ctx.harness.tool.task_continue.execute({
       session_id: "ses_missing",

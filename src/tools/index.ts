@@ -18,6 +18,7 @@ import {
   TASK_INTERRUPT_DESCRIPTION,
   TASK_LIST_DESCRIPTION,
   TASK_STATUS_DESCRIPTION,
+  MODEL_ARG_DESCRIPTION,
 } from "../shared/voice.js";
 
 export function buildToolMap(deps: ToolDeps) {
@@ -31,7 +32,7 @@ export function buildToolMap(deps: ToolDeps) {
           model: tool.schema
             .string()
             .optional()
-            .describe("Optional model override as providerID/modelID exactly as spelled in opencode.jsonc (e.g. \"nvidia/z-ai/glm-5.3\"). Bare ids are rejected at admission."),
+            .describe(MODEL_ARG_DESCRIPTION),
           depends_on: tool.schema
             .array(tool.schema.string())
             .optional()
@@ -51,6 +52,7 @@ export function buildToolMap(deps: ToolDeps) {
         args: {
           session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
           prompt: tool.schema.string().describe("Follow-up instructions"),
+          model: tool.schema.string().optional().describe(`${MODEL_ARG_DESCRIPTION} Applies when reviving a settled task; steers keep the task's model.`),
         },
         async execute(args) {
           return executeTaskContinue(deps, args);

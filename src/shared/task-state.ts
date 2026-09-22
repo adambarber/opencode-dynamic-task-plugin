@@ -21,6 +21,7 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import type { DynamicTaskConfig } from "./config.js";
+import type { ModelOverride } from "./prompt.js";
 import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
 
 export type TaskState =
@@ -218,11 +219,14 @@ export function noteLateOutcome(store: TaskStore, childSessionId: string, outcom
 // Continuation revival: a settled task earns a live turn by moving back to
 // active through this gate — the same slot accounting as a fresh spawn, the
 // same single-winner settlement when its next idle event lands. The old
-// retained history is replaced by the revived record, not duplicated.
+// retained history is replaced by the revived record, not duplicated. An
+// explicit model replaces the retained one for the new turn (revive-only:
+// steers keep the task's model); omitted keeps it.
 export function reviveRetainedTask(
   store: TaskStore,
   childSessionId: string,
   config?: Pick<DynamicTaskConfig, "maxConcurrent">,
+  model?: ModelOverride | undefined,
 ): ActiveTaskState {
   const retained = store.retainedTasks.get(childSessionId);
   if (!retained) {
@@ -236,7 +240,12 @@ export function reviveRetainedTask(
     if (limitError) throw new Error(limitError);
   }
   const { state: _terminal, retainedAt: _at, abortError: _err, ...core } = retained;
-  const revived: ActiveTaskState = { ...core, state: "active", startedAt: Date.now() };
+  const revived: ActiveTaskState = {
+    ...core,
+    state: "active",
+    startedAt: Date.now(),
+    ...(model !== undefined ? { requestedModel: model } : {}),
+  };
   store.retainedTasks.delete(childSessionId);
   store.activeTasks.set(childSessionId, revived);
   emitRetainedChange(store);

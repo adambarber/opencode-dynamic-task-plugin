@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { RetainedTaskState } from "./task-state.js";
 
 // Host event payloads are untyped JSON at this boundary. isEventRecord is the
@@ -213,8 +213,8 @@ export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: st
   if (!filePath) {
     throw new Error("Task ledger path is required");
   }
-  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
-  if (dir) {
+  const dir = dirname(filePath);
+  if (dir && dir !== ".") {
     mkdirSync(dir, { recursive: true });
   }
   const entries = Object.fromEntries(retainedTasks);

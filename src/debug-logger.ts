@@ -5,6 +5,9 @@ const DEBUG_DIR = ".dynamic-task-logs";
 // Same scoping rule as the ledger: logs land in the project the host gave
 // the plugin, not the process CWD. initPluginState sets this once per boot;
 // the default keeps the pure path helper usable without boot.
+// Tenet 9: process-global by design. Debug output is best-effort and off by
+// default; log paths embed server-unique session ids, so a second init
+// cannot collide — threading a root through every call site buys no safety.
 let debugRoot = DEBUG_DIR;
 const DEFAULT_DEBUG_BLOCKLIST = (process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST ?? "prompt,fullPrompt").split(",").slice(0, 4);
 const MAX_DEBUG_FIELDS = 4;

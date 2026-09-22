@@ -202,6 +202,8 @@ interface AgentCacheEntry {
 }
 
 const agentCaches = new WeakMap<object, AgentCacheEntry>();
+// Tenet 9: the epoch is process-global by design — per-client lists stay
+// isolated in the WeakMap; the epoch only invalidates, never shares.
 let agentCacheEpoch = 0;
 
 const CACHE_TTL = 300000;

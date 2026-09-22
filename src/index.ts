@@ -44,9 +44,11 @@ export default async function dynamicTaskPlugin(
     return {};
   }
 
-  // Initialize state at plugin load time — captured per instance: a second
-  // init (multi-workspace) must never reroute this instance's events into
-  // another project's store.
+  // Initialize state at plugin load time — the store and config are captured
+  // per instance: a second init (multi-workspace) must never reroute this
+  // instance's events into another project's store. Debug root and
+  // notification ledgers stay process-global by design (Tenet 9 — see the
+  // exemption note in docs/tasks/06-persistence-and-observability.md).
   const { config, store } = initPluginState(directory, options);
   const deps = { client, store, config, directory };
 

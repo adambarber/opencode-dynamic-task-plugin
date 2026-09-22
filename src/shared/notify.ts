@@ -36,6 +36,9 @@ export interface NotificationRecord {
 }
 
 const notifyLedger: NotificationRecord[] = [];
+// Tenet 9: process-global by design — every key is a server-unique child
+// session id, so two plugin instances cannot share a key; only the bounded
+// memory window is shared, which is benign.
 const NOTIFY_LEDGER_MAX = 200;
 
 export function recordNotification(entry: NotificationRecord): void {

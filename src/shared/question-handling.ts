@@ -132,6 +132,8 @@ export function rejectQuestion(client: OpenCodeClient, questionId: string, reaso
 }
 
 // question.asked carries no session id; correlate asked → replied.
+// Tenet 9: process-global by design — keys are server-unique question ids
+// (see the exemption note in docs/tasks/06-persistence-and-observability.md).
 // FIFO-capped: questions that never resolve (operator abandons the child)
 // must not grow the map unboundedly; the oldest correlations are least
 // likely to receive a late settlement event.

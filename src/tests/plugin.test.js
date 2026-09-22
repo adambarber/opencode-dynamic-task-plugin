@@ -20,6 +20,7 @@ import {
   getLatestAssistantText,
   hydrateLatestOutcome,
   parseModelOverride,
+  describeModelShapeError,
   isTextPart,
   isMessage,
   messageRoleOf,
@@ -559,11 +560,26 @@ import {
 } from "../../dist/shared/task-formatting.js";
 import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
 
+describe("describeModelShapeError", () => {
+  it("rejects bare ids with the qualified form", () => {
+    assert.match(describeModelShapeError("GLM-5.3-Flash"), /providerID\/modelID/);
+    assert.match(describeModelShapeError("GLM-5.3-Flash"), /GLM-5\.3-Flash/);
+  });
+
+  it("accepts qualified, absent, and blank inputs", () => {
+    assert.strictEqual(describeModelShapeError("nvidia/z-ai/glm-5.3"), null);
+    assert.strictEqual(describeModelShapeError(undefined), null);
+    assert.strictEqual(describeModelShapeError("   "), null);
+  });
+});
+
 describe("buildBackgroundPrompt", () => {
   it("adds explicit background instructions before user prompt", () => {
     const result = buildBackgroundPrompt("Return COMPLETED_OK when done.");
     assert.match(result, /You are running as a background child task\./);
     assert.match(result, /Return a final, self-contained answer\./);
+    assert.match(result, /preempts your current turn/);
+    assert.match(result, /never wait/);
     assert.match(result, /Return COMPLETED_OK when done\./);
   });
 });
@@ -586,11 +602,18 @@ describe("formatParentNotification", () => {
     assert.match(message, /task_result or task_continue/);
   });
 
-  it("formats a child notice with the reply path", () => {
-    const message = formatParentNotification(state, "notice", "blocked on credentials");
-    assert.match(message, /Message from a running child task:/);
-    assert.match(message, /blocked on credentials/);
-    assert.match(message, /task_continue/);
+  it("formats a child notice under its own tag with the reply path", () => {
+    const noticeMessage = formatParentNotification(state, "notice", "blocked on credentials");
+    assert.match(noticeMessage, /dynamic-task-notice/);
+    assert.match(noticeMessage, /Message from a running child task:/);
+    assert.match(noticeMessage, /blocked on credentials/);
+    assert.match(noticeMessage, /task_continue/);
+  });
+
+  it("keeps settlements under the settlement tag", () => {
+    assert.match(formatParentNotification(state, "completed", "ok"), /dynamic-task-notify/);
+    assert.match(formatParentNotification(state, "error", "bad"), /dynamic-task-notify/);
+    assert.ok(!formatParentNotification(state, "notice", "x").includes("[dynamic-task-notify]"));
   });
 
   it("renders the empty-output placeholder", () => {
@@ -619,6 +642,27 @@ describe("formatTaskResultSummary", () => {
     });
     assert.match(result, /Recommended next action: use task_result again later\./);
     assert.match(result, /Tracked: yes/);
+  });
+
+  it("renders the store state for active tasks with the live read as advisory", () => {
+    const result = formatTaskResultSummary({
+      sessionId: "ses_123", status: "active", messageCount: 4,
+      latestText: "Still working", tracked: true, liveStatus: "completed",
+    });
+    assert.match(result, /Status: active/);
+    assert.match(result, /Live inference/);
+    assert.match(result, /Session API suggests: completed/);
+    assert.match(result, /task_status/);
+    assert.match(result, /Recommended next action: use task_result again later\./);
+  });
+
+  it("omits the advisory block when no live read disagrees", () => {
+    const result = formatTaskResultSummary({
+      sessionId: "ses_123", status: "completed", messageCount: 4,
+      latestText: "Done", tracked: true,
+    });
+    assert.match(result, /Status: completed/);
+    assert.ok(!result.includes("Live inference"));
   });
 
   it("includes recovery guidance for error status", () => {
@@ -1473,11 +1517,28 @@ describe("admission gate: resolveDependencies", () => {
     assert.deepStrictEqual(resolveDependencies(s2, ["s1"]), { ok: true });
   });
 
-  it("refuses with the pending set for running or failed deps", () => {
+  it("refuses with the blocking set and names each dep state", () => {
     const active = storeWith("s1", "active");
-    assert.deepStrictEqual(resolveDependencies(active, ["s1"]), { ok: false, pending: ["s1"] });
+    assert.deepStrictEqual(resolveDependencies(active, ["s1"]), { ok: false, pending: [{ id: "s1", state: "active" }] });
     const failed = storeWith("s2", "error");
-    assert.deepStrictEqual(resolveDependencies(failed, ["s2"]), { ok: false, pending: ["s2"] });
+    assert.deepStrictEqual(resolveDependencies(failed, ["s2"]), { ok: false, pending: [{ id: "s2", state: "error" }] });
+  });
+
+  it("settled-waits admit failed and interrupted deps but still block actives", () => {
+    const failed = storeWith("s2", "error");
+    assert.deepStrictEqual(resolveDependencies(failed, undefined, ["s2"]), { ok: true });
+    const halted = storeWith("s3", "interrupted");
+    assert.deepStrictEqual(resolveDependencies(halted, undefined, ["s3"]), { ok: true });
+    const active = storeWith("s1", "active");
+    assert.deepStrictEqual(resolveDependencies(active, undefined, ["s1"]), { ok: false, pending: [{ id: "s1", state: "active" }] });
+  });
+
+  it("strict wins when an id sits in both lists", () => {
+    const failed = storeWith("s2", "error");
+    assert.deepStrictEqual(
+      resolveDependencies(failed, ["s2"], ["s2"]),
+      { ok: false, pending: [{ id: "s2", state: "error" }] },
+    );
   });
 
   it("treats unknown ids as satisfied (aged-out tolerance)", () => {

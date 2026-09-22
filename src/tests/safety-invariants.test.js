@@ -79,9 +79,9 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
   it("no raw store/flag mutation outside task-state.ts", () => {
     const sanctioned = `task-state.ts`;
     // (?!=) excludes == / === reads: only real assignments are bypasses.
-    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice) belong to the
+    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice/steerPending) belong to the
     // state machine alone: outside task-state.ts they may be read, never written.
-    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice)\s*=(?!=)/;
+    const pattern = /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|steerPending)\s*=(?!=)/;
     const hits = listProdFiles()
       .filter((f) => !f.endsWith(sanctioned))
       .flatMap((f) => scanLines(f, pattern));
@@ -148,7 +148,7 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
       0,
       formatViolations(
         "docs/tasks/09-non-blocking-settlement.md",
-        "Child sessions must be created/aborted only via the entry's spawn/interrupt paths.",
+        "Child sessions must be created/aborted only via the entry's spawn/interrupt/steer paths.",
         hits,
       ),
     );

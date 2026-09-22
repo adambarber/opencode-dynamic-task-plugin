@@ -103,7 +103,7 @@ function createToolsMock(hooks = {}) {
           return Promise.reject(new Error(`prompt failed for ${path.id}`));
         }
         const text = body?.parts?.[0]?.text || "";
-        if (text.includes("[dynamic-task-notify]")) {
+        if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
           state.notifications.push({ to: path.id, message: text });
         } else {
           state.promptBodies.push({ to: path.id, body });
@@ -208,7 +208,7 @@ async function setupTwoTurnHarness() {
   let parentNotifies = 0;
   h.client.session.prompt = (args) => {
     const text = args.body?.parts?.[0]?.text || "";
-    if (text.includes("[dynamic-task-notify]")) {
+    if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
       parentNotifies++;
       if (parentNotifies === 1) return Promise.reject(new Error("parent busy"));
     }
@@ -251,6 +251,24 @@ describe("dynamic_task validation", () => {
       { sessionID: "p1" },
     );
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
+  });
+
+  it("rejects bare model ids at admission, before creating a session", async () => {
+    const before = ctx.harness.client._state.sessions.size;
+    const out = await ctx.harness.tool.dynamic_task.execute(
+      { description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" },
+      { sessionID: "p1" },
+    );
+    assert.ok(out.includes("Invalid model"), `got: ${out}`);
+    assert.ok(out.includes("providerID/modelID"), `names the shape. got: ${out}`);
+    assert.ok(out.includes("GLM-5.3-Flash"), `names the suspect. got: ${out}`);
+    assert.strictEqual(ctx.harness.client._state.sessions.size, before, "no session created for a bad id");
+  });
+
+  it("echoes a qualified model in the spawn confirmation", async () => {
+    const { out, id } = await spawn(ctx.harness, { model: "nvidia/z-ai/glm-5.3" });
+    ctx.spawned.push(id);
+    assert.ok(out.includes("Model: nvidia/z-ai/glm-5.3"), `got: ${out}`);
   });
 
   it("rejects blocked agents", async () => {
@@ -309,19 +327,64 @@ describe("task_continue branches", () => {
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
   });
 
-  it("refuses a still-running task — follow-ups wait for settlement", async () => {
+  it("steers a still-running task — the turn stops and the message becomes the next turn", async () => {
     const { id } = await spawn(ctx.harness);
     ctx.spawned.push(id);
     const out = await ctx.harness.tool.task_continue.execute({
       session_id: id,
       prompt: "follow up",
     });
-    assert.ok(out.includes("still running"), `got: ${out}`);
-    assert.strictEqual(
-      ctx.harness.client._state.promptBodies.filter((p) => p.to === id && p.body.parts[0].text.includes("follow up")).length,
-      0,
-      "no follow-up prompt reaches a running child",
+    assert.ok(out.includes("Steer sent"), `got: ${out}`);
+    assert.ok(ctx.harness.client._state.aborted.includes(id), "the running turn is stopped first");
+    const followUps = ctx.harness.client._state.promptBodies.filter(
+      (p) => p.to === id && p.body.parts[0].text.includes("follow up"),
     );
+    assert.strictEqual(followUps.length, 1, "the message becomes the next turn");
+    assert.ok(
+      followUps[0].body.parts[0].text.includes("[Parent steer"),
+      `framed as a preemption. got: ${followUps[0].body.parts[0].text}`,
+    );
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("active"), `a steer never settles. got: ${status}`);
+  });
+
+  it("a steered turn's abort echo never settles the task, but the next genuine event does", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    await ctx.harness.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    await settle(ctx.harness, id);
+    const status = await ctx.harness.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("active"), `the echo is consumed. got: ${status}`);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 0, "the echo notifies nothing");
+    await settle(ctx.harness, id);
+    assert.strictEqual(ctx.harness.client._state.notifications.length, 1, "the genuine settlement delivers");
+    assert.ok(ctx.harness.client._state.notifications[0].message.includes("completed successfully"));
+  });
+
+  it("steer on a vanished session settles error instead of stranding", async () => {
+    const h = await setupTools({ abortFailIds: new Set(["ses_tools_1"]) });
+    const { id } = await spawn(h);
+    const out = await h.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    assert.ok(out.includes("not found"), `got: ${out}`);
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("error"), `settled error, never stranded active. got: ${status}`);
+  });
+
+  it("a failed steer abort stays active and sends nothing", async () => {
+    const h = await setupTools({ abortThrowsOnce: true });
+    const { id } = await spawn(h);
+    const out = await h.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    assert.ok(out.includes("abort failed"), `reports the gap. got: ${out}`);
+    assert.ok(out.includes("active"), `admits the child may be live. got: ${out}`);
+    assert.strictEqual(
+      h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
+      0,
+      "no competing prompt races the live turn",
+    );
+    const status = await h.tool.task_status.execute({ session_id: id });
+    assert.ok(status.includes("active"), `stays settable. got: ${status}`);
+    await settle(h, id);
+    assert.strictEqual(h.client._state.notifications.length, 1, "the live turn still settles");
   });
 
   it("revives a settled task and the new turn settles again", async () => {
@@ -445,12 +508,22 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok((await ctx.harness.tool.task_result.execute({})).includes("required"));
   });
 
-  it("task_result reports tracked active tasks", async () => {
+  it("task_result reports store state for active tasks with the live read as advisory", async () => {
     const { id } = await spawn(ctx.harness);
     ctx.spawned.push(id);
     const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
-    assert.ok(summary.includes(id), `got: ${summary}`);
+    assert.ok(summary.includes("Status: active"), `the store is authoritative. got: ${summary}`);
+    assert.ok(summary.includes("Live inference"), `the API read stays advisory. got: ${summary}`);
+    assert.ok(summary.includes("task_status"), `points at the store read. got: ${summary}`);
     assert.ok(summary.includes("Tracked: yes"), `got: ${summary}`);
+  });
+
+  it("task_result reports settled state with no advisory block", async () => {
+    const { id } = await spawn(ctx.harness);
+    await settle(ctx.harness, id);
+    const summary = await ctx.harness.tool.task_result.execute({ session_id: id });
+    assert.ok(summary.includes("Status: completed"), `got: ${summary}`);
+    assert.ok(!summary.includes("Live inference"), `nothing to contradict once settled. got: ${summary}`);
   });
 
   it("task_result maps API 404 to unknown", async () => {
@@ -810,6 +883,25 @@ describe("admission dependencies", () => {
     await settle(h, a.id);
     const admitted = await spawn(h, { description: "ready task", depends_on: [a.id] });
     assert.ok(admitted.out.includes("in background"), `got: ${admitted.out}`);
+    await h.tool.task_interrupt.execute({ session_id: admitted.id });
+  });
+
+  it("names the blocking dep state, and depends_on_settled admits settled failures", async () => {
+    const h = await setupTools();
+    const a = await spawn(h, { description: "dep task" });
+    await h.fireEvent({ type: "session.error", properties: { sessionID: a.id, status: "error" } });
+
+    const refused = await h.tool.dynamic_task.execute(
+      { description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] },
+      { sessionID: "p1" },
+    );
+    assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
+    assert.ok(refused.includes(`${a.id} (error)`), `names the terminal state. got: ${refused}`);
+
+    const admitted = await spawn(h, { description: "lenient task", depends_on_settled: [a.id] });
+    assert.ok(admitted.out.includes("in background"), `settled failure satisfies. got: ${admitted.out}`);
+    const status = await h.tool.task_status.execute({ session_id: admitted.id });
+    assert.ok(status.includes(a.id), `the settled wait is recorded. got: ${status}`);
     await h.tool.task_interrupt.execute({ session_id: admitted.id });
   });
 

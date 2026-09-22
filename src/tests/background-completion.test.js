@@ -142,6 +142,17 @@ describe("Background Task Settlement", () => {
     return childId;
   }
 
+  it("a hung host log never stalls settlement — observability is detached", async () => {
+    harness.client.app.log = () => new Promise(() => {});
+    const childId = await spawn("parent_hung_log", "hung log task");
+    const settled = await Promise.race([
+      harness.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } }).then(() => true),
+      sleep(2000).then(() => false),
+    ]);
+    assert.ok(settled, "the event head must not serialize on the log round-trip");
+    assert.strictEqual(harness.client._notifications.length, 1, "settlement still notifies");
+  });
+
   it("spawns return immediately with a session id", async () => {
     const started = Date.now();
     const childId = await spawn("parent_fast");

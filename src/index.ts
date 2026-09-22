@@ -61,16 +61,16 @@ export default async function dynamicTaskPlugin(
       const evtSessionId = getSessionIdFromEvent(event);
       const topKeys = isEventRecord(event) ? Object.keys(event).slice(0, 8).join(",") : "(null)";
 
-      // The head is guarded too: a dead log call must never skip the question
-      // gate or lifecycle handling for every subsequent event.
-      try {
-        await safeLog(client, "info", `event: type=${eventType} name=${eventName} sid=${evtSessionId ?? "(none)"} keys=[${topKeys}]`);
-        debugLog("event-handler", "event-handler", "event-received", {
-          type: eventType,
-          name: eventName,
-          sessionId: evtSessionId,
-        });
-      } catch { /* best-effort visibility */ }
+      // The head never blocks the gate: observability is detached (void) —
+      // safeLog and debugLog can neither throw nor delay question and
+      // lifecycle handling, so every event reaches the settlement path even
+      // when the host log hangs.
+      void safeLog(client, "info", `event: type=${eventType} name=${eventName} sid=${evtSessionId ?? "(none)"} keys=[${topKeys}]`);
+      debugLog("event-handler", "event-handler", "event-received", {
+        type: eventType,
+        name: eventName,
+        sessionId: evtSessionId,
+      });
 
       // --- Question gate (Task 04): attribute through the gate, then settle.
       try {

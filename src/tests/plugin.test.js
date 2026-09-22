@@ -862,7 +862,7 @@ describe("normalizeDynamicTaskConfig", () => {
     const config = normalizeDynamicTaskConfig({});
     assert.strictEqual(config.maxDepth, 2);
     assert.strictEqual(config.maxConcurrent, 4);
-    assert.deepStrictEqual(config.blockedAgents, ["general"]);
+    assert.deepStrictEqual(config.blockedAgents, []);
     assert.strictEqual(config.allowSameAgentRecursion, false);
     assert.ok(config.agentCacheTtlMs > 0);
     assert.ok(config.retainedTaskTtlMs > 0);
@@ -913,12 +913,12 @@ describe("normalizeDynamicTaskConfig", () => {
     }
   });
 
-  it("empty env forbidden agents does NOT unblock 'general'", () => {
+  it("empty-string env var falls through to the default blocklist", () => {
     const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
     process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = "";
     try {
       const config = normalizeDynamicTaskConfig({});
-      assert.ok(config.blockedAgents.includes("general"));
+      assert.deepStrictEqual(config.blockedAgents, []);
     } finally {
       if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
       else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
@@ -942,7 +942,7 @@ describe("normalizeDynamicTaskConfig", () => {
     for (const junk of [",", " , ", ",,"]) {
       process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = junk;
       try {
-        assert.deepStrictEqual(normalizeDynamicTaskConfig({}).blockedAgents, ["general"], `env=${JSON.stringify(junk)}`);
+        assert.deepStrictEqual(normalizeDynamicTaskConfig({}).blockedAgents, [], `env=${JSON.stringify(junk)}`);
       } finally {
         if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
         else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
@@ -1045,9 +1045,9 @@ describe("normalizeAgentName", () => {
 });
 
 describe("validateAgent", () => {
-  const config = normalizeDynamicTaskConfig({});
+  const config = normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
 
-  it("rejects 'general' by default", () => {
+  it("rejects a configured blocked agent", () => {
     const result = validateAgent("general", config);
     assert.strictEqual(result.ok, false);
     if (!result.ok) assert.match(result.error, /general/i);
@@ -1457,7 +1457,8 @@ describe("admission gate: resolveAdmission", () => {
   });
 
   it("denies blocked agents", () => {
-    const result = resolveAdmission([{ name: "general" }], "general", [], config);
+    const blockedConfig = normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
+    const result = resolveAdmission([{ name: "general" }], "general", [], blockedConfig);
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.reason.kind, "blocked");
   });

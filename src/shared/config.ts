@@ -21,7 +21,10 @@ export const DEFAULT_CONFIG: DynamicTaskConfig = {
   agentCacheTtlMs: 300_000,
   retainedTaskTtlMs: 3_600_000,
   retainedTaskMaxEntries: 100,
-  blockedAgents: ["general"],
+  // Any agent dispatches by default — lineage, depth, and recursion policy
+  // bound the real hazards (self-spawning loops), not the agent name.
+  // Operators who want names barred keep the blocklist as policy.
+  blockedAgents: [],
   allowSameAgentRecursion: false,
 };
 

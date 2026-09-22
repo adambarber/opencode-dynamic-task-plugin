@@ -271,8 +271,15 @@ describe("dynamic_task validation", () => {
     assert.ok(out.includes("Model: nvidia/z-ai/glm-5.3"), `got: ${out}`);
   });
 
-  it("rejects blocked agents", async () => {
-    const out = await ctx.harness.tool.dynamic_task.execute(
+  it("admits any agent by default — general dispatches", async () => {
+    const { out, id } = await spawn(ctx.harness, { subagent_type: "general" });
+    ctx.spawned.push(id);
+    assert.ok(out.includes("@general"), `got: ${out}`);
+  });
+
+  it("rejects blocked agents when the operator configures the blocklist", async () => {
+    const h = await setupTools({}, { blockedAgents: ["general"] });
+    const out = await h.tool.dynamic_task.execute(
       { description: "task t", subagent_type: "general", prompt: "hi" },
       { sessionID: "p1" },
     );

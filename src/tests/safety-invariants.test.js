@@ -140,15 +140,19 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
 
   it("session create/abort funnel through the entry — no side doors", () => {
     const pattern = /client\.session\.(create|abort)\s*\(/;
+    // Tenet 9: create lives in the spawn executor; aborts live beside the
+    // claims that order them (steer in continue, settle-first in interrupt).
+    // No other module may create or abort sessions.
+    const sanctioned = ["tools/spawn.ts", "tools/continue.ts", "tools/interrupt.ts"];
     const hits = listProdFiles()
-      .filter((f) => !f.endsWith("index.ts"))
+      .filter((f) => !sanctioned.some((s) => f.endsWith(s)))
       .flatMap((f) => scanLines(f, pattern));
     assert.strictEqual(
       hits.length,
       0,
       formatViolations(
         "docs/tasks/09-non-blocking-settlement.md",
-        "Child sessions must be created/aborted only via the entry's spawn/interrupt/steer paths.",
+        "Child sessions must be created/aborted only via the spawn/interrupt/steer executors.",
         hits,
       ),
     );
@@ -391,7 +395,7 @@ describe("invariant: tests import production, never redefine it (Tenet 12)", () 
 // exactly the tools registered in src/index.ts (fidelity gate).
 describe("invariant: README tool inventory matches registered tools (Task 00)", () => {
   it("every documented tool is registered and vice versa", () => {
-    const indexSrc = readFileSync(path.join(SRC_DIR, "index.ts"), "utf8");
+    const indexSrc = readFileSync(path.join(SRC_DIR, "tools", "index.ts"), "utf8");
     // Both tool shells count: tool({...}) and the sessionReadTool funnel.
     const registered = new Set(
       [...indexSrc.matchAll(/^\s{6}(\w+):\s*(?:tool\s*\(\{|sessionReadTool\s*\()/gm)].map((m) => m[1]),
@@ -413,7 +417,7 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     assert.strictEqual(
       drift.length,
       0,
-      `README ↔ src/index.ts capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n` +
+      `README ↔ src/tools/index.ts capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n` +
         drift.map((d) => `  - ${d}`).join("\n"),
     );
   });

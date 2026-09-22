@@ -10,6 +10,16 @@ import {
   recordAbortError,
 } from "../shared/task-state.js";
 import { missingSessionId, type ToolDeps } from "./context.js";
+import {
+  interruptUnknown,
+  interruptAbortedUntracked,
+  interruptAbortFailedActive,
+  interruptAbortFailedRetained,
+  interruptAbortFailedSettled,
+  interruptServerGone,
+  interruptAlreadySettled,
+  taskInterrupted,
+} from "../shared/voice.js";
 
 export interface InterruptArgs {
   session_id?: string | undefined;
@@ -46,8 +56,8 @@ export async function executeTaskInterrupt(deps: ToolDeps, args: InterruptArgs):
     // Untracked: transient abort failures are simply the caller's
     // transport error; nothing of ours is at stake.
     if (abortMessage) return `ERROR: ${abortMessage}`;
-    if (serverGone) return `ERROR: Session "${sessionId}" not found.`;
-    return `Session ${sessionId} aborted (not a tracked task).`;
+    if (serverGone) return interruptUnknown(sessionId);
+    return interruptAbortedUntracked(sessionId);
   }
 
   if (abortMessage) {
@@ -61,28 +71,28 @@ export async function executeTaskInterrupt(deps: ToolDeps, args: InterruptArgs):
     if (claimed && store.retainedTasks.get(sessionId)?.state === "interrupted") {
       if (withdrawInterruptClaim(store, sessionId, claimTime, config)) {
         void safeLog(client, "warn", `Interrupt: abort failed for ${sessionId} (${abortMessage}); speculative claim withdrawn, child may still be live.`);
-        return `ERROR: abort failed (${abortMessage}) — task left active; its lifecycle events will still settle it. Retry task_interrupt to abort again.`;
+        return interruptAbortFailedActive(abortMessage);
       }
       recordAbortError(store, sessionId, abortMessage);
-      return `ERROR: abort failed (${abortMessage}) — task retained as interrupted; history preserved. Retry task_interrupt to abort again.`;
+      return interruptAbortFailedRetained(abortMessage);
     }
     // A success record is never annotated with abort noise — the gap
     // belongs in the operator-visible report, not on the outcome.
     if (retained && retained.state !== "completed") recordAbortError(store, sessionId, abortMessage);
     const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
-    return `ERROR: abort failed (${abortMessage}) — task already settled as ${state}; history preserved.`;
+    return interruptAbortFailedSettled(abortMessage, state);
   }
   if (serverGone) {
-    return `ERROR: Session "${sessionId}" not found — history preserved.`;
+    return interruptServerGone(sessionId);
   }
   if (!claimed && retained) {
     // A successful abort landing on settled history is stamped: a
     // concurrent interruptor's stale withdraw must observe it (F-R4).
     noteAbortLanded(store, sessionId);
-    return `Session ${sessionId} already settled as ${retained.state}; abort sent to the server, history preserved.`;
+    return interruptAlreadySettled(sessionId, retained.state);
   }
   // Successful abort on our own fresh claim: stamp it so a concurrent
   // stale withdraw cannot resurrect a dead child.
   noteAbortLanded(store, sessionId);
-  return `Session ${sessionId} interrupted.`;
+  return taskInterrupted(sessionId);
 }

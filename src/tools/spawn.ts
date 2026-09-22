@@ -16,6 +16,15 @@ import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import { transitionState, pruneRetainedTasks } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
+import {
+  INVALID_PROMPT,
+  promptTooLong,
+  dependenciesPending,
+  createFailed,
+  spawnConfirmation,
+  agentGone,
+  PERMISSION_DENIED,
+} from "../shared/voice.js";
 import { createDummyLineage, type ToolDeps } from "./context.js";
 
 export interface SpawnArgs {
@@ -41,11 +50,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   const agent = admission.agent;
 
   if (!args.prompt || typeof args.prompt !== "string") {
-    return "ERROR: Invalid prompt. Must be a non-empty string.";
+    return INVALID_PROMPT;
   }
 
   if (args.prompt.length > 100000) {
-    return `ERROR: Prompt too long (${args.prompt.length} chars). Max: 100000.`;
+    return promptTooLong(args.prompt.length);
   }
 
   // Model shape is admission-checked before the session exists: a bad
@@ -63,10 +72,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   pruneRetainedTasks(store, config);
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
   if (!readiness.ok) {
-    return [
-      `ERROR: Dependencies pending: ${readiness.pending.map((p) => `${p.id} (${p.state})`).join(", ")}.`,
-      "Complete them first (unknown ids are treated as satisfied; depends_on_settled only waits for settlement).",
-    ].join("\n");
+    return dependenciesPending(readiness.pending);
   }
 
   // Concurrency is checked BEFORE create: rejecting after the session
@@ -101,7 +107,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
 
     const childSessionId = validateSessionResult(sessionResult);
     if (!childSessionId) {
-      return `ERROR: Failed to create session. Response: ${JSON.stringify(sessionResult)}`;
+      return createFailed(sessionResult);
     }
     createdSessionId = childSessionId;
 
@@ -126,21 +132,20 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     });
 
     if (parentSessionId) {
-      return [
-        `Spawned @${agent.name} in background.`,
-        `Session: ${childSessionId}`,
-        `Model: ${requestedModelLabel ?? "(default)"}`,
-        `Async notification: enabled (parent ${parentSessionId})`,
-        "The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile.",
-      ].join("\n");
+      return spawnConfirmation({
+        agentName: agent.name,
+        childSessionId,
+        model: requestedModelLabel,
+        parentSessionId,
+      });
     }
 
-    return [
-      `Spawned @${agent.name} in background.`,
-      `Session: ${childSessionId}`,
-      `Model: ${requestedModelLabel ?? "(default)"}`,
-      "Async notification: disabled (parent session ID not available in tool context)",
-    ].join("\n");
+    return spawnConfirmation({
+      agentName: agent.name,
+      childSessionId,
+      model: requestedModelLabel,
+      parentSessionId: null,
+    });
   } catch (error: unknown) {
     const message = errorMessage(error);
     // Post-create failure must never strand a child: a registered task
@@ -171,10 +176,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       ).then((delivered) => debugLog(parentSessionId || "unknown", failedChildSessionId, "spawn-error-notify", { delivered }));
     }
     if (message.includes("not found")) {
-      return `ERROR: Agent "${agent.name}" not found.`;
+      return agentGone(agent.name);
     }
     if (message.includes("permission") || message.includes("denied")) {
-      return "ERROR: Permission denied.";
+      return PERMISSION_DENIED;
     }
     return `ERROR: ${message}`;
   }

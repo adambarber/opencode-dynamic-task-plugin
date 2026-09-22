@@ -13,6 +13,18 @@ import {
 } from "../shared/task-state.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import { missingSessionId, type ToolDeps } from "./context.js";
+import {
+  PROMPT_REQUIRED,
+  promptTooLong,
+  steerMissing,
+  steerWonBySettler,
+  steerStateUnknown,
+  steerSettledMidway,
+  steerAbortFailed,
+  steerSent,
+  untrackedSession,
+  followupSent,
+} from "../shared/voice.js";
 
 export interface ContinueArgs {
   session_id?: string | undefined;
@@ -24,11 +36,11 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
   const missing = missingSessionId(args);
   if (missing) return missing;
   if (!args.prompt || typeof args.prompt !== "string") {
-    return "ERROR: prompt is required and must be a non-empty string.";
+    return PROMPT_REQUIRED;
   }
 
   if (args.prompt.length > 100000) {
-    return `ERROR: Prompt too long (${args.prompt.length} chars). Max: 100000.`;
+    return promptTooLong(args.prompt.length);
   }
 
   pruneRetainedTasks(store, config);
@@ -64,13 +76,14 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       if (!weSettled) {
         const state = store.retainedTasks.get(sessionId)?.state;
         if (state) {
-          return `Session "${sessionId}" is gone on the server, but the task had already settled as ${state} — history preserved.`;
+          return steerWonBySettler(sessionId, state);
         }
-        return `ERROR: steer failed for "${sessionId}"; task state unknown — history unavailable.`;
+        return steerStateUnknown(sessionId);
       }
-      void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", `Steer failed: session "${sessionId}" not found on the server.`)
+      const missing = steerMissing(sessionId);
+      void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", missing.notify)
         .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
-      return `ERROR: Session "${sessionId}" not found — steer failed; task settled as error, history preserved.`;
+      return missing.report;
     }
     if (abortError) {
       // The abort may never have reached the server, so the turn may
@@ -79,7 +92,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       // turn's genuine terminal event must still settle it) and stay
       // active without sending.
       consumeSteerPending(store, sessionId);
-      return `ERROR: abort failed (${abortError}) — task left active; the running turn was not stopped, so no message was sent. Retry task_continue to steer again.`;
+      return steerAbortFailed(abortError);
     }
     // Re-validate after the await: an event or an interrupt may have
     // settled the task while the abort was in flight. Firing the
@@ -89,10 +102,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       // No disarm needed: the flag lives on the active record and
       // transitionState strips it, so nothing is armed anymore by construction.
       const state = store.retainedTasks.get(sessionId)?.state ?? "unknown";
-      const remedy = state === "interrupted"
-        ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"
-        : "use task_continue to revive it for another turn";
-      return `Message not sent: the task settled as ${state} while its turn was stopping; ${remedy}.`;
+      return steerSettledMidway(state);
     }
     // The turn is dead: fire the parent message as the next user turn.
     // Fire-and-forget like every prompt — the lifecycle event owns
@@ -110,7 +120,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       description: active.description,
       ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
     }, steerText);
-    return `Steer sent to ${sessionId} (@${active.agentName}): the running turn was stopped and the message was sent as the next turn. The task stays active; its outcome arrives as a dynamic-task-notify message.`;
+    return steerSent(sessionId, active.agentName);
   }
 
   let task;
@@ -121,11 +131,11 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     gateLedger.forgetChild(sessionId);
   } catch (error: unknown) {
     if (!store.retainedTasks.has(sessionId)) {
-      return `ERROR: Session "${sessionId}" is not a tracked task. Use task_list to see tracked sessions, or dynamic_task to start a new one.`;
+      return untrackedSession(sessionId);
     }
     return `ERROR: ${errorMessage(error)}`;
   }
 
   fireChildPrompt(client, store, task, args.prompt);
-  return `Follow-up sent to ${task.childSessionId} (@${task.agentName}). The reply arrives as a dynamic-task-notify message.`;
+  return followupSent(task.childSessionId, task.agentName);
 }

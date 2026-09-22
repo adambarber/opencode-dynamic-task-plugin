@@ -10,12 +10,20 @@ import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
 import type { ToolDeps } from "./context.js";
+import {
+  DYNAMIC_TASK_DESCRIPTION,
+  TASK_CONTINUE_DESCRIPTION,
+  TASK_NOTIFY_DESCRIPTION,
+  TASK_RESULT_DESCRIPTION,
+  TASK_INTERRUPT_DESCRIPTION,
+  TASK_LIST_DESCRIPTION,
+  TASK_STATUS_DESCRIPTION,
+} from "../shared/voice.js";
 
 export function buildToolMap(deps: ToolDeps) {
   return {
       dynamic_task: tool({
-        description:
-          "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight [dynamic-task-notice] notices with task_notify. Inspect with task_result/task_status/task_list; steer a running child or revive a settled one with task_continue; stop it with task_interrupt.",
+        description: DYNAMIC_TASK_DESCRIPTION,
         args: {
           description: tool.schema.string().describe("Short human-readable task label"),
           subagent_type: tool.schema.string().describe("Agent to invoke"),
@@ -39,8 +47,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_continue: tool({
-        description:
-          "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead.",
+        description: TASK_CONTINUE_DESCRIPTION,
         args: {
           session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
           prompt: tool.schema.string().describe("Follow-up instructions"),
@@ -51,8 +58,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_notify: tool({
-        description:
-          "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)",
+        description: TASK_NOTIFY_DESCRIPTION,
         args: {
           message: tool.schema.string().describe("What the parent needs to know"),
         },
@@ -62,7 +68,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_result: tool({
-        description: "Fetch latest known child session result/status without sending a new prompt.",
+        description: TASK_RESULT_DESCRIPTION,
         args: {
           session_id: tool.schema.string().describe("Background task session ID (ses_...)"),
         },
@@ -72,8 +78,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_interrupt: tool({
-        description:
-          "Terminate a child session by request. The task settles as interrupted synchronously; its history is preserved. An interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.",
+        description: TASK_INTERRUPT_DESCRIPTION,
         args: {
           session_id: tool.schema.string(),
         },
@@ -83,7 +88,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_list: tool({
-        description: "List all tracked tasks with their lifecycle states.",
+        description: TASK_LIST_DESCRIPTION,
         args: {},
         async execute() {
           return executeTaskList(deps);
@@ -91,7 +96,7 @@ export function buildToolMap(deps: ToolDeps) {
       }),
 
       task_status: tool({
-        description: "Detailed tracked state for one task without calling the API.",
+        description: TASK_STATUS_DESCRIPTION,
         args: {
           session_id: tool.schema.string().describe("Background task session ID (ses_...)"),
         },

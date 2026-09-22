@@ -5,6 +5,16 @@ import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecyc
 import { notifyParent, formatParentNotification, noticeDedupKey } from "../shared/notify.js";
 import { pruneRetainedTasks, findTask, annotateNotice } from "../shared/task-state.js";
 import type { ToolDeps } from "./context.js";
+import {
+  CALLER_UNKNOWN,
+  MESSAGE_REQUIRED,
+  noticeTooLong,
+  NOT_A_TRACKED_TASK,
+  alreadySettledNotice,
+  NOTICE_PARENTLESS,
+  NOTICE_SENT,
+  NOTICE_UNSENT,
+} from "../shared/voice.js";
 
 export interface NotifyArgs {
   message?: unknown;
@@ -14,28 +24,28 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   const { client, store, config } = deps;
   const callerId = resolveParentSessionId(ctx);
   if (!callerId || callerId === "unknown") {
-    return "ERROR: Unable to resolve the calling session.";
+    return CALLER_UNKNOWN;
   }
   if (!isEventRecord(args) || typeof args.message !== "string" || !args.message.trim()) {
-    return "ERROR: message is required.";
+    return MESSAGE_REQUIRED;
   }
   const message = args.message.trim();
   if (message.length > 4000) {
-    return `ERROR: message too long (${message.length} chars). Max: 4000 — this goes into the parent's conversation; summarize.`;
+    return noticeTooLong(message.length);
   }
 
   pruneRetainedTasks(store, config);
   const task = findTask(store, callerId);
   if (!task) {
-    return "ERROR: Not a tracked task. Child-to-parent messages route through the task ledger; only sessions spawned by dynamic_task can notify.";
+    return NOT_A_TRACKED_TASK;
   }
   if (task.state !== "active") {
-    return `Message not sent: the task already settled (${task.state}).`;
+    return alreadySettledNotice(task.state);
   }
 
   annotateNotice(store, callerId, message);
   if (task.parentSessionId === "unknown") {
-    return "Message recorded locally; this task has no parent session to deliver to.";
+    return NOTICE_PARENTLESS;
   }
   const parentMessage = formatParentNotification(
     { childSessionId: task.childSessionId, description: task.description },
@@ -47,7 +57,5 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
     kind: "notice",
     dedupKey: noticeDedupKey(message),
   });
-  return delivered
-    ? "Message sent to parent."
-    : "Message not sent: an identical notice was already delivered (duplicate suppressed), or the parent was unreachable.";
+  return delivered ? NOTICE_SENT : NOTICE_UNSENT;
 }

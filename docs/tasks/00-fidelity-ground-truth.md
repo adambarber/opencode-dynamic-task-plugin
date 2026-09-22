@@ -37,3 +37,5 @@ Follow-up 2026-09-12 (plugin failed to load intermittently: the host invokes the
 ## Litmus
 
 A newcomer who has never read this doc cannot merge a new tool, arg, or behavior without updating the single capability inventory — the build fails first.
+
+Follow-up 2026-09-22 (entry split, all files ≤200 lines): `src/index.ts` is wiring only — executors moved to `src/tools/` (one hazard per file), event handling to `src/entry/`. The README↔registration fidelity gate now scans `src/tools/index.ts`, which keeps every full `tool({...})` definition; the create/abort funnel scanner names the three sanctioned executor files. No funnel moved, only addresses changed.

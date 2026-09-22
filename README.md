@@ -92,9 +92,21 @@ Both live in the **project directory the host provides** (never the process CWD 
 
 ```
 src/
-├── index.ts                 Orchestrator — tool/event wiring, settlement gate
+├── index.ts                 Thin entry — boot, event head, tool inventory
 ├── plugin-entry.ts          Clean ESM re-export
 ├── debug-logger.ts          Opt-in diagnostics (off by default, total writes)
+├── entry/
+│   ├── state.ts             Per-instance boot (config, store, ledger wiring)
+│   ├── questions.ts         Question-gate dispatch (attribute, then settle)
+│   └── lifecycle.ts         Prompt dance, parent delivery, settlement handler
+├── tools/
+│   ├── index.ts             Tool inventory (the Task-00 fidelity gate scans this)
+│   ├── context.ts           Shared deps, guards, session readers
+│   ├── spawn.ts             dynamic_task executor (the only session.create site)
+│   ├── continue.ts          task_continue executor (steer + revive)
+│   ├── notice.ts            task_notify executor (mid-flight voice)
+│   ├── read.ts              task_result/status/list executors (store reads)
+│   └── interrupt.ts         task_interrupt executor (settle-first abort)
 └── shared/
     ├── client.ts            SDK facade — the only @opencode-ai/sdk import
     ├── config.ts            Normalization, 4-layer precedence, concurrency limit

@@ -55,8 +55,18 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     }
     if (serverGone) {
       // Nothing left to steer: the session is gone. Settle error so
-      // the ledger never strands an active task with no server side.
-      try { transitionState(store, sessionId, "error"); } catch { /* settled concurrently */ }
+      // the ledger never strands an active task with no server side —
+      // unless a concurrent settler already won: its outcome (and its
+      // notification) stands, and the report names it instead of
+      // double-notifying an error over the winner.
+      let weSettled = false;
+      try { transitionState(store, sessionId, "error"); weSettled = true; } catch { /* settled concurrently */ }
+      if (!weSettled) {
+        const state = store.retainedTasks.get(sessionId)?.state;
+        if (state) {
+          return `Session "${sessionId}" is gone on the server, but the task had already settled as ${state} — history preserved.`;
+        }
+      }
       void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", `Steer failed: session "${sessionId}" not found on the server.`)
         .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
       return `ERROR: Session "${sessionId}" not found — steer failed; task settled as error, history preserved.`;

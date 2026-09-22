@@ -399,6 +399,34 @@ describe("task_continue branches", () => {
     );
   });
 
+  it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h);
+    let releaseAbort;
+    const gate = new Promise((r) => { releaseAbort = r; });
+    let firstAbort = true;
+    const origAbort = h.client.session.abort;
+    h.client.session.abort = (args) => {
+      if (firstAbort) {
+        firstAbort = false;
+        return gate.then(() => { throw new Error(`Session "${args.path.id}" not found.`); });
+      }
+      return origAbort(args);
+    };
+    const steer = h.tool.task_continue.execute({ session_id: id, prompt: "pivot" });
+    await new Promise((r) => setTimeout(r, 10));
+    await h.tool.task_interrupt.execute({ session_id: id });
+    releaseAbort();
+    const out = await steer;
+    assert.ok(out.includes("interrupted"), `reports the actual winner. got: ${out}`);
+    assert.ok(!out.includes("settled as error"), `no false error claim. got: ${out}`);
+    assert.strictEqual(
+      h.client._state.notifications.filter((n) => n.message.includes("Steer failed")).length,
+      0,
+      "no second notice over the winner's outcome",
+    );
+  });
+
   it("steer on a vanished session settles error instead of stranding", async () => {
     const h = await setupTools({ abortFailIds: new Set(["ses_tools_1"]) });
     const { id } = await spawn(h);

@@ -1,6 +1,6 @@
 # Docs
 
-Design doctrine: **Choke Point Theory** — if the same shape of bug is fixed in three places, there is one missing choke point. Every task below names its dangerous primitive, its single funnel, its build enforcement, its contract test, and its degradation direction.
+Design doctrine: **Choke Point Theory** (`2026-09-10-choke-point-theory-of-software-design.md`) — if the same shape of bug is fixed in three places, there is one missing choke point. Every task below names its dangerous primitive, its single funnel, its build enforcement, its contract test, and its degradation direction.
 
 Work proceeds in order. Each task doc is the spec for one unit of work — no code lands without its doc's litmus passing.
 

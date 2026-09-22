@@ -19,6 +19,7 @@ Work proceeds in order. Each task doc is the spec for one unit of work — no co
 | 08 | `tasks/08-strong-types.md` | Untyped boundaries | `any` at four seams defeats review; close them with guard-first types | Complete |
 | 09 | `tasks/09-non-blocking-settlement.md` | Per-call clocks | Timeout-as-detector is masking; settlement is event-driven, the only bound is operator intent | Complete |
 | 10 | `tasks/10-parent-steer.md` | Parent→child steer | A queued follow-up races the running turn; stop-append-resubmit at the lifecycle gate | Complete |
+| 11 | `tasks/11-durability.md` | Durable liveness + delivery | Settlement is durable, delivery and actives are not — one schema migration, not four bugs | Design |
 
 Each doc carries its proof (commands, results, decisions) in its Status section.
 

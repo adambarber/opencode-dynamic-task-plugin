@@ -21,6 +21,7 @@ import {
   hydrateLatestOutcome,
   parseModelOverride,
   describeModelShapeError,
+  isTransientOutcomeError,
   isTextPart,
   isMessage,
   messageRoleOf,
@@ -503,6 +504,22 @@ describe("extractSessionStatus: message-level error", () => {
   it("normalizes idle to completed — an idle session is done", () => {
     assert.strictEqual(extractSessionStatus({ status: "idle" }, []), "completed");
     assert.strictEqual(extractSessionStatus({ data: { info: { status: "idle" } } }, []), "completed");
+  });
+});
+
+describe("isTransientOutcomeError", () => {
+  it("marks provider and network blips transient", () => {
+    assert.strictEqual(isTransientOutcomeError("429 rate limit exceeded, retry shortly"), true);
+    assert.strictEqual(isTransientOutcomeError("Upstream overloaded, please try again"), true);
+    assert.strictEqual(isTransientOutcomeError("fetch failed: socket hang up"), true);
+    assert.strictEqual(isTransientOutcomeError("Request timeout after 120s"), true);
+  });
+
+  it("treats auth, permission, and empty details as fatal-or-unknown", () => {
+    assert.strictEqual(isTransientOutcomeError("permission denied for model"), false);
+    assert.strictEqual(isTransientOutcomeError("authentication required"), false);
+    assert.strictEqual(isTransientOutcomeError(""), false);
+    assert.strictEqual(isTransientOutcomeError(undefined), false);
   });
 });
 

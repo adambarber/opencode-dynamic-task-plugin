@@ -579,6 +579,30 @@ describe("task_notify: the child-to-parent channel", () => {
   });
 });
 
+describe("error settlement guidance", () => {
+  async function settleWithMessageError(detail) {
+    const h = await setupTools({
+      messages: () => [{ info: { role: "assistant", error: { data: { message: detail } } }, parts: [] }],
+    });
+    const { id } = await spawn(h);
+    await h.fireEvent({ type: "session.error", properties: { sessionID: id, status: "error" } });
+    assert.strictEqual(h.client._state.notifications.length, 1, "error settles exactly once");
+    return h.client._state.notifications[0].message;
+  }
+
+  it("transient error settlements name task_continue as the resume path", async () => {
+    const note = await settleWithMessageError("429 rate limit exceeded, retry shortly");
+    assert.ok(note.includes("transient"), `names the failure class. got: ${note}`);
+    assert.ok(note.includes("task_continue"), `points at resume. got: ${note}`);
+  });
+
+  it("fatal error settlements carry no resume hint", async () => {
+    const note = await settleWithMessageError("permission denied for model");
+    assert.ok(note.includes("permission denied"), `keeps the cause. got: ${note}`);
+    assert.ok(!note.includes("transient"), `no resume hint for fatal. got: ${note}`);
+  });
+});
+
 describe("task_result and task_interrupt paths", () => {
   const ctx = useTrackedHarness();
 

@@ -93,6 +93,30 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
   };
 }
 
+// Advisory-only transient markers for settled outcomes. Unlike
+// RETRYABLE_FRAGMENTS (which gate the prompt-failure path), these never
+// decide anything — they annotate the settlement so the parent can judge
+// "safe to task_continue". Heuristics are permitted here precisely because
+// they are not load-bearing (Tenet 2): the worst case is a wrong hint, never
+// a wrong state.
+const TRANSIENT_OUTCOME_FRAGMENTS = [
+  ...RETRYABLE_FRAGMENTS,
+  "429",
+  "rate limit",
+  "overload",
+  "temporar",
+  "unavailable",
+  "500",
+  "502",
+  "503",
+];
+
+export function isTransientOutcomeError(detail: unknown): boolean {
+  if (typeof detail !== "string" || !detail.trim()) return false;
+  const lowered = detail.toLowerCase();
+  return TRANSIENT_OUTCOME_FRAGMENTS.some((fragment) => lowered.includes(fragment));
+}
+
 // ─── Message/Part family (Task 08 Cycle 5) ─────────────────────────
 // The one hand-made type design in the program: the shapes the extraction
 // group validates *toward*. Guards are the only door in — consumers below

@@ -12,6 +12,7 @@ import { debugLog } from "../debug-logger.js";
 import {
   invokePrompt,
   classifyPromptError,
+  isTransientOutcomeError,
   hydrateLatestOutcome,
 } from "../shared/prompt.js";
 import {
@@ -156,12 +157,19 @@ export async function handleChildLifecycleEvent(
       }
     }
     const latestText = outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+    // Transient failures name the resume path: a network/provider blip that
+    // killed the turn usually resumes cleanly via task_continue, while a
+    // fatal cause must not invite a blind retry. Advisory only — kind and
+    // state are already decided above.
+    const resumeHint = kind === "error" && isTransientOutcomeError(outcome.errorDetail)
+      ? "\n\nThis failure looks transient (network/provider blip) — task_continue can usually resume the child from here."
+      : "";
     // Detached: the synchronous claim above is the settlement guarantee;
     // delivery transport must never hold the event pump head-of-line.
     // Observability survives via the ledger record, logged on completion.
     // deliverParent is the single funnel for parent-directed writes: it
     // records parentless settlements instead of dialing a phantom session.
-    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, latestText)
+    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${resumeHint}`)
       .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
     return;
   }

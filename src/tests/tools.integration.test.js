@@ -557,6 +557,29 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.strictEqual(ctx.harness.client._state.notifications.length, 2);
   });
 
+  it("a suppressed duplicate says to say something new", async () => {
+    const { id } = await spawn(ctx.harness);
+    ctx.spawned.push(id);
+    await ctx.harness.tool.task_notify.execute({ message: "still working" }, { sessionID: id });
+    const again = await ctx.harness.tool.task_notify.execute({ message: "still working" }, { sessionID: id });
+    assert.ok(again.includes("duplicate suppressed"), `keeps the kind. got: ${again}`);
+    assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`);
+  });
+
+  it("an unreachable parent is reported distinctly from a duplicate", async () => {
+    const h = await setupTools();
+    const { id } = await spawn(h);
+    const origPrompt = h.client.session.prompt;
+    h.client.session.prompt = (args) => {
+      if (args.path.id === "p1") return Promise.reject(new Error("parent down"));
+      return origPrompt(args);
+    };
+    const out = await h.tool.task_notify.execute({ message: "hello?" }, { sessionID: id });
+    assert.ok(out.includes("did not acknowledge"), `names the failure. got: ${out}`);
+    assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`);
+    await h.tool.task_interrupt.execute({ session_id: id });
+  });
+
   it("suppresses an identical repeated notice", async () => {
     const { id } = await spawn(ctx.harness);
     ctx.spawned.push(id);

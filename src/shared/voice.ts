@@ -152,8 +152,11 @@ export const NOTICE_PARENTLESS =
 
 export const NOTICE_SENT = "Message sent to parent.";
 
-export const NOTICE_UNSENT =
-  "Message not sent: an identical notice was already delivered (duplicate suppressed), or the parent was unreachable.";
+export const NOTICE_DUPLICATE_SUPPRESSED =
+  "Message not sent: this exact notice was already delivered (duplicate suppressed). Say something new and call task_notify again.";
+
+export const NOTICE_PARENT_UNREACHABLE =
+  "Message not sent: the parent did not acknowledge after 2 attempts. The notice is recorded locally; retry task_notify later.";
 
 // ─── Interrupt ───────────────────────────────────────────────────────────
 

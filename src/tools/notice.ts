@@ -2,7 +2,7 @@
 // the active record, delivery through the gate — never a settlement.
 import type { ToolContext } from "@opencode-ai/plugin";
 import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecycle.js";
-import { notifyParent, formatParentNotification, noticeDedupKey } from "../shared/notify.js";
+import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
 import { pruneRetainedTasks, findTask, annotateNotice } from "../shared/task-state.js";
 import type { ToolDeps } from "./context.js";
 import {
@@ -13,7 +13,8 @@ import {
   alreadySettledNotice,
   NOTICE_PARENTLESS,
   NOTICE_SENT,
-  NOTICE_UNSENT,
+  NOTICE_DUPLICATE_SUPPRESSED,
+  NOTICE_PARENT_UNREACHABLE,
 } from "../shared/voice.js";
 
 export interface NotifyArgs {
@@ -57,5 +58,13 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
     kind: "notice",
     dedupKey: noticeDedupKey(message),
   });
-  return delivered ? NOTICE_SENT : NOTICE_UNSENT;
+  if (delivered) return NOTICE_SENT;
+  // The gate resolves synchronously after this await, so the latest record
+  // is ours: suppressed-duplicate and unreachable-parent read differently
+  // and tell the child different next moves.
+  const record = getLatestNotification(task.childSessionId);
+  if (record && record.message === parentMessage && record.suppressed) {
+    return NOTICE_DUPLICATE_SUPPRESSED;
+  }
+  return NOTICE_PARENT_UNREACHABLE;
 }

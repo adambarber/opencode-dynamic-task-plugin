@@ -90,10 +90,13 @@ export function formatTaskStatusDetail(
   ];
   if (task.state === "active") {
     lines.push(`Started: ${formatAge(task.startedAt)} ago`);
-    const lastActivity = Math.max(task.startedAt, task.lastNotice?.at ?? 0);
+    // Observed motion, newest of three clocks: the event heartbeat (any host
+    // event for this child's session), an explicit notice, and the spawn as
+    // the floor for a child that has gone unheard since it was registered.
+    const lastActivity = Math.max(task.startedAt, task.lastNotice?.at ?? 0, task.lastActivityAt ?? 0);
     lines.push(`Last activity: ${formatAge(lastActivity)} ago`);
     if (Date.now() - lastActivity > STALE_TURN_AFTER_MS) {
-      lines.push(`Warning: no activity in ${formatAge(lastActivity)} — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`);
+      lines.push(`Warning: no child events in ${formatAge(lastActivity)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`);
     }
     if (task.lastNotice) {
       lines.push(`Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`);

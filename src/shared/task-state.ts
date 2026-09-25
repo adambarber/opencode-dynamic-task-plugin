@@ -48,6 +48,13 @@ export interface ActiveTaskState {
   dependsOnSettled?: string[] | undefined;
   // Latest mid-flight notice from the child (advisory metadata, not a lifecycle field).
   lastNotice?: { message: string; at: number } | undefined;
+  // Latest time the host emitted ANY event for this child's session — the
+  // event funnel's own proof the turn is moving. Without it "last activity"
+  // could only mean "spawned" or "called task_notify", so a child working
+  // through a long tool chain read as silent since spawn. Advisory like the
+  // notice: never a lifecycle field, stripped at settlement so the durable
+  // ledger carries no heartbeat.
+  lastActivityAt?: number | undefined;
   // Parent steer in flight: set synchronously by task_continue before aborting
   // the running turn, consumed by the lifecycle handler to suppress that
   // turn's terminal echo. Advisory, never a lifecycle mutation — the task
@@ -183,7 +190,7 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-    const { lastNotice: _notice, steerPending: _steer, ...settled } = active;
+    const { lastNotice: _notice, steerPending: _steer, lastActivityAt: _activity, ...settled } = active;
     const retained: RetainedTaskState = {
       ...settled,
       state: to,
@@ -250,6 +257,20 @@ export function reviveRetainedTask(
   store.activeTasks.set(childSessionId, revived);
   emitRetainedChange(store);
   return revived;
+}
+
+// Activity heartbeat: the event funnel's single writer. Any event bearing a
+// tracked ACTIVE child's session id is proof the turn is moving, so the
+// operator's "last activity" reads observed motion instead of "no task_notify
+// since spawn". Returns false for untracked ids (the parent, settled children)
+// and writes nothing — the read side (task_status) still treats startedAt as
+// the floor when no event has been seen.
+export function noteActivity(store: TaskStore, childSessionId: string | null | undefined): boolean {
+  if (!childSessionId) return false;
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) return false;
+  active.lastActivityAt = Date.now();
+  return true;
 }
 
 // Notice announcements are recorded on the active entry by the gate module —

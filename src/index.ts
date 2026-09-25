@@ -27,6 +27,7 @@ import { safeLog } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
 import { handleQuestionEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
+import { noteActivity } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
 export default async function dynamicTaskPlugin(
@@ -71,6 +72,13 @@ export default async function dynamicTaskPlugin(
         name: eventName,
         sessionId: evtSessionId,
       });
+
+      // --- Activity heartbeat: this head is the ONLY place that sees every
+      // host event, so it is where "the child's turn is moving" is observed.
+      // Synchronous and before any gate, because the whole point is that a
+      // child doing real work (message/part updates, token deltas, tool
+      // transitions) never reads as silent since spawn.
+      noteActivity(store, evtSessionId);
 
       // --- Question gate (Task 04): attribute through the gate, then settle.
       try {

@@ -1216,6 +1216,7 @@ import {
   reviveRetainedTask,
   withdrawInterruptClaim,
   annotateNotice,
+  noteActivity,
   recordAbortError,
   oldestRetainedId,
 } from "../../dist/shared/task-state.js";
@@ -1332,6 +1333,13 @@ describe("task-state: transitionState", () => {
     transitionState(store, "ses_active", "completed");
     assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid|not found/i);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
+  });
+
+  it("settlement strips advisory activity metadata — the ledger carries no heartbeat", () => {
+    noteActivity(store, "ses_active");
+    assert.ok(store.activeTasks.get("ses_active").lastActivityAt, "the event funnel stamps the active record");
+    transitionState(store, "ses_active", "completed");
+    assert.ok(!("lastActivityAt" in store.retainedTasks.get("ses_active")));
   });
 
   it("settlement strips advisory notice metadata", () => {
@@ -2237,6 +2245,24 @@ describe("task formatting: fleet views", () => {
     const fresh = formatTaskStatusDetail({ ...base, startedAt: Date.now() }, null);
     assert.match(fresh, /Last activity:/);
     assert.ok(!fresh.includes("stalled"), `fresh turns carry no warning. got: ${fresh}`);
+  });
+
+  it("formatTaskStatusDetail reads activity from observed events, not from the spawn", () => {
+    const base = {
+      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
+      description: "d", lineage: [], state: "active",
+    };
+    // 20m since spawn, an event 2s ago: the child is demonstrably working, so
+    // the stall line is a false alarm and must not render.
+    const working = formatTaskStatusDetail(
+      { ...base, startedAt: Date.now() - 20 * 60 * 1000, lastActivityAt: Date.now() - 2000 }, null);
+    assert.match(working, /Last activity: 2s ago/);
+    assert.ok(!working.includes("stalled"), `observed activity suppresses the stall line. got: ${working}`);
+    // No heartbeat yet (plugin booted after the spawn): the spawn stays the
+    // honest floor and the silence stays visible.
+    const unheard = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
+    assert.match(unheard, /Last activity: 20m ago/);
+    assert.match(unheard, /stalled/);
   });
 
   it("formatTaskListSummary names pruned expiries when told", () => {

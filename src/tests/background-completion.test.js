@@ -96,6 +96,14 @@ function extractSessionId(spawnOutput) {
   return match[1];
 }
 
+// Rendered ages come back as "45s" / "12m" / "1h 5m" — parse them back to
+// seconds so a test can compare the two clocks instead of eyeballing text.
+function renderedAgeSeconds(detail, label) {
+  const match = detail.match(new RegExp(`^${label}: (?:(\\d+)h )?(?:(\\d+)m )?(\\d+)s ago$`, "m"));
+  assert.ok(match, `"${label}" must render an age. Got: ${detail}`);
+  return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3]);
+}
+
 // --- Tests -----------------------------------------------------------------
 
 describe("Background Task Settlement", () => {
@@ -289,6 +297,31 @@ describe("Background Task Settlement", () => {
     // A second error event cannot re-notify or regress the record further.
     await harness.fireEvent({ type: "session.error", properties: { sessionID: childId, status: "error" } });
     assert.strictEqual(harness.client._notifications.length, 2, "escalation happens once");
+  });
+
+  it("a working child's own events count as recent activity", async () => {
+    const childId = await spawn("parent_activity", "Activity test");
+    await sleep(1200);
+    const silent = await harness.tool.task_status.execute({ session_id: childId });
+    assert.match(silent, /Last activity: \d+s ago/, `starts at the spawn. Got: ${silent}`);
+
+    // Host-shaped progress event: message/part updates carry the child's
+    // session id and are the only evidence the turn is moving. Before the
+    // heartbeat this event was dropped on the floor and the child read as
+    // silent since spawn.
+    await harness.fireEvent({
+      type: "message.part.updated",
+      properties: { sessionID: childId, part: { type: "tool", state: { status: "running" } } },
+    });
+
+    const detail = await harness.tool.task_status.execute({ session_id: childId });
+    const started = renderedAgeSeconds(detail, "Started");
+    const activity = renderedAgeSeconds(detail, "Last activity");
+    assert.ok(
+      activity < started,
+      `the event must move the activity clock past the spawn. started=${started}s activity=${activity}s. Got: ${detail}`,
+    );
+    assert.ok(!detail.includes("stalled"), `a working child never reads as stalled. Got: ${detail}`);
   });
 
   it("ignores events for untracked sessions", async () => {

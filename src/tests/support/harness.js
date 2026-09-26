@@ -424,6 +424,33 @@ export function createMockClient(hooks = {}) {
           // the plugin reaches it.
           const plan = hooks.notifyTransport;
           state.notifyCalls.push(text);
+          if (plan) {
+            // An unrecognised plan is a FALSE GREEN, not a no-op. A mistyped
+            // plan key is silently ignored, the write takes the success path,
+            // and the test asserts against a delivery the host never performed
+            // — observed live 2026-09-26, where `hold` (a plan that did not
+            // exist yet) made a held-write test pass while the real behaviour
+            // was the failure it existed to catch. So the vocabulary is
+            // closed here: adding a plan means teaching the harness its shape.
+            const PLANS = ["hang", "hold", "failTimes"];
+            for (const key of Object.keys(plan)) {
+              if (!PLANS.includes(key)) {
+                throw new Error(
+                  `unknown notifyTransport plan "${key}" — known: ${PLANS.join(", ")}`,
+                );
+              }
+            }
+          }
+          if (plan?.hold) {
+            // The live shape of a held write, observed 2026-09-26: the host
+            // puts the notification in the parent's context AND leaves the
+            // request open — delivery and acknowledgement are independent, and
+            // the promise can outlive the message by minutes. Modelling a hold
+            // as "not delivered" (see `hang`, below) is what let the child be
+            // told its message was not sent while the parent had read it.
+            state.notifications.push({ to: path.id, message: text });
+            return plan.hold;
+          }
           if (plan?.hang) return plan.hang;
           if (plan?.failTimes && ++state.notifyAttempts <= plan.failTimes) {
             return Promise.reject(new Error("parent notify failed"));

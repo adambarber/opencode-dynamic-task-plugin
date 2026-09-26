@@ -283,29 +283,49 @@ describe("task_continue branches", () => {
     assert.ok(note.includes("completed successfully"), `got: ${note}`);
   });
 
-  // M9: a settlement can still win a steer, but only one way — the replaced
-  // turn's own prompt delivery failing while the steer waits on its abort. A
-  // terminal event can no longer do it (turn attribution drops every ending the
-  // replacement has not been seen working through), so this is the settler the
-  // auto-revive actually exists for.
-  it("a steer racing a prompt-delivery failure auto-revives instead of demanding a second call", async () => {
-    const h = await setupHarness();
-    const { release } = h.client.gateChildPrompt();
-    const { id, c } = await h.spawn({ prompt: "turn one" });
-    const { release: releaseAbort } = h.client.gateAbort();
-    const steer = c.steer("pivot");
-    await sleep(10);
-    release(); // turn one's prompt fails non-retryably → the task settles error
-    await sleep(30);
-    releaseAbort(); // the abort lands; the steer re-validates and finds it settled
-    const out = await steer;
-    assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
-    assert.strictEqual(
-    h.client._state.promptBodies.filter((p) => p.body.parts[0].text === "pivot").length,
-    1,
-    "the message fires as the fresh turn",
-    );
-  });
+  // M9: a settlement can still win a steer — the running turn can complete
+  // inside the abort window, and the replaced turn's own prompt delivery can
+  // fail there. Either way the steer re-validates, finds a settled task, and
+  // revives it in the same call rather than demanding a second round-trip.
+  //
+  // Both settlers are here because they are not the same code path, and the
+  // sequence a live smoke test ran is one where the parent ended up with no
+  // notification at all. Whatever the live transport did, the contract is: a
+  // revived turn settles on its own and its settlement is delivered, so the
+  // assertion below is the parent's only route to that outcome.
+  const midSteerSettlers = [
+    ["the running turn completing", async ({ h, c }) => { await h.settle(c.id, "completed"); }],
+    ["the replaced turn's prompt delivery failing", async ({ release }) => { release(); }],
+  ];
+  for (const [name, settle] of midSteerSettlers) {
+    it(`a steer racing ${name} auto-revives, and the revived turn still notifies`, async () => {
+      const h = await setupHarness();
+      const { release } = h.client.gateChildPrompt();
+      const { c } = await h.spawn({ prompt: "turn one" });
+      const { release: releaseAbort } = h.client.gateAbort();
+      const steer = c.steer("pivot");
+      await sleep(10);
+      await settle({ h, c, release });
+      await sleep(30);
+      releaseAbort(); // the abort lands; the steer re-validates and finds it settled
+      const out = await steer;
+      assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
+      assert.strictEqual(
+        h.client._state.promptBodies.filter((p) => p.body.parts[0].text === "pivot").length,
+        1,
+        "the message fires as the fresh turn",
+      );
+      await h.settle(c.id, "completed");
+      await sleep(20);
+      assert.match(await c.status(), /State: completed/, "the revived turn settles on its own");
+      assert.strictEqual(
+        h.notices().length,
+        2,
+        "the settlement the parent was told about, and the one that carries the outcome. got: "
+          + h.notices().map((n) => n.message.split("\n")[1]).join(" | "),
+      );
+    });
+  }
 
   it("a task settling mid-steer never receives the replacement prompt", async () => {
     const { h, c, steer, release } = await racingSteer();

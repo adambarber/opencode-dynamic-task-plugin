@@ -6,6 +6,7 @@
 // generated client surface — it is typed via OpenCodeClient, not cast here.
 
 import { eventField, eventString, errorMessage, isEventRecord } from "./session-lifecycle.js";
+import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import type { OpenCodeClient } from "./client.js";
 import type { TaskStore } from "./task-state.js";
 
@@ -23,19 +24,19 @@ export interface QuestionResult {
   reason?: string;
 }
 
-const NO_ANSWER = "No suggestion available - background task cannot answer; steer with task_continue when it resumes";
-
 // Pure decision: active children keep moving (first suggestion, recorded);
-// settled children cannot answer and are closed explicitly.
+// settled children cannot answer and are closed explicitly. Both rejection
+// reasons are operator voice (voice.ts), because each one is a child's only
+// description of what it can do next.
 export function decideQuestion(
   taskState: "active" | "retained",
   answers: string[],
 ): QuestionDecision {
   if (taskState === "retained") {
-    return { action: "reject", reason: "This task has already settled. No response will be provided." };
+    return { action: "reject", reason: QUESTION_SETTLED };
   }
   const answer = answers[0];
-  if (!answer) return { action: "reject", reason: NO_ANSWER };
+  if (!answer) return { action: "reject", reason: QUESTION_NO_ANSWER };
   return { action: "reply", answer };
 }
 

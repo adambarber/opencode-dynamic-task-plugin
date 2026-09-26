@@ -18,7 +18,7 @@ export function buildBackgroundPrompt(prompt: string): string {
     "Do not wait for parent follow-up.",
     "The parent may steer you mid-run: a parent message preempts your current turn — read it first, then continue.",
     "Answer any question yourself with your best judgment, never wait.",
-      "If blocked mid-task, call task_notify with what you need and kind:\"needs_input\" — the task then settles as blocked instead of as a success, and the parent may answer via task_continue.",
+    "If blocked mid-task, call task_notify with what you need and kind:\"needs_input\" — the task then settles as blocked instead of as a success, and the parent may answer via task_continue.",
     "",
     prompt,
   ].join("\n");

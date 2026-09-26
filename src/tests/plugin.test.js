@@ -2189,10 +2189,17 @@ describe("question gate: decideQuestion", () => {
     assert.deepStrictEqual(decideQuestion("active", ["yes", "no"]), { action: "reply", answer: "yes" });
   });
 
-  it("active without answers rejects with follow-up guidance", () => {
+  it("active without answers rejects by naming the claim the child can make itself", () => {
+    // The rejection is a child's only description of the way out, so it must
+    // name a tool the CHILD holds and a claim it can make in this very turn.
+    // It used to name task_continue — the parent's tool — and told the child to
+    // wait, which the spawn prompt forbids outright.
     const decision = decideQuestion("active", []);
     assert.strictEqual(decision.action, "reject");
-    assert.ok(decision.reason.includes("task_continue"));
+    assert.ok(decision.reason.includes("task_notify"), `names the child's own tool. got: ${decision.reason}`);
+    assert.ok(decision.reason.includes("needs_input"), `names the durable claim. got: ${decision.reason}`);
+    assert.ok(!decision.reason.includes("task_continue"), `never points at a parent tool. got: ${decision.reason}`);
+    assert.ok(!/when it resumes/.test(decision.reason), `never tells a child to wait. got: ${decision.reason}`);
   });
 
   it("retained rejects with settled guidance", () => {

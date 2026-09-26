@@ -123,16 +123,26 @@ async function withBrokenAbortSettledChild() {
 
 /**
  * A child's tool asks the parent a question and the parent never answers: the
- * plugin rejects it once, naming the tool that would. The rejection is the
- * contract, so it is asserted here rather than in each test that provokes it.
+ * plugin rejects it ONCE, never silently. The reason it rejects with is the
+ * whole contract — it is a child's only description of the way out — so this
+ * returns it for the caller to assert, rather than each test re-deriving it.
  */
-async function assertQuestionRejectedNaming(h, event, named) {
+async function assertQuestionRejected(h, event) {
   await h.fireEvent(event);
   const calls = h.questionCalls();
   assert.strictEqual(calls.length, 1, "one rejection, never a silent stall");
   assert.strictEqual(calls[0].method, "reject");
-  assert.ok(calls[0].reason.includes(named), `must name ${named}. got: ${calls[0].reason}`);
+  return calls[0].reason;
 }
+
+/**
+ * The state line and nothing else. The status view also names the last
+ * notification's kind, which is history, so a substring over the whole report
+ * cannot tell a state claim from a mention of one. One reader, because every
+ * settlement test asks the same question of the same view.
+ */
+const stateOf = async (child) =>
+  (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
 
 // --- Tests -----------------------------------------------------------------
 
@@ -824,12 +834,6 @@ describe("task_result and task_interrupt paths", () => {
 });
 
 describe("a child that needs input is not a success", () => {
-  // The state line and nothing else: the status view also names the last
-  // notification's kind, which is history, and a substring over the whole
-  // report cannot tell a state claim from a mention of one.
-  const stateOf = async (child) =>
-    (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
-
   // The spawn contract tells a child to notify the parent when it is blocked.
   // When that child's turn then ended, the plugin recorded `completed` and told
   // the parent "Background task completed successfully" — a false success claim
@@ -1080,13 +1084,44 @@ describe("question gate: child questions settle", () => {
     assert.strictEqual(h.notices().length, 0);
     await h.fireEvent(events.questionReplied({ id: "q1" })); });
 
-  it("answerless questions are rejected with follow-up guidance", async () => {
+  it("an answerless question tells the child the path that exists, not one that does not", async () => {
+    // The rejection is the ONLY thing a blocked child sees at the moment it is
+    // blocked. It used to read "steer with task_continue when it resumes" — a
+    // parent tool, and an instruction to WAIT, in a system whose own spawn prompt
+    // says never wait. The child was left with a blocked turn and no durable
+    // claim to make, so it either stalled or settled as a success. The remedy it
+    // is given is the one it can act on in its own turn.
+    const { h, id } = await withChild();
+    const reason = await assertQuestionRejected(h, events.question(id, [], { id: "q2" }));
+    assert.match(reason, /task_notify/, `names the tool the child holds. got: ${reason}`);
+    assert.match(reason, /needs_input/, `and the claim that makes the block durable. got: ${reason}`);
+    assert.ok(!/when it resumes/.test(reason), `never tells a child to wait. got: ${reason}`);
+  });
+
+  it("a question the gate could not answer is a block the settlement must not report as a success", async () => {
+    // The gate is the plugin BLOCKING the child: it told the child that nobody
+    // can answer. It knows the child cannot finish on that point, so it knows
+    // more than the child recorded. If the child does not itself call
+    // task_notify, the settlement read nothing and reported the block as a
+    // success — the same false success, arriving through a different door. The
+    // gate is the second source of the claim, and it must reach the same funnel.
     const { h, c, id } = await withChild();
-    await assertQuestionRejectedNaming(h, events.question(id, [], { id: "q2" }), "task_continue"); });
+    await h.fireEvent(events.question(id, [], { id: "q-block" }));
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: blocked", `the gate's block is the record's block.`);
+  });
+
+  it("a question the gate ANSWERED is not a block — the child kept moving", async () => {
+    const { h, c, id } = await withChild();
+    await h.fireEvent(events.question(id, [{ text: "yes" }], { id: "q-answered" }));
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: completed", `an answered question blocks nothing.`);
+  });
 
   it("settled task questions are rejected with settled guidance", async () => {
     const { h, c, id } = await withSettledChild();
-    await assertQuestionRejectedNaming(h, events.question(id, [{ text: "yes" }], { id: "q3" }), "settled"); });
+    const reason = await assertQuestionRejected(h, events.question(id, [{ text: "yes" }], { id: "q3" }));
+    assert.ok(reason.includes("settled"), `must say the task is settled. got: ${reason}`); });
 
   it("a failed retained rejection is logged as failed, never as rejected", async () => {
     const directory = tmpProjectDir();

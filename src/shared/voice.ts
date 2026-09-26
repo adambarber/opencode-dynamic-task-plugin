@@ -177,6 +177,19 @@ export const NOTICE_DUPLICATE_SUPPRESSED =
 export const NOTICE_PARENT_UNREACHABLE =
   "Message not sent: the parent did not acknowledge after 2 attempts. The notice is recorded locally; retry task_notify later.";
 
+// ─── Question gate ───────────────────────────────────────────────────────
+
+// What a child is told when nothing can answer its question. The child reads
+// this as the only description of the way out, so it names a tool the child
+// HOLDS and a claim it can make in this very turn — and it never says "when it
+// resumes", which in a system whose spawn prompt says never wait is an
+// instruction to stall. (The parent tool, task_continue, is the parent's.)
+export const QUESTION_NO_ANSWER =
+  "No suggestion available, and no one can answer this: a background task has no human on the other end. Do not wait. If you cannot decide without input, call task_notify with what you need and kind:\"needs_input\", end your turn, and the parent will answer — the task then settles as blocked instead of a success. If you can decide, decide and finish.";
+
+export const QUESTION_SETTLED =
+  "This task has already settled. No response will be provided.";
+
 // ─── Settlement ──────────────────────────────────────────────────────────
 
 // What the child said, for when it said nothing. One function over the verdict

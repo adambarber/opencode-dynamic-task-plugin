@@ -2,7 +2,7 @@
 // Unattributable questions (including the operator's own) are never
 // touched — the gate fails closed on ambiguity.
 import type { OpenCodeClient } from "../shared/client.js";
-import type { TaskStore } from "../shared/task-state.js";
+import { annotateNotice, type TaskStore } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { eventField } from "../shared/session-lifecycle.js";
 import {
@@ -73,6 +73,21 @@ export async function handleQuestionEvent(
       rememberQuestionSession(questionId, childSessionId);
       const answers = normalizeQuestionAnswers(eventField(event, "properties", "answers"));
       const decision = decideQuestion("active", answers);
+      if (decision.action === "reject") {
+        // The gate just refused the child its question — nobody can answer, and
+        // the child knows it. The plugin knows it too, so the refusal IS the
+        // needs_input declaration, routed through the one claim funnel the
+        // child's own task_notify would have used. Without this the block was
+        // visible only in the rejection text: a child that ended its turn
+        // without re-declaring settled as a success. An ANSWERED question
+        // records nothing — there the child kept moving.
+        annotateNotice(
+          store,
+          childSessionId,
+          `The task asked a question nobody could answer: ${decision.reason}`,
+          "needs_input",
+        );
+      }
       if (decision.action === "reply") {
         const result = await replyToQuestion(client, questionId, decision.answer);
         if (result.succeeded) {

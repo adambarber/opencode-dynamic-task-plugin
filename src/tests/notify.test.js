@@ -1,12 +1,17 @@
 /**
  * Notification gate contract — kind mapping, exactly-once delivery with one
  * retry, and a bounded record ledger. Fast by construction: the retry sleep
- * is injectable; real timers are never awaited.
+ * is injectable; real timers are never awaited. Also the prose the gate writes:
+ * a notification is read by an orchestrator as much as by a human, so the tag,
+ * the truncation and the recovery pointer are part of the contract.
  */
 
-import { describe, it, beforeEach } from "node:test";
-import assert from "node:assert";
+import { describe, it, beforeEach, assert } from "./support/runner.js";
 import {
+  formatParentNotification,
+  isParentNotification,
+  noticeDedupKey,
+  notificationTag,
   notifyParent,
   getLatestNotification,
   clearNotifyLedger,
@@ -14,6 +19,7 @@ import {
   notifyChainCount,
   getPendingDeliveries,
   restorePendingDeliveries,
+  truncateText,
 } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
 import { deferred, promptText } from './support/mock-host.js';
@@ -436,5 +442,81 @@ describe("durable pending delivery: the queue IS the crash window", () => {
       "attempts and FIFO order both survive the durability boundary",
     );
     assert.strictEqual(restored[0].text, "a", "the owed text is the exact write, not a recipe to rebuild it");
+  });
+});
+
+// --- The prose the gate writes -----------------------------------------------
+
+describe("notify: the message the parent receives", () => {
+  const state = { childSessionId: "ses_1", description: "Quick task" };
+
+  it("formats completion with the wire marker and output", () => {
+    const message = formatParentNotification(state, "completed", "COMPLETED_OK");
+    assert.match(message, /^\[dynamic-task-notify\]/);
+    assert.match(message, /Background task completed successfully\./);
+    assert.match(message, /Session: ses_1/);
+    assert.match(message, /Latest output: COMPLETED_OK/);
+  });
+
+  it("formats error with recovery guidance", () => {
+    const message = formatParentNotification(state, "error", "Something failed");
+    assert.match(message, /Background task ended with an error\./);
+    assert.match(message, /Something failed/);
+    assert.match(message, /task_result or task_continue/);
+  });
+
+  it("formats a child notice under its own tag with the reply path", () => {
+    const noticeMessage = formatParentNotification(state, "notice", "blocked on credentials");
+    assert.match(noticeMessage, /dynamic-task-notice/);
+    assert.match(noticeMessage, /Message from a running child task:/);
+    assert.match(noticeMessage, /blocked on credentials/);
+    assert.match(noticeMessage, /task_continue/);
+  });
+
+  it("keeps settlements under the settlement tag, and the mid-flight notice off it", () => {
+    // The tag is the routing contract a host orchestrator reads, so this pins the
+    // grouping rather than a spelling: every settlement kind shares one tag, the
+    // mid-flight notice has its own, and the rendered text carries the tag the kind
+    // declares. Typing the marker here instead is how this case used to read.
+    const settlement = notificationTag("completed");
+    for (const kind of ["completed", "error", "blocked"]) {
+      assert.strictEqual(notificationTag(kind), settlement, `${kind} is a settlement`);
+      assert.ok(formatParentNotification(state, kind, "out").includes(settlement), `${kind} renders its tag`);
+    }
+    assert.notStrictEqual(notificationTag("notice"), settlement, "a mid-flight notice is not a settlement");
+    assert.ok(isParentNotification(formatParentNotification(state, "notice", "x")), "and is still parent-directed");
+  });
+
+  it("renders the empty-output placeholder", () => {
+    assert.match(formatParentNotification(state, "completed", "   "), /\(No text output\)/);
+  });
+
+  it("passes mid-size payloads through whole — no silent cliff", () => {
+    const body = "x".repeat(3000);
+    const message = formatParentNotification(state, "completed", body);
+    assert.ok(message.includes(body), "3000-char output must survive the push path intact");
+  });
+
+  it("bounds huge payloads but points at task_result for the rest", () => {
+    const message = formatParentNotification(state, "completed", "x".repeat(9000));
+    assert.ok(message.length < 9000, "push path stays bounded");
+    assert.match(message, /task_result/, "truncation names the full-text recovery path");
+    assert.match(message, /ses_1/, "pointer names the session");
+  });
+});
+
+describe("notify: dedup key and truncation", () => {
+  it("noticeDedupKey separates distinct long messages sharing a prefix", () => {
+    const first = noticeDedupKey("a".repeat(200) + "1");
+    const second = noticeDedupKey("a".repeat(200) + "2");
+    assert.notStrictEqual(first, second, "full content keys the dedup, not a prefix");
+    assert.strictEqual(noticeDedupKey("same"), noticeDedupKey("same"), "deterministic");
+  });
+
+  it("truncateText caps long output", () => {
+    const out = truncateText("x".repeat(1300));
+    assert.strictEqual(out.length, 1203);
+    assert.ok(out.endsWith("..."));
+    assert.strictEqual(truncateText("short"), "short");
   });
 });

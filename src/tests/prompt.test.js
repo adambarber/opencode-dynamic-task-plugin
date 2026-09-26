@@ -1,0 +1,314 @@
+/**
+ * prompt.ts — the message the plugin writes, and the turn it reads back.
+ *
+ * The prompt payload and its classification on the way out; the message/part
+ * guards and the extraction built on them on the way back. The guards come first
+ * because extraction is defined in terms of them — a reader that skipped a guard
+ * would be a second, divergent definition of what a message is.
+ */
+
+import { describe, it, assert } from "./support/runner.js";
+import {
+  classifyPromptError,
+  describeModelShapeError,
+  extractTextFromParts,
+  getLatestAssistantText,
+  hydrateLatestOutcome,
+  invokePrompt,
+  isMessage,
+  isTextPart,
+  isTransientOutcomeError,
+  messageErrorDetail,
+  messageRoleOf,
+  parseModelOverride,
+  ASSISTANT_ROLE,
+} from "../../dist/shared/prompt.js";
+import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
+
+// The smallest shapes the reader tests are about, stated once: a text part, and
+// a message carrying one. A case should be able to say what it means ("an
+// assistant turn that said X") instead of the envelope that carries it — the
+// envelope is an implementation detail of the host, and restating it per case
+// is how two cases end up asserting different things under the same name.
+const textPart = (text) => ({ type: "text", text });
+const said = (role, text) => ({ role, parts: [textPart(text)] });
+
+describe("describeModelShapeError", () => {
+  it("rejects bare ids with the qualified form", () => {
+    assert.match(describeModelShapeError("GLM-5.3-Flash"), /providerID\/modelID/);
+    assert.match(describeModelShapeError("GLM-5.3-Flash"), /GLM-5\.3-Flash/);
+  });
+
+  it("accepts qualified, absent, and blank inputs", () => {
+    assertNothing(describeModelShapeError("nvidia/z-ai/glm-5.3"), "a well-formed override");
+    assertNothing(describeModelShapeError(undefined), "no model named");
+    assertNothing(describeModelShapeError("   "), "a blank model");
+  });
+});
+
+describe("extractTextFromParts", () => {
+  it("joins text parts", () => {
+    assert.strictEqual(extractTextFromParts([textPart("Hello "), textPart("World")]), "Hello \nWorld");
+  });
+
+  it("filters non-text parts", () => {
+    assert.strictEqual(extractTextFromParts([textPart("Hello"), { type: "file", url: "http://example.com" }]), "Hello");
+  });
+
+  it("handles empty array", () => {
+    assert.strictEqual(extractTextFromParts([]), "");
+  });
+
+  it("handles null/undefined in parts", () => {
+    assert.strictEqual(extractTextFromParts([textPart("Hello"), null, undefined, textPart("World")]), "Hello\nWorld");
+  });
+});
+
+// The real 429 signal lives on the message INFO (AssistantMessage.error ->
+// ApiError.data.message), never as a part type or a message role: a failed
+// turn still has role "assistant" with empty text. The reader must dig the
+// info envelope (dual-era, like messageRoleOf) and surface a human detail.
+// The envelope the reader must dig. A failed turn still has role
+// "assistant", and the human detail is one level down inside info.error — no
+// part carries it. Stated once so two cases cannot pass for different reasons.
+describe("messageErrorDetail", () => {
+  const assistantTurn = (error, parts = []) => ({
+    info: error === undefined ? { role: ASSISTANT_ROLE } : { role: ASSISTANT_ROLE, error },
+    parts,
+  });
+
+  it("extracts ApiError.data.message from the info envelope", () => {
+    assert.strictEqual(
+      messageErrorDetail(assistantTurn({ name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } })),
+      "Too Many Requests",
+    );
+  });
+
+  it("falls back to the error name when no message", () => {
+    assert.strictEqual(
+      messageErrorDetail(assistantTurn({ name: "MessageAbortedError" })),
+      "MessageAbortedError",
+    );
+  });
+
+  it("returns empty for a clean assistant message", () => {
+    assert.strictEqual(
+      messageErrorDetail(assistantTurn(undefined, [textPart("done")])),
+      "",
+    );
+  });
+
+  it("reads the legacy flat error role from its text parts", () => {
+    assert.strictEqual(
+      messageErrorDetail({ role: "error", parts: [{ type: "text", text: "provider exploded" }] }),
+      "provider exploded",
+    );
+  });
+
+  it("returns empty for non-message values", () => {
+    assert.strictEqual(messageErrorDetail(null), "");
+    assert.strictEqual(messageErrorDetail("junk"), "");
+    assertEmpty(messageErrorDetail({ role: ASSISTANT_ROLE }), "an assistant message carrying no error part");
+  });
+});
+
+describe("isTransientOutcomeError", () => {
+  it("marks provider and network blips transient", () => {
+    assert.strictEqual(isTransientOutcomeError("429 rate limit exceeded, retry shortly"), true);
+    assert.strictEqual(isTransientOutcomeError("Upstream overloaded, please try again"), true);
+    assert.strictEqual(isTransientOutcomeError("fetch failed: socket hang up"), true);
+    assert.strictEqual(isTransientOutcomeError("Request timeout after 120s"), true);
+  });
+
+  it("treats auth, permission, and empty details as fatal-or-unknown", () => {
+    assert.strictEqual(isTransientOutcomeError("permission denied for model"), false);
+    assert.strictEqual(isTransientOutcomeError("authentication required"), false);
+    assert.strictEqual(isTransientOutcomeError(""), false);
+    assertIs(isTransientOutcomeError(undefined), false, "a non-error is not a transient host error");
+  });
+});
+
+// --- The prompt dance, outbound ----------------------------------------------
+
+describe("prompt dance: invokePrompt", () => {
+  /**
+   * A client whose only method is the prompt, answering as the case says. The
+   * dance is a payload shape and a passthrough of whatever the client answered,
+   * so the two cases are the same client with a different response — named once
+   * here rather than re-typed per case, which is how one of them grew a second
+   * prompt stub nobody was asserting against.
+   */
+  const clientAnswering = (respond) => ({ session: { prompt: async (args) => respond(args) } });
+
+  it("sends the single payload shape and resolves with the client result", async () => {
+    let captured;
+    const client = clientAnswering((args) => {
+      captured = args;
+      return { parts: [{ type: "text", text: "hi" }] };
+    });
+    const result = await invokePrompt(client, "ses_1", "hello");
+    assert.deepStrictEqual(captured, {
+      path: { id: "ses_1" },
+      body: { parts: [{ type: "text", text: "hello" }] },
+    });
+    assert.deepStrictEqual(result, { parts: [{ type: "text", text: "hi" }] });
+  });
+
+  it("rejects with the raw client error (callers classify)", async () => {
+    const failure = new Error("boom");
+    const client = clientAnswering(() => { throw failure; });
+    await assert.rejects(() => invokePrompt(client, "ses_1", "hello"), /boom/);
+  });
+});
+
+describe("prompt dance: parseModelOverride", () => {
+  it("splits provider and model on the first slash", () => {
+    assert.deepStrictEqual(parseModelOverride("prov/model-x"), { providerID: "prov", modelID: "model-x" });
+    assert.deepStrictEqual(parseModelOverride("a/b/c"), { providerID: "a", modelID: "b/c" });
+  });
+
+  it("keeps providerless models with an empty provider", () => {
+    assert.deepStrictEqual(parseModelOverride("lonely"), { providerID: "", modelID: "lonely" });
+  });
+
+  it("rejects empty and non-string overrides", () => {
+    assert.strictEqual(parseModelOverride(""), undefined);
+    assert.strictEqual(parseModelOverride("   "), undefined);
+    assert.strictEqual(parseModelOverride(null), undefined);
+    assert.strictEqual(parseModelOverride(undefined), undefined);
+    assertAbsent(parseModelOverride(42), "a model that is not a string names no override");
+  });
+});
+
+/**
+ * The classifier is total: whatever it is handed, it reports that value back and
+ * calls nothing but a refusal retryable. Two describes were each asserting a
+ * couple of these by hand, which is how "handles non-Error values" came to be
+ * split from "handles odd shapes".
+ */
+function assertClassifiedAs(thrown, said) {
+  const classified = classifyPromptError(thrown);
+  assert.strictEqual(classified.message, said, `reported value. got: ${JSON.stringify(classified)}`);
+  assert.strictEqual(classified.retryable, false, "a value that is not a transient host error is not retryable");
+}
+
+describe("prompt dance: classifyPromptError", () => {
+  it("marks transport failures retryable", () => {
+    for (const msg of ["ECONNREFUSED", "request ETIMEDOUT", "fetch failed", "network error"]) {
+      const classified = classifyPromptError(new Error(msg));
+      assert.strictEqual(classified.retryable, true, msg);
+      assert.strictEqual(classified.message, msg);
+    }
+  });
+
+  it("marks application errors non-retryable", () => {
+    assertClassifiedAs(new Error("session not found"), "session not found");
+  });
+
+  it("handles non-Error values", () => {
+    assertClassifiedAs("plain string", "plain string");
+    assertClassifiedAs(null, "null");
+  });
+});
+
+describe("prompt dance: extractor shape coverage", () => {
+
+  it("classifyPromptError handles odd shapes", () => {
+    assertClassifiedAs({ message: 42 }, "42");
+    assertClassifiedAs(undefined, "undefined");
+  });
+});
+
+// --- The message/part guards, and the extraction built on them ---------------
+
+describe("message/part family guards (Task 08)", () => {
+  it("isTextPart accepts only parts that declare themselves text with string content", () => {
+    assert.ok(isTextPart({ type: "text", text: "hi" }));
+    assert.ok(isTextPart({ type: "text", text: "" }));
+    assert.ok(!isTextPart({ type: "text" }));
+    assert.ok(!isTextPart({ type: "text", text: 42 }));
+    assert.ok(!isTextPart({ type: "image", url: "x" }));
+    assert.ok(!isTextPart({ text: "legacy, untyped" }));
+    assert.ok(!isTextPart("text"));
+    assert.ok(!isTextPart(null));
+  });
+
+  it("isMessage is a record with an array parts field", () => {
+    assert.ok(isMessage({ parts: [] }));
+    assert.ok(isMessage({ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "x" }] }));
+    assert.ok(!isMessage({ parts: "nope" }));
+    assert.ok(!isMessage({}));
+    assert.ok(!isMessage(null));
+    assert.ok(!isMessage([]));
+  });
+
+  it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
+    assert.strictEqual(messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant");
+    assert.strictEqual(messageRoleOf({ role: "user", parts: [] }), "user");
+    assert.strictEqual(messageRoleOf({ parts: [] }), "");
+    assert.strictEqual(messageRoleOf({ info: "junk", role: "system", parts: [] }), "system");
+    assert.strictEqual(messageRoleOf({ info: { role: 42 }, parts: [] }), "");
+  });
+
+  it("the extraction group is built on the guards: same answers through either door", () => {
+    const parts = [{ type: "text", text: "a" }, { type: "tool", x: 1 }, { type: "text", text: "b" }];
+    assert.strictEqual(extractTextFromParts(parts), "a\nb");
+    const messages = [{ info: { role: "user" }, parts: [] }, { role: ASSISTANT_ROLE, parts: [{ type: "text", text: "final" }] }];
+    assert.strictEqual(getLatestAssistantText(messages), "final");
+    // Non-message entries are skipped by the guard, never thrown on.
+    assert.strictEqual(getLatestAssistantText([null, "junk", ...messages]), "final");
+  });
+});
+
+describe("prompt dance: getLatestAssistantText", () => {
+  it("returns the newest assistant text", () => {
+    assert.strictEqual(
+      getLatestAssistantText([said(ASSISTANT_ROLE, "first"), said("user", "q"), said(ASSISTANT_ROLE, "second")]),
+      "second"
+    );
+  });
+
+  it("reads the latest assistant text, skipping empties", () => {
+    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, "old"), said(ASSISTANT_ROLE, "new")]), "new");
+    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, ""), said("user", "q")]), "");
+    assert.strictEqual(getLatestAssistantText([]), "");
+    assertEmpty(getLatestAssistantText(null), "no message at all");
+  });
+});
+
+// The reader's one dependency is a message list, so that is the only thing
+// these clients declare: a reader that grew a second dependency would have to
+// be faked differently, and this is where that would show.
+describe("prompt dance: hydrateLatestOutcome", () => {
+  const clientReading = (read) => ({ session: { messages: async () => read() } });
+
+  // The outcome is a fixed shape — text, errorDetail, unreadable — and a case
+  // states only the part that moved. The full default is written once, so a new
+  // field on the outcome is one edit here instead of a three-field literal at
+  // every site, any of which could disagree about what "empty" means.
+  const assertHydrated = async (read, expected) => assert.deepStrictEqual(
+    await hydrateLatestOutcome(clientReading(read), "ses_1"),
+    { text: "", errorDetail: "", unreadable: false, ...expected },
+  );
+
+  it("reads the latest assistant text from the session", async () => {
+    await assertHydrated(() => [said(ASSISTANT_ROLE, "CHILD_SAYS")], { text: "CHILD_SAYS" });
+  });
+
+  it("surfaces the message-level error detail from the same read", async () => {
+    const failedTurn = [{
+      info: { role: ASSISTANT_ROLE, error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      parts: [],
+    }];
+    await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });
+  });
+
+  // A read that could not be made is not a read that found nothing, and the
+  // notification has to be able to say which one it is quoting.
+  it("falls back to empty fields and admits the read failed when messages fail", async () => {
+    const gone = () => {
+      throw new Error("gone");
+    };
+    await assertHydrated(gone, { unreadable: true });
+  });
+});

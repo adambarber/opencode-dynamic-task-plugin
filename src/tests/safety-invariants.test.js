@@ -403,7 +403,7 @@ describe("invariant: spawn admission flows through one gate (Task 07)", () => {
 
 // --- Tenet 12: pin contracts with the real primitive ------------------------
 // Tests must import production code from dist/, never re-define it. Copies
-// drift — plugin.test.js carries its own agent-mode filter that contradicts
+// drift — admission.test.js carries its own agent-mode filter that contradicts
 // the eed3a04 dispatchability fix it should pin.
 describe("invariant: tests import production, never redefine it (Tenet 12)", () => {
   rule({ name: "no production-function copies in test files", ...TEST_LOCAL_PRODUCTION_COPY });

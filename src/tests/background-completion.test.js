@@ -8,8 +8,7 @@
  * plugin arms no timers, and every task settles exactly once by event.
  */
 
-import { describe, it, beforeEach } from "node:test";
-import assert from "node:assert";
+import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
 

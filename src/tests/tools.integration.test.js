@@ -8,8 +8,7 @@
 * once per settled turn; task_notify is the child's general channel.
 */
 
-import { describe, it } from "node:test";
-import assert from "node:assert";
+import { describe, it, assert } from "./support/runner.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -17,13 +16,12 @@ import {
   withLoggedChild,
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
   resultForChild, resultForUnreadableChild,
-  abortedSessions, dialCount, notifiedNotes, promptsCarrying, promptsTo, promptsToCarrying,
+  abortedSessions, dialCount, notifiedNotes, promptsTo, promptsToCarrying,
   declareNeedsInput, promptTextsTo, promptsSaying, sentPrompts, sessionBody, sessionCount, sessionIds, wasAborted, statusReadCount,
 } from './support/harness.js';
 import { deferred, events, hostSaid, promptText, unclockedSaid } from './support/mock-host.js';
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
-import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 // The ledger's own name and root, resolved by the code that owns them. Six cases
 // here used to spell the filename out, which is a restatement of a production
 // constant: rename the ledger and they would read a path nothing writes, and a

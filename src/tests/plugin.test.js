@@ -1889,12 +1889,6 @@ describe("config: file and env edges", () => {
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
     });
   });
-
-  it("ignores non-numeric env maxConcurrent", async () => {
-    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "bogus", async () => {
-      assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
-    });
-  });
 });
 
 

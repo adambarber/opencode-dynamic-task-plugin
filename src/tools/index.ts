@@ -27,25 +27,49 @@ import {
 type ToolArgs = Parameters<typeof tool>[0]["args"];
 
 export function buildToolMap(deps: ToolDeps) {
-  // The ONLY door into a session-scoped executor. The scope is resolved here,
-  // once per call, and the executor receives it — so the session-id guard is
-  // structurally present for every session tool rather than repeated (and
-  // driftable) inside four executors, and an executor's signature has no room
-  // for an unresolved id.
+  // The ONLY door into any registered tool, and the ONLY decision about what an
+  // executor runs against: a resolved session scope for a tool that acts on a
+  // named child, the dependency set for the two that do not. One builder, so an
+  // executor is reached the same way from both kinds and a new tool cannot invent
+  // a third call shape. The refusal is reported by the resolve step, before the
+  // executor exists.
+  const registeredTool = <T>(
+    description: string,
+    args: ToolArgs,
+    resolve: (raw: unknown) => { ok: true; input: T } | { ok: false; error: string },
+    execute: (input: T, args: never, ctx: ToolContext) => Promise<string>,
+  ) =>
+    tool({
+      description,
+      args,
+      async execute(raw, ctx: ToolContext) {
+        const resolved = resolve(raw);
+        if (!resolved.ok) return resolved.error;
+        return execute(resolved.input, raw as never, ctx);
+      },
+    });
+
+  // The scope is resolved here, once per call, and the executor receives it — so
+  // the session-id guard is structurally present for every session tool rather
+  // than repeated (and driftable) inside four executors, and an executor's
+  // signature has no room for an unresolved id.
   const scopedTool = (
     description: string,
     args: ToolArgs,
     execute: (scope: ResolvedSessionScope, args: never) => Promise<string>,
   ) =>
-    tool({
-      description,
-      args,
-      async execute(raw) {
-        const opened = openSessionScope(deps, raw);
-        if (!opened.ok) return opened.error;
-        return execute(opened.scope, raw as never);
-      },
-    });
+    registeredTool(description, args, (raw) => {
+      const opened = openSessionScope(deps, raw);
+      return opened.ok ? { ok: true as const, input: opened.scope } : opened;
+    }, execute);
+
+  // The two tools that run against the PLUGIN rather than a session scope: there
+  // is no session id to resolve, and the whole dependency set is the input.
+  const pluginTool = (
+    description: string,
+    args: ToolArgs,
+    execute: (deps: ToolDeps, args: never, ctx: ToolContext) => Promise<string>,
+  ) => registeredTool(description, args, () => ({ ok: true as const, input: deps }), execute);
   const SESSION_ID = tool.schema.string().describe("Background task session ID (ses_...)");
   // One builder for the two dependency arguments. They are the same schema with
   // the same meaning — a list of child session ids — and differ only in what
@@ -53,18 +77,22 @@ export function buildToolMap(deps: ToolDeps) {
   // chain twice is how the two arguments stop being the same kind of value.
   const SESSION_ID_LIST = (description: string) =>
     tool.schema.array(tool.schema.string()).optional().describe(description);
+  // Likewise the prompt and the model override: the two arguments every
+  // prompt-bearing tool takes, each with its own sentence but the same shape. The
+  // model's base contract is MODEL_ARG_DESCRIPTION (providerID/modelID as spelled
+  // in the host's own config, bare ids refused) — a tool that restates that
+  // sentence restates it wrong sooner or later, so a tool adds a clause instead.
+  const PROMPT = (description: string) => tool.schema.string().describe(description);
+  const MODEL = (clause = "") => tool.schema.string().optional().describe(`${MODEL_ARG_DESCRIPTION}${clause}`);
 
   return {
-      dynamic_task: tool({
-        description: DYNAMIC_TASK_DESCRIPTION,
-        args: {
+      dynamic_task: pluginTool(
+        DYNAMIC_TASK_DESCRIPTION,
+        {
           description: tool.schema.string().describe("Short human-readable task label"),
           subagent_type: tool.schema.string().describe("Agent to invoke"),
-          prompt: tool.schema.string().describe("Instructions for the child session"),
-          model: tool.schema
-            .string()
-            .optional()
-            .describe(MODEL_ARG_DESCRIPTION),
+          prompt: PROMPT("Instructions for the child session"),
+          model: MODEL(),
           depends_on: SESSION_ID_LIST(
             "Task dependencies — session IDs this task depends on. Each must have completed.",
           ),
@@ -72,34 +100,30 @@ export function buildToolMap(deps: ToolDeps) {
             "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
           ),
         },
-        async execute(args, ctx: ToolContext) {
-          return executeDynamicTask(deps, args, ctx);
-        },
-      }),
+        executeDynamicTask,
+      ),
 
       task_continue: scopedTool(
         TASK_CONTINUE_DESCRIPTION,
         {
           session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
-          prompt: tool.schema.string().describe("Follow-up instructions"),
-          model: tool.schema.string().optional().describe(`${MODEL_ARG_DESCRIPTION} Applies when reviving a settled task; steers keep the task's model.`),
+          prompt: PROMPT("Follow-up instructions"),
+          model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
         },
         executeTaskContinue,
       ),
 
-      task_notify: tool({
-        description: TASK_NOTIFY_DESCRIPTION,
-        args: {
+      task_notify: pluginTool(
+        TASK_NOTIFY_DESCRIPTION,
+        {
           message: tool.schema.string().describe("What the parent needs to know"),
           kind: tool.schema
             .enum(NOTICE_CLAIMS)
             .optional()
             .describe("What this notice claims about your own state: 'progress' (default) or 'needs_input' when this turn cannot finish without the parent"),
         },
-        async execute(args, ctx: ToolContext) {
-          return executeTaskNotify(deps, args, ctx);
-        },
-      }),
+        executeTaskNotify,
+      ),
 
       task_result: scopedTool(TASK_RESULT_DESCRIPTION, { session_id: SESSION_ID }, executeTaskResult),
 

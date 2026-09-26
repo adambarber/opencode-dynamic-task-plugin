@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
-import type { RetainedTaskState, ActiveTaskState, TaskRecordBase, TaskState } from "./task-state.js";
+import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
 import { TASK_STATES } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, isEventRecord } from "./host-shape.js";
@@ -153,12 +153,8 @@ export function isTerminalSessionEvent(event: unknown): boolean {
 // durable halves (running and settled) — they differ in which state is legal
 // and which clock must be there, not in the identity and routing fields, and
 // two nearly-identical guards would be two places for them to drift.
-interface ValidLedgerEntry {
-  childSessionId: string;
-  parentSessionId: string;
-  agentName: string;
-  description: string;
-  lineage: unknown[];
+interface ValidLedgerEntry extends TaskIdentity {
+  lineage: LineagePath;
   state: TaskState;
   startedAt: number;
   retainedAt?: unknown;

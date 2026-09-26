@@ -29,15 +29,9 @@ import {
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
 import { createDummyLineage, type ToolDeps } from "./context.js";
+import type { SpawnArgs } from "./args.js";
 
-export interface SpawnArgs {
-  description?: string | undefined;
-  subagent_type?: string | undefined;
-  prompt?: string | undefined;
-  model?: string | undefined;
-  depends_on?: string[] | undefined;
-  depends_on_settled?: string[] | undefined;
-}
+export type { SpawnArgs } from "./args.js";
 
 export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: ToolContext): Promise<string> {
   const { client, store, config, directory } = deps;
@@ -56,8 +50,9 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // admission-checked before the session exists (a bad id would otherwise fail
   // after creation, surfacing on the lifecycle path with nothing naming the
   // suspect), and retained history is pruned before anything reads it.
-  const admitted = admitToolPrompt(args, INVALID_PROMPT, store, config);
-  if (typeof admitted === "string") return admitted;
+  const promptAdmission = admitToolPrompt(args, INVALID_PROMPT, store, config);
+  if (!promptAdmission.ok) return promptAdmission.error;
+  const admitted = promptAdmission.input;
 
   if (typeof args.description === "string" && args.description.length > MAX_DESCRIPTION_CHARS) {
     return descriptionTooLong(args.description.length);
@@ -142,20 +137,14 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       description: args.description || `Task: ${agent.name}`,
     });
 
-    if (parentSessionId) {
-      return spawnConfirmation({
-        agentName: agent.name,
-        childSessionId,
-        model: requestedModelLabel,
-        parentSessionId,
-      });
-    }
-
+    // One confirmation for both shapes: a child with no parent to name is still
+    // a tracked child, and `parentSessionId` is already nullable in the report —
+    // deciding here what that field means is the one place that can decide it.
     return spawnConfirmation({
       agentName: agent.name,
       childSessionId,
       model: requestedModelLabel,
-      parentSessionId: null,
+      parentSessionId: parentSessionId || null,
     });
   } catch (error: unknown) {
     const message = errorMessage(error);

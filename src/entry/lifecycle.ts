@@ -28,7 +28,11 @@ import {
   declaredBlocked,
   terminalEventIsAttributable,
   releaseWaitsFor,
+  isRunning,
+  findTask,
   type TaskStore,
+  type TaskIdentity,
+  type TaskRecordBase,
   type SettlementVerdict,
   type DependencyWait,
 } from "../shared/task-state.js";
@@ -67,12 +71,8 @@ export function deliverParent(
   return notifyParent(client, parentSessionId, message, { childSessionId, kind });
 }
 
-export interface ChildRef {
-  childSessionId: string;
-  parentSessionId: string;
-  agentName: string;
-  description: string;
-  requestedModel?: { providerID: string; modelID: string } | undefined;
+export interface ChildRef extends TaskIdentity {
+  requestedModel?: TaskRecordBase["requestedModel"];
 }
 
 // Fire a child prompt and own its failure path. The prompt resolving is NOT
@@ -163,18 +163,20 @@ export async function settleRunningChild(
   signal: SettlementSignal,
 ): Promise<boolean> {
   const { status, cause } = signal;
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) return false;
-  // Turn attribution: a turn that REPLACED another (a steer, a revival) has a
-  // prior turn's terminal copies possibly still in flight, and the host
-  // publishes a turn end more than once. Until the replacement has been seen
-  // doing something, a terminal event cannot be attributed to it and the task
-  // stays active. A fresh spawn — and a restored one, whose attribution state
-  // was deliberately not persisted — has no prior turn, so it always settles.
+  // Turn attribution first, and the reason for it lives on the gate itself. It is
+  // a question about the store rather than about a record in hand, so asking it
+  // first also means a session this plugin has no record of costs one lookup
+  // instead of two.
   if (!terminalEventIsAttributable(store, childSessionId)) {
     void safeLog(client, "info", `Dropped unattributable ending for ${childSessionId}, staying active`);
     return false;
   }
+  // "Still running" is asked of the store's ONE reader for "is this one of ours",
+  // so a session id in the settled half is refused by the same door that refuses
+  // an unknown one — and the record the settlement needs is the record the guard
+  // was asked about, not a second lookup.
+  const task = findTask(store, childSessionId);
+  if (task?.state !== "active") return false;
   // Synchronous claim — no awaits before this. transitionState is the one
   // settlement gate: the winner replaces the active entry, so every
   // competing writer's transition throws and bows out.
@@ -190,8 +192,8 @@ export async function settleRunningChild(
     event: signal.event,
     declaredBlocked: declaredBlocked(store, childSessionId),
   });
-  const parentSessionId = active.parentSessionId;
-  const childDescription = active.description;
+  const parentSessionId = task.parentSessionId;
+  const childDescription = task.description;
   try {
     transitionState(store, childSessionId, verdict);
   } catch {
@@ -258,7 +260,7 @@ function releaseWaitingDispatches(
     store,
     settledChildSessionId,
     (wait) => resolveDependencies(store, wait.dependsOn, wait.dependsOnSettled),
-    (id) => store.activeTasks.has(id),
+    (id) => isRunning(store, id),
   );
   if (release.ready.length === 0 && release.dead.length === 0) return;
   const byParent = new Map<string, DependencyWait[]>();

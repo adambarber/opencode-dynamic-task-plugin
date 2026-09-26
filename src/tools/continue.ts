@@ -26,11 +26,9 @@ import {
   steerAutoRevived,
 } from "../shared/voice.js";
 
-export interface ContinueArgs {
-  session_id?: string | undefined;
-  prompt?: string | undefined;
-  model?: string | undefined;
-}
+import type { ContinueArgs } from "./args.js";
+
+export type { ContinueArgs } from "./args.js";
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
   const { client, store, config, sessionId } = scope;
@@ -39,8 +37,9 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // before anything moves (a bad id fails without touching the task), then
   // prune retained history. The model override applies to revivals only — steers
   // keep the task's model (a mid-turn model swap is a new task, not a steer).
-  const admitted = admitToolPrompt(args, PROMPT_REQUIRED, store, config);
-  if (typeof admitted === "string") return admitted;
+  const admission = admitToolPrompt(args, PROMPT_REQUIRED, store, config);
+  if (!admission.ok) return admission.error;
+  const admitted = admission.input;
 
   // The state a revival was auto-triggered from, or undefined when the parent
   // simply followed up on a settled task. Set by the M9 arm below and read by

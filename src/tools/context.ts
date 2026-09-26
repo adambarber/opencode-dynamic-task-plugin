@@ -3,7 +3,7 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
-import type { TaskStore } from "../shared/task-state.js";
+import type { TaskRecord, TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
 import { resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
@@ -68,15 +68,28 @@ export function unknownSessionResult(sessionId: string): string {
   });
 }
 
+/**
+ * The caller of the current tool, as the tool layer sees it: the host's word for
+ * the calling session, or undefined when it gave none — `unknown` IS that word,
+ * so it is treated as no caller at all. The two child-side tools that need a
+ * caller (a notice, a nested dispatch) resolve it here rather than each
+ * re-implementing what "the host named no session" means.
+ */
+export function callerSessionId(ctx: ToolContext): string | undefined {
+  const caller = resolveParentSessionId(ctx);
+  return !caller || caller === "unknown" ? undefined : caller;
+}
+
+/** The caller's own record, or undefined when there is no caller or it is not one of ours. */
+export function callerTask(ctx: ToolContext, store: TaskStore): TaskRecord | undefined {
+  const caller = callerSessionId(ctx);
+  return caller === undefined ? undefined : (findTask(store, caller) ?? undefined);
+}
+
 // Lineage from current session (for nested dynamic_task calls).
 export function createDummyLineage(ctx: ToolContext, store: TaskStore): string[] {
-  const callerSessionId = resolveParentSessionId(ctx);
-  if (!callerSessionId || callerSessionId === "unknown") return [];
-  const callerTask = findTask(store, callerSessionId);
-  if (callerTask) {
-    // The stored lineage already ends with the caller's own agent (it was
-    // built as admission.newLineage) — re-appending it would double-count.
-    return [...callerTask.lineage];
-  }
-  return [];
+  const task = callerTask(ctx, store);
+  // The stored lineage already ends with the caller's own agent (it was
+  // built as admission.newLineage) — re-appending it would double-count.
+  return task ? [...task.lineage] : [];
 }

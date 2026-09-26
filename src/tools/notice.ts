@@ -1,11 +1,10 @@
 // task_notify executor: the child's mid-flight voice. Advisory metadata on
 // the active record, delivery through the gate — never a settlement.
 import type { ToolContext } from "@opencode-ai/plugin";
-import { resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
 import { pruneRetainedTasks, findTask, annotateNotice, NOTICE_CLAIMS, type NoticeClaim } from "../shared/task-state.js";
-import type { ToolDeps } from "./context.js";
+import { callerSessionId, type ToolDeps } from "./context.js";
 import {
   CALLER_UNKNOWN,
   MESSAGE_REQUIRED,
@@ -27,8 +26,8 @@ export interface NotifyArgs {
 
 export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: ToolContext): Promise<string> {
   const { client, store, config } = deps;
-  const callerId = resolveParentSessionId(ctx);
-  if (!callerId || callerId === "unknown") {
+  const callerId = callerSessionId(ctx);
+  if (callerId === undefined) {
     return CALLER_UNKNOWN;
   }
   if (!isEventRecord(args) || typeof args.message !== "string" || !args.message.trim()) {

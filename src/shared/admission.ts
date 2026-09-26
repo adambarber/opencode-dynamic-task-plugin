@@ -198,19 +198,25 @@ export function registerAdmittedTask(
  * sequence in one function makes "a bad prompt fails before anything moves" a
  * property of the tool rather than a habit at a call site.
  *
- * Returns the refusal as a STRING, ready to hand the parent verbatim — the same
- * convention formatAdmissionError already uses — or the admitted pair.
+ * The refusal comes back as a VALUE in the same `{ ok, error }` shape every other
+ * gate in this module answers in (`resolveAdmission`, `resolveDependencies`), so
+ * the caller's early return is the one line every gate's caller already writes,
+ * rather than a typeof check each prompt-bearing tool re-spells for itself.
  */
+export type ToolPromptAdmission =
+  | { ok: true; input: AdmittedPromptInput }
+  | { ok: false; error: string };
+
 export function admitToolPrompt(
   args: { prompt?: unknown; model?: unknown },
   absentPromptVoice: string,
   store: TaskStore,
   config: DynamicTaskConfig,
-): AdmittedPromptInput | string {
+): ToolPromptAdmission {
   const admitted = admitPromptInput(args.prompt, args.model, absentPromptVoice);
-  if (!admitted.ok) return admitted.error;
+  if (!admitted.ok) return admitted;
   pruneRetainedTasks(store, config);
-  return admitted.input;
+  return { ok: true, input: admitted.input };
 }
 
 // ─── agent discovery ───────────────────────────────────────────────

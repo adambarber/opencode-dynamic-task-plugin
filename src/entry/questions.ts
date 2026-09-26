@@ -8,27 +8,31 @@
 // bridge an `asked` event that carried no session id — a shape the host has
 // never published.
 import type { OpenCodeClient } from "../shared/client.js";
-import { annotateNotice, type TaskStore } from "../shared/task-state.js";
+import { annotateNotice, findTask, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { isQuestionAsked, readAskedQuestion } from "../shared/host-events.js";
 import { replyToQuestion, rejectQuestion, decideQuestion } from "../shared/question-handling.js";
 
 // One reporting tail for every rejection: a rejected question is logged by
-// outcome and the log prefix names who owned the child. Both rejection arms (a
-// live child's failed auto-answer, a settled child's unanswered question) route
-// through it, so the log vocabulary cannot drift between them. The rejection
-// REASON is logged rather than sent — the host's reject endpoint takes no body,
-// so a reason can only ever reach the operator here.
-async function reportAutoReject(
+// outcome and the tag names which arm of the gate refused it. Both rejection arms
+// (a live child's failed auto-answer, a settled child's unanswered question)
+// route through it, so the log vocabulary cannot drift between them. The
+// rejection REASON is logged rather than sent — the host's reject endpoint takes
+// no body, so a reason can only ever reach the operator here.
+//
+// The parent to tell is read off the record rather than passed beside it: a
+// refusal reported to the wrong parent is the one mistake this tail cannot be
+// asked to make twice, and a caller with a record in hand cannot get it wrong.
+async function reportRefusal(
   client: OpenCodeClient,
-  questionId: string,
-  childSessionId: string,
-  logParentSessionId: string,
+  asked: { questionId: string; sessionId: string },
+  record: Pick<TaskIdentity, "parentSessionId">,
+  arm: "question-auto" | "question-retained",
   reason: string,
-  logPrefix: string,
 ): Promise<void> {
+  const { questionId, sessionId } = asked;
   const result = await rejectQuestion(client, questionId);
-  debugLog(logParentSessionId, childSessionId, `${logPrefix}-${result.succeeded ? "rejected" : "reject-failed"}`, {
+  debugLog(record.parentSessionId, sessionId, `${arm}-${result.succeeded ? "rejected" : "reject-failed"}`, {
     questionId,
     reason,
     ...(result.succeeded ? {} : { failure: result.reason }),
@@ -51,10 +55,15 @@ export async function handleQuestionEvent(
     return true;
   }
   const { questionId, sessionId, answer } = asked;
-  const active = store.activeTasks.get(sessionId);
-  const retained = active ? undefined : store.retainedTasks.get(sessionId);
+  // One reader, one preference. `findTask` already answers "is this one of ours"
+  // and already resolves the only ambiguity there is — a session id in both halves
+  // (a settled child that was revived) is the RUNNING one, because that is the
+  // half whose turn can still end. Reaching into the two maps here restated that
+  // preference in a call site, which is how it would come to disagree.
+  const task = findTask(store, sessionId);
 
-  if (active) {
+  if (task?.state === "active") {
+    const active = task;
     const decision = decideQuestion("active", answer);
     if (decision.action === "reply") {
       const result = await replyToQuestion(client, questionId, decision.answer);
@@ -69,14 +78,7 @@ export async function handleQuestionEvent(
         questionId,
         reason: result.reason,
       });
-      await reportAutoReject(
-        client,
-        questionId,
-        sessionId,
-        active.parentSessionId,
-        "Background task question auto-answer failed",
-        "question-auto",
-      );
+      await reportRefusal(client, asked, active, "question-auto", "Background task question auto-answer failed");
       return true;
     }
     // The gate just refused the child its question — nobody can answer, and the
@@ -91,30 +93,16 @@ export async function handleQuestionEvent(
     // reason already says only pushes the parent's remedy further out, and the
     // status view truncates.
     annotateNotice(store, sessionId, decision.reason, "needs_input");
-    await reportAutoReject(
-      client,
-      questionId,
-      sessionId,
-      active.parentSessionId,
-      decision.reason,
-      "question-auto",
-    );
+    await reportRefusal(client, asked, active, "question-auto", decision.reason);
     return true;
   }
 
-  if (retained) {
+  if (task !== null) {
     // A settled child cannot answer its own question, and its answer would be
     // worthless anyway — so the question is closed rather than left open.
     const decision = decideQuestion("retained", answer);
     if (decision.action === "reject") {
-      await reportAutoReject(
-        client,
-        questionId,
-        sessionId,
-        retained.parentSessionId,
-        decision.reason,
-        "question-retained",
-      );
+      await reportRefusal(client, asked, task, "question-retained", decision.reason);
     }
     return true;
   }

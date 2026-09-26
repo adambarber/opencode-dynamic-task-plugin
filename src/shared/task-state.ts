@@ -71,17 +71,33 @@ export type SettlementVerdict = Extract<TaskState, "completed" | "blocked" | "er
 export type LineageStep = string;
 export type LineagePath = LineageStep[];
 
-// The fields every record carries, whatever state it is in. Declared once, so
-// the active and retained shapes cannot drift and what admission hands the
-// registry is derived from the record instead of re-typed alongside it.
-export interface TaskRecordBase {
+// The identity and routing of a task: the store's record, the durable entry the
+// loader narrows an untrusted file to, and the reference the plugin hands to the
+// prompt path are one contract wearing three coats. Declared once, so a field
+// added to a task is added here — a fourth coat is a fourth place a rename or a
+// new required field silently fails to reach.
+export interface TaskIdentity {
   childSessionId: string;
   parentSessionId: string;
   agentName: string;
   description: string;
+}
+
+// A model override as the parent spelled it. Named because the record, the
+// reference, and the confirmation that renders it all need the same pair, and an
+// inline spelling in each is three places for a rename to miss.
+export interface RequestedModel {
+  providerID: string;
+  modelID: string;
+}
+
+// The fields every record carries, whatever state it is in. Declared once, so
+// the active and retained shapes cannot drift and what admission hands the
+// registry is derived from the record instead of re-typed alongside it.
+export interface TaskRecordBase extends TaskIdentity {
   startedAt: number;
   lineage: LineagePath;
-  requestedModel?: { providerID: string; modelID: string } | undefined;
+  requestedModel?: RequestedModel | undefined;
   dependsOn?: string[] | undefined;
   // Admission-time only: ids that needed settlement, not success, before this
   // task spawned. Persisted so status renders the full dependency picture.
@@ -240,31 +256,58 @@ export function withdrawInterruptClaim(
   claimTimeMs: number,
   bounds?: Pick<DynamicTaskConfig, "maxConcurrent">,
 ): boolean {
-  const retained = retainedFor(store, childSessionId);
-  if (!retained || retained.state !== "interrupted") return false;
-  // >= not >: a successful abort landing in the same millisecond as the
-  // claim is still knowledge — the newer (or same-instant) success wins.
-  if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
-  if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
-  const { retainedAt: _retainedAt, abortError: _abortError, lastAbortAt: _lastAbortAt, ...active } = retained;
-  store.retainedTasks.delete(childSessionId);
-  // No turn attribution: a withdrawal UNDOES a claim about this very turn, so
-  // the turn is still live and its own ending settles it like any other.
-  setActive(store, childSessionId, { ...active, state: "active" });
-  emitRetainedChange(store);
-  return true;
+  return decideRetained(store, childSessionId, (retained) => {
+    if (retained.state !== "interrupted") return false;
+    // >= not >: a successful abort landing in the same millisecond as the
+    // claim is still knowledge — the newer (or same-instant) success wins.
+    if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
+    if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
+    // No turn attribution: a withdrawal UNDOES a claim about this very turn, so
+    // the turn is still live and its own ending settles it like any other.
+    reclaimAsActive(store, childSessionId, retained);
+    return true;
+  });
 }
 
 /**
- * The ONE way a retained (settled) record is edited in place. Both halves of
- * that are load-bearing and neither is the caller's business: a record that is
- * gone must be a no-op, and a record that changed must publish through the
- * retained funnel, because the durable ledger is written from that event. A
- * mutation that skipped the publish left a persisted record disagreeing with the
- * store — a settled task that comes back wrong after a restart. The caller
- * supplies the decision and the edit; the lookup and the publish live here.
+ * The move from settled back to running. A revival and a withdrawn interrupt
+ * claim are the same move with different bookkeeping, so it is written once: the
+ * settled-only fields are dropped here rather than each caller listing which ones
+ * it remembered — one of them had been carrying a stale `lastAbortAt` onto the
+ * running record, where nothing can read it — and the two maps are moved in the
+ * only order that cannot be observed half-done.
+ *
+ * The caller still owes the publish: dropping a settled record IS a retained
+ * mutation, and the durable ledger is written from that event.
  */
-function amendRetained(
+function reclaimAsActive(
+  store: TaskStore,
+  childSessionId: string,
+  retained: RetainedTaskState,
+  overrides: Partial<ActiveTaskState> = {},
+): ActiveTaskState {
+  const { state: _settled, retainedAt: _at, abortError: _err, lastAbortAt: _abort, ...carried } = retained;
+  const reclaimed: ActiveTaskState = { ...carried, state: "active", ...overrides };
+  store.retainedTasks.delete(childSessionId);
+  setActive(store, childSessionId, reclaimed);
+  return reclaimed;
+}
+
+/**
+ * The ONE way a retained (settled) record is read for a decision. All three
+ * halves are load-bearing and none is the caller's business: a record that is
+ * gone must be a no-op, a decision that declines itself must publish nothing,
+ * and a decision that DID act must publish through the retained funnel, because
+ * the durable ledger is written from that event. A mutation that skipped the
+ * publish left a persisted record disagreeing with the store — a settled task
+ * that comes back wrong after a restart.
+ *
+ * The decision is one predicate over the record and nothing more: stamping an
+ * abort, annotating a notice, and withdrawing an interrupt claim are all "look,
+ * decide, act", so the lookup and the publish are not three callers' chance to
+ * spell them differently.
+ */
+function decideRetained(
   store: TaskStore,
   childSessionId: string,
   amend: (retained: RetainedTaskState) => boolean,
@@ -279,7 +322,7 @@ function amendRetained(
 // Stamp a successful abort landing on a retained record (F-R4): concurrent
 // interruptors observe it through withdrawInterruptClaim's guard.
 export function noteAbortLanded(store: TaskStore, childSessionId: string): boolean {
-  return amendRetained(store, childSessionId, (retained) => {
+  return decideRetained(store, childSessionId, (retained) => {
     retained.lastAbortAt = Date.now();
     return true;
   });
@@ -365,7 +408,7 @@ export function transitionState(
 // Only a recorded success can be corrected to error: an interrupted or
 // errored task's own abort aftermath must never re-notify the parent.
 export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, "active">): boolean {
-  return amendRetained(store, childSessionId, (retained) => {
+  return decideRetained(store, childSessionId, (retained) => {
     if (retained.state !== "completed" || outcome !== "error") return false;
     retained.state = outcome;
     return true;
@@ -395,10 +438,9 @@ export function reviveRetainedTask(
     const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
     if (limitError) throw new Error(limitError);
   }
-  const { state: _terminal, retainedAt: _at, abortError: _err, ...core } = retained;
-  const revived: ActiveTaskState = {
-    ...core,
-    state: "active",
+  const revived = reclaimAsActive(store, childSessionId, retained, {
+    // A revival REPLACES the turn, so the clock restarts: this is a new turn of
+    // the same child, not the continuation of the one that ended.
     startedAt: Date.now(),
     // A revival replaces the turn that just ended, and a turn end is published
     // more than once — a copy can still be in flight when the new prompt fires.
@@ -406,9 +448,7 @@ export function reviveRetainedTask(
     // settle the revival and report it completed before it has begun.
     replacedAt: Date.now(),
     ...(model !== undefined ? { requestedModel: model } : {}),
-  };
-  store.retainedTasks.delete(childSessionId);
-  setActive(store, childSessionId, revived);
+  });
   emitRetainedChange(store);
   return revived;
 }
@@ -422,7 +462,7 @@ function annotateActive(
   childSessionId: string,
   apply: (active: ActiveTaskState) => void,
 ): boolean {
-  const active = store.activeTasks.get(childSessionId);
+  const active = activeFor(store, childSessionId);
   if (!active) return false;
   apply(active);
   return true;
@@ -509,7 +549,16 @@ export function turnReplacementPending(
   return (task.turnLiveAt ?? 0) < task.replacedAt;
 }
 
-/** Can a terminal event on this child be attributed to the current turn? */
+/**
+ * The ONE gate that decides whether a terminal event may settle this turn.
+ *
+ * A turn that REPLACED another (a steer, a revival) has a prior turn's terminal
+ * copies possibly still in flight, and the host publishes a turn end more than
+ * once. Until the replacement has been seen doing something, a terminal event
+ * cannot be attributed to it and the task stays active. A fresh spawn — and a
+ * restored one, whose attribution state was deliberately not persisted — has no
+ * prior turn, so it always settles.
+ */
 export function terminalEventIsAttributable(store: TaskStore, childSessionId: string): boolean {
   return !turnReplacementPending(store.activeTasks.get(childSessionId));
 }
@@ -637,7 +686,7 @@ export function releaseWaitsFor(
 // Transient abort failures are recorded on the retained entry: an
 // interrupted-but-still-live child must be visible, not silently stranded.
 export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
-  amendRetained(store, childSessionId, (retained) => {
+  decideRetained(store, childSessionId, (retained) => {
     retained.abortError = error;
     return true;
   });
@@ -648,6 +697,17 @@ export function recordAbortError(store: TaskStore, childSessionId: string, error
 // touches settled history goes through one of these three, which is what makes
 // "a retained record is only ever read here, changed there, and published once"
 // checkable by reading one screen instead of auditing every edge.
+
+/**
+ * The running record for a child, or undefined. The mirror of `retainedFor`, and
+ * named for the same reason: "what is this child's running record" is one question
+ * with one answer, so the absence signal is declared once here rather than left to
+ * each caller. The policy that answers it stays with the edge — an internal
+ * rollback, a settlement and a revival genuinely disagree about a missing record.
+ */
+function activeFor(store: TaskStore, childSessionId: string): ActiveTaskState | undefined {
+  return store.activeTasks.get(childSessionId);
+}
 
 /**
  * The settled (retained) record for a child, or undefined. One accessor because
@@ -673,18 +733,28 @@ function emitRetainedChange(store: TaskStore): void {
 // One loop for both halves. "Walk what the last boot left, keep what fits, count
 // what came back" is one shape; the per-record work (where it lands, and what
 // conflicts with it) is a function, not a copy of the loop.
+//
+// The conflict is handed over as the OTHER durable half rather than as a
+// predicate: a settled record and a running record for one id are the same task
+// seen twice, so the rule is simply "the other half outranks me" and each caller
+// names the map that holds it instead of re-deriving the lookup.
 function hydrate<T extends ActiveTaskState | RetainedTaskState>(
   records: Map<string, T>,
   place: (id: string, record: T) => void,
-  alreadyPresent: (id: string) => boolean,
+  outrankedBy: Map<string, ActiveTaskState | RetainedTaskState>,
 ): number {
   let restored = 0;
   for (const [id, record] of records) {
-    if (alreadyPresent(id)) continue;
+    if (outrankedBy.has(id)) continue;
     place(id, record);
     restored++;
   }
   return restored;
+}
+
+/** Is this one of ours, still running? The same question `activeFor` answers, as a verdict. */
+export function isRunning(store: TaskStore, childSessionId: string): boolean {
+  return activeFor(store, childSessionId) !== undefined;
 }
 
 // Boot hydration for the running half. The concurrency cap is deliberately NOT
@@ -782,11 +852,7 @@ export function subtreeTaskIds(store: TaskStore, rootSessionId: string): string[
 }
 
 export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
-  return hydrate(
-    records,
-    (id, record) => setActive(store, id, record),
-    (id) => store.retainedTasks.has(id), // settled history wins over a stale running half
-  );
+  return hydrate(records, (id, record) => setActive(store, id, record), store.retainedTasks);
 }
 
 export function restoreRetained(
@@ -800,7 +866,7 @@ export function restoreRetained(
       store.retainedTasks.set(id, pruneIfBounded(store, record, maxEntries));
       emitRetainedChange(store);
     },
-    (id) => store.activeTasks.has(id), // live wins over restored history
+    store.activeTasks,
   );
 }
 

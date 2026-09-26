@@ -17,6 +17,16 @@
  * the build fails. Different streams means jscpd paired the wrong coordinates and
  * the finding is discarded.
  *
+ * The comparison stream must be IDENTICAL to the one jscpd measured, imports
+ * included. Filtering import lines out of it — the judgement `cross-boundary.mjs`
+ * makes for its own detector, where an import list is a fact about names — was
+ * tried here and it is a hole: a four-file clone whose shared run spanned an
+ * import line and the code after it was reported by jscpd and DISMISSED here, so
+ * the gate printed "Found 0 clones" and exited 0 over code with visible
+ * duplication. Any divergence between what is measured and what is re-measured
+ * becomes blind spot, and the whole value of a verification step is that it has
+ * none. Import lists that collide are a real thing to fix, not to filter.
+ *
  * This cannot make the gate weaker in the direction that matters. A real clone
  * still fails: the same tokens at the reported coordinates are the definition of
  * the clone, and anything the report cannot reproduce at its own coordinates is
@@ -39,23 +49,11 @@ const { tokenize } = require("@jscpd/tokenizer");
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";
 
-/** The lines an import declaration occupies — see cross-boundary.mjs for why. */
-const importLines = (source) => {
-  const lines = new Set();
-  const pattern = /import[\s\S]{0,400}?from\s*["'][^"']*["']|import\s*["'][^"']*["']/g;
-  for (const match of source.matchAll(pattern)) {
-    const end = match.index + match[0].length;
-    for (let line = 1, at = 0; at < end; line++, at = source.indexOf("\n", at) + 1) lines.add(line);
-  }
-  return lines;
-};
-
 /** Every significant token in the file, tagged with the line it starts on. */
 const stream = (path) => {
   const source = readFileSync(path, "utf8");
-  const imports = importLines(source);
   return tokenize(source, "typescript")
-    .filter((t) => t.type !== "empty" && t.type !== "new_line" && !imports.has(t.loc.start.line))
+    .filter((t) => t.type !== "empty" && t.type !== "new_line")
     .map((t) => ({
       key: t.type === "string" ? "string" : `${t.type}:${t.value}`,
       line: t.loc.start.line,

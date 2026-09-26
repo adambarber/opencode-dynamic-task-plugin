@@ -151,18 +151,17 @@ describe("task_continue branches", () => {
     const status = await c.status();
     assert.ok(status.includes("active"), `the echo is consumed. got: ${status}`);
     assert.strictEqual(h.notices().length, 0, "the echo notifies nothing");
-    await h.settle(id);
-    assert.strictEqual(h.notices().length, 1, "the genuine settlement delivers");
-    assert.ok(h.noticeBodies()[0].includes("completed successfully")); });
+    const note = await h.settledNotice(id);
+    assert.ok(note.includes("completed successfully")); });
 
   it("a steer racing a completed settle auto-revives instead of demanding a second call", async () => {
     const { h, c, id } = await withChild();
-    const { release: releaseAbort } = h.client.gateAbort();
+    const { release } = h.client.gateAbort();
     const steer = c.steer("pivot");
     await sleep(10);
     await h.fireEvent(events.idle(id));
     await h.fireEvent(events.idle(id));
-    releaseAbort();
+    release();
     const out = await steer;
     assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
     assert.strictEqual(
@@ -174,18 +173,11 @@ describe("task_continue branches", () => {
 
   it("a task settling mid-steer never receives the replacement prompt", async () => {
     const { h, c, id } = await withChild();
-    let releaseAbort;
-    const gate = new Promise((r) => { releaseAbort = r; });
-    const origAbort = h.client.session.abort;
-    let firstAbort = true;
-    h.client.session.abort = (args) => {
-      if (firstAbort) { firstAbort = false; return gate; }
-      return origAbort(args);
-      };
+    const { release } = h.client.gateAbort();
     const steer = c.steer("pivot");
     await sleep(10);
     await c.interrupt();
-    releaseAbort();
+    release();
     const out = await steer;
     assert.ok(!out.includes("Steer sent"), `must not claim a steer that never happened. got: ${out}`);
     assert.ok(out.includes("interrupted"), `truthful report. got: ${out}`);
@@ -198,21 +190,11 @@ describe("task_continue branches", () => {
 
   it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
     const { h, c, id } = await withChild();
-    let releaseAbort;
-    const gate = new Promise((r) => { releaseAbort = r; });
-    let firstAbort = true;
-    const origAbort = h.client.session.abort;
-    h.client.session.abort = (args) => {
-      if (firstAbort) {
-        firstAbort = false;
-        return gate.then(() => { throw new Error(`Session "${args.path.id}" not found.`); });
-        }
-      return origAbort(args);
-      };
+    const { release } = h.client.gateAbort({ fails: true });
     const steer = c.steer("pivot");
     await sleep(10);
     await c.interrupt();
-    releaseAbort();
+    release();
     const out = await steer;
     assert.ok(out.includes("interrupted"), `reports the actual winner. got: ${out}`);
     assert.ok(!out.includes("settled as error"), `no false error claim. got: ${out}`);
@@ -497,8 +479,7 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(h.noticeBodies()[0].includes("completed successfully")); });
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
-    const h = await setupHarness();
-    h.client.session.abort = async () => { throw new Error("ECONNREFUSED"); };
+    const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
     const { id, c } = await h.spawn();
     await h.settle(id);
     const out = await c.interrupt();
@@ -544,13 +525,7 @@ describe("settlement: the notification layer owns outcomes", () => {
 
   it("settlement does not hold the event pump on slow transport", async () => {
     const gate = deferred();
-    const h = await setupHarness();
-    const origPrompt = h.client.session.prompt;
-    h.client.session.prompt = (args) => {
-      const text = args.body?.parts?.[0]?.text || "";
-      if (text.includes("[dynamic-task-notify]")) return gate;
-      return origPrompt(args);
-      };
+    const h = await setupHarness({ hooks: { notifyTransport: { hang: gate } } });
     const { id, c } = await h.spawn();
     const settled = h.settle(id);
     const winner = await Promise.race([settled.then(() => "event"), sleep(500).then(() => "timeout")]);
@@ -684,16 +659,7 @@ describe("notification delivery records", () => {
     // p1's prompt fails ONLY on the first attempt (child prompt ok, parent
     // notify attempt 1 fails, attempt 2 succeeds): the record is a history,
     // not a veto — exactly-once is about successful deliveries.
-    let parentAttempts = 0;
-    const h = await setupHarness();
-    const realPrompt = h.client.session.prompt;
-    h.client.session.prompt = (args) => {
-      if (args.path.id === "p1" && args.body?.parts?.[0]?.text.includes("[dynamic-task-notify]")) {
-        parentAttempts++;
-        if (parentAttempts === 1) return Promise.reject(new Error("parent busy"));
-        }
-      return realPrompt(args);
-      };
+    const h = await setupHarness({ hooks: { notifyTransport: { failTimes: 1 } } });
     const { id, c } = await h.spawn();
     await h.settle(id);
     await sleep(500); // one retry cycle at the gate's fixed backoff
@@ -918,17 +884,9 @@ describe("outcome correctness: failed turns never report success", () => {
     // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
     // well be running. Settling error here would deafen the ledger to the
     // child's genuine terminal event, so the task stays active and waits.
-    const h = await setupHarness();
-    const realPrompt = h.client.session.prompt;
-    let firstChildPrompt = true;
-    h.client.session.prompt = (args) => {
-      const text = args.body?.parts?.[0]?.text || "";
-      if (firstChildPrompt && !text.includes("[dynamic-task-notify]")) {
-        firstChildPrompt = false;
-        return Promise.reject(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
-        }
-      return realPrompt(args);
-      };
+    const h = await setupHarness({
+      hooks: { childPromptFailOnce: { message: "connect ETIMEDOUT", code: "ETIMEDOUT" } },
+    });
     const { id, c } = await h.spawn({ description: "blip child" });
     await sleep(50); // the fire-and-forget catch has run
     const status = await c.status();
@@ -1018,8 +976,7 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("abort failure on a completed task reports the gap without annotating success", async () => {
-    const h = await setupHarness();
-    h.client.session.abort = async () => { throw new Error("ECONNREFUSED"); };
+    const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
     const { id, c } = await h.spawn();
     await h.settle(id);
     const out = await c.interrupt();

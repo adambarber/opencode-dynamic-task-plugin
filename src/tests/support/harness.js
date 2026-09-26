@@ -158,6 +158,8 @@ export function createMockClient(hooks = {}) {
     sessionBodies: new Map(),
     createThrown: false,
     abortThrown: false,
+    notifyAttempts: 0,
+    childPromptFailed: false,
     abortGate: null,
   };
 
@@ -209,9 +211,27 @@ export function createMockClient(hooks = {}) {
           return Promise.reject(new Error(`prompt failed for ${path.id}`));
         }
         const text = body?.parts?.[0]?.text || "";
-        if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
+        const isNotify =
+          text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]");
+        if (isNotify) {
+          // The delivery transport for THIS notification, as a plan rather
+          // than an override: a test states what the transport does, never how
+          // the plugin reaches it.
+          const plan = hooks.notifyTransport;
+          if (plan?.hang) return plan.hang;
+          if (plan?.failTimes && ++state.notifyAttempts <= plan.failTimes) {
+            return Promise.reject(new Error("parent notify failed"));
+          }
           state.notifications.push({ to: path.id, message: text });
         } else {
+          if (hooks.childPromptFailOnce && !state.childPromptFailed) {
+            state.childPromptFailed = true;
+            return Promise.reject(
+              Object.assign(new Error(hooks.childPromptFailOnce.message), {
+                code: hooks.childPromptFailOnce.code,
+              }),
+            );
+          }
           state.promptBodies.push({ to: path.id, body });
         }
         return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
@@ -236,6 +256,11 @@ export function createMockClient(hooks = {}) {
           state.abortThrown = true;
           throw new Error("abort failed");
         }
+        if (hooks.abortThrows) {
+          // The message is what a test will assert it saw, so the plan carries
+          // it rather than the test reaching in to normalize it.
+          throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
+        }
         if (!state.sessions.has(path.id)) {
           throw new Error(`Session "${path.id}" not found.`);
         }
@@ -243,19 +268,24 @@ export function createMockClient(hooks = {}) {
           throw new Error(`Session "${path.id}" not found.`);
         }
         // The abort gate: the first abort parks here until the test releases
-        // it, so a racing call can be arranged without monkey-patching.
+        // it, so a racing call can be arranged without monkey-patching. With
+        // `fails`, the released abort reports the session as gone — the race
+        // outcome the settlement path must survive.
         if (state.abortGate && !state.abortGate.used) {
           state.abortGate.used = true;
           await state.abortGate.promise;
+          if (state.abortGate.fails) {
+            throw new Error(`Session "${path.id}" not found.`);
+          }
         }
         state.aborted.push(path.id);
         return { ok: true };
       },
     },
     // Hold the next abort open. Returns the release, awaited by the test.
-    gateAbort() {
+    gateAbort({ fails = false } = {}) {
       const gate = deferred();
-      state.abortGate = { promise: gate.promise, used: false, release: gate.resolve };
+      state.abortGate = { promise: gate.promise, used: false, fails, release: gate.resolve };
       return { release: () => gate.resolve() };
     },
   };
@@ -423,9 +453,8 @@ export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: "
  * child's settled state. Naming it keeps a test from spelling out the same
  * three steps to ask the same question.
  */
-export async function withSettledChild({ harness = {}, spawn = {}, ctx = { sessionID: "p1" } } = {}) {
-  const h = await setupHarness(harness);
-  const { id, out, c } = await h.spawn(spawn, ctx);
+export async function withSettledChild(opts = {}) {
+  const { h, c, id, out } = await withChild(opts);
   await h.settle(id);
   return { h, c, id, out };
 }

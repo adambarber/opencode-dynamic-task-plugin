@@ -212,11 +212,35 @@ function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { sta
 // File shape: { version, tasks: { [childSessionId]: entry }, active: { [childSessionId]: entry }, pending: [owed write] }.
 export const TASK_LEDGER_VERSION = 3;
 
-/** The whole durable file, as the one dance sees it. */
+/**
+ * The whole durable file, as the one dance sees it.
+ */
 export interface TaskLedgerFile {
   retained: Map<string, RetainedTaskState>;
   active: Map<string, ActiveTaskState>;
   pending: PendingDelivery[];
+}
+
+/**
+ * A ledger that was READ, plus why it was thrown away when it was not.
+ *
+ * `discarded` is null when the file was read (including when there was no file,
+ * which is a first boot and loses nothing). It exists because the alternative
+ * was a boot that silently invents a clean slate: a torn write, a hand-edited
+ * file, or a version this build does not speak all produce an EMPTY ledger, and
+ * an empty ledger is indistinguishable from a project that has never run a task.
+ * A parent owed a completion notice would never receive it, and the plugin —
+ * whose whole claim is that it does not lose track of a child — would have lost
+ * one in silence. Discarding is the right call; discarding QUIETLY is not, so
+ * the reason travels out beside the maps and the boot reports it. This is the
+ * read side of the pair `persistLedger` already reports on the write side.
+ *
+ * It is a fact about the READ and not a field of the file, which is why it is
+ * not on `TaskLedgerFile`: nothing writes a reason for discarding into the
+ * document it is describing.
+ */
+export interface LoadedTaskLedger extends TaskLedgerFile {
+  discarded: string | null;
 }
 
 const FALLBACK_LEDGER_ROOT = join(homedir(), ".local", "share", "opencode-dynamic-task");
@@ -276,44 +300,67 @@ export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
   return { ...withoutAdvisory(record), state: "active" };
 }
 
-export function loadTaskLedger(filePath: string): TaskLedgerFile {
+export function loadTaskLedger(filePath: string): LoadedTaskLedger {
   const retained = new Map<string, RetainedTaskState>();
   const active = new Map<string, ActiveTaskState>();
   const pending: PendingDelivery[] = [];
-  if (!filePath || !existsSync(filePath)) return { retained, active, pending };
-  try {
-    const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
-    if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
-      return { retained, active, pending };
-    }
-    if (Array.isArray(parsed["pending"])) {
-      for (const entry of parsed["pending"]) {
-        if (isPendingDelivery(entry)) pending.push(entry);
+  // Every road out of here that throws durable state away says which road it
+  // was. One count for records dropped inside an otherwise-readable file, and
+  // one reason for a file that could not be read at all: those are different
+  // failures and an operator needs to tell them apart.
+  //
+  // ONE return, on purpose. Three returns that each built the same object is
+  // three places to add a field, and the one somebody forgets is a silent
+  // discard — which is the failure this whole shape exists to remove.
+  let discarded: string | null = null;
+  let dropped = 0;
+  if (filePath && existsSync(filePath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
+      if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
+        const version = isEventRecord(parsed) ? JSON.stringify(parsed["version"]) : "not an object";
+        discarded = `unreadable as a v${TASK_LEDGER_VERSION} ledger file (version field: ${version})`;
+      } else {
+        if (Array.isArray(parsed["pending"])) {
+          for (const entry of parsed["pending"]) {
+            if (isPendingDelivery(entry)) pending.push(entry);
+            else dropped++;
+          }
+        }
+        if (isEventRecord(parsed["active"])) {
+          for (const [key, entry] of Object.entries(parsed["active"])) {
+            if (isValidLedgerEntry(entry) && entry.state === "active" && entry.childSessionId === key) {
+              active.set(key, { ...hydratedBase(entry), state: "active" });
+            } else {
+              dropped++;
+            }
+          }
+        }
+        for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
+          // The map key is canonical identity: an entry disagreeing with its key
+          // is corrupt, not merely mislabeled.
+          if (isValidRetainedEntry(entry) && key.startsWith("ses_") && entry.childSessionId === key) {
+            const abortError = entry["abortError"];
+            retained.set(key, {
+              ...hydratedBase(entry),
+              state: entry.state,
+              retainedAt: entry.retainedAt,
+              ...(typeof abortError === "string" ? { abortError } : {}),
+            });
+          } else {
+            dropped++;
+          }
+        }
+        if (dropped > 0) discarded = `${dropped} record(s) in the file failed validation and were dropped`;
       }
+    } catch (error: unknown) {
+      // A torn write is the ordinary way to get here, and this is the one place
+      // it is survivable: the file is all the plugin has, and a partial parse is
+      // still a record of what the last boot knew.
+      discarded = `unparseable (${errorMessage(error)})`;
     }
-    if (isEventRecord(parsed["active"])) {
-      for (const [key, entry] of Object.entries(parsed["active"])) {
-        if (!isValidLedgerEntry(entry) || entry.state !== "active" || entry.childSessionId !== key) continue;
-        active.set(key, { ...hydratedBase(entry), state: "active" });
-      }
-    }
-    for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
-      if (!isValidRetainedEntry(entry) || !key.startsWith("ses_")) continue;
-      // The map key is canonical identity: an entry disagreeing with its key
-      // is corrupt, not merely mislabeled.
-      if (entry.childSessionId !== key) continue;
-      const abortError = entry["abortError"];
-      retained.set(key, {
-        ...hydratedBase(entry),
-        state: entry.state,
-        retainedAt: entry.retainedAt,
-        ...(typeof abortError === "string" ? { abortError } : {}),
-      });
-    }
-  } catch {
-    // ignore
   }
-  return { retained, active, pending };
+  return { retained, active, pending, discarded };
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the

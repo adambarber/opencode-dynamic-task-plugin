@@ -39,7 +39,13 @@ export const writeLedger = (directory, document) =>
  */
 export const bootOn = async (seed, { hooks = {} } = {}) => {
   const directory = tmpProjectDir();
-  writeLedger(directory, seed(Date.now()));
+  const document = seed(Date.now());
+  // A case may hand the reader something that is not a document at all. A torn
+  // write is a failure mode of the READ, so the seam that owns what the reader
+  // is given has to be able to produce one — and it is the SAME seam, because a
+  // second boot helper is a second arrangement that can drift from the first.
+  if (typeof document === "string") writeFileSync(resolveTaskLedgerPath(directory), document);
+  else writeLedger(directory, document);
   return { directory, ...(await setupHarness({ hooks, directory })) };
 };
 

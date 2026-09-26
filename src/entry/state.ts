@@ -43,6 +43,18 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   const ledgerPath = resolveTaskLedgerPath(directory);
 
   const ledger = loadTaskLedger(ledgerPath);
+  // A discarded ledger is a LOST one, and the loss is only actionable if the
+  // operator is told. It used to be a bare `catch {}` that returned an empty
+  // document, which is indistinguishable from a project that has never run a
+  // task — so a parent owed a completion notice simply never received it, with
+  // no log, no record, and nothing in any read to show for it. Two channels,
+  // matching the write failure below: the host log, which is always on and is
+  // where an operator looks when a project has lost track of its tasks, and the
+  // structured debug line, which carries the path.
+  if (ledger.discarded !== null) {
+    void safeLog(client, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.`);
+    debugLog("plugin", "ledger", "ledger-read-discarded", { path: ledgerPath, reason: ledger.discarded });
+  }
   // One writer for the whole file. Retained records and owed notices live in one
   // document, so they are written together: a persist that could update one and
   // lose the other is the same deafness this file exists to prevent.

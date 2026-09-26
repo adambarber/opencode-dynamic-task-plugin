@@ -78,6 +78,56 @@ describe("a ledger write that cannot land is recorded, not swallowed", () => {
   });
 });
 
+// The mirror of the suite above, and the one that was silent. A ledger that
+// cannot be READ was a bare `catch {}` returning an empty document, and an
+// empty document is indistinguishable from a project that has never run a task:
+// a parent owed a completion notice never received it, with no log line, no
+// record, and nothing in any read to show that anything had been lost. The
+// operator's only way to find out was to already know.
+//
+// The host log is asserted as well as the debug line because the debug log is
+// env-gated at boot — a claim that only shows up when DYNAMIC_TASK_DEBUG=1 was
+// set before the process started is a claim most operators will never see.
+describe("a ledger that cannot be read is reported, not silently replaced", () => {
+  // No `debug: true` anywhere in this suite, on purpose: the host log is the
+  // claim being made, and a claim that only appears when DYNAMIC_TASK_DEBUG=1
+  // was set before the process started is one most operators will never see.
+  const bootOnCorrupt = (contents) => bootOn(() => contents);
+
+  it("a torn file is named on the host log, where an operator will actually look", async () => {
+    const h = await bootOnCorrupt('{"version":3,"tasks":{"ses_a":{"state":"comp');
+    const said = JSON.stringify(h.logs());
+    answerMatches(said, /discarded/i, "the log says the file was thrown away, not merely empty");
+    answerMatches(said, /unparseable/i, "and says which failure it was");
+    answerMatches(said, /\.dynamic-task-ledger\.json/, "and which file lost what");
+  });
+
+  it("a file this build cannot speak is reported by version, not swallowed", async () => {
+    const h = await bootOnCorrupt(JSON.stringify({ version: 2, tasks: {}, active: {}, pending: [] }));
+    const said = JSON.stringify(h.logs());
+    answerMatches(said, /discarded/i, "an old version is still a discarded file");
+    answerMatches(said, /version/i, "and the version is what an operator needs to act on");
+  });
+
+  it("records dropped inside a readable file are counted, not lost quietly", async () => {
+    const h = await bootOnCorrupt(JSON.stringify({
+      version: 3,
+      tasks: { ses_real: retainedEntry("ses_real", { state: "completed" }), ses_broken: { state: "completed" } },
+      active: {},
+      pending: [],
+    }));
+    const said = JSON.stringify(h.logs());
+    answerMatches(said, /discarded/i, "a partly-bad file is still a loss worth reporting");
+    answerMatches(said, /record/i, "and the loss is described in records, which is what was lost");
+  });
+
+  it("a good ledger reports nothing — silence must still mean healthy", async () => {
+    const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
+    const aboutTheLedger = h.logs().filter((entry) => /discarded|unparseable/i.test(JSON.stringify(entry)));
+    assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
+  });
+});
+
 // --- State scoping (contamination regression) -------------------------------
 // Root cause of the poisoned repo ledger: persistence resolved against the
 // process CWD, not the plugin's project directory. Pins: retained mutations

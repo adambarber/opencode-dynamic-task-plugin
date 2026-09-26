@@ -1311,6 +1311,8 @@ import {
   oldestRetainedId,
   withoutAdvisory,
   noticeRecord,
+  markTurnReplacement,
+  ADVISORY_FIELDS,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1557,17 +1559,21 @@ describe("task-state: transitionState", () => {
     assertSettlementIsFinal(store);
   });
 
-  it("settlement strips advisory activity metadata — the ledger carries no heartbeat", () => {
-    noteActivity(store, "ses_active");
-    assert.ok(store.activeTasks.get("ses_active").lastActivityAt, "the event funnel stamps the active record");
+  it("settlement strips every advisory the record can carry — the ledger carries no heartbeat", () => {
+    // One case over the whole list, not a case per field. Production exports
+    // ADVISORY_FIELDS, so a fifth advisory is covered the day it is added — where
+    // three hand-named cases would have quietly stopped covering anything new.
+    const stamped = {
+      lastActivityAt: noteActivity(store, "ses_active"),
+      lastNotice: annotateNotice(store, "ses_active", "interim", "progress"),
+      turnLiveAt: noteActivity(store, "ses_active", false),
+      replacedAt: markTurnReplacement(store, "ses_active"),
+    };
+    for (const field of ADVISORY_FIELDS) {
+      assert.ok(stamped[field], `the event funnel stamps ${field} on the active record`);
+    }
     transitionState(store, "ses_active", "completed");
-    assertNotRetainedFrom(store, "lastActivityAt");
-  });
-
-  it("settlement strips advisory notice metadata", () => {
-    annotateNotice(store, "ses_active", "interim");
-    transitionState(store, "ses_active", "completed");
-    assertNotRetainedFrom(store, "lastNotice");
+    for (const field of ADVISORY_FIELDS) assertNotRetainedFrom(store, field);
   });
 
   it("retained task remains visible to findTask", () => {

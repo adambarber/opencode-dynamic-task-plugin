@@ -104,27 +104,41 @@ export interface TaskRecordBase extends TaskIdentity {
 export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
 
 /**
- * The record minus the four fields a fresh process cannot verify, which is the
- * only shape allowed to reach disk. A mid-flight notice and an activity
- * heartbeat belong to the process that observed them, and turn attribution
- * belongs to in-flight events that died with it: a fresh boot that inherited any
- * of them would be trusting a claim it cannot verify — and would re-persist a
- * heartbeat on every host event, putting a file write in the event head.
+ * The advisory fields — the ones a fresh process cannot verify, and so the only
+ * ones that may never reach disk. A mid-flight notice and an activity heartbeat
+ * belong to the process that observed them, and turn attribution belongs to
+ * in-flight events that died with it: a fresh boot that inherited any of them
+ * would be trusting a claim it cannot verify — and would re-persist a heartbeat on
+ * every host event, putting a file write in the event head.
  *
- * The list lives HERE, with the fields it names, because two writers need it and
- * the write that would drift is the one nobody is looking at. It was written out
- * in the settle path and again on the durable write, in different orders, and a
- * fifth advisory field added to the record had to be remembered in both places.
+ * The list lives HERE, exported, because three readers need it: the strip below,
+ * the durable write, and the suite that has to prove the strip happens. It was
+ * written out in the settle path and again on the durable write, in different
+ * orders, and a fifth advisory field added to the record had to be remembered in
+ * both places — while the tests, which named their advisories one case at a time,
+ * would not have covered the fifth at all.
  */
+export const ADVISORY_FIELDS = ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt"] as const;
+
+/** A compile-time proof that ADVISORY_FIELDS is the whole advisory set. Add a fifth
+ *  advisory to the record and this stops being `never`, so the build fails until the
+ *  list names it — which is the point of declaring the list in one place. */
+type UnlistedAdvisory = Exclude<
+  keyof ActiveTaskState,
+  "state" | keyof TaskRecordBase | (typeof ADVISORY_FIELDS)[number]
+>;
+const everyAdvisoryIsListed: UnlistedAdvisory extends never ? true : never = true;
+void everyAdvisoryIsListed;
+
+/** The object minus the named keys, typed — the one way this repo drops a field. */
+function omit<T extends object, K extends keyof T>(record: T, keys: readonly K[]): Omit<T, K> {
+  const copy = { ...record } as Record<PropertyKey, unknown>;
+  for (const key of keys) delete copy[key];
+  return copy as Omit<T, K>;
+}
+
 export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
-  const {
-    lastNotice: _notice,
-    lastActivityAt: _activity,
-    turnLiveAt: _turnLive,
-    replacedAt: _replaced,
-    ...core
-  } = record;
-  return core;
+  return omit(record, ADVISORY_FIELDS);
 }
 
 export interface ActiveTaskState extends TaskRecordBase {

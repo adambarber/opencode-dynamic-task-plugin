@@ -42,6 +42,37 @@ import {
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * An assistant turn as the HOST's transcript carries one: `info` holding the
+ * clock, parts beside it. The liveness reader takes an age from `info.time`, and
+ * getting this shape wrong does not crash — it renders as "this child has never
+ * written a message", which is what a live smoke test caught on a child that had
+ * written three. So the shape is stated once, here, and the mock that answers a
+ * transcript read and the cases that seed one both read it from here.
+ */
+export const hostSaid = (text, at = Date.now()) => ({
+  info: { role: "assistant", time: { created: at, completed: at } },
+  parts: [{ type: "text", text }],
+});
+
+/** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
+export const unclockedSaid = (text = "go", role = "user") => ({
+  ...hostSaid(text),
+  info: { role },
+});
+
+/**
+ * The host's sync session.updated envelope. `status` is the word it reports, or
+ * the error object it reports instead — the one field those two spellings
+ * disagree on, and the field a terminal verdict reads. The address rides
+ * separately, so a case about the shape alone has no session to invent.
+ */
+export const sessionUpdatedEnvelope = (status) => ({
+  type: "sync",
+  name: "session.updated.1",
+  data: { info: { status } },
+});
+
+/**
  * Refuse a question settlement the host would not accept. Derived from the SDK's
  * QuestionReplyData/QuestionRejectData: the path key is `requestID` (verified
  * against opencode 1.18.30, which serves /question/{requestID}/reply and no
@@ -235,9 +266,7 @@ export const events = {
   working: (id) => events.status(id, "busy"),
   // A sync update. `status` is the string, or the host's error object.
   updated: (id, status = "idle") => ({
-    type: "sync",
-    name: "session.updated.1",
-    data: { info: { status } },
+    ...sessionUpdatedEnvelope(status),
     properties: { sessionID: id },
   }),
   errorUpdate: (id) => events.updated(id, { type: "error" }),
@@ -511,15 +540,7 @@ function createMockClient(hooks = {}) {
           error.status = 404;
           throw error;
         }
-        return SDK_ENVELOPE([
-          {
-            info: {
-              role: "assistant",
-              time: { created: state.hostStatus.get(path.id)?.at ?? Date.now() },
-            },
-            parts: [{ type: "text", text: "COMPLETED_OK" }],
-          },
-        ]);
+        return SDK_ENVELOPE([hostSaid("COMPLETED_OK", state.hostStatus.get(path.id)?.at ?? Date.now())]);
       },
       // No session.get: the plugin does not call it. It was here to back the
       // status guess this mock also once invented a status field for — both are
@@ -944,7 +965,7 @@ export async function setupTwoTurnHarness() {
       messages: () => {
         msgCalls++;
         const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
-        return [{ info: { role: "assistant" }, parts: [{ type: "text", text }] }];
+        return [unclockedSaid(text, "assistant")];
       },
     },
   });

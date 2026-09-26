@@ -16,7 +16,7 @@ import {
   deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withAskedChild,
   withLoggedChild,
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
-  resultForChild, resultForUnreadableChild,
+  resultForChild, resultForUnreadableChild, hostSaid, unclockedSaid,
 } from './support/harness.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 
@@ -36,8 +36,9 @@ async function withShrunkBounds(fn) {
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
-// absence of a time is the only difference from a real message.
-const UNCLOCKED_MESSAGE = { info: { role: "user" }, parts: [{ type: "text", text: "go" }] };
+// absence of a time is the only difference from a real message, which is
+// `unclockedSaid` in the harness — the shape is stated once, where the mock that
+// answers a transcript read also reads it from.
 
 /**
  * A plugin booted on a project whose durable state is a ledger the case wrote.
@@ -882,7 +883,7 @@ describe("task_result and task_interrupt paths", () => {
   ];
   for (const [name, expected] of nothingWritten) {
     it(`a child with ${name} says so rather than guessing an age`, async () => {
-      const summary = await resultForChild([UNCLOCKED_MESSAGE]);
+      const summary = await resultForChild([unclockedSaid()]);
       answerSays(summary, expected, "no invention");
     });
   }
@@ -893,9 +894,7 @@ describe("task_result and task_interrupt paths", () => {
   // that had written three.
   it("a child's last message time comes off the message's info, not the item", async () => {
     const writtenAt = Date.now() - 45_000;
-    const summary = await resultForChild([
-      { info: { role: "assistant", time: { created: writtenAt, completed: writtenAt } }, parts: [{ type: "text", text: "done" }] },
-    ]);
+    const summary = await resultForChild([hostSaid("done", writtenAt)]);
     assert.match(summary, /Last child message: 4[0-9]s ago/, `the child's own clock. got: ${summary}`);
   });
 

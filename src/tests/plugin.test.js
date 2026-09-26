@@ -424,10 +424,10 @@ describe("getEventLifecycleStatus", () => {
 // ApiError.data.message), never as a part type or a message role: a failed
 // turn still has role "assistant" with empty text. The reader must dig the
 // info envelope (dual-era, like messageRoleOf) and surface a human detail.
+// The envelope the reader must dig. A failed turn still has role
+// "assistant", and the human detail is one level down inside info.error — no
+// part carries it. Stated once so two cases cannot pass for different reasons.
 describe("messageErrorDetail", () => {
-  // The envelope the reader must dig. A failed turn still has role
-  // "assistant", and the human detail is one level down inside info.error — no
-  // part carries it. Stated once so two cases cannot pass for different reasons.
   const assistantTurn = (error, parts = []) => ({
     info: error === undefined ? { role: "assistant" } : { role: "assistant", error },
     parts,
@@ -484,9 +484,9 @@ describe("isTransientOutcomeError", () => {
   });
 });
 
+// One hypothesis: an absent or unusable env value yields the default. `undefined`
+// is the "not set" case, which withEnv understands as unset.
 describe("maxConcurrent default", () => {
-  // One hypothesis: an absent or unusable env value yields the default. `undefined`
-  // is the "not set" case, which withEnv understands as unset.
   const unusable = [
     ["defaults to 4 when env is not set", undefined],
     ["ignores non-numeric env maxConcurrent", "bogus"],
@@ -500,20 +500,12 @@ describe("maxConcurrent default", () => {
   }
 });
 
+// One hypothesis, one arrangement: which event SHAPES end a turn. Each case
+// keeps its own name because the shape is what a reader needs to see.
 describe("isTerminalSessionEvent", () => {
-  // One hypothesis, one arrangement: which event SHAPES end a turn. Each case
-  // keeps its own name because the shape is what a reader needs to see.
   const shapes = [
-    ["treats sync session.updated idle as terminal", {
-      type: "sync",
-      name: "session.updated.1",
-      data: { info: { status: "idle" } },
-    }, true],
-    ["treats sync session.updated error as terminal", {
-      type: "sync",
-      name: "session.updated.1",
-      data: { info: { status: { type: "error" } } },
-    }, true],
+    ["treats sync session.updated idle as terminal", sessionUpdatedEnvelope("idle"), true],
+    ["treats sync session.updated error as terminal", sessionUpdatedEnvelope({ type: "error" }), true],
     ["treats sync session.deleted.1 as terminal", {
       type: "sync",
       name: "session.deleted.1",
@@ -850,6 +842,21 @@ function activeEntry(overrides = {}) {
     ...overrides,
   };
 }
+/** withRawLedger's middle, for the case that already holds the file. */
+const withRawLedgerSync = (document, file) => {
+  writeFileSync(file, JSON.stringify({ version: 3, ...document }));
+  return loadTaskLedger(file);
+};
+
+/**
+ * A ledger file holding a document the case composed by hand, read back. These
+ * cases are about files the plugin has to survive — corrupt, partial, or written
+ * by a past it cannot read — and `saveTaskLedger` cannot produce any of them, so
+ * going through it would test the writer instead of the reader.
+ */
+const withRawLedger = (document, fn) =>
+  inLedgerFile((file) => fn(withRawLedgerSync(document, file), file));
+
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
 
 /**
@@ -898,11 +905,11 @@ function tmpLedgerPath() {
   return `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
 }
 
+// Every case here owns a temp ledger for the duration of one assertion. The
+// old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`
+// sidecar in the two sites that mattered, and the missing-file site skipped
+// cleanup entirely — withTempFile owns the whole lifetime.
 describe("task ledger persistence", () => {
-  // Every case here owns a temp ledger for the duration of one assertion. The
-  // old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`
-  // sidecar in the two sites that mattered, and the missing-file site skipped
-  // cleanup entirely — withTempFile owns the whole lifetime.
   const itRoundTrips = (name, check) => it(name, () => withSavedLedger((file) => check(loadTaskLedger(file))));
 
   itRoundTrips("round-trips retained records through an injectable path", (loaded) => {
@@ -939,13 +946,10 @@ describe("task ledger persistence", () => {
       // settled by reconciliation with no clock, no lineage and no parent to
       // tell, i.e. a record invented from a corrupt file.
       const { startedAt: _noClock, ...clockless } = activeEntry({ childSessionId: "ses_nostart" });
-      writeFileSync(file, JSON.stringify({
-        version: 3,
-        tasks: {},
-        pending: [],
-        active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless },
-      }));
-      const loaded = loadTaskLedger(file);
+      const loaded = withRawLedgerSync(
+        { tasks: {}, pending: [], active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless } },
+        file,
+      );
       assert.deepStrictEqual([...loaded.active.keys()], ["ses_ok"], "only the whole entry returns");
     }));
 
@@ -962,8 +966,7 @@ describe("task ledger persistence", () => {
         owedEntry({ childSessionId: "ses_noid", childSessionId: 42 }),
         owedEntry(),
       ] };
-      writeFileSync(file, JSON.stringify({ version: 3, tasks: {}, ...broken }));
-      const loaded = loadTaskLedger(file);
+      const loaded = withRawLedgerSync({ tasks: {}, ...broken }, file);
       assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
     }));
 
@@ -1028,12 +1031,10 @@ describe("task ledger persistence", () => {
   // clean boot — a retained history that silently lost entries reads as history.
   it("a v2 ledger is discarded whole, retained records and owed notices alike", () =>
     inLedgerFile(async (file) => {
-      writeFileSync(file, JSON.stringify({
-        version: 2,
-        tasks: { ses_1: retainedEntry() },
-        pending: [owedEntry()],
-      }));
-      const loaded = loadTaskLedger(file);
+      const loaded = withRawLedgerSync(
+        { version: 2, tasks: { ses_1: retainedEntry() }, pending: [owedEntry()] },
+        file,
+      );
       assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
       assert.strictEqual(loaded.active.size, 0, "and no running task from a past this build cannot read");
       assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
@@ -1151,9 +1152,9 @@ describe("config field parsing edges", () => {
     assert.strictEqual(config.agentCacheTtlMs, 1500);
   });
 
+  // NaN is the interesting one: it is a number, and a `<= 0` guard would let it
+  // through, so the whole "safe" claim would rest on a TTL of NaN.
   it("rejects non-positive numbers everywhere", () => {
-    // NaN is the interesting one: it is a number, and a `<= 0` guard would let it
-    // through, so the whole "safe" claim would rest on a TTL of NaN.
     assertSafeDefaults(normalizeDynamicTaskConfig({ maxDepth: 0, maxConcurrent: -3, agentCacheTtlMs: NaN }));
   });
 
@@ -1177,8 +1178,8 @@ import {
 
 } from "../../dist/shared/task-policy.js";
 
+// type PolicyResult is type-only, imported via the functions' return types
 describe("normalizeAgentName", () => {
-  // type PolicyResult is type-only, imported via the functions' return types
   it("lowercases and trims agent names", () => {
     assert.strictEqual(normalizeAgentName("General"), "general");
     assert.strictEqual(normalizeAgentName("  REVIEWER "), "reviewer");
@@ -1243,25 +1244,21 @@ describe("validateLineage", () => {
   const config = normalizeDynamicTaskConfig({ maxDepth: 2 });
 
   it("rejects same-agent anywhere in lineage", () => {
-    const result = validateLineage(["reviewer"], "reviewer", config);
-    assert.strictEqual(result.ok, false);
-    if (!result.ok) assert.match(result.error, /recursion|same-agent|already present/i);
+    const result = refuses(validateLineage(["reviewer"], "reviewer", config), "the agent is already in the lineage");
+    assert.match(result.error, /recursion|same-agent|already present/i);
   });
 
   it("rejects same-agent deep in lineage", () => {
-    const result = validateLineage(["general", "coder", "explore"], "general", config);
-    assert.strictEqual(result.ok, false);
+    refuses(validateLineage(["general", "coder", "explore"], "general", config), "presence anywhere in the lineage counts");
   });
 
   it("rejects when next depth exceeds maxDepth", () => {
-    const result = validateLineage(["general", "coder"], "explore", config);
-    assert.strictEqual(result.ok, false);
-    if (!result.ok) assert.match(result.error, /depth/i);
+    const result = refuses(validateLineage(["general", "coder"], "explore", config), "the next step is past maxDepth");
+    assert.match(result.error, /depth/i);
   });
 
   it("allows different-agent chain within depth limit", () => {
-    const result = validateLineage(["general"], "coder", config);
-    assert.strictEqual(result.ok, true);
+    admits(validateLineage(["general"], "coder", config), "a different agent within the depth limit");
   });
 
   it("does not mutate lineage arrays", () => {
@@ -1322,13 +1319,11 @@ import {
 import { readAskedQuestion } from "../../dist/shared/host-events.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
-import { tmpFilePath, withEnv, withTempFile } from './support/harness.js';
+import { tmpFilePath, withEnv, withTempFile, sessionUpdatedEnvelope } from './support/harness.js';
 
 describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {
-    const store = createTaskStore();
-    assert.strictEqual(store.activeTasks.size, 0);
-    assert.strictEqual(store.retainedTasks.size, 0);
+    assertStoreEmpty(createTaskStore(), "a fresh store");
   });
 });
 
@@ -1337,6 +1332,72 @@ describe("task-state: createTaskStore", () => {
 // fields and only the child id usually matters. This names the shape once, so
 // a test states its intent ("a second agent") instead of a field list whose
 // defaults could drift from the production param type.
+/**
+ * The config a case means when it does not care: the machine's own defaults,
+ * normalized once. Nine describes were each deriving it, and a change to the
+ * defaults meant nine edits. Describes that need something else keep their own
+ * derivation, and the name is theirs to shadow.
+ */
+const config = normalizeDynamicTaskConfig({});
+
+/** A store holding one running child named ses_active — where most state cases start. */
+function storeWithActive(cfg = config) {
+  const store = createTaskStore();
+  seedSesActive(store, cfg);
+  return store;
+}
+
+/** The same store with the retained-change signal counted: the callback cases' subject. */
+function countingStore(cfg = config) {
+  const store = storeWithActive(cfg);
+  return { store, changes: countRetainedChanges(store) };
+}
+
+/**
+ * A gate's verdict, with the refusal's own words in the failure. A gate answers
+ * in a result object whose only field worth reading is `ok`, and each case was
+ * asserting that field alone — so a refusal that came back saying nothing at all
+ * read the same as one that explained itself.
+ */
+function verdict(result, expected, why) {
+  assert.strictEqual(result.ok, expected, `${why}. got: ${JSON.stringify(result)}`);
+  return result;
+}
+const refuses = (result, why) => verdict(result, false, why);
+const admits = (result, why) => verdict(result, true, why);
+
+/** "The answer is nothing" — the claim behind a free slot and an unknown session. */
+function assertNothing(found, why) {
+  assert.strictEqual(found, null, `${why}. got: ${JSON.stringify(found)}`);
+}
+
+/** A store holding nothing — the claim behind a fresh store, a filter, and a prune. */
+function assertStoreEmpty(store, why) {
+  assert.strictEqual(store.activeTasks.size, 0, `${why}: nothing running`);
+  assert.strictEqual(store.retainedTasks.size, 0, `${why}: nothing retained`);
+}
+
+/**
+ * The advisory fields a settlement must not carry into retention. A heartbeat and
+ * a mid-flight notice are the two the event funnel writes, and neither survives a
+ * restart — the claim is one, so the check is one.
+ */
+function assertNotRetainedFrom(store, field) {
+  assert.ok(!(field in store.retainedTasks.get("ses_active")), `${field} must not reach the retained record`);
+}
+
+/**
+ * The classifier is total: whatever it is handed, it reports that value back and
+ * calls nothing but a refusal retryable. Two describes were each asserting a
+ * couple of these by hand, which is how "handles non-Error values" came to be
+ * split from "handles odd shapes".
+ */
+function assertClassifiedAs(thrown, said) {
+  const classified = classifyPromptError(thrown);
+  assert.strictEqual(classified.message, said, `reported value. got: ${JSON.stringify(classified)}`);
+  assert.strictEqual(classified.retryable, false, "a value that is not a transient host error is not retryable");
+}
+
 function childParams({ id, parent = "parent_1", agent = "explore", description = "test", lineage = [] } = {}) {
   return { childSessionId: id, parentSessionId: parent, agentName: agent, description, lineage };
 }
@@ -1388,8 +1449,7 @@ function storeAtLimit(cfg) {
  * and noteLateOutcome — so the arrangement needs a name, not a state.
  */
 function storeSettledAs(state, cfg) {
-  const store = createTaskStore();
-  seedSesActive(store, cfg);
+  const store = storeWithActive(cfg);
   transitionState(store, "ses_active", state);
   return store;
 }
@@ -1416,7 +1476,6 @@ function summaryWith(notification) {
 }
 
 describe("task-state: transitionState", () => {
-  const config = normalizeDynamicTaskConfig({});
   let store;
 
   beforeEach(() => {
@@ -1434,8 +1493,7 @@ describe("task-state: transitionState", () => {
 
   it("transitions active → error and active → interrupted", () => {
     assert.strictEqual(transitionState(store, "ses_active", "error").state, "error");
-    const store2 = createTaskStore();
-    seedSesActive(store2, config);
+    const store2 = storeWithActive(config);
     assert.strictEqual(transitionState(store2, "ses_active", "interrupted").state, "interrupted");
   });
 
@@ -1448,13 +1506,13 @@ describe("task-state: transitionState", () => {
     noteActivity(store, "ses_active");
     assert.ok(store.activeTasks.get("ses_active").lastActivityAt, "the event funnel stamps the active record");
     transitionState(store, "ses_active", "completed");
-    assert.ok(!("lastActivityAt" in store.retainedTasks.get("ses_active")));
+    assertNotRetainedFrom(store, "lastActivityAt");
   });
 
   it("settlement strips advisory notice metadata", () => {
     annotateNotice(store, "ses_active", "interim");
     transitionState(store, "ses_active", "completed");
-    assert.ok(!("lastNotice" in store.retainedTasks.get("ses_active")));
+    assertNotRetainedFrom(store, "lastNotice");
   });
 
   it("retained task remains visible to findTask", () => {
@@ -1470,23 +1528,18 @@ describe("task-state: transitionState", () => {
 });
 
 describe("task-state: revival and annotations", () => {
-  const config = normalizeDynamicTaskConfig({});
 
-  function retained(store, state = "completed") {
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", state);
-  }
+  /** A store whose one child has already been retained in the given state. */
+  const retained = (state = "completed", cfg = config) => storeSettledAs(state, cfg);
 
   // The subject of every withdrawInterruptClaim test: one task holding a
   // speculative interrupt claim in the retained ledger, with the persistence
   // signal already wired. Naming the arrangement is what lets each test state
   // only the rule it is about.
   function interruptClaim(cfg = config) {
-    const store = createTaskStore();
-    const changes = countRetainedChanges(store);
-    seedSesActive(store, cfg);
-    transitionState(store, "ses_active", "interrupted", cfg);
-    return { store, changes };
+    const counted = countingStore(cfg);
+    transitionState(counted.store, "ses_active", "interrupted", cfg);
+    return counted;
   }
 
   it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
@@ -1498,7 +1551,7 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("withdrawInterruptClaim refuses when full or superseded", () => {
-    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+    const limited = singleSlotConfig();
     const { store } = interruptClaim(limited);
     fillBackgroundTasks(store, limited, ["ses_other"]);
     assert.strictEqual(
@@ -1515,9 +1568,9 @@ describe("task-state: revival and annotations", () => {
     );
   });
 
+  // Same-ms success is still knowledge: a withdraw stamped at the instant of
+  // a successful abort must lose to it (>=, not >).
   it("withdrawInterruptClaim refuses when the abort landed in the same millisecond", () => {
-    // Same-ms success is still knowledge: a withdraw stamped at the instant of
-    // a successful abort must lose to it (>=, not >).
     const { store } = interruptClaim();
     const sameInstant = Date.now();
     store.retainedTasks.get("ses_active").lastAbortAt = sameInstant;
@@ -1534,8 +1587,7 @@ describe("task-state: revival and annotations", () => {
     seedSesActive(store, config);
     transitionState(store, "ses_active", "completed");
     assert.strictEqual(withdrawInterruptClaim(store, "ses_active"), false, "only interrupted claims withdraw");
-    const store2 = createTaskStore();
-    seedSesActive(store2, config);
+    const store2 = storeWithActive(config);
     transitionState(store2, "ses_active", "interrupted");
     assert.strictEqual(withdrawInterruptClaim(store2, "ses_active", Date.now(), config), true);
     assert.strictEqual(store2.activeTasks.get("ses_active")?.state, "active");
@@ -1544,8 +1596,7 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("reviveRetainedTask moves a settled task back to active", () => {
-    const store = createTaskStore();
-    retained(store);
+    const store = retained();
     const revived = reviveRetainedTask(store, "ses_active", config);
     assert.strictEqual(revived.state, "active");
     assert.strictEqual(store.activeTasks.has("ses_active"), true);
@@ -1553,8 +1604,7 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("interrupted tasks are not revived — that takes a fresh spawn", () => {
-    const store = createTaskStore();
-    retained(store, "interrupted");
+    const store = retained("interrupted");
     assert.throws(() => reviveRetainedTask(store, "ses_active", config), /interrupt/i);
   });
 
@@ -1567,8 +1617,7 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("annotateNotice records the latest child message on active tasks only", () => {
-    const store = createTaskStore();
-    seedSesActive(store, config);
+    const store = storeWithActive();
     assert.strictEqual(annotateNotice(store, "ses_active", "blocked on credentials"), true);
     assert.strictEqual(store.activeTasks.get("ses_active").lastNotice.message, "blocked on credentials");
     assert.strictEqual(annotateNotice(store, "ses_nope", "x"), false);
@@ -1577,23 +1626,21 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("recordAbortError annotates retained records and is silent otherwise", () => {
-    const store = createTaskStore();
-    retained(store, "interrupted");
+    const store = retained("interrupted");
     recordAbortError(store, "ses_active", "boom");
     assert.strictEqual(store.retainedTasks.get("ses_active").abortError, "boom");
     recordAbortError(store, "ses_nope", "boom"); // no throw
   });
 
   it("oldestRetainedId reads retention order", () => {
-    const store = createTaskStore();
+    const store = storeWithActive();
     assert.strictEqual(oldestRetainedId(store), null);
-    retained(store);
+    transitionState(store, "ses_active", "completed");
     assert.strictEqual(oldestRetainedId(store), "ses_active");
   });
 
   it("listTasks splits the fleet by state", () => {
-    const store = createTaskStore();
-    retained(store);
+    const store = retained();
     registerActiveTask(store, childParams({ id: "ses_run" }), config);
     const { active, retained: settled } = listTasks(store);
     assert.deepStrictEqual(active.map((t) => t.childSessionId), ["ses_run"]);
@@ -1602,7 +1649,6 @@ describe("task-state: revival and annotations", () => {
 });
 
 describe("admission gate: resolveAdmission", () => {
-  const config = normalizeDynamicTaskConfig({});
   const agents = [
     { name: "explore" },
     { name: "architect", mode: "all" },
@@ -1654,13 +1700,11 @@ describe("admission gate: allowSameAgentRecursion", () => {
   const lenient = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true });
 
   it("blocks same-agent recursion by default", () => {
-    const result = resolveAdmission([{ name: "explore" }], "explore", ["explore"], strict);
-    assert.strictEqual(result.ok, false);
+    refuses(resolveAdmission([{ name: "explore" }], "explore", ["explore"], strict), "the agent is already in the lineage");
   });
 
   it("honors the recursion flag", () => {
-    const result = resolveAdmission([{ name: "explore" }], "explore", ["explore"], lenient);
-    assert.strictEqual(result.ok, true);
+    admits(resolveAdmission([{ name: "explore" }], "explore", ["explore"], lenient), "recursion allowed, so the repeat is fine");
   });
 
   it("still enforces depth when recursion is allowed", () => {
@@ -1671,7 +1715,6 @@ describe("admission gate: allowSameAgentRecursion", () => {
 });
 
 describe("admission gate: resolveDependencies", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   function storeWith(childSessionId, state) {
     const store = createTaskStore();
@@ -1779,7 +1822,6 @@ describe("admission gate: parseAgentList", () => {
 });
 
 describe("admission gate: registerAdmittedTask", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   it("registers through the funnel and enforces the concurrency limit", () => {
     const limited = singleSlotConfig();
@@ -1845,14 +1887,12 @@ describe("prompt dance: classifyPromptError", () => {
   });
 
   it("marks application errors non-retryable", () => {
-    const classified = classifyPromptError(new Error("session not found"));
-    assert.strictEqual(classified.retryable, false);
-    assert.strictEqual(classified.message, "session not found");
+    assertClassifiedAs(new Error("session not found"), "session not found");
   });
 
   it("handles non-Error values", () => {
-    assert.strictEqual(classifyPromptError("plain string").message, "plain string");
-    assert.strictEqual(classifyPromptError(null).retryable, false);
+    assertClassifiedAs("plain string", "plain string");
+    assertClassifiedAs(null, "null");
   });
 });
 
@@ -1947,13 +1987,13 @@ describe("question gate: reply/reject settlement", () => {
   });
 });
 
+// The host publishes `question.asked` carrying `questions: QuestionInfo[]`,
+// each with `options: QuestionOption[]`. The suggestions live on the OPTION as
+// its `label` — this gate used to read a top-level `properties.answers`, a
+// field that exists only on the reply event, so every live question looked
+// answerless and was rejected. These cases read the host's real shape, because
+// a fixture invented to match the code certifies the code, not the host.
 describe("question handling: the asked payload", () => {
-  // The host publishes `question.asked` carrying `questions: QuestionInfo[]`,
-  // each with `options: QuestionOption[]`. The suggestions live on the OPTION as
-  // its `label` — this gate used to read a top-level `properties.answers`, a
-  // field that exists only on the reply event, so every live question looked
-  // answerless and was rejected. These cases read the host's real shape, because
-  // a fixture invented to match the code certifies the code, not the host.
   const asked = (properties) => ({ type: "question.asked", properties });
   const info = (text, labels) => ({ question: text, header: "Question", options: labels.map((label) => ({ label })) });
 
@@ -1964,9 +2004,9 @@ describe("question handling: the asked payload", () => {
     assert.deepStrictEqual(read, { questionId: "q1", sessionId: "ses_child", answer: "yes" });
   });
 
+  // Answering the first part of a two-part ask retires the question with the
+  // child never having seen the second answer: a silent loss as a success.
   it("a multi-part ask yields no answer — one entry per asked question, or none", () => {
-    // Answering the first part of a two-part ask retires the question with the
-    // child never having seen the second answer: a silent loss as a success.
     assert.strictEqual(
       readAskedQuestion(asked({ id: "q2", sessionID: "ses_child", questions: [info("A?", ["a1"]), info("B?", ["b1"])] })).answer,
       null,
@@ -1988,23 +2028,23 @@ describe("question handling: the asked payload", () => {
     assert.strictEqual(readAskedQuestion(asked({ id: "q7", sessionID: "ses_child" })), null);
   });
 
+  // The two answers are not the same. Unidentifiable means the gate cannot tell
+  // whose question this is, so it touches nothing and leaves the question open.
+  // An empty list still identifies a live child with an unanswerable question,
+  // and there the fail-closed act is to REJECT it: passing on it would leave a
+  // child stuck on a question that can never be answered.
   it("an EMPTY questions list is a refusal, not an unidentifiable event", () => {
-    // The two answers are not the same. Unidentifiable means the gate cannot tell
-    // whose question this is, so it touches nothing and leaves the question open.
-    // An empty list still identifies a live child with an unanswerable question,
-    // and there the fail-closed act is to REJECT it: passing on it would leave a
-    // child stuck on a question that can never be answered.
     assert.deepStrictEqual(
       readAskedQuestion(asked({ id: "q8", sessionID: "ses_child", questions: [] })),
       { questionId: "q8", sessionId: "ses_child", answer: null },
     );
   });
 
+  // The plugin reads the event the host published, not an SDK-resolved
+  // response: only the client wraps. A gate that accepted both would be
+  // guessing which one it is holding, and guessing is the defect class here —
+  // the bare read of a wrapped event finds nothing and must say so.
   it("ignores an envelope-wrapped payload, since the host publishes it bare", () => {
-    // The plugin reads the event the host published, not an SDK-resolved
-    // response: only the client wraps. A gate that accepted both would be
-    // guessing which one it is holding, and guessing is the defect class here —
-    // the bare read of a wrapped event finds nothing and must say so.
     const bare = { id: "q9", sessionID: "ses_child", questions: [info("?", ["y"])] };
     assert.strictEqual(readAskedQuestion({ type: "question.asked", data: bare }), null);
   });
@@ -2065,7 +2105,6 @@ describe("task formatting: truncate + delivery records", () => {
 });
 
 describe("task policy: invalid inputs", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   it("validateAgent rejects empty names", () => {
     assert.strictEqual(validateAgent("", config).ok, false);
@@ -2076,10 +2115,10 @@ describe("task policy: invalid inputs", () => {
     assert.strictEqual(validateLineage([], "", config).ok, false);
   });
 
+  // The timeout-era races are structurally gone: settlement is exactly once
+  // (active -> terminal), so a late error after a reported completion can
+  // only arrive through noteLateOutcome, never through transitionState.
   it("a second settlement attempt cannot regress the first outcome", () => {
-    // The timeout-era races are structurally gone: settlement is exactly once
-    // (active -> terminal), so a late error after a reported completion can
-    // only arrive through noteLateOutcome, never through transitionState.
     const store = storeSettledAs("completed", config);
     assertSettlementIsFinal(store);
   });
@@ -2088,9 +2127,8 @@ describe("task policy: invalid inputs", () => {
 describe("prompt dance: extractor shape coverage", () => {
 
   it("classifyPromptError handles odd shapes", () => {
-    assert.strictEqual(classifyPromptError({ message: 42 }).message, "42");
-    assert.strictEqual(classifyPromptError(undefined).message, "undefined");
-    assert.strictEqual(classifyPromptError(undefined).retryable, false);
+    assertClassifiedAs({ message: 42 }, "42");
+    assertClassifiedAs(undefined, "undefined");
   });
 });
 
@@ -2118,10 +2156,10 @@ describe("prompt dance: getLatestAssistantText", () => {
   });
 });
 
+// The reader's one dependency is a message list, so that is the only thing
+// these clients declare: a reader that grew a second dependency would have to
+// be faked differently, and this is where that would show.
 describe("prompt dance: hydrateLatestOutcome", () => {
-  // The reader's one dependency is a message list, so that is the only thing
-  // these clients declare: a reader that grew a second dependency would have to
-  // be faked differently, and this is where that would show.
   const clientReading = (read) => ({ session: { messages: async () => read() } });
 
   // The outcome is a fixed shape — text, errorDetail, unreadable — and a case
@@ -2156,7 +2194,6 @@ describe("prompt dance: hydrateLatestOutcome", () => {
 });
 
 describe("task-state: noteLateOutcome", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   it("escalates a completed record to error — the one retained rewrite edge", () => {
     const store = storeSettledAs("completed", config);
@@ -2182,12 +2219,12 @@ describe("question gate: decideQuestion", () => {
     assert.deepStrictEqual(decideQuestion("active", "yes"), { action: "reply", answer: "yes" });
   });
 
+  // The only reader of this text is the parent: the host's reject endpoint
+  // declares `body?: never`, so it cannot reach the asking session. It used to
+  // read as child advice — "call task_notify" — which the parent does not hold,
+  // and it led with the diagnosis so the parent's own remedy fell past the
+  // status view's 120-char truncation. Hence: the parent's tool, up front.
   it("an active child with nothing to answer is rejected with the PARENT's remedy", () => {
-    // The only reader of this text is the parent: the host's reject endpoint
-    // declares `body?: never`, so it cannot reach the asking session. It used to
-    // read as child advice — "call task_notify" — which the parent does not hold,
-    // and it led with the diagnosis so the parent's own remedy fell past the
-    // status view's 120-char truncation. Hence: the parent's tool, up front.
     const decision = decideQuestion("active", null);
     assert.strictEqual(decision.action, "reject");
     assert.ok(decision.reason.startsWith("task_continue"), `leads with what the reader can do. got: ${decision.reason}`);
@@ -2195,10 +2232,10 @@ describe("question gate: decideQuestion", () => {
     assert.ok(!/when it resumes/.test(decision.reason), `never tells anyone to wait. got: ${decision.reason}`);
   });
 
+  // The claim line is truncated to 120 chars. A reason that puts its instruction
+  // last is a reason the operator never reads in full, which is the defect the
+  // composition exists to prevent — asserted against the real formatter.
   it("a rejected reason survives the status view's truncation, remedy intact", () => {
-    // The claim line is truncated to 120 chars. A reason that puts its instruction
-    // last is a reason the operator never reads in full, which is the defect the
-    // composition exists to prevent — asserted against the real formatter.
     const reason = decideQuestion("active", null).reason;
     const shown = truncateText(reason, 120);
     assert.match(shown, /task_continue the child with the input it needs/);
@@ -2214,15 +2251,13 @@ describe("question gate: decideQuestion", () => {
 });
 
 describe("task store: retained-change callback", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   function seedActive(store, id) {
     registerActiveTask(store, childParams({ id: id }), config);
   }
 
   it("notifies on retained writes, silent on active-only writes", () => {
-    const store = createTaskStore();
-    const changes = countRetainedChanges(store);
+    const { store, changes } = countingStore();
     seedActive(store, "s1");
     assert.strictEqual(changes.calls, 0, "active-only writes stay silent");
     transitionState(store, "s1", "completed");
@@ -2245,10 +2280,10 @@ describe("task store: retained-change callback", () => {
   });
 });
 
+// The fleet list is a tree, so a row carries its depth and — when the parent
+// that spawned it is no longer tracked — the link it lost. Both are decided
+// here, at the formatter, so they are pinned here.
 describe("task formatting: fleet views", () => {
-  // The fleet list is a tree, so a row carries its depth and — when the parent
-  // that spawned it is no longer tracked — the link it lost. Both are decided
-  // here, at the formatter, so they are pinned here.
   const treeRow = (over = {}) => ({
     childSessionId: "ses_a", agentName: "explore", description: "A task", state: "active",
     startedAt: Date.now() - 45_000, depth: 0, parentSessionId: "p1", parentTracked: true, ...over,
@@ -2277,9 +2312,9 @@ describe("task formatting: fleet views", () => {
     assert.match(rowFor(summary, "ses_b"), /^ {2}- /, `a descendant is indented. got: ${summary}`);
   });
 
+  // Rendered flush it would read as a root, and a root is a task whose parent
+  // nobody has stopped.
   it("a row whose parent is not tracked names the link it lost", () => {
-    // Rendered flush it would read as a root, and a root is a task whose parent
-    // nobody has stopped.
     const summary = listOf({ tree: [treeRow({ parentTracked: false, parentSessionId: "ses_gone" })], activeCount: 1 });
     assert.match(rowFor(summary, "ses_a"), /spawned by ses_gone, not tracked/, `got: ${summary}`);
   });
@@ -2320,18 +2355,17 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskStatusDetail renders tracked metadata offline", () => {
-    const detail = formatTaskStatusDetail({
-      childSessionId: "ses_1",
-      parentSessionId: "parent_1",
-      agentName: "explore",
-      description: "Deep dive",
-      lineage: ["planner"],
-      state: "active",
-      startedAt: 1,
-      requestedModel: { providerID: "prov", modelID: "model" },
-      dependsOn: ["ses_dep"],
-      lastNotice: { message: "blocked on credentials", at: Date.now() },
-    }, null);
+    const detail = formatTaskStatusDetail(
+      taskRecord({
+        description: "Deep dive",
+        lineage: ["planner"],
+        startedAt: 1,
+        requestedModel: { providerID: "prov", modelID: "model" },
+        dependsOn: ["ses_dep"],
+        lastNotice: { message: "blocked on credentials", at: Date.now() },
+      }),
+      null,
+    );
     assert.ok(detail.includes("ses_1"));
     assert.ok(detail.includes("planner"));
     assert.ok(detail.includes("prov/model"));
@@ -2340,17 +2374,15 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskStatusDetail surfaces delivery records", () => {
-    const detail = formatTaskStatusDetail({
-      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state: "completed",
-      startedAt: 1, retainedAt: 2,
-    }, { kind: "error", delivered: false, attempts: 2 });
+    const detail = formatTaskStatusDetail(
+      taskRecord({ state: "completed", startedAt: 1, retainedAt: 2 }),
+      { kind: "error", delivered: false, attempts: 2 },
+    );
     assert.ok(detail.includes("FAILED"), `got: ${detail}`);
   });
 });
 
 describe("task-state: restoreRetained", () => {
-  const config = normalizeDynamicTaskConfig({});
 
   function ledgerEntry(id, state = "completed") {
     return {
@@ -2361,8 +2393,7 @@ describe("task-state: restoreRetained", () => {
   }
 
   it("restores unknown ids and skips live state", () => {
-    const store = createTaskStore();
-    seedSesActive(store, config);
+    const store = storeWithActive();
     const restored = restoreRetained(store, [
       ["ses_ledger", ledgerEntry("ses_ledger")],
       ["ses_active", ledgerEntry("ses_active")],
@@ -2381,8 +2412,7 @@ describe("task-state: concurrency helper", () => {
   const config = normalizeDynamicTaskConfig({ maxConcurrent: 2 });
 
   it("returns null when under limit", () => {
-    const result = checkConcurrencyLimit(1, config);
-    assert.strictEqual(result, null);
+    assertNothing(checkConcurrencyLimit(1, config), "a free slot is reported as no error at all");
   });
 
   it("returns error message when at limit", () => {
@@ -2421,11 +2451,11 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
   it("removes expired retained tasks by TTL", () => {
     const store = storeAged(["ses_old", 100000]);
     assert.strictEqual(pruneRetainedTasks(store, config), 1, "Should prune 1 expired entry");
-    assert.strictEqual(store.retainedTasks.size, 0);
+    assertStoreEmpty(store, "only the expired entry was pruned");
   });
 
+  // max is 2, all three within the TTL window — so only the max can prune here.
   it("evicts oldest entries when over max", () => {
-    // max is 2, all three within the TTL window — so only the max can prune here.
     const store = storeAged(["ses_a", 5], ["ses_b", 3], ["ses_c", 0]);
     assert.strictEqual(pruneRetainedTasks(store, config), 1, "Should evict 1 oldest entry");
     assert.strictEqual(store.retainedTasks.size, 2);
@@ -2442,8 +2472,7 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
 describe("findTask — edge cases", () => {
   it("returns null for unknown session ID", () => {
     const store = createTaskStore();
-    const result = findTask(store, "nonexistent");
-    assert.strictEqual(result, null);
+    assertNothing(findTask(store, "nonexistent"), "an unknown session is not a task");
   });
 
   it("finds active task before retained task", () => {

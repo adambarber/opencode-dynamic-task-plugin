@@ -49,6 +49,10 @@ describe("notify gate: resolveNotifyKind", () => {
   });
 });
 
+// The gate's own inputs: which child, what kind, and no real backoff — the
+// retry count is the thing under test, so waiting for it proves nothing.
+const gate = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
+
 describe("notify gate: notifyParent", () => {
   beforeEach(() => {
     clearNotifyLedger();
@@ -56,11 +60,7 @@ describe("notify gate: notifyParent", () => {
 
   it("delivers on first attempt and records success", async () => {
     const { client, calls } = promptClient([]);
-    const delivered = await notifyParent(client, "parent_1", "hello", {
-      childSessionId: "ses_a1",
-      kind: "completed",
-      sleep: NO_SLEEP,
-    });
+    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_a1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(calls.length, 1);
     const record = getLatestNotification("ses_a1");
@@ -72,11 +72,7 @@ describe("notify gate: notifyParent", () => {
 
   it("retries once, then records failure", async () => {
     const { client, calls } = promptClient([new Error("down"), new Error("still down")]);
-    const delivered = await notifyParent(client, "parent_1", "hello", {
-      childSessionId: "ses_b1",
-      kind: "error",
-      sleep: NO_SLEEP,
-    });
+    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_b1", "error"));
     assert.strictEqual(delivered, false);
     assert.strictEqual(calls.length, 2, "exactly one retry");
     const record = getLatestNotification("ses_b1");
@@ -85,11 +81,7 @@ describe("notify gate: notifyParent", () => {
 
   it("second-attempt success records delivered with attempts=2", async () => {
     const { client } = promptClient([new Error("blip")]);
-    const delivered = await notifyParent(client, "parent_1", "hello", {
-      childSessionId: "ses_c1",
-      kind: "completed",
-      sleep: NO_SLEEP,
-    });
+    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_c1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
   });

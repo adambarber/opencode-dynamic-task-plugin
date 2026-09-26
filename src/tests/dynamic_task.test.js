@@ -204,6 +204,23 @@ async function refusedDispatchScenario(kind) {
   return { h, edge: await refusedOnOneEdge(h, "consume the edge", kind) };
 }
 
+/**
+ * A refused dispatch waiting on SEVERAL running edges. N spelled as a number
+ * because the questions asked of these edges differ only in how many there are —
+ * which edge is announced, and what the parent is told when the last one lands.
+ * Hand-writing the spawn list in each case is what the duplicate-code gate
+ * caught, and rightly: the arrangement was the duplicated thing, not the
+ * assertions.
+ */
+async function refusedOverEdges(h, description, count) {
+  const edges = [];
+  for (let i = 0; i < count; i++) {
+    edges.push(await h.spawn({ description: `edge ${i + 1}` }));
+  }
+  await refuseDispatch(h, description, edges.map((e) => e.id));
+  return edges;
+}
+
 // A refused depends_on was advice in a string and nothing else. The plugin
 // forgot the dispatch, so the parent had to carry the wait in prose, be alive
 // when the dependency settled, and re-dispatch from memory. Every one of those
@@ -229,9 +246,7 @@ describe("dependency waits are state, not prose the parent must remember", () =>
 
   it("a wait with an edge still running is not announced, and it resolves on the LAST edge", async () => {
     const h = await setupHarness();
-    const one = await h.spawn({ description: "edge one" });
-    const two = await h.spawn({ description: "edge two" });
-    await refuseDispatch(h, "consume both", [one.id, two.id]);
+    const [one, two] = await refusedOverEdges(h, "consume both", 2);
 
     await announcedAbout(h, "consume both", () => h.settle(one.id), 0);
     await announcedAbout(h, "consume both", () => h.settle(two.id));
@@ -245,14 +260,10 @@ describe("dependency waits are state, not prose the parent must remember", () =>
   // that whether one edge had cleared or three.
   it("a dispatch waiting on several edges is told they all cleared, not that one did", async () => {
     const h = await setupHarness();
-    const one = await h.spawn({ description: "edge one" });
-    const two = await h.spawn({ description: "edge two" });
-    const three = await h.spawn({ description: "edge three" });
-    await refuseDispatch(h, "consume all three", [one.id, two.id, three.id]);
-    await h.settle(one.id);
-    await h.settle(two.id);
+    const edges = await refusedOverEdges(h, "consume all three", 3);
+    for (const edge of edges.slice(0, -1)) await h.settle(edge.id);
 
-    const hint = await announcedAbout(h, "consume all three", () => h.settle(three.id));
+    const hint = await announcedAbout(h, "consume all three", () => h.settle(edges.at(-1).id));
     answerOmits(hint.message, "the dependency has completed", "one dispatch is not one dependency");
     answerSays(hint.message, "everything it waited on has completed", "and the true shape of the release is stated");
   });

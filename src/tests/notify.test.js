@@ -19,7 +19,7 @@ import { bounded, deferred } from './support/harness.js';
 
 const NO_SLEEP = async () => {};
 
-/** The answer a host gives a write it accepted — stated once, because "accepted" is the claim. */
+/** The answer a host gives a write it accepted — one answer, so "accepted" is a name and not a shape. */
 const accepted = () => ({ ok: true });
 
 /**
@@ -46,7 +46,7 @@ function gatedClient(gate, options = {}) {
       throw new Error("parent busy");
     }
     await gate.promise;
-    return { ok: true };
+    return accepted();
   });
 }
 
@@ -99,7 +99,7 @@ function answeredClient(script = []) {
   return recordingClient(async () => {
     const step = script.length > 0 ? script.shift() : "ok";
     if (step instanceof Error) throw step;
-    return { ok: true };
+    return accepted();
   });
 }
 
@@ -138,9 +138,7 @@ async function withHeldWrites(body) {
 }
 
 describe("notify gate: notifyParent", () => {
-  beforeEach(() => {
-    clearNotifyLedger();
-  });
+  beforeEach(clearNotifyLedger);
 
   it("delivers on first attempt and records success", async () => {
     const { client, calls } = answeredClient([]);
@@ -235,7 +233,7 @@ describe("notify gate: notifyParent", () => {
       order.push(`start:${text}`);
       await new Promise((r) => setTimeout(r, 20));
       order.push(`end:${text}`);
-      return { ok: true };
+      return accepted();
     });
     const [ra, rb] = await Promise.all([
       notifyParent(client, "p", "first", gate("ses_chain1", "completed")),
@@ -368,7 +366,6 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     clearNotifyLedger();
     restorePendingDeliveries([]);
   });
-
   const queuedFor = (childSessionId) =>
     getPendingDeliveries().filter((entry) => entry.childSessionId === childSessionId);
 

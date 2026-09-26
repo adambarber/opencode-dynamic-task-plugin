@@ -138,6 +138,11 @@ const noUsableSessionId = () => {
   assertNothing(resolveParentSessionId({ sessionID: "   " }), "a blank session id");
 };
 
+/** The same refusals with the legacy ambient var set: a reader that consulted it would answer the phantom. */
+const noUsableSessionIdUnderThePhantomVar = async () => {
+  await withEnv("DYNAMIC_TASK_TEST_SESSION_ID", "ses_phantom", noUsableSessionId);
+};
+
 describe("resolveParentSessionId", () => {
   it("prefers explicit sessionID", () => {
     const ctx = { sessionID: "ses_parent_1", sessionId: "ses_parent_2" };
@@ -160,13 +165,7 @@ describe("resolveParentSessionId", () => {
     noUsableSessionId();
   });
 
-  it("ignores the legacy ambient test var — callers resolve explicitly", async () => {
-    await withEnv("DYNAMIC_TASK_TEST_SESSION_ID", "ses_phantom", async () => {
-      // The same refusals, with the phantom set: a reader that consulted the
-      // ambient var would answer "ses_phantom" to the first of them.
-      noUsableSessionId();
-    });
-  });
+  it("ignores the legacy ambient test var — callers resolve explicitly", noUsableSessionIdUnderThePhantomVar);
 });
 
 describe("fetchAgents", () => {
@@ -863,10 +862,23 @@ const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
  * that is not the one the rest of the file cleans up after.
  */
 const assertJsoncRejected = async (contents) => {
+  assertNothing(await jsoncRead(contents), `must refuse ${JSON.stringify(contents)}`);
+};
+
+/**
+ * A .jsonc file the parser must read, and what it read out of it. The mirror of
+ * the helper above, and it exists for the same reason: the temp file, the write
+ * and the parse are one arrangement, so a case that hand-rolls the accepted side
+ * is a case that can assert against a file that was never written, or through a
+ * second temp-file idiom the rest of the file does not clean up after.
+ */
+const jsoncRead = async (contents) => {
+  let parsed;
   await inTempFile(async (file) => {
     writeFileSync(file, contents);
-    assert.strictEqual(parseDynamicTaskJsonc(file), null, `must refuse ${JSON.stringify(contents)}`);
+    parsed = parseDynamicTaskJsonc(file);
   });
+  return parsed;
 };
 
 function tmpLedgerPath() {
@@ -1100,10 +1112,11 @@ describe("parseDynamicTaskJsonc", () => {
   });
 
   it("strips comments and parses objects", async () => {
-    await withTempFile(`${tmpdir()}/dt-ok-${Date.now()}.jsonc`, async (file) => {
-      writeFileSync(file, '{ /* block */ "maxDepth": 3 } // trailing\n');
-      assert.deepStrictEqual(parseDynamicTaskJsonc(file), { maxDepth: 3 });
-    });
+    assertAnswer(
+      await jsoncRead('{ /* block */ "maxDepth": 3 } // trailing\n'),
+      { maxDepth: 3 },
+      "a commented config parses to the object it describes",
+    );
   });
 });
 

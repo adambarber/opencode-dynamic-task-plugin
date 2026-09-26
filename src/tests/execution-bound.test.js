@@ -13,16 +13,29 @@ import { bounded, deferred, sleep } from "./support/harness.js";
 
 const NO_VALUE = Symbol("degradation");
 
+/**
+ * A bound answers a value AND whether that value is the degradation — the two
+ * fields travel together and are the whole claim, so they are read together: a
+ * case that asserted the value alone would pass on a bound that answered the
+ * right thing by timing out.
+ */
+const assertBound = async (out, expected, why) => {
+  assert.deepStrictEqual({ value: out.value, timedOut: out.timedOut }, expected, why);
+  return out;
+};
+
 describe("execution bound: withBound", () => {
   it("passes a fast answer through as a whole answer", async () => {
-    const out = await withBound(1_000, () => Promise.resolve("ok"), () => NO_VALUE);
-    assert.deepStrictEqual({ value: out.value, timedOut: out.timedOut }, { value: "ok", timedOut: false });
+    await assertBound(await withBound(1_000, () => Promise.resolve("ok"), () => NO_VALUE), { value: "ok", timedOut: false }, "a fast answer is the work's own");
   });
 
   it("hands back the caller's degradation, flagged, when work runs long", async () => {
     const gate = deferred();
-    const out = await bounded(20, () => withBound(WRITE_BOUNDS.parentPrompt, () => gate.promise, () => NO_VALUE));
-    assert.deepStrictEqual({ value: out.value, timedOut: out.timedOut }, { value: NO_VALUE, timedOut: true });
+    await assertBound(
+      await bounded(20, () => withBound(WRITE_BOUNDS.parentPrompt, () => gate.promise, () => NO_VALUE)),
+      { value: NO_VALUE, timedOut: true },
+      "a bound that ran out answers the degradation, flagged",
+    );
     gate.resolve();
   });
 
@@ -31,8 +44,7 @@ describe("execution bound: withBound", () => {
   // answer into a TypeError, which the caller read as a failure and answered
   // with a retry — a 200ms stall and a record blaming the wrong thing.
   it("accepts a work function that answers synchronously", async () => {
-    const out = await withBound(1_000, () => "immediate", () => NO_VALUE);
-    assert.deepStrictEqual({ value: out.value, timedOut: out.timedOut }, { value: "immediate", timedOut: false });
+    await assertBound(await withBound(1_000, () => "immediate", () => NO_VALUE), { value: "immediate", timedOut: false }, "a synchronous answer is an answer");
   });
 
   it("reports a synchronous throw as the rejection it is", async () => {

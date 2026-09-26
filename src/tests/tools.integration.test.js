@@ -30,6 +30,54 @@ async function racingSteer(gateOpts) {
   return { h, c, id, steer, release };
 }
 
+/**
+ * One child, two turns, with turn one's settlement doomed — the harness fails
+ * that first notification, arming a retry. What the caller's next line does is
+ * decide WHEN the revival lands relative to the stale retry, which is the whole
+ * subject of the two tests that start here.
+ */
+async function reviveAfterFailedDelivery() {
+  const h = await setupTwoTurnHarness();
+  const { id, c } = await h.spawn({ prompt: "turn one" });
+  await h.settle(id); // attempt 1 fails; the retry is armed at the fixed backoff
+  const cont = await c.steer("turn two");
+  assert.ok(cont.includes("Follow-up sent"), `got: ${cont}`);
+  return { h, c, id };
+}
+
+/** Two turns, two settlements, and no suppression of the second. */
+async function assertBothTurnsDelivered(h) {
+  await sleep(30);
+  const notes = h.notices();
+  assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
+  assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `turn order preserved. first: ${notes[0]?.message}`);
+  assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `second: ${notes[1]?.message}`);
+}
+
+/**
+ * A child whose abort transport is down, settled — the arrangement behind both
+ * "the gap is recorded" and "success is not annotated by a failed abort".
+ */
+async function withBrokenAbortSettledChild() {
+  const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
+  const { id, c } = await h.spawn();
+  await h.settle(id);
+  return { h, c, id, out: await c.interrupt() };
+}
+
+/**
+ * A child's tool asks the parent a question and the parent never answers: the
+ * plugin rejects it once, naming the tool that would. The rejection is the
+ * contract, so it is asserted here rather than in each test that provokes it.
+ */
+async function assertQuestionRejectedNaming(h, event, named) {
+  await h.fireEvent(event);
+  const calls = h.questionCalls();
+  assert.strictEqual(calls.length, 1, "one rejection, never a silent stall");
+  assert.strictEqual(calls[0].method, "reject");
+  assert.ok(calls[0].reason.includes(named), `must name ${named}. got: ${calls[0].reason}`);
+}
+
 // --- Tests -----------------------------------------------------------------
 
 describe("dynamic_task validation", () => {
@@ -478,10 +526,7 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(h.noticeBodies()[0].includes("completed successfully")); });
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
-    const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
-    const { id, c } = await h.spawn();
-    await h.settle(id);
-    const out = await c.interrupt();
+    const { h, c, out } = await withBrokenAbortSettledChild();
     assert.ok(out.includes("already settled as completed"), `got: ${out}`);
     assert.ok(out.includes("ECONNREFUSED"), `gap recorded in the report. got: ${out}`);
     const status = await c.status();
@@ -583,19 +628,11 @@ describe("question gate: child questions settle", () => {
 
   it("answerless questions are rejected with follow-up guidance", async () => {
     const { h, c, id } = await withChild();
-    await h.fireEvent(events.question(id, [], { id: "q2" }));
-    const calls = h.questionCalls();
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].method, "reject");
-    assert.ok(calls[0].reason.includes("task_continue"), `got: ${calls[0].reason}`); });
+    await assertQuestionRejectedNaming(h, events.question(id, [], { id: "q2" }), "task_continue"); });
 
   it("settled task questions are rejected with settled guidance", async () => {
     const { h, c, id } = await withSettledChild();
-    await h.fireEvent(events.question(id, [{ text: "yes" }], { id: "q3" }));
-    const calls = h.questionCalls();
-    assert.strictEqual(calls.length, 1);
-    assert.strictEqual(calls[0].method, "reject");
-    assert.ok(calls[0].reason.includes("settled"), `got: ${calls[0].reason}`); });
+    await assertQuestionRejectedNaming(h, events.question(id, [{ text: "yes" }], { id: "q3" }), "settled"); });
 
   it("a failed retained rejection is logged as failed, never as rejected", async () => {
     const dir = tmpProjectDir();
@@ -901,34 +938,19 @@ describe("outcome correctness: failed turns never report success", () => {
     // continues before the 250ms retry resolves, and the retry then succeeds —
     // an in-flight commit from the old generation must not reserve the key
     // that turn 2's settlement needs.
-    const h = await setupTwoTurnHarness();
-    const { id, c } = await h.spawn({ prompt: "turn one" });
-    await h.settle(id); // attempt 1 fails; the retry is armed at the fixed backoff
-    const cont = await c.steer("turn two");
-    assert.ok(cont.includes("Follow-up sent"), `got: ${cont}`);
+    const { h, id } = await reviveAfterFailedDelivery();
     await sleep(350); // the stale retry lands and commits while the revival is live
     await h.settle(id);
-    await sleep(30);
-    const notes = h.notices();
-    assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
-    assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `order preserved. first: ${notes[0]?.message}`);
-    assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `revival never suppressed. second: ${notes[1]?.message}`);
+    await assertBothTurnsDelivered(h);
     });
 
   it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
     // Same harness, opposite timing: the revival lands BEFORE the retry
     // resolves, so serialization — not generations — carries the order.
-    const h = await setupTwoTurnHarness();
-    const { id, c } = await h.spawn({ prompt: "turn one" });
-    await h.settle(id);
-    const cont = await c.steer("turn two");
-    assert.ok(cont.includes("Follow-up sent"));
+    const { h, id } = await reviveAfterFailedDelivery();
     await h.settle(id);
     await sleep(600);
-    const notes = h.notices();
-    assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
-    assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `turn order preserved. first: ${notes[0]?.message}`);
-    assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `second: ${notes[1]?.message}`);
+    await assertBothTurnsDelivered(h);
     });
 
   it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
@@ -969,10 +991,7 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("abort failure on a completed task reports the gap without annotating success", async () => {
-    const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
-    const { id, c } = await h.spawn();
-    await h.settle(id);
-    const out = await c.interrupt();
+    const { h, c, out } = await withBrokenAbortSettledChild();
     assert.ok(out.includes("already settled as completed"), `got: ${out}`);
     assert.ok(out.includes("ECONNREFUSED"), `gap reported. got: ${out}`);
     const status = await c.status();

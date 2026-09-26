@@ -450,20 +450,24 @@ export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly Ledg
   const pending = [...onDisk.pending];
   for (const change of changes) {
     switch (change.kind) {
-      case LedgerChangeKind.Running:
-        active.set(change.id, change.record);
-        break;
+      // Grouped in the shape the notice cases below already use: a kind that
+      // differs only in WHICH VERB it uses belongs next to its twin, so each verb
+      // is written once. Spelled as four arms, the pair read as near-identical
+      // blocks — `active.delete(change.id); break;` twice over — which is one
+      // decision restated in the one place a reader looks to learn what a kind does.
       case LedgerChangeKind.Settled:
-        retained.set(change.id, change.record);
+      case LedgerChangeKind.Forgotten: {
+        if (change.kind === LedgerChangeKind.Settled) retained.set(change.id, change.record);
+        else retained.delete(change.id);
         active.delete(change.id);
         break;
-      case LedgerChangeKind.Stopped:
-        active.delete(change.id);
+      }
+      case LedgerChangeKind.Running:
+      case LedgerChangeKind.Stopped: {
+        if (change.kind === LedgerChangeKind.Stopped) active.delete(change.id);
+        else active.set(change.id, change.record);
         break;
-      case LedgerChangeKind.Forgotten:
-        retained.delete(change.id);
-        active.delete(change.id);
-        break;
+      }
       // One lookup for both: what makes two notices the SAME notice is
       // `owedIdentity`, and the two cases differ only in what they do about it.
       case LedgerChangeKind.Owed:

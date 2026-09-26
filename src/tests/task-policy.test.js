@@ -13,8 +13,9 @@ import {
   normalizeAgentName,
   validateAgent,
   validateLineage,
+  depthLimits,
 } from "../../dist/shared/task-policy.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { DEFAULT_LANE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertIs, assertNothing, refuses } from "./support/assertions.js";
 import { blockingConfig, defaultConfig } from "./support/fixtures.js";
 
@@ -81,31 +82,84 @@ describe("isSameAgent", () => {
 });
 
 describe("validateLineage", () => {
-  const config = normalizeDynamicTaskConfig({ maxDepth: 2 });
+  // A depth case is about three things at once — the lane's cap, the set of
+  // agents that could actually be spent, and whether repeating one is allowed —
+  // so they are named here once and each case says which it is about.
+  const FOUR_AGENTS = ["general", "coder", "explore", "reviewer"];
+  const depth = (lineage, child, { maxDepth = 2, agents = FOUR_AGENTS, recursion = false, lane = DEFAULT_LANE } = {}) =>
+    validateLineage(lineage, child, { maxDepth, allowSameAgentRecursion: recursion }, agents, lane);
 
   it("rejects same-agent anywhere in lineage", () => {
-    const result = refuses(validateLineage(["reviewer"], "reviewer", config), "the agent is already in the lineage");
+    const result = refuses(depth(["reviewer"], "reviewer"), "the agent is already in the lineage");
     assert.match(result.error, /recursion|same-agent|already present/i);
   });
 
   it("rejects same-agent deep in lineage", () => {
-    refuses(validateLineage(["general", "coder", "explore"], "general", config), "presence anywhere in the lineage counts");
+    refuses(depth(["general", "coder", "explore"], "general"), "presence anywhere in the lineage counts");
   });
 
   it("rejects when next depth exceeds maxDepth", () => {
-    const result = refuses(validateLineage(["general", "coder"], "explore", config), "the next step is past maxDepth");
+    const result = refuses(depth(["general", "coder"], "explore"), "the next step is past maxDepth");
     assert.match(result.error, /depth/i);
   });
 
   it("allows different-agent chain within depth limit", () => {
-    admits(validateLineage(["general"], "coder", config), "a different agent within the depth limit");
+    admits(depth(["general"], "coder"), "a different agent within the depth limit");
   });
 
   it("does not mutate lineage arrays", () => {
     const lineage = ["general", "coder"];
     const copy = [...lineage];
-    validateLineage(lineage, "explore", config); // should fail — exceeds depth
+    depth(lineage, "explore"); // should fail — exceeds depth
     assert.deepStrictEqual(lineage, copy, "Lineage must not be mutated");
+  });
+
+  it("a negative cap is no limit, however few agents there are", () => {
+    admits(depth(["a", "b", "c"], "d", { maxDepth: -1, agents: ["a"] }), "an unlimited depth is not capped by breadth");
+  });
+
+  it("the refusal names the LANE, because the cap it broke is the lane's", () => {
+    const result = refuses(depth(["general", "coder"], "explore", { lane: "build" }), "the lane is named");
+    assert.match(result.error, /lane "build"/);
+  });
+
+  describe("which constraint binds", () => {
+    it("reports the cap as binding when the agent set is wide enough", () => {
+      assert.deepStrictEqual(depthLimits({ maxDepth: 3, allowSameAgentRecursion: false }, FOUR_AGENTS), {
+        configured: 3, effective: 3, boundBy: "lane-cap",
+      });
+    });
+
+    it("reports the AGENT SET as binding when it is narrower than the cap", () => {
+      // The case the whole value exists for: a maxDepth of 4 on a project with
+      // two usable agent types is a 2, and the number in the config is a lie the
+      // operator cannot see.
+      assert.deepStrictEqual(depthLimits({ maxDepth: 4, allowSameAgentRecursion: false }, ["general", "coder"]), {
+        configured: 4, effective: 2, boundBy: "agent-set",
+      });
+    });
+
+    it("counts DISTINCT normalized names, so @General and general are one agent", () => {
+      assert.strictEqual(
+        depthLimits({ maxDepth: 9, allowSameAgentRecursion: false }, ["general", "@General", " coder "]).effective,
+        2,
+      );
+    });
+
+    it("ignores the agent set entirely when same-agent recursion is allowed", () => {
+      assert.deepStrictEqual(depthLimits({ maxDepth: 9, allowSameAgentRecursion: true }, ["general"]), {
+        configured: 9, effective: 9, boundBy: "lane-cap",
+      });
+    });
+
+    it("says which one bound, in the refusal the parent reads", () => {
+      const result = refuses(
+        depth(["general", "coder"], "explore", { maxDepth: 4, agents: ["general", "coder"] }),
+        "the chain is at the agent-set bound, not the configured cap",
+      );
+      assert.match(result.error, /only 2 distinct agent/);
+      assert.match(result.error, /allowSameAgentRecursion/, "the message names the other lever");
+    });
   });
 });
 

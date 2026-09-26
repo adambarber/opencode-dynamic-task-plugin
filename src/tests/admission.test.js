@@ -194,6 +194,32 @@ describe("admission gate: resolveAdmission", () => {
     assert.deepStrictEqual(result.newLineage, ["planner", "explore"]);
   });
 
+  describe("a lane's own depth cap is the one that binds", () => {
+    // The defect this pins: a lane declared `maxDepth` that nothing read, so the
+    // field sat in the operator's config looking authoritative while every
+    // dispatch was judged against the top-level number. A declared limit that
+    // does not limit is worse than no field, because it is trusted.
+    const agents = [{ name: "architect" }, { name: "coder" }, { name: "explore" }];
+    const capped = normalizeDynamicTaskConfig({ maxDepth: 5, lanes: { build: { maxDepth: 2 } } });
+
+    it("admits a chain the lane's cap allows, where the top-level cap would also allow", () => {
+      admits(resolveAdmission(agents, "coder", ["architect"], capped, "build"), "depth 1 into a cap of 2");
+    });
+
+    it("refuses past the lane's cap while the top-level cap has plenty of room", () => {
+      const result = resolveAdmission(agents, "explore", ["architect", "coder"], capped, "build");
+      refuses(result, "the lane's cap of 2 is spent at depth 2, and maxDepth 5 never applies");
+      assert.match(result.reason.refusal, /lane "build"/, "the refusal names the lane whose cap bound");
+    });
+
+    it("a lane that declares no depth of its own inherits the top-level cap", () => {
+      const inherited = normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { build: {} } });
+      admits(resolveAdmission(agents, "coder", ["architect"], inherited, "build"), "depth 1 of 2");
+      refuses(resolveAdmission(agents, "explore", ["architect", "coder"], inherited, "build"),
+        "depth 2 is past the inherited cap of 2");
+    });
+  });
+
   it("does not mutate the input lineage", () => {
     const lineage = ["planner"];
     resolveAdmission(agents, "explore", lineage, defaultConfig);

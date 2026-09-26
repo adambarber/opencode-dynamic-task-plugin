@@ -6,7 +6,7 @@
 // can bypass it.
 
 import type { DynamicTaskConfig } from "./config.js";
-import { admissibleLaneNames, resolveLaneName } from "./config.js";
+import { admissibleLaneNames, resolveLane as lanePolicyFor, resolveLaneName } from "./config.js";
 import { liveLanes } from "./lane-overlay.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
@@ -78,6 +78,25 @@ export type Admission =
 // same matching the orchestrator has always used), then apply blocked-agent
 // and lineage policy. Pure wrt the store: no mutation, no client calls.
 
+/**
+ * The names a dispatch can actually spend: dispatchable, and not blocked.
+ *
+ * It lives HERE and not in task-policy because the admission gate is the only
+ * place allowed to apply policy — a second derivation of "which agents could this
+ * project delegate to" is a second answer, and the build gate that enforces the
+ * single gate is right to refuse it anywhere else.
+ *
+ * An agent this plugin would refuse cannot lengthen a chain, so counting one
+ * would report a depth the operator can never reach: a cap that looks generous
+ * and is not.
+ */
+export function dispatchableAgentNames(
+  agents: readonly AgentRecord[],
+  config: Pick<DynamicTaskConfig, "blockedAgents">,
+): string[] {
+  return agents.filter((agent) => validateAgent(agent.name, config as DynamicTaskConfig).ok).map((agent) => agent.name);
+}
+
 export function resolveAdmission(
   agents: AgentRecord[],
   requestedName: unknown,
@@ -102,12 +121,23 @@ export function resolveAdmission(
     return { ok: false, reason: policyRefused(agentCheck.error) };
   }
 
-  const laneCheck = resolveLane(config, requestedLane);
+  const laneCheck = admitLaneName(config, requestedLane);
   if (!laneCheck.ok) {
     return { ok: false, reason: laneCheck.reason };
   }
 
-  const lineageCheck = validateLineage(lineage, agent.name, config);
+  // Depth is judged against the LANE's cap, with the dispatchable set in hand so
+  // the refusal can name the constraint that actually binds. A lane that declares
+  // its own maxDepth is only real if this reads the resolved lane rather than the
+  // top-level number.
+  const lanePolicy = lanePolicyFor(liveLanes(config), laneCheck.lane);
+  const lineageCheck = validateLineage(
+    lineage,
+    agent.name,
+    { maxDepth: lanePolicy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
+    dispatchableAgentNames(agents, config),
+    laneCheck.lane,
+  );
   if (!lineageCheck.ok) {
     return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
@@ -126,7 +156,7 @@ export function resolveAdmission(
 // before lanes existed, any string here was ignored, so a name that used to be
 // decorative is now a typo the parent has to be told about. Declaring the lane
 // is the remedy, and the refusal says so.
-function resolveLane(
+function admitLaneName(
   config: DynamicTaskConfig,
   requestedLane: unknown,
 ): { ok: true; lane: string } | { ok: false; reason: AdmissionDenial } {

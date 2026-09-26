@@ -18,7 +18,7 @@
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LaneConfigSource } from "./config.js";
+import type { LaneConfig, LaneConfigSource } from "./config.js";
 
 /** Beside the ledger, in the project directory the host hands us. */
 export const LANE_OVERLAY_FILE = ".dynamic-task-lanes.json";
@@ -29,7 +29,48 @@ export interface LaneOverlay {
   maxConcurrent?: number;
   /** The default lane's depth cap, and the fallback for any lane that omits it. */
   maxDepth?: number;
-  lanes?: Record<string, { maxConcurrent?: number; maxDepth?: number }>;
+  lanes?: Record<string, LaneConfig>;
+}
+
+/**
+ * The lanes of an untrusted overlay, read by the one reader — and what it had to
+ * throw away to get them.
+ *
+ * The report travels with the read because the reader is the ONLY place that
+ * knows: asking anything else to work out which caps were dropped means a second
+ * reader of the same untrusted file, which is the disagreement this was extracted
+ * to prevent. A dialog that cannot say what it ignored shows a cap the dispatch
+ * path will not honour as though it applied.
+ *
+ * Null means the file is a shape this cannot interpret, which is a DIFFERENT
+ * answer from "no lanes" and must not collapse into it: a dialog that reported
+ * an unreadable file as an empty one would show the config's caps and invite the
+ * operator to write over whatever was actually there.
+ */
+export function readLaneOverlayLanes(raw: unknown): { lanes: Record<string, LaneConfig>; dropped: Record<string, string[]> } | null {
+  if (raw === null || raw === undefined) return { lanes: {}, dropped: {} };
+  if (typeof raw !== "object" || Array.isArray(raw)) return null;
+  const rawLanes = (raw as { lanes?: unknown }).lanes;
+  if (rawLanes === undefined) return { lanes: {}, dropped: {} };
+  if (typeof rawLanes !== "object" || rawLanes === null || Array.isArray(rawLanes)) return null;
+  const lanes: Record<string, LaneConfig> = {};
+  const dropped: Record<string, string[]> = {};
+  for (const [name, body] of Object.entries(rawLanes as Record<string, unknown>)) {
+    lanes[name] = readLaneBody(body);
+    const ignored = ignoredCaps(body);
+    if (ignored.length > 0) dropped[name] = ignored;
+  }
+  return { lanes, dropped };
+}
+
+/** The two cap keys a body may set. Anything else in it is not a policy statement. */
+const CAP_KEYS = ["maxConcurrent", "maxDepth"] as const;
+
+/** The cap keys a body states that are not a cap the plugin will act on. */
+function ignoredCaps(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  const body = raw as Record<string, unknown>;
+  return CAP_KEYS.filter((key) => body[key] !== undefined && cap(body[key]) === undefined);
 }
 
 /** The overlay's path for a project directory. Never process CWD (Tenet: durable state). */
@@ -50,11 +91,18 @@ function cap(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-/** The knobs a lane body may set. Nothing else in it is a policy statement. */
-function laneBody(raw: unknown): { maxConcurrent?: number; maxDepth?: number } {
+/**
+ * The knobs a lane body may set. Nothing else in it is a policy statement.
+ *
+ * EXPORTED because it is the reader for an untrusted file, and a second reader
+ * for the same untrusted file is how two processes come to disagree: the dialog
+ * shows a cap the dispatch path silently drops, and the operator edits a number
+ * that has no effect. One reader, so that cannot happen.
+ */
+export function readLaneBody(raw: unknown): LaneConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const body = raw as Record<string, unknown>;
-  const out: { maxConcurrent?: number; maxDepth?: number } = {};
+  const out: LaneConfig = {};
   const concurrent = cap(body["maxConcurrent"]);
   const depth = cap(body["maxDepth"]);
   if (concurrent !== undefined) out.maxConcurrent = concurrent;
@@ -92,7 +140,7 @@ export function applyLaneOverlay(
       return { source: null, problem: "`lanes` is not an object" };
     }
     for (const [name, body] of Object.entries(rawLanes as Record<string, unknown>)) {
-      lanes[name] = laneBody(body);
+      lanes[name] = readLaneBody(body);
       sawLane = true;
     }
   }

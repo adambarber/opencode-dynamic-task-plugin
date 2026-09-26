@@ -14,16 +14,24 @@
  * testable and the renderer stays a thin adapter over it.
  */
 import { DEFAULT_LANE, type DynamicTaskConfig, type LaneConfig } from "../shared/config.js";
-import type { LaneOverlay } from "../shared/lane-overlay.js";
+import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.js";
 
 /**
- * One selectable row. The default lane is a row like any other even though the
- * overlay need not mention it: the base config's caps are inherited unless the
- * overlay says otherwise, so a cap the dialog cannot display is a cap the
- * operator cannot correct, and a lane that works but is missing from the dialog
- * is the worst shape that bug can take.
+ * One entry in the dialog's list.
+ *
+ * Named "entry" and not "row" because `task-formatting.ts` already exports a
+ * `LaneRow` for what `task_list` PRINTS: a resolved lane, with every cap
+ * present. This one is unresolved on purpose — a cap may be absent, meaning
+ * inherited — so the two share a name and nothing else, and a reader who meets
+ * both should not assume the shapes agree.
+ *
+ * The default lane is an entry like any other even though the overlay need not
+ * mention it: the base config's caps are inherited unless the overlay says
+ * otherwise, so a cap the dialog cannot display is a cap the operator cannot
+ * correct, and a lane that works but is missing from the dialog is the worst
+ * shape that bug can take.
  */
-export type LaneRow = {
+export type LaneEntry = {
   name: string;
   lane: LaneConfig;
   /** Running tasks charged to this lane, as last recorded on disk. */
@@ -33,7 +41,7 @@ export type LaneRow = {
 };
 
 export type LaneDialog = {
-  rows: LaneRow[];
+  rows: LaneEntry[];
   /** Set when the overlay exists but is not something the dialog can show. */
   problem: string | null;
 };
@@ -58,25 +66,34 @@ export const UNBOUNDED = "off";
 type CapPatch = { maxConcurrent?: number | null; maxDepth?: number | null };
 
 /**
- * The rows to offer, from an overlay that has NOT been through the server's
- * normalizer — this is a different question from "what lanes exist", because
- * this one is asking what an operator can edit here, and a file they cannot
- * read is not an answer.
+ * The rows to offer, from the overlay as it sits on disk.
+ *
+ * The lanes are read by the SERVER's reader (`readLaneOverlayLanes`), not by a
+ * cast of the parsed JSON. That is the whole point: a hand-mangled file —
+ * `{"maxConcurrent": "four"}`, `{"maxConcurrent": -1}` — is dropped by the reader
+ * the dispatch path uses, so a dialog that trusted its own parse would DISPLAY a
+ * cap the server is not honouring, and an edit would launder the garbage it
+ * showed into the file it wrote back.
+ *
+ * A value that was dropped is reported rather than silently shown as unset: the
+ * operator is looking at a number that will not apply, and "unset" reads as
+ * "inherited" only if nobody says otherwise.
  */
 export function laneDialogFrom(raw: unknown, running: ReadonlyMap<string, number>, base: DynamicTaskConfig): LaneDialog {
-  if (raw === null || raw === undefined) return { rows: rowsFrom({}, running, base), problem: null };
-  if (typeof raw !== "object" || Array.isArray(raw)) {
+  const read = readLaneOverlayLanes(raw);
+  if (read === null) {
     return { rows: rowsFrom({}, running, base), problem: "the overlay is a JSON object, or nothing at all" };
   }
-  const lanes = (raw as { lanes?: unknown }).lanes;
-  if (lanes === undefined) return { rows: rowsFrom({}, running, base), problem: null };
-  if (typeof lanes !== "object" || lanes === null || Array.isArray(lanes)) {
-    return { rows: rowsFrom({}, running, base), problem: "`lanes` is a JSON object" };
-  }
-  return { rows: rowsFrom(lanes as Record<string, LaneConfig>, running, base), problem: null };
+  const ignored = Object.entries(read.dropped).map(
+    ([name, keys]) => `${name}: ${keys.join(", ")} is not a whole positive number, so the cap there is ignored`,
+  );
+  return {
+    rows: rowsFrom(read.lanes, running, base),
+    problem: ignored.length > 0 ? ignored.join(" · ") : null,
+  };
 }
 
-function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string, number>, base: DynamicTaskConfig): LaneRow[] {
+function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string, number>, base: DynamicTaskConfig): LaneEntry[] {
   // The base config's lanes are part of the answer even when the overlay is
   // empty: a lane declared in the config file is a lane an operator expects to
   // find in the dialog, and leaving it out makes the dialog disagree with the
@@ -103,12 +120,12 @@ function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string
  * that exists, is idle, and inherits its caps, all of which are claims nothing
  * has checked.
  */
-export function newLaneRow(name: string): LaneRow {
+export function newLaneEntry(name: string): LaneEntry {
   return { name, lane: {}, running: 0, inherited: true };
 }
 
 /** The prompt for one row: both caps at once, because two nested dialogs to set two numbers is one too many. */
-export function promptFor(row: LaneRow): LanePrompt {
+export function promptFor(row: LaneEntry): LanePrompt {
   return {
     title: `Lanes · ${row.name}`,
     placeholder: `${row.lane.maxConcurrent ?? "?"} ${row.lane.maxDepth ?? UNBOUNDED}`,
@@ -138,7 +155,7 @@ export type EditOutcome =
  * itself — a lane set back to `{}` stays present, which is a distinct statement
  * from "this lane is gone".
  */
-export function applyLaneEdit(current: LaneOverlay, row: LaneRow, typed: string): EditOutcome {
+export function applyLaneEdit(current: LaneOverlay, row: LaneEntry, typed: string): EditOutcome {
   if (row === undefined || row.name === undefined) {
     // A dialog that throws leaves a broken modal on screen and no way back. Every
     // outcome of this function is a string the operator can read, so this is one
@@ -146,7 +163,6 @@ export function applyLaneEdit(current: LaneOverlay, row: LaneRow, typed: string)
     return { kind: "invalid", problem: "no lane to edit" };
   }
   const answer = typed.trim();
-  if (answer === "") return { kind: "invalid", problem: "nothing typed" };
   if (answer.toLowerCase() === "delete") {
     return withoutLane(current, row.name);
   }
@@ -159,25 +175,42 @@ export function applyLaneEdit(current: LaneOverlay, row: LaneRow, typed: string)
   return { kind: "written", overlay: overlayWith(current, row.name, withCaps(row.lane, parsed)), summary: `${row.name} → ${describe(parsed)}` };
 }
 
-/** Apply a patch by deleting what it clears, so the written JSON says what it means. */
+/**
+ * Apply a patch, deleting what it clears so the written JSON says what it means.
+ *
+ * Written out per field rather than looped over `Object.entries(patch)`: the loop
+ * needs a cast to land back on `LaneConfig`, because the type system cannot see
+ * that a patch's keys are the same two keys. Naming them removes the cast AND the
+ * possibility of a third cap being added to `CapPatch` and silently ignored here.
+ */
 function withCaps(lane: LaneConfig, patch: CapPatch): LaneConfig {
-  const next: Record<string, unknown> = { ...lane };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === null) delete next[key];
-    else next[key] = value;
-  }
-  return next as LaneConfig;
+  const next: LaneConfig = { ...lane };
+  if (patch.maxConcurrent !== undefined) applyCap(next, "maxConcurrent", patch.maxConcurrent);
+  if (patch.maxDepth !== undefined) applyCap(next, "maxDepth", patch.maxDepth);
+  return next;
 }
 
-/** "n" caps concurrency, "n d" caps both, "n off" caps concurrency and lifts depth. */
+function applyCap(lane: LaneConfig, key: keyof LaneConfig, value: number | null): void {
+  if (value === null) delete lane[key];
+  else lane[key] = value;
+}
+
+/**
+ * The caps grammar: "n" caps concurrency, "n d" caps both, "n off" caps
+ * concurrency and lifts depth.
+ *
+ * It answers for the empty input too, rather than leaving that to the caller,
+ * because the caller checking it first meant two checks for one fact: the
+ * caller's said "nothing typed" and this one's branch could never run, so the
+ * grammar it actually enforces was not the grammar the dialog described.
+ */
 function parseCaps(answer: string): CapPatch | string {
-  const parts = answer.split(/[\s,]+/).filter((part) => part.length > 0);
-  if (parts.length === 0 || parts.length > 2) {
-    return `expected "n", "n d", or "off" — got ${parts.length} values`;
+  const [first, second, ...rest] = answer.split(/[\s,]+/).filter((part) => part.length > 0);
+  if (first === undefined) return "nothing typed";
+  if (rest.length > 0) {
+    return `expected "n", "n d", or "off" — got ${rest.length + 2} values`;
   }
   const out: CapPatch = {};
-  const [first, second] = parts;
-  if (first === undefined) return `expected "n", "n d", or "off" — got nothing`;
   if (second !== undefined) {
     const depth = asCap(second);
     if (typeof depth === "string") return depth;

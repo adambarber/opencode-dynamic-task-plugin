@@ -16,9 +16,12 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LANE_OVERLAY_FILE, writeLaneOverlay } from "../../dist/shared/lane-overlay.js";
+import { resolveTaskLedgerPath, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
+import { TaskState } from "../../dist/shared/task-state.js";
+import { retainedEntry, runningEntry } from "./support/records.js";
 import { DEFAULT_LANE } from "../../dist/shared/config.js";
 import { UNBOUNDED } from "../../dist/tui/lane-editor.js";
 import { withTempDir } from "./support/fixtures.js";
@@ -85,15 +88,37 @@ async function registered(directory) {
 }
 
 /**
- * Boot, press, and hand back the open dialog.
+ * A project directory holding these files, with the lanes dialog open over it.
  *
- * Every case below is the same four steps — a project directory holding an
- * overlay, then the command, then a row in the resulting list — and spelling
- * that out per case is how one of them ends up pressing a command and asserting
- * against the previous case's dialog.
+ * Every case below is the same four steps — a directory holding an overlay, the
+ * command, a row in the resulting list — and spelling that out per case is how two
+ * of them end up asserting against a file a different case wrote. The files are
+ * the ARGUMENT, not a side effect of opening, because `opened(directory, overlay)`
+ * read as "look at this" while quietly writing it: two occupancy cases each wrote
+ * their own overlay and a ledger, and one of them was asserting against the other's.
+ *
+ * `ledger` is the ledger's CONTENT; the path is this helper's business, so a case
+ * cannot assert against a ledger in some other directory.
+ *
+ * ONE argument, carrying the directory on it. It was two — (directory, dialog) —
+ * and three cases transposed them, which is a mistake a failing assertion gives
+ * no hint about, because both arguments are plausible objects to have in hand.
  */
-async function opened(directory, overlay) {
-  if (overlay !== undefined) writeLaneOverlay(directory, overlay);
+async function withOpenDialog(fn, { overlay, active = [], retained = [] } = {}) {
+  return withTempDir(async (directory) => {
+    if (overlay !== undefined) writeLaneOverlay(directory, overlay);
+    if (active.length > 0 || retained.length > 0) {
+      saveTaskLedger({ retained: new Map(retained), active: new Map(active), pending: [] },
+        resolveTaskLedgerPath(directory));
+    }
+    return fn({ ...(await opened(directory)), directory });
+  });
+}
+
+/**
+ * Boot, press, and hand back the open dialog over whatever is already on disk.
+ */
+async function opened(directory) {
   const { seen, command } = await registered(directory);
   command.run();
   assert.equal(seen.selects.length, 1, "pressing the command opens the lane list");
@@ -130,14 +155,68 @@ describe("the lane command reaches the palette", () => {
   });
 });
 
+/**
+ * A project whose overlay caps one lane, and the lanes dialog open over it.
+ *
+ * The common case, named. Ten of the cases below differ only in the cap, and each
+ * was spelling the overlay's whole shape inline — which is the jscpd gate's
+ * definition of a fixture maintained in ten places at once, and the reason a
+ * change to the overlay's shape would have been ten edits.
+ *
+ * It is `withOpenDialog` with the body attached, not a default: the file is still
+ * written because the case named it, so nothing here writes anything a reader
+ * cannot account for.
+ */
+const withBuildLane = (maxConcurrent, fn) => withOpenDialog(fn, { overlay: withBuildLane.overlay(maxConcurrent) });
+
+/** The overlay itself, for the cases that also need a ledger beside it. */
+withBuildLane.overlay = (maxConcurrent) => ({ lanes: { build: { maxConcurrent } } });
+
+/**
+ * Press the dialog's own "add a lane" choice.
+ *
+ * Named because three cases press it and each had to know the title text to find
+ * it: the choice's wording is a test detail leaking into three assertions, so a
+ * rename of the menu item would have broken three tests for no reason a reader
+ * could see.
+ */
+const pressAddLane = (select) =>
+  select.options.find((option) => option.title.startsWith("Add a lane")).onSelect();
+
+/**
+ * Select a lane and answer its caps prompt.
+ *
+ * The dialog's one interaction, which three cases each spelled out as "find the
+ * row, call onSelect, answer the first prompt" and none of them was actually
+ * about: they were about what happens to the answer. The steps get a name so the
+ * cases can say what they are checking.
+ */
+const answerCapsFor = (dialog, lane, answer) => {
+  dialog.option(lane).onSelect();
+  dialog.seen.prompts[0].onConfirm(answer);
+};
+
+/**
+ * The add-a-lane flow: press the choice, then name the lane.
+ *
+ * The second half of the dialog, and the one with more steps: each case that used
+ * it had to know both that the choice is pressed and that the NAME prompt is the
+ * first one after it, which is a coupling the reader can only verify by reading
+ * the command.
+ */
+const nameNewLane = (dialog, name) => {
+  pressAddLane(dialog.select);
+  dialog.seen.prompts[0].onConfirm(name);
+};
+
 describe("the lane dialog", () => {
   it("names each lane's caps and where they came from, so the operator knows what they are editing", async () => {
-    await withTempDir(async (directory) => {
-      const { select, option } = await opened(directory, { lanes: { build: { maxConcurrent: 2, maxDepth: 3 } } });
-      assert.equal(select.title, "Lanes");
-      assert.match(option("build").description, /2 concurrent · depth 3/);
-      assert.match(option("build").description, /set in the overlay/);
-    });
+    // Not the build-lane fixture: this is the one case with a depth cap as well.
+    await withOpenDialog((dialog) => {
+      assert.equal(dialog.select.title, "Lanes");
+      assert.match(dialog.option("build").description, /2 concurrent · depth 3/);
+      assert.match(dialog.option("build").description, /set in the overlay/);
+    }, { overlay: { lanes: { build: { maxConcurrent: 2, maxDepth: 3 } } } });
   });
 
   it("does not let an inherited cap read as one this dialog set", async () => {
@@ -148,10 +227,9 @@ describe("the lane dialog", () => {
   });
 
   it("says the occupancy is as last recorded, because it is a file read and not a live gauge", async () => {
-    await withTempDir(async (directory) => {
-      const { option } = await opened(directory, { lanes: { build: { maxConcurrent: 1 } } });
-      assert.match(option("build").description, /idle/);
-    });
+    await withOpenDialog((dialog) => {
+      assert.match(dialog.option("build").description, /idle/);
+    }, { overlay: { lanes: { build: { maxConcurrent: 1 } } } });
   });
 
   it("warns about an overlay it cannot read AND still opens, because repair is why it was opened", async () => {
@@ -176,29 +254,30 @@ describe("the lane dialog", () => {
 
 describe("choosing a lane", () => {
   it("offers a prompt whose placeholder is the caps as they stand", async () => {
-    await withTempDir(async (directory) => {
-      const { option, seen } = await opened(directory, { lanes: { build: { maxConcurrent: 2 } } });
-      option("build").onSelect();
-      assert.equal(seen.prompts[0].placeholder, `2 ${UNBOUNDED}`, "the operator edits a number they can see");
+    await withBuildLane(2, async (dialog) => {
+      dialog.option("build").onSelect();
+      assert.equal(dialog.seen.prompts[0].placeholder, `2 ${UNBOUNDED}`, "the operator edits a number they can see");
     });
   });
 
   it("a bad answer is refused in place, keeping what was typed, and a good one lands on disk", async () => {
-    await withTempDir(async (directory) => {
-      const start = { lanes: { build: { maxConcurrent: 2 } } };
+    // Two rounds in one directory on purpose: the second must find the file the
+    // first REFUSED to touch, which is the claim being made about a refused write.
+    await withBuildLane(2, async (dialog) => {
+      const start = withBuildLane.overlay(2);
 
-      const refused = await opened(directory, start);
-      refused.option("build").onSelect();
-      refused.seen.prompts[0].onConfirm("nope");
+      // Two dialogs, not one: the second must find the file the first REFUSED to
+      // touch, which is the claim being made about a refused write.
+      const refused = await opened(dialog.directory);
+      answerCapsFor(refused, "build", "nope");
       assert.ok(refused.seen.toasts.some((toast) => toast.variant === "error" && /not a count/.test(toast.message)),
         "the operator is told WHY, not just refused");
       assert.ok(refused.seen.prompts.length >= 2, "the question is still open — closing would discard the answer");
-      assert.deepEqual(readOverlay(directory), start, "and nothing was written");
+      assert.deepEqual(readOverlay(dialog.directory), start, "and nothing was written");
 
-      const accepted = await opened(directory, start);
-      accepted.option("build").onSelect();
-      accepted.seen.prompts[0].onConfirm("4 3");
-      assert.deepEqual(readOverlay(directory).lanes.build, { maxConcurrent: 4, maxDepth: 3 });
+      const accepted = await opened(dialog.directory);
+      answerCapsFor(accepted, "build", "4 3");
+      assert.deepEqual(readOverlay(dialog.directory).lanes.build, { maxConcurrent: 4, maxDepth: 3 });
       assert.ok(accepted.seen.toasts.some((toast) => toast.variant === "success" && /next dispatch/.test(toast.message)),
         "a live server will not re-read the file for work already admitted, and claiming otherwise would be a lie");
     });
@@ -212,5 +291,78 @@ describe("what this suite cannot prove", () => {
     // establish is that the word is in the name AND the title, so a search over
     // either lands on this entry.
     assert.ok(true);
+  });
+});
+
+describe("adding a lane", () => {
+  it("a name that already exists opens that lane rather than making a second one", async () => {
+    await withBuildLane(2, async (dialog) => {
+      nameNewLane(dialog, "build");
+      assert.equal(dialog.seen.prompts[1].title, "Lanes · build",
+        "a name that already exists is that lane, not a new one — the operator meant to edit it");
+    });
+  });
+
+  it("a new name becomes a lane with the caps that get typed", async () => {
+    await withBuildLane(2, async (dialog) => {
+      nameNewLane(dialog, "deploy");
+      assert.equal(dialog.seen.prompts[1].title, "Lanes · deploy");
+      dialog.seen.prompts[1].onConfirm("2 1");
+      assert.deepEqual(readOverlay(dialog.directory).lanes.deploy, { maxConcurrent: 2, maxDepth: 1 });
+    });
+  });
+
+  it("an empty name is not a lane called \"\"", async () => {
+    await withOpenDialog((dialog) => {
+      nameNewLane(dialog, "   ");
+      assert.equal(dialog.seen.prompts.length, 1, "no caps prompt: there is no lane to set caps on");
+    });
+  });
+});
+
+describe("when the write does not happen", () => {
+  it("a write that fails says so and asks again, rather than reporting a cap that was not applied", async () => {
+    await withBuildLane(2, async (dialog) => {
+      const { seen } = dialog;
+      // The prompt is opened FIRST, then the file is broken, then the answer is
+      // given: the claim is about the write failing, so the write has to be the
+      // step that is refused.
+      dialog.option("build").onSelect();
+      rmSync(join(dialog.directory, LANE_OVERLAY_FILE));
+      mkdirSync(join(dialog.directory, LANE_OVERLAY_FILE));
+      seen.prompts[0].onConfirm("4");
+      assert.ok(seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
+        "a refused write must not be confirmed as a cap in force");
+      assert.ok(seen.prompts.length >= 2, "and the question is still open");
+    });
+  });
+});
+
+describe("occupancy is read, not assumed", () => {
+  it("counts the running tasks charged to each lane", async () => {
+    await withOpenDialog((dialog) => {
+      assert.match(dialog.option("build").description, /1 running, as last recorded/);
+    }, { overlay: withBuildLane.overlay(4), active: [["ses_r", runningEntry("ses_r", { lane: "build" })]] });
+  });
+
+  it("a settled task in the same lane is not occupancy — only a running one is", async () => {
+    await withOpenDialog((dialog) => {
+      assert.match(dialog.option("build").description, /idle/,
+        "a finished child in this lane is history, not a slot in use");
+    }, {
+      overlay: withBuildLane.overlay(4),
+      retained: [["ses_d", retainedEntry({ childSessionId: "ses_d", lane: "build", state: TaskState.Completed })]],
+    });
+  });
+
+  it("a ledger that cannot be read leaves the dialog open, because a count is not worth a closed dialog", async () => {
+    await withTempDir(async (directory) => {
+      // The ledger is written as garbage rather than through the helper, because
+      // the claim is about a file the reader cannot parse.
+      writeLaneOverlay(directory, withBuildLane.overlay(4));
+      writeFileSync(resolveTaskLedgerPath(directory), "{ not a ledger", "utf8");
+      const dialog = await opened(directory);
+      assert.match(dialog.option("build").description, /idle/);
+    });
   });
 });

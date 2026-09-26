@@ -10,10 +10,10 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
-import { applyLaneOverlay, readLaneOverlay, writeLaneOverlay } from "../../dist/shared/lane-overlay.js";
+import { applyLaneOverlay, readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay } from "../../dist/shared/lane-overlay.js";
 import { DEFAULT_LANE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { withTempDir } from "./support/fixtures.js";
-import { UNBOUNDED, applyLaneEdit, capsOf, laneDialogFrom, newLaneRow, promptFor } from "../../dist/tui/lane-editor.js";
+import { UNBOUNDED, applyLaneEdit, capsOf, laneDialogFrom, newLaneEntry, promptFor } from "../../dist/tui/lane-editor.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
 
@@ -30,7 +30,7 @@ function view(raw, running = {}) {
  * `applyLaneEdit` a row shape the renderer would never produce.
  */
 function edit(name, typed, raw) {
-  const row = view(raw).rows.find((candidate) => candidate.name === name) ?? newLaneRow(name);
+  const row = view(raw).rows.find((candidate) => candidate.name === name) ?? newLaneEntry(name);
   return applyLaneEdit({ lanes: (raw?.lanes ?? {}) }, row, typed);
 }
 
@@ -175,5 +175,73 @@ describe("the prompt", () => {
     const row = view({ lanes: { build: { maxConcurrent: 2 } } }).rows.find((candidate) => candidate.name === "build");
     assert.equal(promptFor(row).placeholder, `2 ${UNBOUNDED}`, "depth is unset, so it shows as off");
     assert.deepEqual(capsOf(row.lane), { concurrency: "2", depth: UNBOUNDED });
+  });
+});
+
+describe("a hand-mangled overlay", () => {
+  // A file written by a human or by a writer with a bug. The server drops an
+  // unusable cap and falls back to the config, which is the right answer; the
+  // danger is the dialog DISPLAYING one the server will not honour, and then
+  // writing the garbage back out beside the operator's new number.
+  const mangled = { lanes: { build: { maxConcurrent: "four", maxDepth: -1 } } };
+
+  it("shows the same caps the dispatch path will honour, not the ones the file claims", () => {
+    const { rows } = view(mangled);
+    assert.deepEqual(capsOf(rows.find((row) => row.name === "build").lane), { concurrency: UNBOUNDED, depth: UNBOUNDED },
+      "a cap the server drops must not appear in the dialog as if it applied");
+    assert.deepEqual(applyLaneOverlay(BASE, mangled).source.lanes.build, {},
+      "and the two answers agree, because they come from one reader");
+  });
+
+  it("says which caps it ignored, so 'unset' is not mistaken for 'inherited'", () => {
+    const { problem } = view(mangled);
+    assert.match(problem, /build/);
+    assert.match(problem, /not a whole positive number/);
+  });
+
+  it("an edit does not carry the ignored values back out into the file", () => {
+    const { rows } = view(mangled);
+    const outcome = applyLaneEdit({ lanes: readLaneOverlayLanes(mangled) }, rows.find((row) => row.name === "build"), "5");
+    assert.deepEqual(outcome.overlay.lanes.build, { maxConcurrent: 5 },
+      "the file keeps the new number and loses the value the server would have refused anyway");
+  });
+});
+
+describe("the caps prompt's grammar", () => {
+  const view = (raw) => laneDialogFrom(raw, new Map(), BASE);
+
+  it("an empty answer is refused at the prompt, before the grammar is even read", () => {
+    const outcome = applyLaneEdit({ lanes: {} }, view({ lanes: { build: { maxConcurrent: 2 } } }).rows[0], "");
+    assert.equal(outcome.problem, "nothing typed",
+      "the caller answers the empty case, so the grammar below never sees one");
+  });
+
+  it("a third value is refused rather than read as depth, which would be a silent cap", () => {
+    const outcome = applyLaneEdit({ lanes: {} }, view({ lanes: { build: { maxConcurrent: 2 } } }).rows[0], "4 3 2");
+    assert.match(outcome.problem, /got 3 values/);
+  });
+
+  it("a bad depth is refused, naming the value rather than the field", () => {
+    const outcome = applyLaneEdit({ lanes: {} }, view({ lanes: { build: { maxConcurrent: 2 } } }).rows[0], "4 deep");
+    assert.match(outcome.problem, /deep/);
+  });
+});
+
+describe("an overlay whose shapes are wrong in ways the reader must survive", () => {
+  it("a lane body that is not an object is an empty lane, not a crash and not a cap", () => {
+    const { rows, problem } = laneDialogFrom({ lanes: { build: "four", deploy: 7 } }, new Map(), BASE);
+    assert.deepEqual(capsOf(rows.find((row) => row.name === "build").lane), { concurrency: UNBOUNDED, depth: UNBOUNDED });
+    assert.equal(problem, null, "a body that is not an object states no cap to ignore, so nothing is reported");
+  });
+
+  it("lanes that are not an object reads as no overlay at all, and says so", () => {
+    const { problem } = laneDialogFrom({ lanes: ["build"] }, new Map(), BASE);
+    assert.match(problem, /JSON object/);
+  });
+
+  it("no overlay at all is the empty set, and the dialog still has the config's lanes", () => {
+    const { rows, problem } = laneDialogFrom(null, new Map(), BASE);
+    assert.deepEqual(rows.map((row) => row.name), [DEFAULT_LANE]);
+    assert.equal(problem, null);
   });
 });

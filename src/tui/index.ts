@@ -18,11 +18,11 @@
  * and no server endpoint added to read a number a file already holds.
  */
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
-import { normalizeDynamicTaskConfig, type LaneConfig } from "../shared/config.js";
-import { readLaneOverlay, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
-import { loadTaskLedger, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
+import { normalizeDynamicTaskConfig } from "../shared/config.js";
+import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
+import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
 import { TaskState } from "../shared/task-state.js";
-import { applyLaneEdit, capsOf, laneDialogFrom, newLaneRow, promptFor, type LaneRow } from "./lane-editor.js";
+import { applyLaneEdit, capsOf, laneDialogFrom, newLaneEntry, promptFor, type LaneEntry } from "./lane-editor.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -43,7 +43,7 @@ const COMMAND = "dynamic-task.lanes";
  * can only be spelled as a lane name nobody would choose, and one that somebody
  * does choose makes the dialog edit the wrong row.
  */
-type LaneChoice = { kind: ChoiceKind.Lane; row: LaneRow } | { kind: ChoiceKind.Add };
+type LaneChoice = { kind: ChoiceKind.Lane; row: LaneEntry } | { kind: ChoiceKind.Add };
 
 enum ChoiceKind {
   Lane = "lane",
@@ -98,13 +98,13 @@ function openLaneManager(api: TuiApi): void {
 }
 
 type LaneView = {
-  rows: LaneRow[];
+  rows: LaneEntry[];
   problem: string | null;
   overlay: LaneOverlay;
   directory: string;
 };
 
-function laneOption(api: TuiApi, view: LaneView, row: LaneRow) {
+function laneOption(api: TuiApi, view: LaneView, row: LaneEntry) {
   const caps = capsOf(row.lane);
   return {
     title: row.name,
@@ -126,7 +126,7 @@ function askForName(api: TuiApi, view: LaneView): void {
     // An existing name is not an error to stop on: that row IS the answer,
     // and opening it is what the operator meant.
     const existing = view.rows.find((row) => row.name === trimmed);
-    askForCaps(api, view, existing ?? newLaneRow(trimmed));
+    askForCaps(api, view, existing ?? newLaneEntry(trimmed));
   });
 }
 
@@ -144,7 +144,7 @@ function askOverLaneList(api: TuiApi, title: string, placeholder: string, onConf
   );
 }
 
-function askForCaps(api: TuiApi, view: LaneView, row: LaneRow): void {
+function askForCaps(api: TuiApi, view: LaneView, row: LaneEntry): void {
   const prompt = promptFor(row);
   const askAgain = (problem: string) => {
     api.ui.toast({ variant: "error", title: row.name, message: problem });
@@ -184,29 +184,36 @@ function readLanes(api: TuiApi): LaneView {
   return { rows: dialog.rows, problem: dialog.problem ?? raw.problem, overlay: overlayFrom(raw.raw), directory };
 }
 
-/** The overlay as a plain object; an unreadable one is empty, and the problem travels beside it. */
+/**
+ * The overlay as the dialog will write it back.
+ *
+ * Read with the one reader rather than cast, so an edit can never launder a value
+ * the dispatch path already refuses: a body that arrived as
+ * `{"maxConcurrent": "four"}` is read as `{}`, and an edit on top of `{}` writes a
+ * body the server will accept, instead of preserving the garbage beside the new
+ * number.
+ */
 function overlayFrom(raw: unknown): LaneOverlay {
-  const lanes = typeof raw === "object" && raw !== null && !Array.isArray(raw)
-    ? (raw as { lanes?: unknown }).lanes
-    : undefined;
-  if (typeof lanes !== "object" || lanes === null || Array.isArray(lanes)) return { lanes: {} };
-  return { lanes: lanes as Record<string, LaneConfig> };
+  const read = readLaneOverlayLanes(raw);
+  return read === null ? { lanes: {} } : { lanes: read.lanes };
 }
 
 /**
  * Running tasks per lane, from the ledger's active set.
  *
- * A read failure is not an error here: the ledger may legitimately not exist
- * yet, and a missing count is better than a dialog that will not open.
+ * No try/catch, and that is a claim rather than an omission: `loadTaskLedger`
+ * REPORTS every way it can fail rather than throwing — a missing file, a
+ * directory where the file belongs, and unparseable JSON were each probed and each
+ * returns an empty ledger. So a catch here could never fire, and a catch that
+ * cannot fire is worse than none: it says "this boundary is dangerous" to every
+ * reader while quietly proving the opposite.
  */
 function runningByLane(directory: string): Map<string, number> {
   const counts = new Map<string, number>();
-  let loaded: LoadedTaskLedger;
-  try {
-    loaded = loadTaskLedger(directory);
-  } catch {
-    return counts;
-  }
+  // A PATH, not the directory. Passing the directory made the read fail on every
+  // call, and the catch that hid that reported "no tasks are running" — so the row
+  // confidently said `idle` for a lane with work in it.
+  const loaded: LoadedTaskLedger = loadTaskLedger(resolveTaskLedgerPath(directory));
   for (const task of loaded.active.values()) {
     if (task.state !== TaskState.Active) continue;
     counts.set(task.lane, (counts.get(task.lane) ?? 0) + 1);

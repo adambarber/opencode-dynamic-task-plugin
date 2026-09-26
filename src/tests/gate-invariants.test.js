@@ -92,6 +92,63 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
   // comment; the script is what makes duplication a failing run.
 });
 
+// --- The gate's own measurement -------------------------------------------------
+// A threshold pin says the bar. This one says the gate is capable of SEEING the
+// bar, which is a different and stronger claim: the first version of the script
+// filtered `new_line` out of the stream it re-measured each finding in, while
+// jscpd counts those tokens, so every shared run came out shorter than the count
+// it was compared against and every finding was discarded. Nine were discarded
+// that way. Five were real — including `LedgerChangeKind.Settled` and
+// `.Forgotten` in session-lifecycle.ts, whose three-line bodies are byte-identical
+// — and the script printed "Found 0 clones" and exited 0.
+//
+// The lesson is not "add new_line back". It is that the script re-measures, so it
+// has a private arithmetic, and a private arithmetic is only safe if it cannot
+// disagree with the thing it verifies. It now uses ONE tokenizer and ONE threshold
+// (read from this config, never restated) against the COORDINATES jscpd reported,
+// so there is no second count to disagree with. These pins are what keep it that
+// way: they fail if a token class starts being dropped again, if the comparison
+// starts using jscpd's reported count, or if the threshold starts being a literal.
+//
+// The honest limit, same as every other text pin in this repo: this reads source,
+// so an alias or a second filter elsewhere would pass it. What it does buy is that
+// the three specific regressions that actually happened are named, and a change to
+// any of them is a failing test rather than a silent one.
+describe("invariant: the duplicate gate measures what it claims to measure", () => {
+  const gate = readFileSync(path.join(REPO_ROOT, "scripts", "duplicate-gate.mjs"), "utf8");
+
+  it("keeps every token class jscpd counts, including line breaks", () => {
+    const filter = gate.match(/\.filter\(\(t\) => t\.type !== "([^"]+)"\)/);
+    assert.ok(filter, `the stream's filter is the thing that dropped new_line once; it is gone.\n` +
+      `If the filter was rewritten, this pin must be rewritten to say what the new one keeps.`);
+    assert.strictEqual(
+      filter[1],
+      "empty",
+      `the tokenizer filter now drops "${filter[1]}" tokens as well as empty ones.\n` +
+        `jscpd counts line breaks in a clone's token total, so dropping any other class\n` +
+        `makes every shared run shorter than the threshold it is measured against, and\n` +
+        `real clones are discarded as phantoms. That is how five real clones were\n` +
+        `reported as "Found 0 clones" and the build exited 0.`,
+    );
+  });
+
+  it("judges a finding by the shared run it measures, not by the count jscpd reported", () => {
+    assert.ok(
+      !/longestSharedRun\([^)]*\)\s*>=\s*\w+\.tokens/.test(gate),
+      "the gate compares its own token count against jscpd's, so a disagreement between\n" +
+        "two tokenizers silently discards a finding. One tokenizer, one threshold.",
+    );
+  });
+
+  it("reads the threshold from the config rather than restating it", () => {
+    const fromConfig = /\.jscpd\.json/.test(gate);
+    const restated = /\bminTokens\s*=\s*\d/.test(gate);
+    assert.ok(fromConfig && !restated,
+      `the gate's threshold is a copy of .jscpd.json's minTokens, which is how the two\n` +
+        `drift apart. Read it; a change to the bar is then one edit in one file.`);
+  });
+});
+
 // --- The size the tree passes -------------------------------------------------
 // Not a style preference, and the measurement is what makes it one. Every file
 // that broke this line was long for the SAME reason — it had no subject:

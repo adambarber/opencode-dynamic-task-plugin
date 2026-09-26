@@ -2,30 +2,26 @@
  * The duplicate-code gate: jscpd, with every finding re-taken before it fails
  * the build.
  *
- * jscpd 4.2.6 misreports. Measured, not assumed: on a suite of 15 test files it
- * reported five findings of which one was real; the other four paired ONE real
- * range against four ranges whose bytes have nothing to do with it. A report that
- * says "tests/foo.test.js:343-346 duplicates tests/bar.test.js:340-342" while
- * those two spans hold different sentences is not a weak finding, it is a wrong
- * one — and a gate that fails the build on it trains everyone to reach for
- * `--config` overrides, which is how a duplication gate stops meaning anything.
+ * jscpd 4.2.6 misreports SOME findings, and this gate re-measures every one of
+ * them. It is not, however, entitled to disagree with jscpd's arithmetic: what has
+ * to reproduce is a shared run at least as long as the one jscpd REPORTED, and a
+ * run cannot be compared across two different tokenizations.
  *
- * So this gate re-measures. For each reported pair it re-reads BOTH ranges with
- * jscpd's OWN tokenizer (the same devDependency, pinned to the version jscpd
- * itself resolves, so the semantics are the gate's semantics rather than a
- * lookalike) and compares the token streams. Equal streams means a real clone and
- * the build fails. Different streams means jscpd paired the wrong coordinates and
- * the finding is discarded.
+ * The first version of this gate filtered `new_line` out of its stream, on the
+ * reasoning that a line break is not code. It is not — and jscpd COUNTS those
+ * tokens, so the filter made every shared run shorter than the number it was being
+ * compared against. Nine findings were discarded that way, every one of them real:
+ * `LedgerChangeKind.Settled` and `.Forgotten` in session-lifecycle.ts have
+ * byte-identical three-line bodies, and the gate printed "Found 0 clones" and
+ * exited 0 over them. A verification step that discards findings because it
+ * measured them differently from the thing it verifies is not a verification step.
+ * So the stream is jscpd's stream: same tokenizer, same devDependency, same
+ * accounting, and `new_line` kept because jscpd keeps it.
  *
- * The comparison stream must be IDENTICAL to the one jscpd measured, imports
- * included. Filtering import lines out of it — the judgement `cross-boundary.mjs`
- * makes for its own detector, where an import list is a fact about names — was
- * tried here and it is a hole: a four-file clone whose shared run spanned an
- * import line and the code after it was reported by jscpd and DISMISSED here, so
- * the gate printed "Found 0 clones" and exited 0 over code with visible
- * duplication. Any divergence between what is measured and what is re-measured
- * becomes blind spot, and the whole value of a verification step is that it has
- * none. Import lists that collide are a real thing to fix, not to filter.
+ * The re-measurement still earns its keep — it is what distinguishes a real clone
+ * from a pair of coordinates jscpd paired wrongly, and it is how a bounding box is
+ * compared against a match inside it. But it is a check on jscpd's COORDINATES, not
+ * a licence to re-count its tokens.
  *
  * This cannot make the gate weaker in the direction that matters. A real clone
  * still fails: the same tokens at the reported coordinates are the definition of
@@ -36,6 +32,13 @@
  * is visible rather than silently absorbed — the same judgement
  * `cross-boundary.mjs` makes about import lists, reached here by measurement
  * instead.
+ *
+ * `safety-invariants.test.js` pins the accounting: the stream must keep every token
+ * type jscpd keeps, and the boundary case that proves it is a clone whose two
+ * copies sit on DIFFERENT line counts. A filter that drops a token class looks
+ * harmless on a clone that happens to keep its line structure aligned, and only
+ * diverges once the code is edited — so the pin has to be a clone that fails under
+ * the wrong filter, or it is not testing the thing it claims to.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -49,11 +52,27 @@ const { tokenize } = require("@jscpd/tokenizer");
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";
 
-/** Every significant token in the file, tagged with the line it starts on. */
+/**
+ * The bar a shared run has to clear, read from the config rather than restated.
+ *
+ * Restating it is how the two numbers drift apart, and a drift here is silent in
+ * the one direction that matters: a threshold the gate holds itself to, never
+ * compared against jscpd's own count, means the same code is judged by the same
+ * number jscpd used to decide it was worth reporting.
+ */
+const minTokens = JSON.parse(readFileSync(join(REPO, ".jscpd.json"), "utf8")).minTokens;
+
+/**
+ * Every token jscpd counts, tagged with the line it starts on.
+ *
+ * `new_line` is KEPT. jscpd counts line breaks in a clone's token total, so
+ * dropping them here does not make the comparison stricter, it makes it
+ * incomparable.
+ */
 const stream = (path) => {
   const source = readFileSync(path, "utf8");
   return tokenize(source, "typescript")
-    .filter((t) => t.type !== "empty" && t.type !== "new_line")
+    .filter((t) => t.type !== "empty")
     .map((t) => ({
       key: t.type === "string" ? "string" : `${t.type}:${t.value}`,
       line: t.loc.start.line,
@@ -94,8 +113,16 @@ const longestSharedRun = (a, b) => {
  * not be re-taken — an unreadable file or an empty range — and the caller treats
  * that as a clone, because a finding nobody can check is not a finding anyone may
  * dismiss.
+ *
+ * The bar is `minTokens` from the config, NOT the token count jscpd reported.
+ * Comparing a run measured here against a count measured there asks two
+ * tokenizers to agree about a number, and when they disagree the finding is
+ * discarded — which is how a real clone in `cross-boundary.test.js` came to be
+ * reported as 36 tokens and dismissed at 21. One tokenizer, one threshold, applied
+ * to the coordinates jscpd pointed at: then a counting disagreement cannot discard
+ * anything, because no two counts are being compared.
  */
-const reproduces = (first, second, tokens) => {
+const reproduces = (first, second) => {
   let a, b;
   try {
     a = tokensIn(first.name, first.start, first.end);
@@ -104,7 +131,7 @@ const reproduces = (first, second, tokens) => {
     return null;
   }
   if (a.length === 0 || b.length === 0) return null;
-  return longestSharedRun(a, b) >= tokens;
+  return longestSharedRun(a, b) >= minTokens;
 };
 
 const out = mkdtempSync(join(tmpdir(), "dt-jscpd-"));
@@ -124,7 +151,7 @@ try {
 }
 
 const findings = report.duplicates ?? [];
-const checked = findings.map((d) => ({ d, ok: reproduces(d.firstFile, d.secondFile, d.tokens) }));
+const checked = findings.map((d) => ({ d, ok: reproduces(d.firstFile, d.secondFile) }));
 const verified = checked.filter(({ ok }) => ok !== false);
 const unchecked = checked.filter(({ ok }) => ok === null);
 
@@ -132,7 +159,7 @@ for (const { d, ok } of checked) {
   if (ok === false) continue;
   const { firstFile: a, secondFile: b, lines, tokens } = d;
   console.error(
-    `clone: ${a.name}:${a.start}-${a.end} duplicates ${b.name}:${b.start}-${b.end} (${lines} lines, ${tokens} tokens)`,
+    `clone: ${a.name}:${a.start}-${a.end} duplicates ${b.name}:${b.start}-${b.end} (jscpd: ${lines} lines, ${tokens} tokens)`,
   );
 }
 

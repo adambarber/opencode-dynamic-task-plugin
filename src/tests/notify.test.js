@@ -21,31 +21,58 @@ import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 const NO_SLEEP = async () => {};
 
 /**
- * A client whose every parent write parks until the returned gate is released —
- * the transport that held a completion notice on the wire for twenty minutes in
- * the field. `calls` counts writes the moment they are dialed, so "never
- * retried" is observable. `release` answers the held write and waits one
- * macrotask turn, which is exactly long enough for the continuations already
- * queued against that answer to have run — an observable, not a sleep.
+ * The gated parent transport, in its two forms. Every write records its args
+ * (so "never dialed" is observable) and then parks on `gate` until the test
+ * resolves it; `throwFirst` fails the first write and parks the rest, which is
+ * the shape the retry-then-hold tests need. Parked means parked — awaiting
+ * anything that is not the gate's promise (a deferred object, say) lets the
+ * write resolve immediately, and a test written that way asserts a concurrency
+ * claim while actually exercising a transport that answered at once.
+ *
+ * The option vocabulary is CLOSED. A misspelled key that is silently ignored
+ * makes the transport behave like the plan nobody asked for, and the test then
+ * passes against a delivery the host never performed — the mock, not the gate,
+ * becomes the thing under test.
  */
-function heldWriteClient() {
-  const held = deferred();
+function gatedClient(gate, options = {}) {
+  const unknown = Object.keys(options).filter((key) => key !== "throwFirst");
+  if (unknown.length > 0) throw new Error(`gatedClient: unknown option(s) ${unknown.join(", ")}`);
   const calls = [];
+  let thrownOnce = false;
   return {
     calls,
-    release: async () => {
-      held.resolve();
-      await held.promise;
-      await new Promise((r) => setTimeout(r, 0));
-    },
     client: {
       session: {
         prompt: async (args) => {
           calls.push(args);
-          await held.promise;
+          if (options.throwFirst && !thrownOnce) {
+            thrownOnce = true;
+            throw new Error("parent busy");
+          }
+          await gate.promise;
           return { ok: true };
         },
       },
+    },
+  };
+}
+
+/**
+ * A client whose every parent write parks until the returned gate is released —
+ * the transport that held a completion notice on the wire for twenty minutes in
+ * the field. `release` answers the held write and waits one macrotask turn,
+ * which is exactly long enough for the continuations already queued against that
+ * answer to have run — an observable, not a sleep.
+ */
+function heldWriteClient() {
+  const gate = deferred();
+  const held = gatedClient(gate);
+  return {
+    ...held,
+    release: async () => {
+      gate.resolve();
+      await gate.promise;
+      await new Promise((r) => setTimeout(r, 0));
     },
   };
 }
@@ -72,6 +99,17 @@ function promptClient(script) {
 // The gate's own inputs: which child, what kind, and no real backoff — the
 // retry count is the thing under test, so waiting for it proves nothing.
 const gate = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
+
+/**
+ * The outcome every delivery test ends on: the verdict AND how many writes
+ * actually reached the transport. These belong in one assertion because the
+ * count is what makes the verdict mean "exactly once" — a test that asserts the
+ * verdict alone cannot tell a delivered write from a second copy beside it.
+ */
+function assertDelivered(verdict, calls, expectedCalls, why) {
+  assert.strictEqual(verdict, true, why);
+  assert.strictEqual(calls.length, expectedCalls, `${expectedCalls} write(s) reached the parent`);
+}
 
 /**
  * Run `body` against a client that HOLDS every parent write: the deadline is
@@ -205,23 +243,14 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("concurrent same-key writes deliver once — in-flight claims close the race", async () => {
-    const gate = deferred();
-    const calls = [];
-    const client = {
-      session: {
-        prompt: async (args) => {
-          calls.push(args);
-          await gate;
-          return { ok: true };
-        },
-      },
-    };
+    const parked = deferred();
+    const { client, calls } = gatedClient(parked);
     const opts = { childSessionId: "ses_race1", kind: "completed", sleep: NO_SLEEP };
     const first = notifyParent(client, "parent_1", "hello", opts);
     const second = notifyParent(client, "parent_1", "hello", opts);
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
-    gate.resolve();
+    parked.resolve();
     assert.deepStrictEqual((await Promise.all([first, second])).sort(), [false, true]);
   });
 
@@ -250,8 +279,7 @@ describe("notify gate: notifyParent", () => {
     const { client, calls } = promptClient([]);
     await notifyParent(client, "parent_1", "done", { childSessionId: "ses_e1", kind: "completed", sleep: NO_SLEEP });
     const escalated = await notifyParent(client, "parent_1", "actually failed", { childSessionId: "ses_e1", kind: "error", sleep: NO_SLEEP });
-    assert.strictEqual(escalated, true);
-    assert.strictEqual(calls.length, 2);
+    assertDelivered(escalated, calls, 2);
   });
 
   it("notices dedup by message-derived key, not by kind", async () => {
@@ -273,8 +301,7 @@ describe("notify gate: notifyParent", () => {
     await notifyParent(client, "parent_1", "turn 1", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
     gateLedger.forgetChild("ses_g1");
     const second = await notifyParent(client, "parent_1", "turn 2", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
-    assert.strictEqual(second, true);
-    assert.strictEqual(calls.length, 2);
+    assertDelivered(second, calls, 2);
   });
 
   it("a late commit from before revival cannot reserve the revived turn's key", async () => {
@@ -282,17 +309,7 @@ describe("notify gate: notifyParent", () => {
     // succeeds after it. Its commit belongs to the previous generation — it
     // may emit history but must not reserve the key the revived turn needs.
     const retryGate = deferred();
-    let calls = 0;
-    const client = {
-      session: {
-        prompt: async () => {
-          calls++;
-          if (calls === 1) throw new Error("parent busy");
-          await retryGate;
-          return { ok: true };
-        },
-      },
-    };
+    const { client } = gatedClient(retryGate, { throwFirst: true });
     const opts = { childSessionId: "ses_gen1", kind: "completed", sleep: NO_SLEEP };
     const first = notifyParent(client, "parent_1", "turn 1", opts);
     await new Promise((r) => setTimeout(r, 10)); // the retry has dialed and is held

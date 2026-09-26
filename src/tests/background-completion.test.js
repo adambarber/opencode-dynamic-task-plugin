@@ -27,14 +27,26 @@ describe("Background Task Settlement", () => {
     return id;
   };
 
+  /**
+   * How many notifications the parent actually received, with the bodies in the
+   * failure message. The COUNT is the contract this file exists to check — a
+   * settlement that notifies twice, or a duplicate that never got dialed, is
+   * invisible in the text of any single notice — so it gets one assertion shape
+   * instead of a hand-written pair per test.
+   */
+  const assertNotices = (expected, why) => {
+    const notes = harness.noticeBodies();
+    assert.strictEqual(notes.length, expected, `${why}. got ${notes.length}: ${JSON.stringify(notes)}`);
+  };
+
   async function expectSingleSuccessNotification(parentId, description, buildEvent) {
     const childId = await spawn(parentId, description);
     await harness.fireEvent(buildEvent(childId));
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, 1, "exactly 1 completion notification");
+    assertNotices(1, "exactly 1 completion notification");
+    const [note] = harness.noticeBodies();
     assert.ok(
-      notes[0].includes("Background task completed successfully"),
-      `success text. Got: ${notes[0]}`,
+      note.includes("Background task completed successfully"),
+      `success text. Got: ${note}`,
     );
     return childId;
   }
@@ -85,8 +97,7 @@ describe("Background Task Settlement", () => {
       await harness.fireEvent(events.idle(child));
     }
 
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, 3, "3 notifications for 3 completions");
+    assertNotices(3, "3 notifications for 3 completions");
     for (const { parent, child } of children) {
       const note = harness.noticeFor(child);
       assert.ok(note, `notification must reference ${child}`);
@@ -99,10 +110,9 @@ describe("Background Task Settlement", () => {
 
     await harness.fireEvent(events.errorUpdate(childId));
 
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, 1, "exactly 1 notification");
-    assert.match(notes[0], /ended with an error/i, "error-kind notification");
-    assert.ok(!notes[0].includes("completed successfully"), "must not be a success notification");
+    assertNotices(1, "exactly 1 notification");
+    assert.match(harness.noticeBodies()[0], /ended with an error/i, "error-kind notification");
+    assert.ok(!harness.noticeBodies()[0].includes("completed successfully"), "must not be a success notification");
   });
 
   it("deleted session is a failure, never a success", async () => {
@@ -118,9 +128,8 @@ describe("Background Task Settlement", () => {
     for (let i = 0; i < 3; i++) {
       await harness.fireEvent(events.idle(childId));
     }
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, 1, "first event wins; later ones are no-ops");
-    assert.match(notes[0], /completed/i);
+    assertNotices(1, "first event wins; later ones are no-ops");
+    assert.match(harness.noticeBodies()[0], /completed/i);
   });
 
   it("the plugin arms no timers: silence follows a spawn until an event arrives", async () => {
@@ -137,9 +146,8 @@ describe("Background Task Settlement", () => {
     assert.strictEqual(harness.notices().length, 1, "success first");
 
     await harness.fireEvent(events.error(childId));
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, 2, "the contradicting failure is reported");
-    assert.match(notes[1], /ended with an error/i);
+    assertNotices(2, "the contradicting failure is reported");
+    assert.match(harness.noticeBodies()[1], /ended with an error/i);
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `record escalates completed→error. Got: ${detail}`);
 

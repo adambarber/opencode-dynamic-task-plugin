@@ -163,14 +163,24 @@ function armGate(state, name, { fails = false } = {}) {
 }
 
 /**
+ * What an entry in the host's status map IS: the word the host published and
+ * the clock it published it at. Declared once because the map is read by
+ * liveness code as "when did this session last change", and a second way of
+ * spelling an entry is a second answer to that question.
+ */
+const hostWord = (type) => ({ type, at: Date.now() });
+
+/**
  * The one place the mock moves a session's host status word: an abort parks the
  * turn, a prompt starts it — the same two transitions the server makes, from
  * the same two calls, so a read that consults the map sees what the plugin's own
  * calls would have caused. Word only, never an event: the event a real server
- * sends is the plugin's to react to, and a test that delivers it says so.
+ * sends is the plugin's to react to, and a test that delivers it says so. The
+ * guard is what makes this a MOVE: a session the host no longer lists must not
+ * come back from a status write.
  */
 function setHostTurn(state, id, type) {
-  if (state.hostStatus.has(id)) state.hostStatus.set(id, { type, at: Date.now() });
+  if (state.hostStatus.has(id)) state.hostStatus.set(id, hostWord(type));
 }
 
 /**
@@ -307,7 +317,18 @@ export const events = {
  * across hosts on purpose: the notify ledger is process-global, and the resets
  * below are what isolate it (production never resets anything).
  */
-export function createMockClient(hooks = {}) {
+export /**
+ * The ONE "this session is gone" error the mock transport reports. Three
+ * conditions produce it — a session the host never had, a test-declared failure
+ * id, and a gate released with `fails` — and they share the message on purpose:
+ * a test asserting what the transport said must not be able to tell which
+ * scenario it hit, because what the server says is the contract and the
+ * condition is only the story that produces it. Spelled three times, the message
+ * was three chances to drift away from the server's own wording.
+ */
+const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
+
+function createMockClient(hooks = {}) {
   const state = {
     sessions: new Set(),
     notifications: [],
@@ -346,7 +367,7 @@ export function createMockClient(hooks = {}) {
   // by definition — a session in the host's map is a session it lists.
   for (const [id, type] of Object.entries(hooks.hostStatusSeed ?? {})) {
     state.sessions.add(id);
-    state.hostStatus.set(id, { type, at: Date.now() });
+    state.hostStatus.set(id, hostWord(type));
   }
 
   return {
@@ -522,10 +543,10 @@ export function createMockClient(hooks = {}) {
           throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
         }
         if (!state.sessions.has(path.id)) {
-          throw new Error(`Session "${path.id}" not found.`);
+          throw sessionNotFound(path.id);
         }
         if (hooks.abortFailIds?.has(path.id)) {
-          throw new Error(`Session "${path.id}" not found.`);
+          throw sessionNotFound(path.id);
         }
         // The abort gate: the first abort parks here until the test releases
         // it, so a racing call can be arranged without monkey-patching. With
@@ -535,7 +556,7 @@ export function createMockClient(hooks = {}) {
           state.abortGate.used = true;
           await state.abortGate.promise;
           if (state.abortGate.fails) {
-            throw new Error(`Session "${path.id}" not found.`);
+            throw sessionNotFound(path.id);
           }
         }
         state.aborted.push(path.id);

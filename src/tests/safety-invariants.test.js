@@ -28,6 +28,7 @@ import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.join(TESTS_DIR, "..");
+const SCRIPTS_DIR = path.join(SRC_DIR, "..", "scripts");
 const REPO_ROOT = path.join(TESTS_DIR, "..", "..");
 
 /**
@@ -54,16 +55,30 @@ function walkSource(dir, accept, { skipTests = false } = {}) {
 }
 
 const isTypeScript = (file) => file.endsWith(".ts");
-const isProductionOrSuite = (file) => file.endsWith(".ts") || file.endsWith(".js");
+/**
+ * The extensions the file-size rule reads, as a list rather than a chain of
+ * `endsWith` calls — because a chain is a thing you extend by forgetting. The
+ * repo writes `.mjs` for its own gate scripts, and a rule that skipped them was
+ * a rule whose own tooling was ungated.
+ */
+const SOURCE_EXTENSIONS = [".ts", ".js", ".mjs"];
+const isProductionOrSuite = (file) => SOURCE_EXTENSIONS.some((extension) => file.endsWith(extension));
 
 /** The production sources: the .ts tree, minus the suite. */
 function listProdFiles() {
   return walkSource(SRC_DIR, isTypeScript, { skipTests: true });
 }
 
-/** Production and suite alike — the file-size rule's corpus. */
+/**
+ * Production, suite and gate scripts alike — the file-size rule's corpus.
+ *
+ * `scripts/` is in it because the gates ARE code: a duplication detector or a
+ * line counter that nothing checks is a detector that can rot the same way any
+ * other code does. Stating the corpus here is what keeps the rule's name honest
+ * — it used to say "every file under src/" while reading `.ts`/`.js` only.
+ */
 function listSourceFiles() {
-  return walkSource(SRC_DIR, isProductionOrSuite);
+  return [...walkSource(SRC_DIR, isProductionOrSuite), ...walkSource(SCRIPTS_DIR, isProductionOrSuite)].sort();
 }
 
 function listTestFiles() {
@@ -895,7 +910,7 @@ describe("invariant: no file outgrows the point where a reader stops finding thi
     assert.strictEqual(lineCount(`\n${body}\n`), 4, "leading blank lines count");
   });
 
-  it(`keeps every file under src/ within ${MAX_LINES} lines`, () => {
+  it(`keeps every source and gate script within ${MAX_LINES} lines`, () => {
     const files = listSourceFiles();
     assert.ok(files.length > 0, "the corpus resolved to nothing — a stale path");
     const over = files

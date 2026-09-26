@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir,
-  withChild, withSettledChild,
+  withChild, withEnv, withSettledChild,
 } from './support/harness.js';
 
 /**
@@ -28,6 +28,22 @@ async function racingSteer(gateOpts) {
   const steer = c.steer("pivot");
   await sleep(10);
   return { h, c, id, steer, release };
+}
+
+/**
+ * A spawned dep, plus a strict depender's refusal. The dependency gate is two
+ * rules — depends_on and depends_on_settled — and each test exercises one; the
+ * "a live dep blocks" precondition belongs to both, so it is named once.
+ */
+async function withRefusedDep() {
+  const h = await setupHarness();
+  const dep = await h.spawn({ description: "dep task" });
+  const refused = await h.trySpawn({
+    description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id],
+  });
+  assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
+  assert.ok(refused.includes(dep.id), `names the dep. got: ${refused}`);
+  return { h, dep, refused };
 }
 
 /**
@@ -205,15 +221,31 @@ describe("task_continue branches", () => {
     const status = await c.status();
     assert.ok(status.includes("active"), `a steer never settles. got: ${status}`); });
 
-  it("a steered turn's abort echo never settles the task, but the next genuine event does", async () => {
-    const { h, c, id } = await withChild();
-    await c.steer("pivot");
-    await h.settle(id);
-    const status = await c.status();
-    assert.ok(status.includes("active"), `the echo is consumed. got: ${status}`);
-    assert.strictEqual(h.notices().length, 0, "the echo notifies nothing");
-    const note = await h.settledNotice(id);
-    assert.ok(note.includes("completed successfully")); });
+  // One hypothesis: a disturbance that is not a terminal signal — an abort echo
+  // from a steer, a retryable transport blip — leaves the task active and
+  // silent, so nothing is deafened and the child's own terminal event settles it.
+  const disturbances = [
+    // The steer makes the child echo the abort, and that first idle IS the echo:
+    // the next genuine event is the one that settles.
+    ["a steered turn's abort echo never settles the task, but the next genuine event does",
+      {}, async ({ c, h, id }) => { await c.steer("pivot"); await h.settle(id); }],
+    // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
+    // well be running, so the task stays active and waits for its own event.
+    ["a retryable prompt failure leaves the task active — its event settles it",
+      { hooks: { childPromptFailOnce: { message: "connect ETIMEDOUT", code: "ETIMEDOUT" } } },
+      async () => { await sleep(50); }], // the fire-and-forget catch has run
+  ];
+  for (const [name, harness, disturb] of disturbances) {
+    it(name, async () => {
+      const ctx = await withChild({ harness });
+      await disturb(ctx);
+      const status = await ctx.c.status();
+      assert.ok(status.includes("active"), `a non-terminal signal must not settle. got: ${status}`);
+      assert.strictEqual(ctx.h.notices().length, 0, "nothing is notified");
+      const note = await ctx.h.settledNotice(ctx.id);
+      assert.ok(note.includes("completed successfully"), `the real event still settles. got: ${note}`);
+    });
+  }
 
   it("a steer racing a completed settle auto-revives instead of demanding a second call", async () => {
     const { h, c, id, steer, release } = await racingSteer();
@@ -369,12 +401,15 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(second.includes("Message sent to parent"), `prefix collision must not suppress. got: ${second}`);
     assert.strictEqual(h.notices().length, 2); });
 
+  // One hypothesis: a repeat of an identical notice never redelivers, and the
+  // child is told both that and what to do instead.
   it("a suppressed duplicate says to say something new", async () => {
     const { h, c, id } = await withChild();
     await c.notify("still working");
     const again = await c.notify("still working");
     assert.ok(again.includes("duplicate suppressed"), `keeps the kind. got: ${again}`);
-    assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`); });
+    assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`);
+    assert.strictEqual(h.notices().length, 1, "the parent hears it once"); });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { promptFailIds: new Set(["p1"]) } } });
@@ -382,12 +417,6 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(out.includes("did not acknowledge"), `names the failure. got: ${out}`);
     assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`); });
 
-  it("suppresses an identical repeated notice", async () => {
-    const { h, c, id } = await withChild();
-    await c.notify("still working");
-    const again = await c.notify("still working");
-    assert.ok(again.includes("duplicate suppressed") || again.includes("not sent"), `got: ${again}`);
-    assert.strictEqual(h.notices().length, 1); });
 
   it("a suppressed duplicate shows as Suppressed in task_result, never FAILED", async () => {
     const { h, c, id } = await withChild();
@@ -449,28 +478,33 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok((await h.tool.task_result.execute({})).includes("required"));
     });
 
-  it("task_result reports store state for active tasks with the live read as advisory", async () => {
-    const { h, c, id } = await withChild();
-    const summary = await c.result();
-    assert.ok(summary.includes("Status: active"), `the store is authoritative. got: ${summary}`);
-    assert.ok(summary.includes("Live inference"), `the API read stays advisory. got: ${summary}`);
-    assert.ok(summary.includes("task_status"), `points at the store read. got: ${summary}`);
-    assert.ok(summary.includes("Tracked: yes"), `got: ${summary}`); });
-
-  it("live inference reads the message stream — production get() carries no status field", async () => {
-    const { h, c, id } = await withChild();
-    const summary = await c.result();
+  // One hypothesis: task_result reports the STORE's state, and the live read is
+  // only ever advisory — it appears while the task can still change and never
+  // contradicts a settled record. Each case names the fragments that must (or
+  // must not) be in the report for its state.
+  const reports = [
+    ["task_result reports store state for active tasks with the live read as advisory",
+      withChild, [["Status: active", true], ["Live inference", true], ["task_status", true], ["Tracked: yes", true]]],
     // One default assistant message with no status field reads busy (role
-    // inference needs two) — crucially never the invented "idle" the old
-    // mock returned for a shape production never emits.
-    assert.ok(summary.includes("Session API suggests: busy"), `got: ${summary}`);
-    assert.ok(!summary.includes("suggests: idle"), `no invented status. got: ${summary}`); });
-
-  it("task_result reports settled state with no advisory block", async () => {
-    const { h, c, id } = await withSettledChild();
-    const summary = await c.result();
-    assert.ok(summary.includes("Status: completed"), `got: ${summary}`);
-    assert.ok(!summary.includes("Live inference"), `nothing to contradict once settled. got: ${summary}`); });
+    // inference needs two) — crucially never the invented "idle" the old mock
+    // returned for a shape production never emits.
+    ["live inference reads the message stream — production get() carries no status field",
+      withChild, [["Session API suggests: busy", true], ["suggests: idle", false]]],
+    ["task_result reports settled state with no advisory block",
+      withSettledChild, [["Status: completed", true], ["Live inference", false]]],
+  ];
+  for (const [name, scenario, expectations] of reports) {
+    it(name, async () => {
+      const { c } = await scenario();
+      const summary = await c.result();
+      for (const [fragment, present] of expectations) {
+        assert.ok(
+          summary.includes(fragment) === present,
+          `${present ? "must" : "must not"} contain ${fragment}. got: ${summary}`,
+        );
+      }
+    });
+  }
 
   it("task_result maps API 404 to unknown, in the same markdown voice", async () => {
     const h = await setupHarness();
@@ -531,6 +565,7 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(out.includes("ECONNREFUSED"), `gap recorded in the report. got: ${out}`);
     const status = await c.status();
     assert.ok(status.includes("completed"), `got: ${status}`);
+    assert.ok(!status.includes("Abort error"), `a success record stays clean. got: ${status}`);
     });
 });
 
@@ -635,24 +670,17 @@ describe("question gate: child questions settle", () => {
     await assertQuestionRejectedNaming(h, events.question(id, [{ text: "yes" }], { id: "q3" }), "settled"); });
 
   it("a failed retained rejection is logged as failed, never as rejected", async () => {
-    const dir = tmpProjectDir();
-    const prevDebug = process.env.DYNAMIC_TASK_DEBUG;
-    process.env.DYNAMIC_TASK_DEBUG = "1";
-    try {
-      const h = await setupHarness({ hooks: { questionRejectThrows: true }, directory: dir });
-      const { id, c } = await h.spawn();
-      await h.settle(id);
+    const directory = tmpProjectDir();
+    await withEnv("DYNAMIC_TASK_DEBUG", "1", async () => {
+      const { h, id, c } = await withSettledChild({
+        harness: { hooks: { questionRejectThrows: true }, directory },
+      });
       await h.fireEvent(events.question(id, [{ text: "yes" }], { id: "q9" }));
-      const logFile = join(dir, ".dynamic-task-logs", `parent-p1__child-${id}.log`);
-      assert.ok(existsSync(logFile), "retained question path must log");
-      const log = readFileSync(logFile, "utf8");
+      const log = readFileSync(join(directory, ".dynamic-task-logs", `parent-p1__child-${id}.log`), "utf8");
       assert.ok(log.includes("question-retained-reject-failed"), `failure logged. got: ${log}`);
       assert.ok(!log.includes('"eventName":"question-retained-rejected"'), `must not claim rejection. got: ${log}`);
       await c.interrupt();
-      } finally {
-      if (prevDebug !== undefined) process.env.DYNAMIC_TASK_DEBUG = prevDebug;
-      else delete process.env.DYNAMIC_TASK_DEBUG;
-      }
+    });
     });
 
   it("request_id linkage is forgotten on reply — no stale attribution", async () => {
@@ -695,9 +723,7 @@ describe("notification delivery records", () => {
     // p1's prompt fails ONLY on the first attempt (child prompt ok, parent
     // notify attempt 1 fails, attempt 2 succeeds): the record is a history,
     // not a veto — exactly-once is about successful deliveries.
-    const h = await setupHarness({ hooks: { notifyTransport: { failTimes: 1 } } });
-    const { id, c } = await h.spawn();
-    await h.settle(id);
+    const { h, c } = await withSettledChild({ harness: { hooks: { notifyTransport: { failTimes: 1 } } } });
     await sleep(500); // one retry cycle at the gate's fixed backoff
     assert.strictEqual(h.notices().length, 1, "the retry delivered");
     const summary = await c.result();
@@ -731,31 +757,23 @@ describe("task fleet views", () => {
 
 describe("admission dependencies", () => {
   it("refuses until deps complete, admits after", async () => {
-    const h = await setupHarness();
-    const a = await h.spawn({ description: "dep task" });
+    const { h, dep } = await withRefusedDep();
 
-    const refused = await h.trySpawn({ description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] });
-    assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
-    assert.ok(refused.includes(a.id));
-
-    await h.settle(a.id);
-    const admitted = await h.spawn({ description: "ready task", depends_on: [a.id] });
+    await h.settle(dep.id);
+    const admitted = await h.spawn({ description: "ready task", depends_on: [dep.id] });
     assert.ok(admitted.out.includes("in background"), `got: ${admitted.out}`);
     });
 
   it("names the blocking dep state, and depends_on_settled admits settled failures", async () => {
-    const h = await setupHarness();
-    const a = await h.spawn({ description: "dep task" });
-    await h.fireEvent(events.error(a.id));
+    const { h, dep } = await withRefusedDep();
+    await h.fireEvent(events.error(dep.id));
+    const again = await h.trySpawn({ description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id] });
+    assert.ok(again.includes(`${dep.id} (error)`), `names the terminal state. got: ${again}`);
 
-    const refused = await h.trySpawn({ description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] });
-    assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
-    assert.ok(refused.includes(`${a.id} (error)`), `names the terminal state. got: ${refused}`);
-
-    const admitted = await h.spawn({ description: "lenient task", depends_on_settled: [a.id] });
+    const admitted = await h.spawn({ description: "lenient task", depends_on_settled: [dep.id] });
     assert.ok(admitted.out.includes("in background"), `settled failure satisfies. got: ${admitted.out}`);
     const status = await h.tool.task_status.execute({ session_id: admitted.id });
-    assert.ok(status.includes(a.id), `the settled wait is recorded. got: ${status}`);
+    assert.ok(status.includes(dep.id), `the settled wait is recorded. got: ${status}`);
     });
 
   it("unknown deps are treated as satisfied", async () => {
@@ -870,17 +888,26 @@ describe("outcome correctness: failed turns never report success", () => {
     },
   ];
 
-  it("idle terminal event over an errored message stream notifies error, not success", async () => {
-    const h = await setupHarness({ hooks: { messages: erroredMessages } });
-    const { id, c } = await h.spawn({ description: "A1 success-status axis" });
-    const note = (await h.noticeAfter(events.idle(id, {}))).message;
-    assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
-    assert.ok(note.includes("Too Many Requests"), `must carry provider detail. got: ${note}`);
-    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
-
-    const status = await c.status();
-    assert.ok(status.includes("error"), `task_status must show error. got: ${status}`);
+  // One hypothesis: a child the host can no longer vouch for settles as ERROR
+  // and never claims success — whether the messages say so or the session is
+  // simply gone. Each case brings its own way of being unvouchable.
+  const unvouchable = [
+    ["idle terminal event over an errored message stream notifies error, not success",
+      { messages: erroredMessages }, (id) => events.idle(id, {}), "Too Many Requests"],
+    ["deleted session with stale idle status notifies error, never success",
+      {}, (id) => events.deleted(id, { info: { status: "idle" } }), null],
+  ];
+  for (const [name, hooks, terminal, detail] of unvouchable) {
+    it(name, async () => {
+      const h = await setupHarness({ hooks });
+      const { id, c } = await h.spawn({ description: "unvouchable child" });
+      const note = (await h.noticeAfter(terminal(id))).message;
+      assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
+      if (detail) assert.ok(note.includes(detail), `must carry provider detail. got: ${note}`);
+      assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
+      assert.ok((await c.status()).includes("error"), `state settles error. got: ${await c.status()}`);
     });
+  }
 
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await setupHarness({ hooks: { messages: () => [] } });
@@ -906,32 +933,7 @@ describe("outcome correctness: failed turns never report success", () => {
     assert.ok(h.noticeBodies()[0].includes("ended with an error"));
     });
 
-  it("deleted session with stale idle status notifies error, never success", async () => {
-    const h = await setupHarness();
-    const { id, c } = await h.spawn({ description: "vanishing child" });
-    const note = (await h.noticeAfter(events.deleted(id, { info: { status: "idle" } }))).message;
-    assert.ok(note.includes("ended with an error"), `vanished session is a failure. got: ${note}`);
-    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
-    const status = await c.status();
-    assert.ok(status.includes("error"), `state settles error. got: ${status}`);
-    });
 
-  it("a retryable prompt failure leaves the task active — its event settles it", async () => {
-    // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
-    // well be running. Settling error here would deafen the ledger to the
-    // child's genuine terminal event, so the task stays active and waits.
-    const h = await setupHarness({
-      hooks: { childPromptFailOnce: { message: "connect ETIMEDOUT", code: "ETIMEDOUT" } },
-    });
-    const { id, c } = await h.spawn({ description: "blip child" });
-    await sleep(50); // the fire-and-forget catch has run
-    const status = await c.status();
-    assert.ok(status.includes("active"), `retryable failure must not settle. got: ${status}`);
-    assert.strictEqual(h.notices().length, 0, "no error notification for a retryable blip");
-
-    const note = await h.settledNotice(id);
-    assert.ok(note.includes("completed successfully"));
-    });
 
   it("a revived turn is never suppressed by its predecessor's late retry", async () => {
     // The poisoning window: turn 1's delivery fails attempt 1, the operator
@@ -968,34 +970,21 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("boot restore honors the configured retention cap", async () => {
-    const dir = tmpProjectDir();
-    const prev = process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES;
-    process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES = "2";
-    try {
-      const now = Date.now();
-      const tasks = {};
-      for (let i = 1; i <= 4; i++) {
-        tasks[`ses_boot${i}`] = {
-          childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
-          description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
-          };
-        }
-      writeFileSync(join(dir, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks }));
-      const h = await setupHarness({ hooks: {}, directory: dir });
+    const directory = tmpProjectDir();
+    const now = Date.now();
+    const tasks = {};
+    for (let i = 1; i <= 4; i++) {
+      tasks[`ses_boot${i}`] = {
+        childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
+        description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
+      };
+    }
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks }));
+    await withEnv("DYNAMIC_TASK_RETAINED_MAX_ENTRIES", "2", async () => {
+      const h = await setupHarness({ hooks: {}, directory });
       const list = await h.tool.task_list.execute({});
       assert.ok(list.includes("Retained: 2"), `configured cap honored. got: ${list}`);
-      } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES = prev;
-      else delete process.env.DYNAMIC_TASK_RETAINED_MAX_ENTRIES;
-      }
     });
-
-  it("abort failure on a completed task reports the gap without annotating success", async () => {
-    const { h, c, out } = await withBrokenAbortSettledChild();
-    assert.ok(out.includes("already settled as completed"), `got: ${out}`);
-    assert.ok(out.includes("ECONNREFUSED"), `gap reported. got: ${out}`);
-    const status = await c.status();
-    assert.ok(!status.includes("Abort error"), `success record stays clean. got: ${status}`);
     });
 
   it("clean completions still report success unchanged", async () => {

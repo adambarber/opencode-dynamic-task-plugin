@@ -243,9 +243,17 @@ describe("fetchAgents", () => {
     const clientA = clientWith([{ name: "alpha", mode: "subagent" }]);
     const clientB = clientWith([{ name: "beta", mode: "subagent" }]);
 
-    assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
-    assert.deepStrictEqual((await fetchAgents(clientB)).map((a) => a.name), ["beta"]);
-    assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
+    // These reads are a TIMELINE, not three assertions: A, then B, then A again.
+    // Declared as data so the order is the spec — the third read is the whole
+    // point, since only a per-client cache can answer it without refetching.
+    const timeline = [
+      [clientA, ["alpha"]],
+      [clientB, ["beta"]],
+      [clientA, ["alpha"]],
+    ];
+    for (const [client, expected] of timeline) {
+      assert.deepStrictEqual((await fetchAgents(client)).map((a) => a.name), expected);
+    }
     assert.strictEqual(clientA.agentCalls, 1, "client A's second read is served from its own cache");
     assert.strictEqual(clientB.agentCalls, 1, "client B's fetch never touched client A's cache");
   });
@@ -765,6 +773,13 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 // Named for intent at the call site: inLedgerFile for the ledger's own
 // on-disk shape, inTempFile for a fixture the parser reads.
 const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
+// inLedgerFile, with one record already saved. Durability is checked in two
+// places — what comes back out, and what is left on disk — and both start here.
+const withSavedLedger = (fn) =>
+  inLedgerFile((file) => {
+    saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+    return fn(file);
+  });
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
 
 function retainedEntry(overrides = {}) {
@@ -791,16 +806,14 @@ describe("task ledger persistence", () => {
   // old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`
   // sidecar in the two sites that mattered, and the missing-file site skipped
   // cleanup entirely — withTempFile owns the whole lifetime.
-  it("round-trips retained records through an injectable path", async () => {
-    await inLedgerFile(async (file) => {
-      saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+  it("round-trips retained records through an injectable path", () =>
+    withSavedLedger(async (file) => {
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.size, 1);
       assert.strictEqual(loaded.get("ses_1").agentName, "explore");
       assert.strictEqual(loaded.get("ses_1").state, "completed");
       assert.strictEqual(loaded.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
-    });
-  });
+    }));
 
   it("returns empty for missing, corrupt, and unknown-version files", async () => {
     assert.strictEqual(loadTaskLedger(`${tmpdir()}/dt-nope-${Date.now()}.json`).size, 0);
@@ -814,13 +827,11 @@ describe("task ledger persistence", () => {
     });
   });
 
-  it("save writes atomically via rename — no .tmp residue", async () => {
-    await inLedgerFile(async (file) => {
-      saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+  it("save writes atomically via rename — no .tmp residue", () =>
+    withSavedLedger(async (file) => {
       assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
       assert.strictEqual(loadTaskLedger(file).size, 1, "renamed content intact");
-    });
-  });
+    }));
 
   // One hypothesis: an entry survives only if it is well-formed AND agrees with
   // its map key. A divergent or malformed entry is corrupt, not relabeled, so

@@ -377,6 +377,45 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
   });
 });
 
+// --- the duplicate-detection gate ------------------------------------------------
+// The thresholds are not taste. Measured on this tree: 3 lines / 25 tokens is the
+// strictest level that reports 0 clones. One notch down is real duplication, not
+// tokenizer noise — 3/20 finds 37 clones and 3/15 finds 86, headed by duplicated
+// interface declarations and duplicated steer-claim blocks, with zero of them
+// import-shaped. So the gate is pinned here: loosening it is a deliberate edit
+// to a test that says what re-opens, not a quiet edit to a config file.
+describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
+  const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
+
+  it("enforces zero tolerance at 3 lines / 25 tokens", () => {
+    const loosened = [
+      ["threshold", 0],
+      ["minLines", 3],
+      ["minTokens", 25],
+    ].filter(([key, expected]) => config[key] !== expected);
+    assert.deepStrictEqual(
+      loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
+      [],
+      `duplicate gate loosened. 3/20 reports 37 real clones and 3/15 reports 86,\n` +
+        `so these thresholds are the tree's actual clean level, not a preference.`,
+    );
+  });
+
+  it("ignores build artifacts but keeps every test file in scope", () => {
+    // dist/** is a build output and cannot be de-duplicated. An extension-wide
+    // *.js ignore would be the tempting way to quiet test clones — and it would
+    // silently un-check src/tests entirely, which is the regression this gate
+    // exists to prevent.
+    assert.ok(config.ignore.includes("dist/**"), "build artifacts stay out of the scan");
+    const blind = config.ignore.filter((pattern) => pattern.replace(/^\*\*\//, "") === "*.js");
+    assert.deepStrictEqual(
+      blind,
+      [],
+      `a *.js ignore removes every test file from duplicate detection.\nGot: ${JSON.stringify(blind)}`,
+    );
+  });
+});
+
 // --- Task 08: strong types ----------------------------------------------------
 // Primitive: `any` — the missing choke point. Every typed boundary uses
 // `unknown` + narrowing (isEventRecord/eventField/errorMessage). A sanctioned

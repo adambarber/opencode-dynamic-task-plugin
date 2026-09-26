@@ -29,6 +29,7 @@ import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 // read that finds nothing parses as an empty document rather than a failure.
 import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { ENV } from "../../dist/shared/config.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -793,7 +794,7 @@ describe("task_notify: the child-to-parent channel", () => {
 describe("error settlement guidance", () => {
   async function settleWithMessageError(detail) {
     const h = await setupHarness({
-      hooks: { messages: () => [{ info: { role: "assistant", error: { data: { message: detail } } }, parts: [] }] },
+      hooks: { messages: () => [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } }, parts: [] }] },
       });
     const { id, c } = await h.spawn();
     await h.fireEvent(events.error(id));
@@ -959,7 +960,7 @@ describe("task_result and task_interrupt paths", () => {
   it("an untracked session with no status channel is unknown, not idle", async () => {
     const h = await eventHarness({
       statusThrows: new Error("status down"),
-      messages: () => [{ role: "assistant", parts: [{ type: "text", text: "working" }] }],
+      messages: () => [{ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "working" }] }],
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
@@ -1733,7 +1734,7 @@ describe("outcome correctness: failed turns never report success", () => {
   const erroredMessages = () => [
   { info: { role: "user" }, parts: [] },
   {
-    info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } } },
+    info: { role: ASSISTANT_ROLE, error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } } },
     parts: [],
     },
   ];

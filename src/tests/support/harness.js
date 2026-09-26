@@ -22,6 +22,10 @@ import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
+// The role the reader looks for, named by the module that looks for it. A mock
+// message part that hardcodes the role is a message the plugin may correctly
+// ignore, and a test that builds one still passes.
+import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 // The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
 // is `satisfies Event["type"]` in host-events.ts, so the harness cannot fire an
 // event the host does not publish — which is the one thing a fixture must never
@@ -51,7 +55,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * transcript read and the cases that seed one both read it from here.
  */
 export const hostSaid = (text, at = Date.now()) => ({
-  info: { role: "assistant", time: { created: at, completed: at } },
+  info: { role: ASSISTANT_ROLE, time: { created: at, completed: at } },
   parts: [{ type: "text", text }],
 });
 
@@ -1087,7 +1091,7 @@ export async function setupTwoTurnHarness() {
       messages: () => {
         msgCalls++;
         const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
-        return [unclockedSaid(text, "assistant")];
+        return [unclockedSaid(text, ASSISTANT_ROLE)];
       },
     },
   });

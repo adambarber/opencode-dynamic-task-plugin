@@ -27,6 +27,7 @@ import {
   withoutAdvisory,
 } from "../../../dist/shared/task-state.js";
 import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
+import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
 
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({
@@ -94,7 +95,7 @@ export const runningEntry = (childSessionId, overrides = {}) => ({
  * because a case asserting a rendering is not asserting on a clock.
  */
 export const notifiedAs = (kind, outcome, target = {}) =>
-  notifyRecord({ parentSessionId: "unknown", childSessionId: "ses_1", kind, ...target }, "delivered", outcome);
+  notifyRecord({ parentSessionId: UNKNOWN_PARENT, childSessionId: "ses_1", kind, ...target }, "delivered", outcome);
 
 export { noticeRecord };
 /**

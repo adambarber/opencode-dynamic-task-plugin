@@ -27,6 +27,10 @@ import {
   messageRoleOf,
   messageErrorDetail,
 } from "../../dist/shared/prompt.js";
+// The role the reader looks for, named by the module that looks for it. A mock
+// message part that hardcodes the role is a message the plugin may correctly
+// ignore, and a test that builds one still passes.
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 // The smallest shapes the reader tests are about, stated once: a text part, and
 // a message carrying one. A case should be able to say what it means ("an
@@ -428,7 +432,7 @@ describe("getEventLifecycleStatus", () => {
 // part carries it. Stated once so two cases cannot pass for different reasons.
 describe("messageErrorDetail", () => {
   const assistantTurn = (error, parts = []) => ({
-    info: error === undefined ? { role: "assistant" } : { role: "assistant", error },
+    info: error === undefined ? { role: ASSISTANT_ROLE } : { role: ASSISTANT_ROLE, error },
     parts,
   });
 
@@ -463,7 +467,7 @@ describe("messageErrorDetail", () => {
   it("returns empty for non-message values", () => {
     assert.strictEqual(messageErrorDetail(null), "");
     assert.strictEqual(messageErrorDetail("junk"), "");
-    assertEmpty(messageErrorDetail({ role: "assistant" }), "an assistant message carrying no error part");
+    assertEmpty(messageErrorDetail({ role: ASSISTANT_ROLE }), "an assistant message carrying no error part");
   });
 });
 
@@ -1966,7 +1970,7 @@ describe("message/part family guards (Task 08)", () => {
 
   it("isMessage is a record with an array parts field", () => {
     assert.ok(isMessage({ parts: [] }));
-    assert.ok(isMessage({ role: "assistant", parts: [{ type: "text", text: "x" }] }));
+    assert.ok(isMessage({ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "x" }] }));
     assert.ok(!isMessage({ parts: "nope" }));
     assert.ok(!isMessage({}));
     assert.ok(!isMessage(null));
@@ -1974,7 +1978,7 @@ describe("message/part family guards (Task 08)", () => {
   });
 
   it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
-    assert.strictEqual(messageRoleOf({ info: { role: "assistant" }, parts: [] }), "assistant");
+    assert.strictEqual(messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant");
     assert.strictEqual(messageRoleOf({ role: "user", parts: [] }), "user");
     assert.strictEqual(messageRoleOf({ parts: [] }), "");
     assert.strictEqual(messageRoleOf({ info: "junk", role: "system", parts: [] }), "system");
@@ -1984,7 +1988,7 @@ describe("message/part family guards (Task 08)", () => {
   it("the extraction group is built on the guards: same answers through either door", () => {
     const parts = [{ type: "text", text: "a" }, { type: "tool", x: 1 }, { type: "text", text: "b" }];
     assert.strictEqual(extractTextFromParts(parts), "a\nb");
-    const messages = [{ info: { role: "user" }, parts: [] }, { role: "assistant", parts: [{ type: "text", text: "final" }] }];
+    const messages = [{ info: { role: "user" }, parts: [] }, { role: ASSISTANT_ROLE, parts: [{ type: "text", text: "final" }] }];
     assert.strictEqual(getLatestAssistantText(messages), "final");
     // Non-message entries are skipped by the guard, never thrown on.
     assert.strictEqual(getLatestAssistantText([null, "junk", ...messages]), "final");
@@ -2195,14 +2199,14 @@ describe("config: file and env edges", () => {
 describe("prompt dance: getLatestAssistantText", () => {
   it("returns the newest assistant text", () => {
     assert.strictEqual(
-      getLatestAssistantText([said("assistant", "first"), said("user", "q"), said("assistant", "second")]),
+      getLatestAssistantText([said(ASSISTANT_ROLE, "first"), said("user", "q"), said(ASSISTANT_ROLE, "second")]),
       "second"
     );
   });
 
   it("reads the latest assistant text, skipping empties", () => {
-    assert.strictEqual(getLatestAssistantText([said("assistant", "old"), said("assistant", "new")]), "new");
-    assert.strictEqual(getLatestAssistantText([said("assistant", ""), said("user", "q")]), "");
+    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, "old"), said(ASSISTANT_ROLE, "new")]), "new");
+    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, ""), said("user", "q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
     assertEmpty(getLatestAssistantText(null), "no message at all");
   });
@@ -2224,12 +2228,12 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   );
 
   it("reads the latest assistant text from the session", async () => {
-    await assertHydrated(() => [said("assistant", "CHILD_SAYS")], { text: "CHILD_SAYS" });
+    await assertHydrated(() => [said(ASSISTANT_ROLE, "CHILD_SAYS")], { text: "CHILD_SAYS" });
   });
 
   it("surfaces the message-level error detail from the same read", async () => {
     const failedTurn = [{
-      info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      info: { role: ASSISTANT_ROLE, error: { name: "APIError", data: { message: "Too Many Requests" } } },
       parts: [],
     }];
     await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });

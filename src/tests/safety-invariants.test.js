@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildToolMap } from "../../dist/tools/index.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, shortPath } from "../../scripts/cross-boundary.mjs";
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -522,6 +523,98 @@ describe("invariant: record shapes are built, not re-declared (Tenet 12)", () =>
       }
     }
     assert.deepStrictEqual(findings, [], `a record shape restated by hand:\n${findings.join("\n")}`);
+  });
+});
+
+/**
+ * A test must not spell a literal production already exports as a named constant.
+ *
+ * Both duplicate detectors here are blind to this by construction — the tokenizer
+ * erases string contents, and the record rule looks at field names — so it needed
+ * its own rule. Measured before the rule existed: twenty-two sites across four test
+ * files restating `ASSISTANT_ROLE` and `UNKNOWN_PARENT`. The failure mode is the
+ * quiet one in both cases. A mock message part that hardcodes `"assistant"` is a
+ * message the plugin is entitled to ignore, and a test that builds one passes
+ * anyway; a hardcoded env var configures nothing once it is renamed, and passes
+ * anyway. Nothing goes red, which is what makes it worth a gate.
+ *
+ * The sanction list is the judgement, and it is deliberately short: the sites that
+ * legitimately hold the literal are the ones whose SUBJECT is the literal — an
+ * assertion that a role reads back as `"assistant"` pins the value, and a status
+ * table's `"unknown"` is a host turn state, not the unnamed-parent sentinel those
+ * two constants happen to share a spelling with. A site is added here by someone
+ * who has read why it is not a restatement.
+ */
+describe("invariant: a test never retypes an exported production constant (Tenet 12)", () => {
+  const SANCTIONED = [
+    // The value IS the claim: this asserts the role reads back as the literal.
+    'messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant"',
+    // A host turn state, not the unnamed-parent sentinel. Different vocabulary,
+    // same spelling — which is exactly why a spelling-based rule needs a sanction.
+    '["error", "unknown", false]',
+    '["idle", "unknown", false]',
+    '[null, "unknown", false]',
+    // Asserting the rendered word a parentless settlement prints.
+    'answerSays(missing, "unknown")',
+  ];
+
+  /** Every string literal production exports as a named constant, and where. */
+  function exportedConstants() {
+    const constants = new Map();
+    for (const file of listProdFiles()) {
+      const source = readFileSync(file, "utf8");
+      const pattern = /export const ([A-Z_0-9]+)\s*(?::[^=]+)?=\s*"((?:[^"\\\n]|\\.)+)"/g;
+      for (const [, name, literal] of source.matchAll(pattern)) constants.set(literal, { name, file });
+    }
+    return constants;
+  }
+
+  /**
+   * Every site in a test source that retypes an exported constant, with the claims
+   * already applied. A function rather than an inline loop so the probe below can
+   * hand it a source of its own — a rule that can only ever be run on the real tree
+   * cannot be shown to see anything.
+   */
+  function retypeFindings(source, constants) {
+    const findings = [];
+    const lines = source.split("\n");
+    for (const [literal, owner] of constants) {
+      let at = source.indexOf(`"${literal}"`);
+      while (at >= 0) {
+        const text = lines[source.slice(0, at).split("\n").length - 1];
+        // A comment discussing the spelling is prose, not a second declaration of
+        // it, and this file's rules already make that distinction everywhere else.
+        const prose = /^\s*(\/\/|\*|\/\*)/.test(text);
+        if (!prose && !SANCTIONED.some((reason) => text.includes(reason))) {
+          findings.push(`line ${source.slice(0, at).split("\n").length} retypes ${owner.name} as "${literal}"`);
+        }
+        at = source.indexOf(`"${literal}"`, at + 1);
+      }
+    }
+    return findings;
+  }
+
+  it("reports no retyped constant", () => {
+    const constants = exportedConstants();
+    assert.ok(constants.size > 20, `only ${constants.size} exported string constants found — the extractor is not reading them`);
+    const findings = [];
+    for (const file of listTestFiles().concat([path.join(TESTS_DIR, "support", "harness.js"), path.join(TESTS_DIR, "support", "records.js")])) {
+      for (const finding of retypeFindings(readFileSync(file, "utf8"), constants)) {
+        findings.push(`${path.relative(REPO_ROOT, file)}: ${finding}`);
+      }
+    }
+    assert.deepStrictEqual(findings, [], `a test retypes a production constant:\n${findings.join("\n")}`);
+  });
+
+  // A rule that cannot fail is a comment. This runs the same comparison over a
+  // source written for the purpose, so the report is shown to be reachable.
+  it("a retyped constant is reported, and prose about one is not", () => {
+    const constants = exportedConstants();
+    const restated = `const part = { info: { role: "${ASSISTANT_ROLE}" } };`;
+    assert.ok(retypeFindings(restated, constants).length > 0, "a restatement must be reported");
+    assert.deepStrictEqual(retypeFindings("// the reader wants the assistant turn", constants), [],
+      "a comment discussing the spelling is prose, not a second declaration of it");
+    assert.deepStrictEqual(retypeFindings("const n = 1;", constants), [], "an unrelated source has nothing to report");
   });
 });
 

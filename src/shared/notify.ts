@@ -53,11 +53,20 @@ export async function containFailure(
 
 export type NotifyKind = "completed" | "error" | "blocked" | "notice";
 
-export interface NotificationRecord {
-  at: number;
+/**
+ * Who a delivery is for. The two records that carry a delivery each spelled this
+ * triple out, and it is the triple owedIdentity hashes — so a field added to
+ * "which parent, which child, which kind" had two declarations to reach and a
+ * third meaning to keep in step.
+ */
+export interface DeliveryTarget {
   parentSessionId: string;
   childSessionId: string;
   kind: NotifyKind;
+}
+
+export interface NotificationRecord extends DeliveryTarget {
+  at: number;
   message: string;
   attempts: number;
   delivered: boolean;
@@ -107,10 +116,7 @@ export function getTurnNotification(childSessionId: string, turnStartedAt: numbe
 // the dial and retired only when the outcome is known, so a crash costs a
 // duplicate notice, which is visible, instead of a silent deafness, which is not.
 // At-least-once across a restart, exactly-once within a boot — deliberately.
-export interface PendingDelivery {
-  parentSessionId: string;
-  childSessionId: string;
-  kind: NotifyKind;
+export interface PendingDelivery extends DeliveryTarget {
   /** The exact text owed. A redelivery must not have to reconstruct it. */
   text: string;
   /** How many attempts the boots before this one already spent. */
@@ -148,15 +154,21 @@ function owedIdentity(entry: PendingDelivery): string {
   return entry.kind === "notice" ? `${entry.childSessionId}\u0000notice\u0000${entry.text}` : `${entry.childSessionId}\u0000${entry.kind}`;
 }
 
+// "Is this one already owed, and where" — the single read both queue writers need,
+// composed once so the pair cannot disagree about what identity means.
+function indexOfOwedEntry(entry: PendingDelivery): number {
+  return indexOfOwed(owedIdentity(entry));
+}
+
 function queuePending(entry: PendingDelivery): void {
-  const at = indexOfOwed(owedIdentity(entry));
+  const at = indexOfOwedEntry(entry);
   if (at === -1) pendingDeliveries.push(entry);
   else pendingDeliveries[at] = entry;
   persistPending?.();
 }
 
 function dropPending(entry: PendingDelivery): void {
-  const at = indexOfOwed(owedIdentity(entry));
+  const at = indexOfOwedEntry(entry);
   if (at === -1) return;
   pendingDeliveries.splice(at, 1);
   persistPending?.();

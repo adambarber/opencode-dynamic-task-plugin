@@ -7,6 +7,8 @@ import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type Act
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading } from "./liveness.js";
 import { textBlock, present } from "./text-block.js";
+import type { LaneOccupancy } from "./lane-occupancy.js";
+import { DepthBound } from "./task-policy.js";
 
 // The one thing a settled record can still be told: the server is working on it,
 // so the settlement was premature and its output is not final. Named because it is
@@ -72,17 +74,6 @@ function formatTreeRow(row: TreeRow): string {
   return `${indent}- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})${link}`;
 }
 
-/** One lane as task_list shows it: occupancy, cap, and the depth actually reachable. */
-export interface LaneRow {
-  name: string;
-  active: number;
-  maxConcurrent: number;
-  depthConfigured: number;
-  /** `null` when the dispatchable set could not be read. */
-  depthEffective: number | null;
-  depthBoundBy: string | null;
-}
-
 /**
  * The depth cell, in the words that make it actionable.
  *
@@ -91,15 +82,15 @@ export interface LaneRow {
  * "4" would be printing the number that is not in force. So the cell says which
  * constraint is binding, and the lane-cap case says the cap plainly.
  */
-function formatDepth(row: LaneRow): string {
+function formatDepth(row: LaneOccupancy): string {
   if (row.depthEffective === null) return `depth ${row.depthConfigured} (dispatchable agents unknown)`;
-  if (row.depthBoundBy === "agent-set") {
+  if (row.depthBoundBy === DepthBound.AgentSet) {
     return `depth ${row.depthEffective} (agent set binds; cap is ${row.depthConfigured})`;
   }
   return `depth ${row.depthConfigured}`;
 }
 
-function formatLaneRow(row: LaneRow): string {
+function formatLaneRow(row: LaneOccupancy): string {
   return `- ${row.name} ${row.active}/${row.maxConcurrent} · ${formatDepth(row)}`;
 }
 
@@ -115,7 +106,7 @@ export function formatTaskListSummary(input: {
   pruned: number;
   // Absent until lanes shipped, and omitted entirely when there are none, so a
   // project that declares no lanes reads exactly as it did before the feature.
-  lanes?: LaneRow[] | undefined;
+  lanes?: LaneOccupancy[] | undefined;
 }): string {
   return textBlock(
     "## Task List",

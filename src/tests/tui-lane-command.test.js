@@ -261,23 +261,25 @@ describe("choosing a lane", () => {
   });
 
   it("a bad answer is refused in place, keeping what was typed, and a good one lands on disk", async () => {
-    // Two rounds in one directory on purpose: the second must find the file the
-    // first REFUSED to touch, which is the claim being made about a refused write.
-    await withBuildLane(2, async (dialog) => {
+    // A DIRECTORY, not a dialog. This case is about two successive dialogs in one
+    // place — the second has to find the file the first REFUSED to touch — so it
+    // needs somewhere to put them rather than a dialog of its own. Reaching for
+    // the one-dialog fixture made it open like every other case here and said
+    // nothing about the two rounds, which is the whole claim.
+    await withTempDir(async (directory) => {
       const start = withBuildLane.overlay(2);
+      writeLaneOverlay(directory, start);
 
-      // Two dialogs, not one: the second must find the file the first REFUSED to
-      // touch, which is the claim being made about a refused write.
-      const refused = await opened(dialog.directory);
+      const refused = await opened(directory);
       answerCapsFor(refused, "build", "nope");
       assert.ok(refused.seen.toasts.some((toast) => toast.variant === "error" && /not a count/.test(toast.message)),
         "the operator is told WHY, not just refused");
       assert.ok(refused.seen.prompts.length >= 2, "the question is still open — closing would discard the answer");
-      assert.deepEqual(readOverlay(dialog.directory), start, "and nothing was written");
+      assert.deepEqual(readOverlay(directory), start, "and nothing was written");
 
-      const accepted = await opened(dialog.directory);
+      const accepted = await opened(directory);
       answerCapsFor(accepted, "build", "4 3");
-      assert.deepEqual(readOverlay(dialog.directory).lanes.build, { maxConcurrent: 4, maxDepth: 3 });
+      assert.deepEqual(readOverlay(directory).lanes.build, { maxConcurrent: 4, maxDepth: 3 });
       assert.ok(accepted.seen.toasts.some((toast) => toast.variant === "success" && /next dispatch/.test(toast.message)),
         "a live server will not re-read the file for work already admitted, and claiming otherwise would be a lie");
     });

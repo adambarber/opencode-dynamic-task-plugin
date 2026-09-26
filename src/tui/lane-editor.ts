@@ -19,11 +19,20 @@ import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.j
 /**
  * One entry in the dialog's list.
  *
- * Named "entry" and not "row" because `task-formatting.ts` already exports a
- * `LaneRow` for what `task_list` PRINTS: a resolved lane, with every cap
- * present. This one is unresolved on purpose — a cap may be absent, meaning
- * inherited — so the two share a name and nothing else, and a reader who meets
- * both should not assume the shapes agree.
+ * Named "entry" and not "row" because a resolved lane is already a named thing
+ * elsewhere: `lane-occupancy.ts` exports `LaneOccupancy`, which is what
+ * `task_list` PRINTS, with every cap present. This one is unresolved on purpose
+ * — a cap may be absent, meaning inherited — so the two describe the same subject
+ * in two states rather than being two things, and a reader who meets both should
+ * not assume the shapes agree.
+ *
+ * That divergence used to be worse than it looks: the printed row was its own
+ * hand-written interface, a mirror of `LaneOccupancy` that had already drifted
+ * (a widened `depthBoundBy`, a dropped `ceiling`). The duplicate-code gate
+ * caught the mirror once doc comments stopped breaking the run — see
+ * `scripts/duplicate-gate.mjs`. The printed row IS `LaneOccupancy` now, so the
+ * two cannot disagree about a field; the only difference left is resolved vs
+ * unresolved, which is the real one.
  *
  * The default lane is an entry like any other even though the overlay need not
  * mention it: the base config's caps are inherited unless the overlay says

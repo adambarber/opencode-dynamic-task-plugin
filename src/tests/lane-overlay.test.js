@@ -115,6 +115,38 @@ describe("lane overlay: what a cap has to be", () => {
 describe("lane overlay: a cap takes effect without a restart", () => {
   beforeEach(resetLiveLanes);
 
+  /**
+   * The two starting states below, named.
+   *
+   * They were one helper plus ad-hoc setup, which left both cases opening with the
+   * same three lines and the duplication gate right to call it: the states are not
+   * the same, and saying so is also what makes each case's claim legible at its
+   * first line. A store full at the boot cap is what a RAISED cap has to unblock; a
+   * settled task beside a holder is what a REVIVAL has to wait on.
+   */
+  const oneSlot = () => {
+    const store = createTaskStore();
+    return { store, cap: normalizeDynamicTaskConfig({ maxConcurrent: 1 }) };
+  };
+
+  /** A store whose single boot slot is already taken. */
+  const fullAtBootCap = (id) => {
+    const { store, cap } = oneSlot();
+    registerActiveTask(store, registration(id), cap);
+    return { store, cap };
+  };
+
+  /** A store holding a settled task and a live holder, so the one slot is full. */
+  const withASettledTask = () => {
+    const { store, cap } = oneSlot();
+    // Settled FIRST, so the single boot slot is free for the holder: the store
+    // reaches one active task the same way a real fleet does.
+    registerActiveTask(store, registration("ses_settled"), cap);
+    transitionState(store, "ses_settled", "completed");
+    registerActiveTask(store, registration("ses_holder"), cap);
+    return { store, cap };
+  };
+
   it("with no overlay installed, policy is the frozen config, by identity", () => {
     assert.strictEqual(liveLanes(defaultConfig), defaultConfig);
   });
@@ -124,9 +156,7 @@ describe("lane overlay: a cap takes effect without a restart", () => {
     // is RAISED looks like it worked if the boot cap simply had room. So the boot
     // cap here is one, the slot is taken, and the overlay is the only thing that
     // can let the third task in.
-    const store = createTaskStore();
-    const bootCap = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
-    registerActiveTask(store, registration("ses_a"), bootCap);
+    const { store, cap: bootCap } = fullAtBootCap("ses_a");
     assert.throws(() => registerActiveTask(store, registration("ses_refused"), bootCap),
       /cannot run more than 1 active task/, "the boot cap refuses this before the overlay exists");
 
@@ -158,13 +188,7 @@ describe("lane overlay: a cap takes effect without a restart", () => {
     // The inconsistency this pins: a revival is a claim on a slot, and judging it
     // against the boot cap means raising a cap in the UI does nothing for the one
     // action an operator reaches for when a fleet is full.
-    const store = createTaskStore();
-    const bootCap = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
-    // Settled FIRST, so the single boot slot is free for the holder: the store
-    // reaches one active task the same way a real fleet does.
-    registerActiveTask(store, registration("ses_settled"), bootCap);
-    transitionState(store, "ses_settled", "completed");
-    registerActiveTask(store, registration("ses_holder"), bootCap);
+    const { store, cap: bootCap } = withASettledTask();
     assert.throws(() => reviveRetainedTask(store, "ses_settled", bootCap), /cannot run more than 1 active task/,
       "the boot cap is what refuses this before the overlay exists");
 

@@ -1,44 +1,50 @@
 /**
- * The duplicate-code gate: jscpd, with every finding re-taken before it fails
- * the build.
+ * The duplicate-code gate: jscpd, with every finding re-taken before it fails the
+ * build.
  *
- * jscpd 4.2.6 misreports SOME findings, and this gate re-measures every one of
- * them. It is not, however, entitled to disagree with jscpd's arithmetic: what has
- * to reproduce is a shared run at least as long as the one jscpd REPORTED, and a
- * run cannot be compared across two different tokenizations.
+ * WHAT IT DOES, in one line: jscpd says WHERE two regions match, and this measures
+ * how much code they actually share, failing the build if the answer clears the
+ * same bar jscpd used. The re-measurement exists because jscpd's reported ranges
+ * are BOUNDING BOXES, and because it pairs some coordinates wrongly — but it is a
+ * check on jscpd's COORDINATES, never a licence to re-count its tokens.
  *
- * The first version of this gate filtered `new_line` out of its stream, on the
- * reasoning that a line break is not code. It is not — and jscpd COUNTS those
- * tokens, so the filter made every shared run shorter than the number it was being
- * compared against. Nine findings were discarded that way, every one of them real:
- * `LedgerChangeKind.Settled` and `.Forgotten` in session-lifecycle.ts have
- * byte-identical three-line bodies, and the gate printed "Found 0 clones" and
- * exited 0 over them. A verification step that discards findings because it
- * measured them differently from the thing it verifies is not a verification step.
- * So the stream is jscpd's stream: same tokenizer, same devDependency, same
- * accounting, and `new_line` kept because jscpd keeps it.
+ * The rule that makes that safe: ONE tokenizer, ONE threshold, on the coordinates
+ * jscpd pointed at. A finding is judged by the longest run of shared tokens this
+ * script measures, against `minTokens` READ FROM `.jscpd.json`. No two token counts
+ * are ever compared, so no disagreement between two measurements can discard
+ * anything.
  *
- * The re-measurement still earns its keep — it is what distinguishes a real clone
- * from a pair of coordinates jscpd paired wrongly, and it is how a bounding box is
- * compared against a match inside it. But it is a check on jscpd's COORDINATES, not
- * a licence to re-count its tokens.
+ * That rule was arrived at by getting it wrong twice, and both failures were the
+ * same shape — a private arithmetic that quietly disagreed with jscpd's:
  *
- * This cannot make the gate weaker in the direction that matters. A real clone
- * still fails: the same tokens at the reported coordinates are the definition of
- * the clone, and anything the report cannot reproduce at its own coordinates is
- * not a claim about the code. A range that cannot be read is treated as REAL, so
- * an unreadable finding fails the build rather than passing it. The raw count is
- * always printed next to the verified count, so a report that is mostly phantoms
- * is visible rather than silently absorbed — the same judgement
- * `cross-boundary.mjs` makes about import lists, reached here by measurement
- * instead.
+ *   1. The stream dropped `new_line`. jscpd counts line breaks in a clone's token
+ *      total, so every shared run came out shorter than the count it was compared
+ *      against. Nine findings were discarded; five were real, including
+ *      `LedgerChangeKind.Settled` and `.Forgotten` in session-lifecycle.ts, whose
+ *      three-line bodies are byte-identical. The gate printed "Found 0 clones" and
+ *      exited 0 over them.
  *
- * `safety-invariants.test.js` pins the accounting: the stream must keep every token
- * type jscpd keeps, and the boundary case that proves it is a clone whose two
- * copies sit on DIFFERENT line counts. A filter that drops a token class looks
- * harmless on a clone that happens to keep its line structure aligned, and only
- * diverges once the code is edited — so the pin has to be a clone that fails under
- * the wrong filter, or it is not testing the thing it claims to.
+ *   2. The stream KEPT `comment`. A doc comment is prose about the code, and prose
+ *      worded differently between two declarations is evidence they were written
+ *      independently — not evidence the declarations differ. Keeping comments
+ *      breaks a shared run at the first reworded sentence, which hid the same
+ *      defect again: `lane-occupancy.ts` and `task-formatting.ts` declare the same
+ *      three fields with the same names, types and nullability, one a
+ *      hand-maintained mirror of the other's interface, and the gate measured 8
+ *      shared tokens there because the doc comments were not worded identically.
+ *
+ * A verification step that discards findings because it measured them differently
+ * from the thing it verifies is not a verification step. So the two decisions are
+ * written down where they are made — see `stream` below — and `gate-invariants.test.js`
+ * pins both by name, along with the threshold and the comparison's shape. A
+ * re-treading of either is a failing test rather than a silent narrowing.
+ *
+ * Two properties make the gate safe in the direction that matters. A real clone
+ * still fails: shared code at the reported coordinates is the definition of a clone.
+ * And a finding that CANNOT be re-read is treated as real, so an unreadable report
+ * fails the build rather than passing it. The raw count is always printed beside
+ * the verified count, so a report that is mostly phantoms stays visible instead of
+ * being silently absorbed.
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -63,16 +69,27 @@ const SCAN = "src";
 const minTokens = JSON.parse(readFileSync(join(REPO, ".jscpd.json"), "utf8")).minTokens;
 
 /**
- * Every token jscpd counts, tagged with the line it starts on.
+ * Every token of CODE jscpd counts, tagged with the line it starts on.
+ *
+ * Two classes are excluded, and each for its own stated reason.
  *
  * `new_line` is KEPT. jscpd counts line breaks in a clone's token total, so
- * dropping them here does not make the comparison stricter, it makes it
- * incomparable.
+ * dropping them does not make the comparison stricter, it makes it incomparable.
+ *
+ * `comment` is DROPPED. A doc comment is prose about the code, and prose worded
+ * differently between two declarations is evidence they were written
+ * independently — not evidence that the declarations differ. Keeping comments
+ * breaks a shared run at the first reworded sentence, which is what hid the
+ * lane-occupancy/task-formatting clone the second time this gate was wrong:
+ * three fields with the same names, types and nullability, measured at 8 shared
+ * tokens because the two doc comments were not worded identically, and it really
+ * is 14. Excluding comments is the only change in this file that can make a run
+ * LONGER, so it can only ever catch more, never fewer.
  */
 const stream = (path) => {
   const source = readFileSync(path, "utf8");
   return tokenize(source, "typescript")
-    .filter((t) => t.type !== "empty")
+    .filter((t) => t.type !== "empty" && t.type !== "comment")
     .map((t) => ({
       key: t.type === "string" ? "string" : `${t.type}:${t.value}`,
       line: t.loc.start.line,

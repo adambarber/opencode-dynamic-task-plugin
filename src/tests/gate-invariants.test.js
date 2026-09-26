@@ -11,6 +11,7 @@
 import { describe, it, assert } from "./support/runner.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { REPO_ROOT, listSourceFiles, lineCount } from "./support/corpus.js";
 
 // --- the duplicate-detection gate ------------------------------------------------
@@ -93,43 +94,127 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
 });
 
 // --- The gate's own measurement -------------------------------------------------
-// A threshold pin says the bar. This one says the gate is capable of SEEING the
-// bar, which is a different and stronger claim: the first version of the script
-// filtered `new_line` out of the stream it re-measured each finding in, while
-// jscpd counts those tokens, so every shared run came out shorter than the count
-// it was compared against and every finding was discarded. Nine were discarded
-// that way. Five were real — including `LedgerChangeKind.Settled` and
-// `.Forgotten` in session-lifecycle.ts, whose three-line bodies are byte-identical
-// — and the script printed "Found 0 clones" and exited 0.
+// A threshold pin says the bar. These say the gate is capable of SEEING the bar,
+// which is a different and stronger claim. Two token classes have each been
+// filtered wrongly, in opposite directions, and both times the gate's private
+// arithmetic disagreed with jscpd's and silently discarded real clones:
 //
-// The lesson is not "add new_line back". It is that the script re-measures, so it
-// has a private arithmetic, and a private arithmetic is only safe if it cannot
-// disagree with the thing it verifies. It now uses ONE tokenizer and ONE threshold
-// (read from this config, never restated) against the COORDINATES jscpd reported,
-// so there is no second count to disagree with. These pins are what keep it that
-// way: they fail if a token class starts being dropped again, if the comparison
-// starts using jscpd's reported count, or if the threshold starts being a literal.
+//   1. `new_line` was dropped, on the reasoning that a line break is not code.
+//      jscpd counts line breaks in a clone's token total, so every shared run came
+//      out shorter than the count it was compared against and every finding was
+//      discarded. Nine were discarded that way, five of them real — including
+//      `LedgerChangeKind.Settled` and `.Forgotten` in session-lifecycle.ts, whose
+//      three-line bodies are byte-identical. It printed "Found 0 clones", exit 0.
+//
+//   2. `comment` was KEPT, on the reasoning that dropping anything jscpd counts
+//      must be unsafe. But jscpd's own tokenizer emits comments as tokens too, so
+//      a reworded doc comment breaks a shared run at the first sentence that
+//      differs. `lane-occupancy.ts` and `task-formatting.ts` declared the same
+//      three fields with the same names, types and nullability — one a
+//      hand-maintained mirror of the other's interface, already drifted — and the
+//      gate measured 8 shared tokens there, because the doc comments above them
+//      were not worded identically. The declarations were duplicated; the prose
+//      was not. That is what a clone is made of.
+//
+// The lesson is not a filter list. It is that the script re-measures, so it has a
+// private arithmetic, and a private arithmetic is only safe if it cannot disagree
+// with the thing it verifies. It uses ONE tokenizer and ONE threshold (read from
+// the config, never restated) against the COORDINATES jscpd reported, so there is
+// no second count to disagree with.
+//
+// A pin that only named the surviving filter would have caught regression 1 and
+// then blocked the fix for regression 2 — which is how a correct change looks
+// like a violation. So each pin states BOTH classes and what each one's presence
+// or absence costs, and the boundary clone is the one that fails under the wrong
+// filter: a two-line change from filtering comments turns it from caught to
+// missed, so a filter that drifts is a failing test rather than a silent
+// narrowing.
 //
 // The honest limit, same as every other text pin in this repo: this reads source,
 // so an alias or a second filter elsewhere would pass it. What it does buy is that
-// the three specific regressions that actually happened are named, and a change to
-// any of them is a failing test rather than a silent one.
+// the specific regressions that actually happened are named, and a change to any
+// of them is a failing test rather than a silent one.
 describe("invariant: the duplicate gate measures what it claims to measure", () => {
   const gate = readFileSync(path.join(REPO_ROOT, "scripts", "duplicate-gate.mjs"), "utf8");
 
-  it("keeps every token class jscpd counts, including line breaks", () => {
-    const filter = gate.match(/\.filter\(\(t\) => t\.type !== "([^"]+)"\)/);
-    assert.ok(filter, `the stream's filter is the thing that dropped new_line once; it is gone.\n` +
-      `If the filter was rewritten, this pin must be rewritten to say what the new one keeps.`);
-    assert.strictEqual(
-      filter[1],
-      "empty",
-      `the tokenizer filter now drops "${filter[1]}" tokens as well as empty ones.\n` +
-        `jscpd counts line breaks in a clone's token total, so dropping any other class\n` +
-        `makes every shared run shorter than the threshold it is measured against, and\n` +
-        `real clones are discarded as phantoms. That is how five real clones were\n` +
-        `reported as "Found 0 clones" and the build exited 0.`,
-    );
+  // The same two declarations the second regression was found in, at the shape
+  // they had: three fields, identical names/types/nullability, and doc comments
+  // worded differently above them. Written as TypeScript source rather than as an
+  // array of line fragments, because it IS TypeScript source — and an array of
+  // string literals is a shape production has plenty of (RETRYABLE_FRAGMENTS and
+  // friends in prompt.ts), which the cross-boundary gate cannot tell from this
+  // fixture's content since it compares the string token, not the string.
+  //
+  // Measured rather than asserted as a number, because a pin holding a magic
+  // count would keep passing after the tokenizer or the corpus changed
+  // underneath it — and this pin's whole job is to be the thing that makes the
+  // two filter choices distinguishable.
+  const DECLARED_TWICE = `interface A {
+  /** The depth cap as configured. */
+  depthConfigured: number;
+  /** \`null\` when the set could not be read — an unknown, not a zero. */
+  depthEffective: number | null;
+  /** Which constraint caps the depth. */
+  depthBoundBy: Bound | null;
+}`;
+  const DECLARED_TWICE_AGAIN = `interface B {
+  depthConfigured: number;
+  /** \`null\` when the set could not be read. */
+  depthEffective: number | null;
+  depthBoundBy: Bound | null;
+}`;
+
+  // The gate's own comparison, run over a fixture under one filter policy. Same
+  // algorithm as the script's `longestSharedRun`, re-implemented here on purpose:
+  // a pin that imported the script's own function would agree with it by
+  // construction and could not catch the script getting it wrong.
+  const sharedRun = (keepComments) => {
+    const { tokenize } = createRequire(import.meta.url)("@jscpd/tokenizer");
+    const stream = (source) => tokenize(source, "typescript")
+      .filter((t) => t.type !== "empty" && (keepComments || t.type !== "comment"))
+      .map((t) => (t.type === "string" ? "string" : `${t.type}:${t.value}`));
+    const [a, b] = [stream(DECLARED_TWICE), stream(DECLARED_TWICE_AGAIN)];
+    let best = 0;
+    let previous = new Array(b.length + 1).fill(0);
+    for (let i = 1; i <= a.length; i++) {
+      const row = new Array(b.length + 1).fill(0);
+      for (let j = 1; j <= b.length; j++) row[j] = a[i - 1] === b[j - 1] ? previous[j - 1] + 1 : 0;
+      best = Math.max(best, ...row);
+      previous = row;
+    }
+    return best;
+  };
+
+  it("keeps new_line, because jscpd counts it in a clone's token total", () => {
+    // The boundary case, stated as the property that makes it one: the same
+    // fixture is CAUGHT when comments are dropped and MISSED when they are kept.
+    // A pin that only named the surviving filter could not tell those apart.
+    // Removing non-matching elements can only lengthen a run, so the caught
+    // direction is the dropped one — which is the whole reason dropping comments
+    // is safe to do.
+    const minTokens = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8")).minTokens;
+    assert.ok(sharedRun(false) >= minTokens && sharedRun(true) < minTokens,
+      `the boundary fixture now measures ${sharedRun(true)} with comments kept and\n` +
+        `${sharedRun(false)} with them dropped, so it no longer straddles the bar of ${minTokens}\n` +
+        "and this pin has stopped testing the difference between the two filter\n" +
+        "choices. Re-derive it before changing either filter — do not relax it until\n" +
+        "it passes.");
+
+    assert.ok(!/t\.type !== "new_line"/.test(gate),
+      "the stream filters new_line out. jscpd counts line breaks in a clone's token\n" +
+        "total, so every shared run comes out shorter than the threshold it is\n" +
+        "measured against and real clones are discarded as phantoms. That is how\n" +
+        "five real clones were reported as \"Found 0 clones\" and the build exited 0.");
+  });
+
+  it("drops comment, because a clone is duplicated CODE and not duplicated prose", () => {
+    assert.ok(/t\.type !== "comment"/.test(gate),
+      "the stream keeps doc comments in the token stream. Two declarations of the\n" +
+        "same fields are the same declaration whether or not the prose above them is\n" +
+        "worded identically, and prose that differs is the evidence they were written\n" +
+        "independently — not the evidence they differ. Keeping comments breaks a\n" +
+        "shared run at the first reworded sentence, which is how a mirrored\n" +
+        "interface went uncaught behind two differently-worded docblocks.");
   });
 
   it("judges a finding by the shared run it measures, not by the count jscpd reported", () => {

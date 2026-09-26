@@ -136,7 +136,19 @@ export interface LineagePolicy {
   allowSameAgentRecursion: boolean;
 }
 
-export type DepthBound = "lane-cap" | "agent-set";
+/**
+ * Which constraint caps the reachable depth.
+ *
+ * An enum, like every other discriminant here, so "the agent set is what binds"
+ * is a named value that cannot be misspelled at a comparison site — a raw
+ * `"agent-set"` compiles against a union just fine and silently never matches if
+ * the spelling drifts, which is how a depth line printed the number that was not
+ * in force.
+ */
+export enum DepthBound {
+  LaneCap = "lane-cap",
+  AgentSet = "agent-set",
+}
 
 export interface DepthLimits {
   /** The cap as configured — what the operator wrote. */
@@ -156,24 +168,24 @@ export interface DepthLimits {
  */
 export function depthLimits(policy: LineagePolicy, agentNames: readonly string[]): DepthLimits {
   if (policy.allowSameAgentRecursion) {
-    return { configured: policy.maxDepth, effective: policy.maxDepth, boundBy: "lane-cap" };
+    return { configured: policy.maxDepth, effective: policy.maxDepth, boundBy: DepthBound.LaneCap };
   }
   const distinct = new Set(agentNames.map(normalizeAgentName).filter((name): name is string => name !== null));
   const byAgentSet = distinct.size;
   // A negative cap is "no limit", and no number of agents makes one reachable
   // depth — so the agent set does not bind and the cap is the whole answer.
   if (policy.maxDepth < 0) {
-    return { configured: policy.maxDepth, effective: Number.POSITIVE_INFINITY, boundBy: "lane-cap" };
+    return { configured: policy.maxDepth, effective: Number.POSITIVE_INFINITY, boundBy: DepthBound.LaneCap };
   }
   return policy.maxDepth <= byAgentSet
-    ? { configured: policy.maxDepth, effective: policy.maxDepth, boundBy: "lane-cap" }
-    : { configured: policy.maxDepth, effective: byAgentSet, boundBy: "agent-set" };
+    ? { configured: policy.maxDepth, effective: policy.maxDepth, boundBy: DepthBound.LaneCap }
+    : { configured: policy.maxDepth, effective: byAgentSet, boundBy: DepthBound.AgentSet };
 }
 
 /** The depth refusal, in words that name the constraint that produced it. */
 function depthRefusal(lane: string, limits: DepthLimits, lineage: string[]): string {
   const where = `Current lineage: [${lineage.join(", ")}].`;
-  if (limits.boundBy === "agent-set") {
+  if (limits.boundBy === DepthBound.AgentSet) {
     return `Max delegation depth exceeded in lane "${lane}": the cap is ${limits.configured}, but only ` +
       `${limits.effective} distinct agent(s) are dispatchable and same-agent recursion is off, so no chain ` +
       `can go deeper. ${where} Raise maxDepth once more agents are dispatchable, or set ` +

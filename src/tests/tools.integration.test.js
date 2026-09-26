@@ -40,31 +40,38 @@ async function withShrunkBounds(fn) {
 const UNCLOCKED_MESSAGE = { info: { role: "user" }, parts: [{ type: "text", text: "go" }] };
 
 /**
- * Boot, spawn, and start a steer whose abort parks at the gate — the
- * arrangement every steer race needs. What races the steer is the caller's
- * next line; `steer` is the still-pending promise to await after the release.
+ * A steer that will lose a race to an interrupt, and the report it hands back.
+ * The steps are always the same — boot a child, park the steer's abort at the
+ * gate, interrupt first, then let the steer land behind the winner — and two
+ * cases were spelling them out, which is how a case ends up racing something
+ * other than a settlement.
  */
-async function racingSteer(gateOpts) {
+async function steerLosingToInterrupt(gateOpts) {
   const { h, c, id } = await withChild();
   const { release } = h.client.gateAbort(gateOpts);
   const steer = c.steer("pivot");
   await sleep(10);
-  return { h, c, id, steer, release };
+  await c.interrupt();
+  release();
+  return { h, c, id, out: await steer };
 }
 
 /**
- * A spawned dep, plus a strict depender's refusal. The dependency gate is two
- * rules — depends_on and depends_on_settled — and each test exercises one; the
- * "a live dep blocks" precondition belongs to both, so it is named once.
+ * A spawned dep, a strict depender's refusal while it lived, and how the dep
+ * then ends. The dependency gate is two rules — depends_on and
+ * depends_on_settled — and each test exercises one; the live-dep precondition,
+ * the refusal it produces, and the ending that makes the dep stop being live
+ * are one arrangement, so they are named once and a case declares only its end.
  */
-async function withRefusedDep() {
+async function withRefusedDep(ended = (h, dep) => h.settle(dep.id)) {
   const h = await setupHarness();
   const dep = await h.spawn({ description: "dep task" });
   const refused = await h.trySpawn({
     description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id],
   });
-  assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
-  assert.ok(refused.includes(dep.id), `names the dep. got: ${refused}`);
+  answerSays(refused, "Dependencies pending");
+  answerSays(refused, dep.id, "names the dep");
+  await ended(h, dep);
   return { h, dep, refused };
 }
 
@@ -72,19 +79,19 @@ async function withRefusedDep() {
  * Arm a turn replacement, then deliver bare terminal copies — endings with no
  * turn behind them, which is exactly what a just-replaced turn's in-flight
  * copies look like. A replacement that has been seen working for nothing yet
- * owns no ending, so none of them may settle it. Returns the ONE notice the
- * parent should end up with, from the replacement's own ending once it has run.
+ * owns no ending, so none of them may settle it — and the one notice the parent
+ * should end up with is the replacement's own ending, once it has run.
  */
 async function echoesCannotSettle(h, c, id, arm) {
   const before = h.notices().length;
   await arm();
   await h.fireEvent(events.idle(id));
   await h.fireEvent(events.idle(id));
-  const status = await c.status();
-  assert.ok(status.includes("active"), `an echo is not the replacement turn's ending. got: ${status}`);
+  assert.strictEqual(await stateOf(c), "State: active", "an echo is not the replacement turn's ending");
   assert.strictEqual(h.notices().length, before, "no premature completion is notified");
   await h.fireEvent(events.working(id));
-  return h.settledNotice(id);
+  const note = await h.settledNotice(id);
+  answerSays(note, "completed successfully", "the eventual ending is still a settlement");
 }
 
 /**
@@ -98,7 +105,7 @@ async function reviveAfterFailedDelivery() {
   const { id, c } = await h.spawn({ prompt: "turn one" });
   await h.settle(id); // attempt 1 fails; the retry is armed at the fixed backoff
   const cont = await c.steer("turn two");
-  assert.ok(cont.includes("Follow-up sent"), `got: ${cont}`);
+  answerSays(cont, "Follow-up sent");
   return { h, c, id };
 }
 
@@ -159,6 +166,58 @@ function assertQuestionRejected(h) {
 const stateOf = async (child) =>
   (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
 
+/**
+ * One dispatch's tool input, for the raw `dynamic_task.execute` calls that
+ * cannot go through a spawn helper. The argument shape IS the tool's contract,
+ * and it was spelled out by hand at every one of these sites — so a required
+ * field could be missing from the very case testing its neighbour.
+ */
+const dispatchArgs = (description, over = {}) => ({ description, subagent_type: "explore", prompt: "hi", ...over });
+
+/** A harness that admits exactly one child, so the second dispatch is the case. */
+const withSingleSlot = () => setupHarness({ options: { maxConcurrent: 1 } });
+
+/**
+ * A fresh project directory, and the clock its records are aged against. The
+ * durability cases write timestamps relative to a reading, so the directory and
+ * the reading are one arrangement rather than two independent choices — and a
+ * case that picks them apart is measuring nothing.
+ */
+const projectWithClock = () => ({ directory: tmpProjectDir(), now: Date.now() });
+
+/**
+ * What a tool's answer says. Every assertion in this file is a claim about the
+ * prose a tool returned — a gate's refusal, a record's verdict, a settlement's
+ * wording — and the answer is the only evidence there is, so it rides in the
+ * failure: a red case must show what the tool actually said, not that some word
+ * was missing from it. `note` is the case's own claim on top of the reason.
+ */
+function answerSays(answer, reason, note) {
+  assert.ok(answer.includes(reason), `${note ? `${note}. ` : ""}got: ${answer}`);
+}
+/**
+ * The durable reader's input, written as given. The file name and the version
+ * are the reader's contract, not a case's business — and four cases were each
+ * spelling out all three, which is four chances to write a document the boot
+ * quietly ignores.
+ */
+const writeLedger = (directory, document) =>
+  writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 3, ...document }));
+
+/**
+ * Wait for an observable, and fail rather than hang. The bound is the only clock
+ * in a poll: boot does not block on what it redelivers, so a case that has to
+ * see a later effect waits for the effect — never sleeps in its place — and the
+ * bound is what turns "never arrives" into a failure.
+ */
+async function waitFor(predicate, what) {
+  for (let tries = 0; tries < 300; tries++) {
+    if (predicate()) return;
+    await sleep(1);
+  }
+  assert.fail(`timed out waiting for ${what}`);
+}
+
 // --- Tests -----------------------------------------------------------------
 
 describe("dynamic_task validation", () => {
@@ -166,85 +225,77 @@ describe("dynamic_task validation", () => {
   it("rejects missing subagent_type with the available list", async () => {
     const h = await setupHarness();
     const out = await h.trySpawn({ description: "task t", prompt: "hi" });
-    assert.ok(out.includes("No subagent_type"), `got: ${out}`);
-    assert.ok(out.includes("explore"), `lists agents. got: ${out}`);
+    answerSays(out, "No subagent_type");
+    answerSays(out, "explore", "lists agents");
     });
 
   it("rejects unknown agents", async () => {
     const h = await setupHarness();
     const out = await h.trySpawn({ description: "task t", subagent_type: "nope", prompt: "hi" });
-    assert.ok(out.includes('Agent "nope" not found'), `got: ${out}`);
+    answerSays(out, 'Agent "nope" not found');
     });
 
   it("rejects missing and oversized prompts", async () => {
     const h = await setupHarness();
-    const missing = await h.trySpawn({ description: "task t", subagent_type: "explore" });
-    assert.ok(missing.includes("Invalid prompt"), `got: ${missing}`);
-
-    const long = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "x".repeat(100001) });
-    assert.ok(long.includes("Prompt too long"), `got: ${long}`);
+    answerSays(await h.trySpawn({ description: "task t", subagent_type: "explore" }), "Invalid prompt");
+    const overlong = "x".repeat(100001);
+    answerSays(await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: overlong }), "Prompt too long");
     });
 
   it("rejects bare model ids at admission, before creating a session", async () => {
     const h = await setupHarness();
     const before = h.client._state.sessions.size;
     const out = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" });
-    assert.ok(out.includes("Invalid model"), `got: ${out}`);
-    assert.ok(out.includes("providerID/modelID"), `names the shape. got: ${out}`);
-    assert.ok(out.includes("GLM-5.3-Flash"), `names the suspect. got: ${out}`);
+    answerSays(out, "Invalid model");
+    answerSays(out, "providerID/modelID", "names the shape");
+    answerSays(out, "GLM-5.3-Flash", "names the suspect");
     assert.strictEqual(h.client._state.sessions.size, before, "no session created for a bad id");
     });
 
   it("echoes a qualified model in the spawn confirmation", async () => {
     const { h, c, out, id } = await withChild({ spawn: { model: "nvidia/z-ai/glm-5.3" } });
-    assert.ok(out.includes("Model: nvidia/z-ai/glm-5.3"), `got: ${out}`);
+    answerSays(out, "Model: nvidia/z-ai/glm-5.3");
   });
 
   it("admits any agent by default — general dispatches", async () => {
     const { h, c, out, id } = await withChild({ spawn: { subagent_type: "general" } });
-    assert.ok(out.includes("@general"), `got: ${out}`);
+    answerSays(out, "@general");
   });
 
   it("rejects overlong descriptions at admission", async () => {
     const h = await setupHarness();
     const out = await h.trySpawn({ description: "x".repeat(3000), subagent_type: "explore", prompt: "hi" });
-    assert.ok(out.includes("Description too long"), `labels stay short. got: ${out}`);
+    answerSays(out, "Description too long", "labels stay short");
     });
 
   it("task_list names pruned expiries", async () => {
     const { h, c, id } = await withSettledChild({ harness: { options: { retainedTaskTtlMs: 1 } } });
     await sleep(5);
     const list = await h.tool.task_list.execute({});
-    assert.ok(list.includes("Pruned: 1 expired"), `expiry is visible. got: ${list}`);
+    answerSays(list, "Pruned: 1 expired", "expiry is visible");
   });
 
   it("rejects blocked agents when the operator configures the blocklist", async () => {
     const h = await setupHarness({ options: { blockedAgents: ["general"] } });
     const out = await h.trySpawn({ description: "task t", subagent_type: "general", prompt: "hi" });
-    assert.ok(out.includes("blocked"), `got: ${out}`);
+    answerSays(out, "blocked");
     });
 
   it("rejects over the concurrency limit", async () => {
-    const limited = await setupHarness({ options: { maxConcurrent: 1 } });
+    const limited = await withSingleSlot();
     const first = await limited.spawn({ description: "task one" });
     assert.ok(first.out.includes("in background"), `first must spawn. got: ${first.out}`);
 
-    const second = await limited.tool.dynamic_task.execute(
-    { description: "task two", subagent_type: "explore", prompt: "hi" },
-    { sessionID: "p1" },
-    );
-    assert.ok(second.includes("Cannot run more than"), `got: ${second}`);
-    assert.ok(second.includes("task_list"), `points at the slot holders. got: ${second}`);
+    const second = await limited.tool.dynamic_task.execute(dispatchArgs("task two"), { sessionID: "p1" });
+    answerSays(second, "Cannot run more than");
+    answerSays(second, "task_list", "points at the slot holders");
     });
 
   it("surfaces session.create failures", async () => {
     const failing = await setupHarness({ hooks: { createThrowsOnce: true } });
-    const out = await failing.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "explore", prompt: "hi" },
-    { sessionID: "p1" },
-    );
-    assert.ok(out.includes("ERROR"), `got: ${out}`);
-    assert.ok(out.includes("create failed"), `got: ${out}`);
+    const out = await failing.tool.dynamic_task.execute(dispatchArgs("task t"), { sessionID: "p1" });
+    answerSays(out, "ERROR");
+    answerSays(out, "create failed");
     });
 
   it("returns immediately even while the child prompt never settles", async () => {
@@ -254,7 +305,7 @@ describe("dynamic_task validation", () => {
     const h = await setupHarness({ hooks: hooks });
     hooks.promptHangIds.add("ses_mock_1");
     const { out, id } = await h.spawn();
-    assert.ok(out.includes("in background"), `got: ${out}`);
+    answerSays(out, "in background");
     assert.ok(id, "session id returned synchronously with the spawn line");
     assert.strictEqual(h.notices().length, 0, "nothing settles without an event");
     });
@@ -265,18 +316,16 @@ describe("task_continue branches", () => {
   it("rejects missing args and oversized prompts", async () => {
     const h = await setupHarness();
     assert.ok((await h.tool.task_continue.execute({})).includes("required"));
-    const long = await h.tool.task_continue.execute({
-      session_id: "ses_mock_1",
-      prompt: "x".repeat(100001),
-      });
-    assert.ok(long.includes("Prompt too long"), `got: ${long}`);
+    const overlong = "x".repeat(100001);
+    const long = await h.tool.task_continue.execute({ session_id: "ses_mock_1", prompt: overlong });
+    answerSays(long, "Prompt too long");
     });
 
   it("steers a still-running task — the turn stops and the message becomes the next turn", async () => {
     const { h, c, id } = await withChild();
     const out = await c.steer("follow up");
-    assert.ok(out.includes("Steer sent"), `got: ${out}`);
-    assert.ok(out.includes("task_interrupt"), `names the stall recovery. got: ${out}`);
+    answerSays(out, "Steer sent");
+    answerSays(out, "task_interrupt", "names the stall recovery");
     assert.ok(h.client._state.aborted.includes(id), "the running turn is stopped first");
     const followUps = h.client._state.promptBodies.filter(
     (p) => p.to === id && p.body.parts[0].text.includes("follow up"),
@@ -286,8 +335,7 @@ describe("task_continue branches", () => {
     followUps[0].body.parts[0].text.includes("[Parent steer"),
     `framed as a preemption. got: ${followUps[0].body.parts[0].text}`,
     );
-    const status = await c.status();
-    assert.ok(status.includes("active"), `a steer never settles. got: ${status}`);
+    assert.strictEqual(await stateOf(c), "State: active", "a steer never settles");
   });
 
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo
@@ -310,10 +358,10 @@ describe("task_continue branches", () => {
       const ctx = await withChild({ harness });
       await disturb(ctx);
       const status = await ctx.c.status();
-      assert.ok(status.includes("active"), `a non-terminal signal must not settle. got: ${status}`);
+      answerSays(status, "active", "a non-terminal signal must not settle");
       assert.strictEqual(ctx.h.notices().length, 0, "nothing is notified");
       const note = await ctx.h.settledNotice(ctx.id);
-      assert.ok(note.includes("completed successfully"), `the real event still settles. got: ${note}`);
+      answerSays(note, "completed successfully", "the real event still settles");
     });
   }
 
@@ -324,8 +372,7 @@ describe("task_continue branches", () => {
   // mid-work text as the latest output, and a ledger deaf to the real ending.
   it("a turn end that publishes several terminal events cannot settle a just-steered turn", async () => {
     const { h, c, id } = await withChild();
-    const note = await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
-    assert.ok(note.includes("completed successfully"), `got: ${note}`);
+    await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
   });
 
   // A child's outcome reaches the parent through exactly one path, and that path
@@ -398,7 +445,7 @@ describe("task_continue branches", () => {
       await sleep(30);
       releaseAbort(); // the abort lands; the steer re-validates and finds it settled
       const out = await steer;
-      assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
+      answerSays(out, "revived", "closes the loop in one call");
       assert.strictEqual(
         h.client._state.promptBodies.filter((p) => p.body.parts[0].text === "pivot").length,
         1,
@@ -417,12 +464,9 @@ describe("task_continue branches", () => {
   }
 
   it("a task settling mid-steer never receives the replacement prompt", async () => {
-    const { h, c, steer, release } = await racingSteer();
-    await c.interrupt();
-    release();
-    const out = await steer;
+    const { h, out } = await steerLosingToInterrupt();
+    answerSays(out, "interrupted", "truthful report");
     assert.ok(!out.includes("Steer sent"), `must not claim a steer that never happened. got: ${out}`);
-    assert.ok(out.includes("interrupted"), `truthful report. got: ${out}`);
     assert.strictEqual(
     h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
     0,
@@ -431,11 +475,8 @@ describe("task_continue branches", () => {
     });
 
   it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
-    const { h, c, steer, release } = await racingSteer({ fails: true });
-    await c.interrupt();
-    release();
-    const out = await steer;
-    assert.ok(out.includes("interrupted"), `reports the actual winner. got: ${out}`);
+    const { h, out } = await steerLosingToInterrupt({ fails: true });
+    answerSays(out, "interrupted", "reports the actual winner");
     assert.ok(!out.includes("settled as error"), `no false error claim. got: ${out}`);
     assert.strictEqual(
     h.notices().filter((n) => n.message.includes("Steer failed")).length,
@@ -446,24 +487,21 @@ describe("task_continue branches", () => {
 
   it("steer on a vanished session settles error instead of stranding", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { abortFailIds: new Set(["ses_mock_1"]) } } });
-    const out = await c.steer("pivot");
-    assert.ok(out.includes("not found"), `got: ${out}`);
-    const status = await c.status();
-    assert.ok(status.includes("error"), `settled error, never stranded active. got: ${status}`);
+    answerSays(await c.steer("pivot"), "not found");
+    assert.strictEqual(await stateOf(c), "State: error", "settled error, never stranded active");
   });
 
   it("a failed steer abort stays active and sends nothing", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { abortThrowsOnce: true } } });
     const out = await c.steer("pivot");
-    assert.ok(out.includes("abort failed"), `reports the gap. got: ${out}`);
-    assert.ok(out.includes("active"), `admits the child may be live. got: ${out}`);
+    answerSays(out, "abort failed", "reports the gap");
+    answerSays(out, "active", "admits the child may be live");
     assert.strictEqual(
     h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
     0,
     "no competing prompt races the live turn",
     );
-    const status = await c.status();
-    assert.ok(status.includes("active"), `stays settable. got: ${status}`);
+    assert.strictEqual(await stateOf(c), "State: active", "stays settable");
     await h.settle(id);
     assert.strictEqual(h.notices().length, 1, "the live turn still settles");
   });
@@ -473,7 +511,7 @@ describe("task_continue branches", () => {
     assert.strictEqual(h.notices().length, 1, "first turn settles");
 
     const out = await c.steer("summarize");
-    assert.ok(out.includes("Follow-up sent"), `got: ${out}`);
+    answerSays(out, "Follow-up sent");
     const followUps = h.client._state.promptBodies.filter(
     (p) => p.to === id && p.body.parts[0].text.includes("summarize"),
     );
@@ -490,16 +528,15 @@ describe("task_continue branches", () => {
 
   it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
     const { h, c, id } = await withSettledChild();
-    const note = await echoesCannotSettle(h, c, id, () => c.steer("continue"));
-    assert.ok(note.includes("completed successfully"), `got: ${note}`);
+    await echoesCannotSettle(h, c, id, () => c.steer("continue"));
   });
 
   it("interrupted children are not revived — the guidance says spawn fresh", async () => {
     const { h, c, id } = await withChild();
     await c.interrupt();
     const out = await c.steer("again");
-    assert.ok(out.includes("not revived"), `got: ${out}`);
-    assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`);
+    answerSays(out, "not revived");
+    answerSays(out, "dynamic_task", "points at the fresh-spawn path");
   });
 
   it("a revived turn does not wear the previous turn's notification", async () => {
@@ -517,21 +554,21 @@ describe("task_continue branches", () => {
     const { id, c } = await h.spawn({ model: "nvidia/z-ai/glm-5.3" });
     await h.settle(id);
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "other/thing-1" });
-    assert.ok(out.includes("Follow-up sent"), `got: ${out}`);
+    answerSays(out, "Follow-up sent");
     const routed = h.client._state.promptBodies.filter((p) => p.to === id);
     assert.deepStrictEqual(routed[routed.length - 1].body.model, { providerID: "other", modelID: "thing-1" });
     const status = await c.status();
-    assert.ok(status.includes("Model: other/thing-1"), `persists on the record. got: ${status}`);
+    answerSays(status, "Model: other/thing-1", "persists on the record");
     });
 
   it("a bare model on continue fails without touching the task", async () => {
     const { h, c, id } = await withSettledChild();
     const before = h.client._state.promptBodies.length;
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "bare-id" });
-    assert.ok(out.includes("Invalid model"), `got: ${out}`);
+    answerSays(out, "Invalid model");
     assert.strictEqual(h.client._state.promptBodies.length, before, "no prompt fires");
     const status = await c.status();
-    assert.ok(status.includes("completed"), `still settled. got: ${status}`);
+    answerSays(status, "completed", "still settled");
   });
 
   it("unknown sessions are refused as untracked", async () => {
@@ -540,7 +577,7 @@ describe("task_continue branches", () => {
       session_id: "ses_missing",
       prompt: "hello?",
       });
-    assert.ok(out.includes("not a tracked task"), `got: ${out}`);
+    answerSays(out, "not a tracked task");
     });
 });
 
@@ -549,7 +586,7 @@ describe("task_notify: the child-to-parent channel", () => {
   it("delivers a mid-flight notice and leaves the task active", async () => {
     const { h, c, id } = await withChild();
     const out = await c.notify("blocked: need DB credentials");
-    assert.ok(out.includes("Message sent to parent"), `got: ${out}`);
+    answerSays(out, "Message sent to parent");
     const notes = h.notices();
     assert.strictEqual(notes.length, 1);
     assert.ok(notes[0].to === "p1", "notice routes to the parent session");
@@ -558,8 +595,8 @@ describe("task_notify: the child-to-parent channel", () => {
 
     // A notice is not a settlement: the child still completes and reports.
     const status = await c.status();
-    assert.ok(status.includes("active"), `task stays active. got: ${status}`);
-    assert.ok(status.includes("need DB credentials"), `notice recorded on the task. got: ${status}`);
+    answerSays(status, "active", "task stays active");
+    answerSays(status, "need DB credentials", "notice recorded on the task");
 
     await h.settle(id);
     assert.strictEqual(h.notices().length, 2, "settlement still reports");
@@ -569,8 +606,8 @@ describe("task_notify: the child-to-parent channel", () => {
     const { h, c, id } = await withChild();
     const first = await c.notify("a".repeat(200) + "1");
     const second = await c.notify("a".repeat(200) + "2");
-    assert.ok(first.includes("Message sent to parent"), `got: ${first}`);
-    assert.ok(second.includes("Message sent to parent"), `prefix collision must not suppress. got: ${second}`);
+    answerSays(first, "Message sent to parent");
+    answerSays(second, "Message sent to parent", "prefix collision must not suppress");
     assert.strictEqual(h.notices().length, 2);
   });
 
@@ -580,15 +617,15 @@ describe("task_notify: the child-to-parent channel", () => {
     const { h, c, id } = await withChild();
     await c.notify("still working");
     const again = await c.notify("still working");
-    assert.ok(again.includes("duplicate suppressed"), `keeps the kind. got: ${again}`);
-    assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`);
+    answerSays(again, "duplicate suppressed", "keeps the kind");
+    answerSays(again, "Say something new", "tells the child what to do");
     assert.strictEqual(h.notices().length, 1, "the parent hears it once");
   });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { promptFailIds: new Set(["p1"]) } } });
     const out = await c.notify("hello?");
-    assert.ok(out.includes("did not acknowledge"), `names the failure. got: ${out}`);
+    answerSays(out, "did not acknowledge", "names the failure");
     assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`);
   });
 
@@ -626,21 +663,16 @@ describe("task_notify: the child-to-parent channel", () => {
   });
 
   it("refuses untracked callers and settled tasks", async () => {
-    const h = await setupHarness();
-    const stranger = await h.tool.task_notify.execute({ message: "hi" }, { sessionID: "ses_stranger" });
-    assert.ok(stranger.includes("Not a tracked task"), `got: ${stranger}`);
-
-    const { id, c } = await h.spawn();
-    await h.settle(id);
-    const late = await c.notify("too late");
-    assert.ok(/settled/i.test(late), `got: ${late}`);
+    const { h, c } = await withSettledChild();
+    answerSays(await h.tool.task_notify.execute({ message: "hi" }, { sessionID: "ses_stranger" }), "Not a tracked task");
+    answerSays(await c.notify("too late"), "the task already settled");
     });
 
   it("validates message shape and length", async () => {
     const { h, c, id } = await withChild();
     assert.ok((await c.notify("  ")).includes("required"));
     const long = await c.notify("x".repeat(4001));
-    assert.ok(long.includes("too long"), `got: ${long}`);
+    answerSays(long, "too long");
   });
 });
 
@@ -657,13 +689,13 @@ describe("error settlement guidance", () => {
 
   it("transient error settlements name task_continue as the resume path", async () => {
     const note = await settleWithMessageError("429 rate limit exceeded, retry shortly");
-    assert.ok(note.includes("transient"), `names the failure class. got: ${note}`);
-    assert.ok(note.includes("task_continue"), `points at resume. got: ${note}`);
+    answerSays(note, "transient", "names the failure class");
+    answerSays(note, "task_continue", "points at resume");
     });
 
   it("fatal error settlements carry no resume hint", async () => {
     const note = await settleWithMessageError("permission denied for model");
-    assert.ok(note.includes("permission denied"), `keeps the cause. got: ${note}`);
+    answerSays(note, "permission denied", "keeps the cause");
     assert.ok(!note.includes("transient"), `no resume hint for fatal. got: ${note}`);
     });
 });
@@ -749,7 +781,7 @@ describe("task_result and task_interrupt paths", () => {
   it("task_result maps API 404 to unknown, in the same markdown voice", async () => {
     const h = await setupHarness();
     const summary = await h.tool.task_result.execute({ session_id: "ses_gone" });
-    assert.ok(summary.includes("Status: unknown"), `got: ${summary}`);
+    answerSays(summary, "Status: unknown");
     assert.ok(summary.startsWith("## Task Result"), `one format for all reads. got: ${summary}`);
     });
 
@@ -758,14 +790,14 @@ describe("task_result and task_interrupt paths", () => {
     // failure is reported as an error status, never as a quiet success.
     const failing = await setupHarness({ hooks: { messages: () => { throw new Error("boom"); } } });
     const summary = await failing.tool.task_result.execute({ session_id: "ses_any" });
-    assert.ok(summary.includes("Status: error"), `got: ${summary}`);
-    assert.ok(summary.includes("boom"), `the cause rides along. got: ${summary}`);
+    answerSays(summary, "Status: error");
+    answerSays(summary, "boom", "the cause rides along");
     });
 
   it("a tracked task whose read fails still reports the store's own state", async () => {
     const summary = await resultForUnreadableChild();
-    assert.ok(summary.includes("Status: active"), `the store is the authority. got: ${summary}`);
-    assert.ok(summary.includes("(API unavailable)"), `the failed read says so. got: ${summary}`);
+    answerSays(summary, "Status: active", "the store is the authority");
+    answerSays(summary, "(API unavailable)", "the failed read says so");
     assert.ok(!summary.includes("Server status"), `no reading, no liveness block. got: ${summary}`);
   });
 
@@ -775,8 +807,8 @@ describe("task_result and task_interrupt paths", () => {
     // what turn the server is on.
     const { c } = await withChild({ harness: { hooks: { statusThrows: new Error("status down") } } });
     const status = await c.status();
-    assert.ok(status.includes("State: active"), `got: ${status}`);
-    assert.ok(status.includes("Last plugin event:"), `the plugin's own clock still reads. got: ${status}`);
+    answerSays(status, "State: active");
+    answerSays(status, "Last plugin event:", "the plugin's own clock still reads");
     assert.ok(!status.includes("Server status"), `an unanswered channel renders nothing. got: ${status}`);
     assert.ok(!status.includes("missed the ending"), `no reading, no verdict. got: ${status}`);
   });
@@ -792,7 +824,7 @@ describe("task_result and task_interrupt paths", () => {
   for (const [name, expected] of nothingWritten) {
     it(`a child with ${name} says so rather than guessing an age`, async () => {
       const summary = await resultForChild([UNCLOCKED_MESSAGE]);
-      assert.ok(summary.includes(expected), `no invention. got: ${summary}`);
+      answerSays(summary, expected, "no invention");
     });
   }
 
@@ -819,7 +851,7 @@ describe("task_result and task_interrupt paths", () => {
       },
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
-    assert.ok(summary.includes("Status: unknown"), `got: ${summary}`);
+    answerSays(summary, "Status: unknown");
     assert.ok(!summary.includes("Server status"), `nothing was learned. got: ${summary}`);
   });
 
@@ -830,28 +862,26 @@ describe("task_result and task_interrupt paths", () => {
       throw err;
     } } });
     const summary = await refused.tool.task_result.execute({ session_id: "ses_any" });
-    assert.ok(summary.includes("Status: error"), `got: ${summary}`);
-    assert.ok(summary.includes("(retryable)"), `a refused connection is worth retrying. got: ${summary}`);
+    answerSays(summary, "Status: error");
+    answerSays(summary, "(retryable)", "a refused connection is worth retrying");
   });
 
   it("interrupt on a settled task reports the settled state, not a fresh interrupt", async () => {
     const { h, c, id } = await withSettledChild();
     const done = await c.interrupt();
-    assert.ok(done.includes("already settled as completed"), `truthful report. got: ${done}`);
+    answerSays(done, "already settled as completed", "truthful report");
     assert.ok(!/^Session .* interrupted\.$/.test(done), `must not claim a fresh interrupt. got: ${done}`);
-    const status = await c.status();
-    assert.ok(status.includes("completed"), `history untouched. got: ${status}`);
+    assert.strictEqual(await stateOf(c), "State: completed", "history untouched");
   });
 
   it("task_interrupt settles as interrupted, preserves history, and reaches the API", async () => {
     const { h, c, id } = await withChild();
     const done = await c.interrupt();
-    assert.ok(done.includes("interrupted"), `got: ${done}`);
+    answerSays(done, "interrupted");
     assert.ok(h.client._state.aborted.includes(id), "abort must reach the API");
     // P1a contract: the record survives (history preserved) and no event can
     // re-settle it — the synchronous claim happened BEFORE the abort.
-    const status = await c.status();
-    assert.ok(status.includes("interrupted"), `history preserved. got: ${status}`);
+    assert.strictEqual(await stateOf(c), "State: interrupted", "history preserved");
     await h.settle(id);
     assert.strictEqual(h.notices().length, 0, "the abort's own idle event must not notify");
   });
@@ -861,16 +891,16 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok((await h.tool.task_interrupt.execute({})).includes("required"));
     const missing = await setupHarness({ hooks: { abortFailIds: new Set(["ses_ghost"]) } });
     const out = await missing.tool.task_interrupt.execute({ session_id: "ses_ghost" });
-    assert.ok(out.includes("not found"), `got: ${out}`);
+    answerSays(out, "not found");
     });
 
   it("a failed abort leaves a live task active — the natural event still settles it", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { abortThrowsOnce: true } } });
     const out = await c.interrupt();
-    assert.ok(out.includes("abort failed"), `reports the abort gap. got: ${out}`);
-    assert.ok(out.includes("active"), `admits the child may be live. got: ${out}`);
+    answerSays(out, "abort failed", "reports the abort gap");
+    answerSays(out, "active", "admits the child may be live");
     const status = await c.status();
-    assert.ok(status.includes("active"), `speculative claim withdrawn. got: ${status}`);
+    answerSays(status, "active", "speculative claim withdrawn");
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
     assert.strictEqual(h.notices().length, 1, "natural completion delivers");
@@ -879,10 +909,10 @@ describe("task_result and task_interrupt paths", () => {
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
     const { h, c, out } = await withBrokenAbortSettledChild();
-    assert.ok(out.includes("already settled as completed"), `got: ${out}`);
-    assert.ok(out.includes("ECONNREFUSED"), `gap recorded in the report. got: ${out}`);
+    answerSays(out, "already settled as completed");
+    answerSays(out, "ECONNREFUSED", "gap recorded in the report");
     const status = await c.status();
-    assert.ok(status.includes("completed"), `got: ${status}`);
+    answerSays(status, "completed");
     assert.ok(!status.includes("Abort error"), `a success record stays clean. got: ${status}`);
     });
 });
@@ -945,10 +975,8 @@ describe("a child that needs input is not a success", () => {
     // dropped on the next boot — the plugin forgetting, in one process, that it
     // had ever asked a parent a question. The list is the machine's now, and
     // this test fails the moment a new state is not in it.
-    const directory = tmpProjectDir();
-    const now = Date.now();
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
-      version: 3,
+    const { directory, now } = projectWithClock();
+    writeLedger(directory, {
       pending: [],
       tasks: {
         ses_blocked1: {
@@ -957,7 +985,7 @@ describe("a child that needs input is not a success", () => {
           startedAt: now - 5000, retainedAt: now - 100,
         },
       },
-    }));
+    });
     const h = await setupHarness({ hooks: {}, directory });
     const c = h.child("ses_blocked1");
     assert.strictEqual(await stateOf(c), "State: blocked", "the restored record is not dropped");
@@ -987,7 +1015,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     for (const member of [child, grandchild]) {
-      assert.ok(out.includes(member.id), `the report names ${member.id}. got: ${out}`);
+      answerSays(out, member.id, "the report names ${member.id}");
       assert.ok((await stateOf(h, member.id)).includes("interrupted"), `${member.id} is stopped`);
     }
   });
@@ -1003,8 +1031,8 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   it("an unrecognized scope is refused, never silently widened or narrowed", async () => {
     const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "everything" });
-    assert.ok(out.includes("everything"), `the rejected value is quoted back. got: ${out}`);
-    assert.ok(out.includes("subtree"), `the choices are named. got: ${out}`);
+    answerSays(out, "everything", "the rejected value is quoted back");
+    answerSays(out, "subtree", "the choices are named");
     assert.ok((await stateOf(h, grandchild.id)).includes("active"), "nothing was stopped");
   });
 
@@ -1012,7 +1040,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const { h, child, grandchild } = await withSettledDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     assert.ok(!out.includes(grandchild.id), `the finished child is not re-aborted. got: ${out}`);
-    assert.ok(out.includes(child.id), `the task the caller named is still answered. got: ${out}`);
+    answerSays(out, child.id, "the task the caller named is still answered");
   });
 
   it("a settled task still has a live child below it, and the child is stopped", async () => {
@@ -1023,8 +1051,8 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const { h, child, grandchild } = await withDispatchTree();
     await h.settle(child.id);
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
-    assert.ok(out.includes("already settled as completed"), `the root's own truth. got: ${out}`);
-    assert.ok(out.includes(grandchild.id), `the live child below it is named. got: ${out}`);
+    answerSays(out, "already settled as completed", "the root's own truth");
+    answerSays(out, grandchild.id, "the live child below it is named");
     assert.ok((await stateOf(h, grandchild.id)).includes("interrupted"), "the grandchild is stopped");
   });
 
@@ -1052,20 +1080,19 @@ describe("settlement: the notification layer owns outcomes", () => {
       spawn: { description: "orphan task", prompt: "hi" },
       ctx: {},
       });
-    assert.ok(out.includes("notification: disabled"), `got: ${out}`);
+    answerSays(out, "notification: disabled");
     await h.settle(id);
     const summary = await c.result();
-    assert.ok(summary.includes("FAILED") || summary.includes("delivered: false") || summary.includes("no parent"), `deafness must be distinguishable from silence. got: ${summary}`);
+    assert.match(summary, /FAILED|delivered: false|no parent/, `deafness must be distinguishable from silence. got: ${summary}`);
     });
 
   it("post-create registration failure notifies instead of stranding error", async () => {
     // Same-tick race through the advisory check: both spawns see an empty
     // slot, both create, the loser hits the authoritative register gate.
-    const h = await setupHarness({ options: { maxConcurrent: 1 } });
-    const args = (description) => ({ description, subagent_type: "explore", prompt: "hi" });
+    const h = await withSingleSlot();
     const [r1, r2] = await Promise.all([
-    h.tool.dynamic_task.execute(args("racer one"), { sessionID: "p1" }),
-    h.tool.dynamic_task.execute(args("racer two"), { sessionID: "p1" }),
+    h.tool.dynamic_task.execute(dispatchArgs("racer one"), { sessionID: "p1" }),
+    h.tool.dynamic_task.execute(dispatchArgs("racer two"), { sessionID: "p1" }),
     ]);
     assert.strictEqual([r1, r2].filter((r) => r.includes("in background")).length, 1, "one winner");
     assert.strictEqual([r1, r2].filter((r) => r.includes("ERROR")).length, 1, "one loser");
@@ -1076,7 +1103,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     await sleep(50); // detached error-settlement delivery
     assert.strictEqual(h.notices().length, 1, "the error settlement notifies");
     const note = h.noticeBodies()[0];
-    assert.ok(note.includes("ended with an error"), `error kind. got: ${note}`);
+    answerSays(note, "ended with an error", "error kind");
     });
 
   it("settlement does not hold the event pump on slow transport", async () => {
@@ -1099,7 +1126,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
     assert.match(notes[0].message, /ended with an error/i, "error-kind notification");
     const summary = await failing.tool.task_result.execute({ session_id: id });
-    assert.ok(summary.includes("error"), `task must be retained as error. got: ${summary}`);
+    answerSays(summary, "error", "task must be retained as error");
     // The lifecycle event that follows must not double-settle.
     await failing.settle(id);
     assert.strictEqual(notes.length, 1, "exactly-once survives a late idle");
@@ -1336,7 +1363,7 @@ describe("question gate: child questions settle", () => {
     await withLoggedChild({ hooks: { questionRejectThrows: true } }, async ({ h, id, c, log }) => {
       await h.fireEvent(events.ask(id, "q9", "yes"));
       const text = log();
-      assert.ok(text.includes("question-retained-reject-failed"), `failure logged. got: ${text}`);
+      answerSays(text, "question-retained-reject-failed", "failure logged");
       assert.ok(!text.includes('"eventName":"question-retained-rejected"'), `must not claim rejection. got: ${text}`);
       await c.interrupt();
     });
@@ -1387,7 +1414,7 @@ describe("notification delivery records", () => {
     assert.strictEqual(h.notices().length, 0, "nothing delivered");
     await sleep(600); // detached delivery runs the gate's 250ms retry cycle
     const summary = await c.result();
-    assert.ok(summary.includes("FAILED"), `delivery failure surfaced. got: ${summary}`);
+    answerSays(summary, "FAILED", "delivery failure surfaced");
     });
 
   it("a failed delivery does not consume the settlement — redelivery can succeed", async () => {
@@ -1398,7 +1425,7 @@ describe("notification delivery records", () => {
     await sleep(500); // one retry cycle at the gate's fixed backoff
     assert.strictEqual(h.notices().length, 1, "the retry delivered");
     const summary = await c.result();
-    assert.ok(summary.includes("completed"), `final record is a success. got: ${summary}`);
+    answerSays(summary, "completed", "final record is a success");
     });
 });
 
@@ -1409,9 +1436,9 @@ describe("task fleet views", () => {
     const two = await h.spawn({ description: "fleet two" });
     await h.settle(two.id);
     const list = await h.tool.task_list.execute({});
-    assert.ok(list.includes(one.id) && list.includes(two.id), `both fleets visible. got: ${list}`);
-    assert.ok(list.includes("Active: 1/4"), `got: ${list}`);
-    assert.ok(list.includes("Retained: 1"), `got: ${list}`);
+    answerSays(list, one.id) && list.includes(two.id, "both fleets visible");
+    answerSays(list, "Active: 1/4");
+    answerSays(list, "Retained: 1");
     });
 
   // A dispatch is a tree, and the flat list hid that: the one fact that
@@ -1434,11 +1461,11 @@ describe("task fleet views", () => {
     it("a finished task is history, not part of the running tree", async () => {
       const { h, child, grandchild } = await withSettledDispatchTree();
       const list = await h.tool.task_list.execute({});
-      assert.ok(list.includes("Active: 1/4"), `one task is still running. got: ${list}`);
+      answerSays(list, "Active: 1/4", "one task is still running");
       const section = list.slice(0, list.indexOf("Retained:"));
-      assert.ok(section.includes(child.id), `the running task is there. got: ${section}`);
+      answerSays(section, child.id, "the running task is there");
       assert.ok(!section.includes(grandchild.id), `the finished one is not in the tree. got: ${section}`);
-      assert.ok(list.includes(grandchild.id), `history still has it. got: ${list}`);
+      answerSays(list, grandchild.id, "history still has it");
     });
 
     it("a pruned parent is named, never silently dropped from the tree", async () => {
@@ -1450,10 +1477,10 @@ describe("task fleet views", () => {
       await h.settle(child.id);
       await sleep(10);
       const list = await h.tool.task_list.execute({});
-      assert.ok(list.includes("Pruned: 1"), `the prune is reported. got: ${list}`);
+      answerSays(list, "Pruned: 1", "the prune is reported");
       const grandchildLine = lineFor(list, grandchild.id);
-      assert.ok(grandchildLine.includes(`spawned by ${child.id}, not tracked`), `the severed link is named. got: ${grandchildLine}`);
-      assert.ok(list.includes("Active: 1/4"), `the child is still the one running task. got: ${list}`);
+      answerSays(grandchildLine, `spawned by ${child.id}, not tracked`, "the severed link is named");
+      answerSays(list, "Active: 1/4", "the child is still the one running task");
     });
 
     it("the tree spends no host read", async () => {
@@ -1467,10 +1494,10 @@ describe("task fleet views", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "status probe" });
     const detail = await c.status();
-    assert.ok(detail.includes(id), `got: ${detail}`);
-    assert.ok(detail.includes("explore"), `got: ${detail}`);
+    answerSays(detail, id);
+    answerSays(detail, "explore");
     const missing = await h.tool.task_status.execute({ session_id: "ses_ghost" });
-    assert.ok(missing.includes("unknown"), `got: ${missing}`);
+    answerSays(missing, "unknown");
     assert.ok((await h.tool.task_status.execute({})).includes("required"));
     });
 });
@@ -1478,27 +1505,24 @@ describe("task fleet views", () => {
 describe("admission dependencies", () => {
   it("refuses until deps complete, admits after", async () => {
     const { h, dep } = await withRefusedDep();
-
-    await h.settle(dep.id);
     const admitted = await h.spawn({ description: "ready task", depends_on: [dep.id] });
     assert.ok(admitted.out.includes("in background"), `got: ${admitted.out}`);
     });
 
   it("names the blocking dep state, and depends_on_settled admits settled failures", async () => {
-    const { h, dep } = await withRefusedDep();
-    await h.fireEvent(events.error(dep.id));
+    const { h, dep } = await withRefusedDep((harness, d) => harness.fireEvent(events.error(d.id)));
     const again = await h.trySpawn({ description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id] });
-    assert.ok(again.includes(`${dep.id} (error)`), `names the terminal state. got: ${again}`);
+    answerSays(again, `${dep.id} (error)`, "names the terminal state");
 
     const admitted = await h.spawn({ description: "lenient task", depends_on_settled: [dep.id] });
     assert.ok(admitted.out.includes("in background"), `settled failure satisfies. got: ${admitted.out}`);
     const status = await h.tool.task_status.execute({ session_id: admitted.id });
-    assert.ok(status.includes(dep.id), `the settled wait is recorded. got: ${status}`);
+    answerSays(status, dep.id, "the settled wait is recorded");
     });
 
   it("unknown deps are treated as satisfied", async () => {
     const { h, c, out, id } = await withChild({ spawn: { description: "lone task", depends_on: ["ses_gone"] } });
-    assert.ok(out.includes("in background"), `got: ${out}`);
+    answerSays(out, "in background");
   });
   });
 
@@ -1509,7 +1533,7 @@ describe("admission lineage", () => {
     const two = await h.spawn({ description: "nested task", subagent_type: "general" }, { sessionID: one.id });
     assert.ok(two.out.includes("in background"), `nested spawn admitted. got: ${two.out}`);
     const status = await h.tool.task_status.execute({ session_id: two.id });
-    assert.ok(status.includes("explore \u2192 general"), `parent chain visible. got: ${status}`);
+    answerSays(status, "explore \u2192 general", "parent chain visible");
     await h.tool.task_interrupt.execute({ session_id: one.id });
     });
 
@@ -1520,7 +1544,7 @@ describe("admission lineage", () => {
     { description: "nested task", subagent_type: "explore", prompt: "hi" },
     { sessionID: one.id },
     );
-    assert.ok(denied.includes("Recursive delegation blocked"), `got: ${denied}`);
+    answerSays(denied, "Recursive delegation blocked");
     await strict.tool.task_interrupt.execute({ session_id: one.id });
 
     const lenient = await setupHarness({ options: { allowSameAgentRecursion: true } });
@@ -1562,9 +1586,9 @@ describe("prompt routing contract", () => {
     const { id, c } = await h.spawn({ prompt: "Review for bugs" });
     await sleep(0);
     const text = h.client._state.promptBodies.find((p) => p.to === id).body.parts[0].text;
-    assert.ok(text.includes("background child task"), `wrapped. got: ${text}`);
-    assert.ok(text.includes("task_notify"), `teaches the notify channel. got: ${text}`);
-    assert.ok(text.includes("Review for bugs"), `carries the payload. got: ${text}`);
+    answerSays(text, "background child task", "wrapped");
+    answerSays(text, "task_notify", "teaches the notify channel");
+    answerSays(text, "Review for bugs", "carries the payload");
     });
 });
 
@@ -1623,7 +1647,7 @@ describe("outcome correctness: failed turns never report success", () => {
       const h = await setupHarness({ hooks });
       const { id, c } = await h.spawn({ description: "unvouchable child" });
       const note = (await h.noticeAfter(terminal(id))).message;
-      assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
+      answerSays(note, "ended with an error", "must report error");
       if (detail) assert.ok(note.includes(detail), `must carry provider detail. got: ${note}`);
       assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
       assert.ok((await c.status()).includes("error"), `state settles error. got: ${await c.status()}`);
@@ -1636,7 +1660,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const note = (await h.noticeAfter(
       events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
     )).message;
-    assert.ok(note.includes("ended with an error"), `got: ${note}`);
+    answerSays(note, "ended with an error");
     });
 
   it("a burst of terminal events notifies the parent exactly once", async () => {
@@ -1687,12 +1711,11 @@ describe("outcome correctness: failed turns never report success", () => {
     await p1;
     assert.ok(!r2.includes("not a tracked task"), `second interrupt sees the tracked task. got: ${r2}`);
     const status = await c.status();
-    assert.ok(status.includes("interrupted"), `converges interrupted. got: ${status}`);
+    answerSays(status, "interrupted", "converges interrupted");
     });
 
   it("boot restore honors the configured retention cap", async () => {
-    const directory = tmpProjectDir();
-    const now = Date.now();
+    const { directory, now } = projectWithClock();
     const tasks = {};
     for (let i = 1; i <= 4; i++) {
       tasks[`ses_boot${i}`] = {
@@ -1700,11 +1723,11 @@ describe("outcome correctness: failed turns never report success", () => {
         description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
       };
     }
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 3, tasks, pending: [] }));
+    writeLedger(directory, { tasks });
     await withEnv("DYNAMIC_TASK_RETAINED_MAX_ENTRIES", "2", async () => {
       const h = await setupHarness({ hooks: {}, directory });
       const list = await h.tool.task_list.execute({});
-      assert.ok(list.includes("Retained: 2"), `configured cap honored. got: ${list}`);
+      answerSays(list, "Retained: 2", "configured cap honored");
     });
     });
 
@@ -1712,15 +1735,15 @@ describe("outcome correctness: failed turns never report success", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "clean" });
     const note = await h.settledNotice(id);
-    assert.ok(note.includes("completed successfully"), `got: ${note}`);
-    assert.ok(note.includes("COMPLETED_OK"), `carries assistant text. got: ${note}`);
+    answerSays(note, "completed successfully");
+    answerSays(note, "COMPLETED_OK", "carries assistant text");
     });
 
   it("a deleted session settles as error, never as success", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "deleted child" });
     const note = (await h.noticeAfter(events.deleted(id))).message;
-    assert.ok(note.includes("ended with an error"), `deletion is a failure. got: ${note}`);
+    answerSays(note, "ended with an error", "deletion is a failure");
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     });
 });
@@ -1731,18 +1754,6 @@ describe("outcome correctness: failed turns never report success", () => {
 // was owed. The debt is written before the dial now, which makes a crash cost a
 // duplicate notice — visible, and the direction the spec takes deliberately.
 describe("boot redelivers what the last boot owed", () => {
-  const owedLedger = (directory, owed) =>
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
-      version: 3,
-      tasks: {
-        ses_owed: {
-          childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
-          description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
-        },
-      },
-      pending: owed,
-    }));
-
   const owed = (overrides = {}) => ({
     parentSessionId: "ses_parent", childSessionId: "ses_owed", kind: "completed",
     text: "[dynamic-task-notify]\nsession ses_owed owed this", attempts: 1, ...overrides,
@@ -1752,7 +1763,15 @@ describe("boot redelivers what the last boot owed", () => {
   // once: a project directory carrying an owed notice, and a plugin booted on it.
   const bootWithOwed = async (owedEntries, hooks = {}) => {
     const directory = tmpProjectDir();
-    owedLedger(directory, owedEntries);
+    writeLedger(directory, {
+      tasks: {
+        ses_owed: {
+          childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
+          description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
+        },
+      },
+      pending: owedEntries,
+    });
     const harness = await setupHarness({ hooks, directory });
     return { directory, ...harness };
   };
@@ -1767,14 +1786,6 @@ describe("boot redelivers what the last boot owed", () => {
   // Boot does not block on redelivery (a held parent must not delay every tool
   // by the write bound), so the observable is waited on — never a sleep standing
   // in for a contract.
-  const until = async (predicate, what) => {
-    for (let tries = 0; tries < 300; tries++) {
-      if (predicate()) return;
-      await sleep(1);
-    }
-    assert.fail(`timed out waiting for ${what}`);
-  };
-
   it("an owed notice is delivered once at boot and retired from disk", async () => {
     const { directory, notices } = await bootWithOwed([owed()]);
 
@@ -1783,7 +1794,7 @@ describe("boot redelivers what the last boot owed", () => {
       [["ses_parent", true]],
       "exactly the owed write, to the parent it was addressed to",
     );
-    await until(() => {
+    await waitFor(() => {
       const ledger = onDisk(directory);
       return Array.isArray(ledger?.pending) && ledger.pending.length === 0;
     }, "the debt to be retired once the parent answered");
@@ -1797,7 +1808,7 @@ describe("boot redelivers what the last boot owed", () => {
     // not on the queue — the restored ledger already holds the entry, so the
     // queue cannot tell "not yet redelivered" from "redelivered and held".
     const { directory, client } = await bootWithOwed([owed()], { notifyTransport: { hang: new Promise(() => {}) } });
-    await until(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
+    await waitFor(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
     assert.strictEqual(client._state.notifyCalls.length, 1, "one dial, then the host holds it");
     assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
   });
@@ -1819,11 +1830,6 @@ describe("boot redelivers what the last boot owed", () => {
 // happened to it. No clocks, no polling: the host's own status words are the
 // answer, and each cell below is a different set of words.
 describe("boot reconciles what the last boot was still running", () => {
-  const runningLedger = (directory, actives) =>
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
-      version: 3, tasks: {}, active: actives, pending: [],
-    }));
-
   const running = (childSessionId, overrides = {}) => ({
     childSessionId, parentSessionId: "ses_parent", agentName: "general",
     description: "running across restart", lineage: [], state: "active", startedAt: 1, ...overrides,
@@ -1831,19 +1837,12 @@ describe("boot reconciles what the last boot was still running", () => {
 
   const bootWithRunners = async (actives, hostStatusSeed) => {
     const directory = tmpProjectDir();
-    runningLedger(directory, actives);
+    writeLedger(directory, { tasks: {}, active: actives, pending: [] });
     const harness = await setupHarness({ hooks: { hostStatusSeed }, directory });
     return { directory, ...harness };
   };
 
   const ledgerActive = (directory) => JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8")).active;
-  const untilSettled = async (notices, what) => {
-    for (let tries = 0; tries < 300; tries++) {
-      if (notices().length > 0) return;
-      await sleep(1);
-    }
-    assert.fail(`timed out waiting for ${what}`);
-  };
 
   it("a child the host is still working stays active and settles on its own event", async () => {
     const h = await bootWithRunners({ ses_live: running("ses_live") }, { ses_live: "busy" });
@@ -1857,7 +1856,7 @@ describe("boot reconciles what the last boot was still running", () => {
 
   it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
     const { directory, notices } = await bootWithRunners({ ses_gone: running("ses_gone") }, {});
-    await untilSettled(notices, "the vanished child to settle");
+    await waitFor(() => notices().length > 0, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
     assert.match(notice.message, /ended with an error/);
@@ -1870,7 +1869,7 @@ describe("boot reconciles what the last boot was still running", () => {
     // The host says the turn is over and the transcript still reads: this is
     // finished work, and settling it error would invent a failure nobody saw.
     const { notices } = await bootWithRunners({ ses_idle: running("ses_idle") }, { ses_idle: "idle" });
-    await untilSettled(notices, "the finished child to settle");
+    await waitFor(() => notices().length > 0, "the finished child to settle");
     assert.match(notices()[0].message, /completed successfully/);
     assert.doesNotMatch(notices()[0].message, /ended with an error/);
   });
@@ -1890,7 +1889,7 @@ describe("boot reconciles what the last boot was still running", () => {
 
 describe("spawn resilience: no untracked child survives a failure", () => {
   it("a concurrency rejection leaves no orphan session behind", async () => {
-    const h = await setupHarness({ options: { maxConcurrent: 1 } });
+    const h = await withSingleSlot();
     const first = await h.spawn({ description: "one" });
     const before = new Set(h.client._state.sessions);
 
@@ -1912,7 +1911,7 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     assert.ok(/not found/i.test(res), `reports the server 404. got: ${res}`);
 
     const status = await c.status();
-    assert.ok(status.includes("interrupted"), `settled as intended. got: ${status}`);
+    answerSays(status, "interrupted", "settled as intended");
     });
 
   it("a sync-throwing prompt failure settles the task out of active", async () => {
@@ -1921,10 +1920,10 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     // The spawn line still returns — create succeeded; the prompt throws
     // synchronously inside the fire-and-forget path, which owns the settle.
     const { out } = await h.spawn({ description: "sync fail" });
-    assert.ok(out.includes("in background"), `spawn reports success first. got: ${out}`);
+    answerSays(out, "in background", "spawn reports success first");
     await sleep(50);
     const status = await h.tool.task_status.execute({ session_id: "ses_mock_1" });
     assert.ok(!/\[active\]|state: active|Status: active/.test(status), `must not linger active. got: ${status}`);
-    assert.ok(status.includes("error"), `settled as error. got: ${status}`);
+    answerSays(status, "error", "settled as error");
     });
 });

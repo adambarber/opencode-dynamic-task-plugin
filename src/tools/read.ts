@@ -13,10 +13,6 @@ import {
 import { pruneRetainedTasks, findTask, listTasks } from "../shared/task-state.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
-export interface ReadArgs {
-  session_id?: string | undefined;
-}
-
 // The prologue both readers share: resolve the session, prune, look up. Pruning
 // first is the point — a retained record past its TTL must not answer as though
 // it were live — and both readers depend on that order, so it is one function

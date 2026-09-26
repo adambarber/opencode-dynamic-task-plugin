@@ -150,6 +150,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       childSessionId,
       model: requestedModelLabel,
       parentSessionId: parentSessionId || null,
+      canNotify: agentCanNotify(agent),
     });
   } catch (error: unknown) {
     const message = errorMessage(error);

@@ -573,3 +573,11 @@ export function createMockClient(hooks = {}) {
     },
   };
 }
+
+/**
+ * The host's agent list, as a case needs it: one dispatchable agent declaring
+ * exactly the tools it provisions to its children. Owned here rather than in a
+ * suite because the tools map is a fact about the HOST, and a suite that wrote
+ * one would be the second place that shape is spelled.
+ */
+export const agentDeclaring = (tools) => [{ name: "explore", mode: "subagent", tools }];

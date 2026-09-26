@@ -92,22 +92,38 @@ export function spawnConfirmation(input: {
   childSessionId: string;
   model: string | null;
   parentSessionId: string | null;
+  canNotify: boolean;
 }): string {
   const head = [
     `Spawned @${input.agentName} in background.`,
     `Session: ${input.childSessionId}`,
     `Model: ${input.model ?? "(default)"}`,
   ];
+  // One line, and it is here rather than nowhere because the parent is the one
+  // who has to know: a child of this agent cannot declare that it is stuck, so a
+  // task that hits a wall settles as `completed` and arrives looking like a
+  // success. Warned, not refused — a read-only agent is a perfectly good worker
+  // and the only thing it loses is its mid-flight voice. See `agentCanNotify`
+  // for why the plugin cannot fix this by provisioning the tool.
+  const noChannel = input.canNotify
+    ? []
+    : [
+      "Warning: @"
+        + input.agentName
+        + "'s children have no task_notify, so it cannot report progress mid-run and cannot declare that it is blocked. If it hits something it cannot finish, it will say so in its final message and the task will still settle as completed — read that message before treating the outcome as a success.",
+    ];
   if (input.parentSessionId) {
     return [
       ...head,
       `Async notification: enabled (parent ${input.parentSessionId})`,
       "The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile.",
+      ...noChannel,
     ].join("\n");
   }
   return [
     ...head,
     "Async notification: disabled (parent session ID not available in tool context)",
+    ...noChannel,
   ].join("\n");
 }
 

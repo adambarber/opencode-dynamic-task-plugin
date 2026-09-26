@@ -8,7 +8,7 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { promptTextsTo, promptsTo, sessionBody, sessionCount, sessionIds, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
+import { confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, sessionIds, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
 import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
 import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
@@ -380,7 +380,7 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     const h = await harnessThrowingPrompt("ses_mock_1");
     // The spawn line still returns — create succeeded; the prompt throws
     // synchronously inside the fire-and-forget path, which owns the settle.
-    const { out } = await h.spawn({ description: "sync fail" });
+    const out = await confirmationFor(h, "sync fail");
     answerSays(out, "in background", "spawn reports success first");
     await sleep(50);
     const status = await h.tool.task_status.execute({ session_id: "ses_mock_1" });

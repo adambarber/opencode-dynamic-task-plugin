@@ -10,7 +10,8 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
+import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
+import { agentDeclaring } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive } from "./support/assertions.js";
 import { bootOn, hostStatus } from "./support/integration.js";
 
@@ -223,8 +224,6 @@ describe("a child that needs input is not a success", () => {
 // failure than the one being fixed); only a positive declaration that the tool is
 // missing changes the text.
 describe("the background prompt tells a child the truth about its own voice", () => {
-  const agentDeclaring = (tools) => [{ name: "explore", mode: "subagent", tools }];
-
   /** The opening text a freshly spawned child was sent. */
   const openingFor = async (h, description) => {
     const { id } = await h.spawn({ description });
@@ -251,5 +250,34 @@ describe("the background prompt tells a child the truth about its own voice", ()
   it("keeps the instruction when the agent says nothing about its tools", async () => {
     const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent" }] } });
     answerSays(await openingFor(h, "unknown tool set"), "task_notify", "no declaration means no reason to hide the channel");
+  });
+});
+
+// The other half of the same fact, told to the other party. The child-facing
+// text stops the child ordering a tool it lacks; this stops the PARENT reading a
+// stuck child as a success — and it is the parent's half that decides whether
+// anyone ever reads that final message at all, so neither half is optional.
+//
+// Warned, never refused: a read-only agent is a good worker and the only thing
+// it loses is its mid-flight voice. Refusing the dispatch would ban the very
+// workers whose output is worth waiting for.
+describe("the spawn confirmation tells the parent what its child cannot report", () => {
+  it("names the limit when the agent declares the tool absent", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true }) } });
+    const out = await confirmationFor(h, "read-only worker");
+    answerSays(out, "no task_notify", "the parent is told the child has no voice at all");
+    answerSays(out, "settle as completed", "because that is the failure the parent is otherwise blind to");
+  });
+
+  it("says nothing extra when the agent has the tool", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true, task_notify: true }) } });
+    const out = await confirmationFor(h, "ordinary worker");
+    answerOmits(out, "no task_notify", "a child that can report is not warned about reporting");
+  });
+
+  it("says nothing extra when the tool set is unknown", async () => {
+    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent" }] } });
+    const out = await confirmationFor(h, "undeclared worker");
+    answerOmits(out, "no task_notify", "absence of knowledge must not manufacture a warning either");
   });
 });

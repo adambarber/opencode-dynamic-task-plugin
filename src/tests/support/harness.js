@@ -155,6 +155,15 @@ export const promptsTo = (client, sessionId) => client._state.promptBodies.filte
 /** The text of every prompt addressed to one session. */
 export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId).map(promptText);
 
+/**
+ * The text the spawning turn was told back — the confirmation, not the child's
+ * opening. Its sibling `promptTextsTo` reads what went OUT; this reads what came
+ * back, and a case that wants the dispatcher's side of a spawn should not have to
+ * destructure the seam's whole return to get one string out of it.
+ */
+export const confirmationFor = async (h, description, args = {}) =>
+  (await h.spawn({ ...args, description })).out;
+
 /** "This prompt said these words" — the one predicate both prompt readers use. */
 const carries = (words) => (p) => promptText(p).includes(words);
 

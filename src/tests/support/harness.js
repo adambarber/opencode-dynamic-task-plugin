@@ -335,6 +335,11 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
       assert.strictEqual(state.notifications.length, 1, "settlement delivers exactly one notice");
       return state.notifications[0].message;
     },
+    /**
+     * Spawn one child. Returns the id, the spawn confirmation, and the child's
+     * bound tools — binding here means a test never restates which session it
+     * is talking about, and it cannot bind the wrong one.
+     */
     async spawn(args = {}, ctx = { sessionID: "p1" }) {
       const out = await harness.tool.dynamic_task.execute(
         { description: "bg task", subagent_type: "explore", prompt: "Return DONE", ...args },
@@ -342,11 +347,60 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
       );
       const id = extractSessionId(out);
       spawned.push(id);
-      return { out, id };
+      return { out, id, c: bindChild(harness, id, args, ctx) };
+    },
+    /**
+     * A child that already exists, with its tools bound to it. Every test in a
+     * tool suite drives SOME child's tool, so the (tool, session_id, ctx)
+     * triple is the suite's boilerplate — binding it once here is why no test
+     * restates which session it is talking about. Use withChild() to spawn one.
+     */
+    child(id, args = {}, ctx = { sessionID: "p1" }) {
+      return bindChild(harness, id, args, ctx);
     },
   };
   liveHarnesses.push(harness);
   return harness;
+}
+
+/**
+ * The tools of a child session, bound. `id` may be null for a child that does
+ * not exist yet (a steer that revives a settled turn, a list) — the binding is
+ * lazy so the handle is usable either way.
+ */
+function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: "p1" }) {
+  const tool = (name) => (args = {}, callCtx) =>
+    harness.tool[name].execute({ session_id: id, ...args }, callCtx ?? ctx);
+  return {
+    get id() { return id; },
+    set id(next) { id = next; },
+    tool,
+    /** Spawn this child and keep the handle's id in sync. */
+    async spawn(args = {}) {
+      const out = await harness.spawn({ ...spawnArgs, ...args }, ctx);
+      id = out.id;
+      return out;
+    },
+    steer: (prompt) => tool("task_continue")({ prompt }),
+    interrupt: () => tool("task_interrupt")(),
+    status: () => tool("task_status")(),
+    result: () => tool("task_result")(),
+    revive: () => tool("task_revive")(),
+    // The child speaks to its parent, so notify routes by the CHILD's id.
+    notify: (message) => harness.tool.task_notify.execute({ message }, { sessionID: id ?? ctx.sessionID }),
+    settle: () => harness.settle(id),
+  };
+}
+
+/**
+ * Boot the plugin, spawn one child, and return the pair a tool test needs.
+ * This is the suite's standard arrangement, so it is declared once here rather
+ * than forty times as boot-then-spawn.
+ */
+export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: "p1" } } = {}) {
+  const h = await setupHarness(harness);
+  const { id, out, c } = await h.spawn(spawn, ctx);
+  return { h, c, id, out };
 }
 
 /** Release one harness's children. Best-effort: settled children are fine. */

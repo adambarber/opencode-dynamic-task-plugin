@@ -31,21 +31,40 @@ const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.join(TESTS_DIR, "..");
 const REPO_ROOT = path.join(TESTS_DIR, "..", "..");
 
-function listProdFiles() {
+/**
+ * Every file under `dir` that `accept` claims, sorted. The ONE walk in this file.
+ *
+ * A rule's corpus is a question about WHICH files, and each rule was answering it
+ * with its own copy of the same recursion — so a corpus going stale was three
+ * edits, and the file-size rule arrived with a fourth already duplicating an
+ * existing walker. What varies between corpora is the extension and whether the
+ * suite is in scope, so those are the parameters.
+ */
+function walkSource(dir, accept, { skipTests = false } = {}) {
   const out = [];
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir)) {
-      const full = path.join(dir, entry);
-      if (statSync(full).isDirectory()) {
-        if (entry === "tests") continue;
-        walk(full);
-      } else if (full.endsWith(".ts")) {
-        out.push(full);
-      }
+  for (const entry of readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    if (statSync(full).isDirectory()) {
+      if (skipTests && entry === "tests") continue;
+      out.push(...walkSource(full, accept, { skipTests }));
+    } else if (accept(full)) {
+      out.push(full);
     }
-  };
-  walk(SRC_DIR);
+  }
   return out.sort();
+}
+
+const isTypeScript = (file) => file.endsWith(".ts");
+const isProductionOrSuite = (file) => file.endsWith(".ts") || file.endsWith(".js");
+
+/** The production sources: the .ts tree, minus the suite. */
+function listProdFiles() {
+  return walkSource(SRC_DIR, isTypeScript, { skipTests: true });
+}
+
+/** Production and suite alike — the file-size rule's corpus. */
+function listSourceFiles() {
+  return walkSource(SRC_DIR, isProductionOrSuite);
 }
 
 function listTestFiles() {
@@ -846,6 +865,53 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
   // The scan itself runs in the gate `npm test` performs, ahead of the suite —
   // see the test script. A threshold pinned here and never executed is a
   // comment; the script is what makes duplication a failing run.
+});
+
+// --- The size the tree passes -------------------------------------------------
+// Not a style preference, and the measurement is what makes it one. Every file
+// that broke this line was long for the SAME reason — it had no subject:
+//
+//   2604  one unit-test file, 62 describes spread across every module in src/
+//   2023  one integration file covering seven tools
+//   1113  one harness holding both the fake host AND the driver that uses it
+//
+// All three were fixed by naming a boundary that already existed (the module, the
+// tool, the client interface) — none by cutting anything. So length here is a
+// SYMPTOM of a missing seam, and the remedy is always a split along a real
+// boundary. A file that is merely long because it does one thing well is not
+// something this rule can see, which is the honest limit of it: the number is a
+// tripwire for "a newcomer cannot tell what this file is about", not a claim
+// about complexity.
+//
+// The escape hatch, stated rather than implied: raise MAX_LINES here and the gate
+// reads the new value, so the change is one line and shows up in the diff that
+// makes it. Do it when a split would be dishonest — when there is genuinely no
+// seam — and say so in the commit that raises it. Never to fit a file you have
+// not finished splitting.
+const MAX_LINES = 1000;
+
+/**
+ * Every file under src/, production and suite alike. The file-size rule is the
+ * one invariant here that applies to both, because a grab-bag test file and a
+ * grab-bag module fail the same way: neither has a subject a reader can hold.
+ */
+describe("invariant: no file outgrows the point where a reader stops finding things", () => {
+  it(`keeps every file under src/ within ${MAX_LINES} lines`, () => {
+    const files = listSourceFiles();
+    assert.ok(files.length > 0, "the corpus resolved to nothing — a stale path");
+    const over = files
+      .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: readFileSync(f, "utf8").split("\n").length }))
+      .filter(({ lines }) => lines > MAX_LINES)
+      .sort((a, b) => b.lines - a.lines)
+      .map(({ file, lines }) => `${file} (${lines} lines)`);
+    assert.deepStrictEqual(
+      over,
+      [],
+      `files over ${MAX_LINES} lines. Length means the file has no subject: split it along the\n` +
+      `boundary that already exists (the module, the tool, the interface it talks to) rather\n` +
+      `than cutting content. Over:\n  - ${over.join("\n  - ")}`,
+    );
+  });
 });
 
 // --- Task 08: strong types ----------------------------------------------------

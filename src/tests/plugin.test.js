@@ -1200,8 +1200,7 @@ function childParams({ id, parent = "parent_1", agent = "explore", description =
   return { childSessionId: id, parentSessionId: parent, agentName: agent, description, lineage };
 }
 
-function fillBackgroundTasks(store, config, ids) {
-  for (const id of ids) {
+function fillBackgroundTasks(store, config, ids) {  for (const id of ids) {
     registerActiveTask(store, childParams({ id, agent: id, description: id }), config);
   }
 }
@@ -1221,21 +1220,39 @@ describe("task-state: registerActiveTask", () => {
   });
 
   it("throws ConcurrencyLimitExceeded when at the limit", () => {
-    const store = createTaskStore();
-    fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
+    const store = storeAtLimit(config);
     assert.throws(() => {
       registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
     }, /Concurrency/);
   });
 
   it("settlement frees the slot for the next registration", () => {
-    const store = createTaskStore();
-    fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
+    const store = storeAtLimit(config);
     transitionState(store, "ses_1", "completed");
     const task = registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
     assert.strictEqual(task.state, "active");
   });
 });
+
+/** A store already holding the configured maximum of active children. */
+function storeAtLimit(cfg) {
+  const store = createTaskStore();
+  fillBackgroundTasks(store, cfg, ["ses_1", "ses_2", "ses_3"]);
+  return store;
+}
+
+/** A store whose one task has already been retained as completed. */
+function storeWithCompleted(cfg) {
+  const store = createTaskStore();
+  seedSesActive(store, cfg);
+  transitionState(store, "ses_active", "completed");
+  return store;
+}
+
+/** formatTaskResultSummary over a settled record carrying this notification. */
+function summaryWith(notification) {
+  return formatTaskResultSummary({ ...resultRecord(), notification });
+}
 
 describe("task-state: transitionState", () => {
   const config = normalizeDynamicTaskConfig({});
@@ -1831,21 +1848,13 @@ describe("task formatting: truncate + delivery records", () => {
   });
 
   it("formatTaskResultSummary renders a suppressed duplicate as Suppressed, never FAILED", () => {
-    const base = resultRecord();
-    const out = formatTaskResultSummary({
-      ...base,
-      notification: { kind: "notice", parentSessionId: "p1", delivered: false, attempts: 0, suppressed: true },
-    });
+    const out = summaryWith({ kind: "notice", parentSessionId: "p1", delivered: false, attempts: 0, suppressed: true });
     assert.ok(out.includes("Suppressed (duplicate — already delivered)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `suppression is not failure. got: ${out}`);
   });
 
   it("formatTaskResultSummary renders a parentless non-delivery honestly", () => {
-    const base = resultRecord();
-    const out = formatTaskResultSummary({
-      ...base,
-      notification: { kind: "completed", parentSessionId: "unknown", delivered: false, attempts: 0 },
-    });
+    const out = summaryWith({ kind: "completed", parentSessionId: "unknown", delivered: false, attempts: 0 });
     assert.ok(out.includes("Not delivered (no parent session)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `nowhere to dial is not a failed dial. got: ${out}`);
   });
@@ -1965,14 +1974,8 @@ describe("prompt dance: hydrateLatestOutcome", () => {
 describe("task-state: noteLateOutcome", () => {
   const config = normalizeDynamicTaskConfig({});
 
-  function seedCompleted(store) {
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "completed");
-  }
-
   it("escalates a completed record to error — the one retained rewrite edge", () => {
-    const store = createTaskStore();
-    seedCompleted(store);
+    const store = storeWithCompleted(config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), true);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "error");
     assert.ok(store.retainedTasks.has("ses_active"), "stays retained");
@@ -1986,8 +1989,7 @@ describe("task-state: noteLateOutcome", () => {
   });
 
   it("refuses non-edges and unknown sessions", () => {
-    const store = createTaskStore();
-    seedCompleted(store);
+    const store = storeWithCompleted(config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "completed"), false);
     assert.strictEqual(noteLateOutcome(store, "ses_nope", "error"), false);
   });

@@ -23,6 +23,7 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import type { ConcurrencyConfig, DynamicTaskConfig } from "./config.js";
+import { evictOldest } from "./bounded-map.js";
 import type { DependencyBlock } from "./admission.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
@@ -638,13 +639,9 @@ export function holdDispatchWait(
 ): DependencyWait {
   const held: DependencyWait = { ...wait, queuedAt: Date.now() };
   store.waits.set(waitKey(wait.parentSessionId, wait.description), held);
-  // Bounded: the map is a courtesy ledger to a live parent, not a history. The
-  // oldest wait goes first, and it is the one least likely to still be wanted.
-  while (store.waits.size > MAX_WAITS) {
-    const oldest = store.waits.keys().next();
-    if (oldest.done) break;
-    store.waits.delete(oldest.value);
-  }
+  // Bounded: the map is a courtesy ledger to a live parent, not a history, and
+  // the oldest wait is the one least likely to still be wanted.
+  evictOldest(store.waits, MAX_WAITS);
   return held;
 }
 
@@ -681,16 +678,21 @@ export function releaseWaitsFor(
     );
     if (!watching) continue;
     const admitted = isAdmissible(wait);
-    if (admitted.ok) {
-      release.ready.push(wait);
+    // Both endings are the same act — this wait is finished waiting, so it
+    // leaves the map and lands in one of the two buckets. Only the question it
+    // answers differs, and only the question belongs in the arms.
+    const doneWaiting = (bucket: DependencyWait[]): void => {
+      bucket.push(wait);
       store.waits.delete(key);
+    };
+    if (admitted.ok) {
+      doneWaiting(release.ready);
       continue;
     }
     // Still refused: is any edge able to change that, or is this wait finished?
     const canStillClear = admitted.pending.some((edge) => stillRunning(edge.id));
     if (canStillClear) continue;
-    release.dead.push(wait);
-    store.waits.delete(key);
+    doneWaiting(release.dead);
   }
   return release;
 }

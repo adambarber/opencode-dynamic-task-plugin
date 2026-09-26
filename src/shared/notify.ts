@@ -10,6 +10,7 @@
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import { textBlock } from "./text-block.js";
+import { evictOldest } from "./bounded-map.js";
 import { errorMessage } from "./host-shape.js";
 
 // Client logging that never throws: a dead log call must not break a
@@ -267,10 +268,7 @@ function createGateLedger(): GateLedger {
       if (kinds.has(dedupKey)) return false;
       kinds.add(dedupKey);
       delivered.set(childSessionId, kinds);
-      if (delivered.size > GATE_MAX_CHILDREN) {
-        const oldest = delivered.keys().next();
-        if (!oldest.done) delivered.delete(oldest.value);
-      }
+      evictOldest(delivered, GATE_MAX_CHILDREN);
       return true;
     },
     claim(childSessionId, dedupKey) {

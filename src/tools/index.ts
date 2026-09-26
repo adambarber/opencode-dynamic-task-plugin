@@ -58,7 +58,13 @@ export function buildToolMap(deps: ToolDeps) {
   const pluginInput = (): Verdict<ToolDeps> => ({ ok: true, input: deps });
   const scopedTool = registeredTool(sessionInput);
   const pluginTool = registeredTool(pluginInput);
-  const SESSION_ID = tool.schema.string().describe("Background task session ID (ses_...)");
+  // One schema for the one argument every child-scoped tool takes. Four tools
+  // spelled it: two borrowed this, task_continue said "Child session ID from
+  // dynamic_task", and task_interrupt said nothing at all — so the same argument
+  // had three descriptions and one absence. The word "background" was also wrong
+  // for three of the four: a settled FOREGROUND task is continued, read and
+  // stopped through this argument too.
+  const SESSION_ID = tool.schema.string().describe("Child session ID from dynamic_task (ses_...)");
   // One builder for the two dependency arguments. They are the same schema with
   // the same meaning — a list of child session ids — and differ only in what
   // waiting for them MEANS, which is the sentence, not the type. Spelling the
@@ -94,7 +100,7 @@ export function buildToolMap(deps: ToolDeps) {
       task_continue: scopedTool(
         TASK_CONTINUE_DESCRIPTION,
         {
-          session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
+          session_id: SESSION_ID,
           prompt: PROMPT("Follow-up instructions"),
           model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
         },
@@ -118,7 +124,7 @@ export function buildToolMap(deps: ToolDeps) {
       task_interrupt: scopedTool(
         TASK_INTERRUPT_DESCRIPTION,
         {
-          session_id: tool.schema.string(),
+          session_id: SESSION_ID,
           scope: tool.schema
             .enum(["subtree", "self"])
             .optional()

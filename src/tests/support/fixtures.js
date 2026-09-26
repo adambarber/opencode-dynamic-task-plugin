@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 /**
@@ -47,6 +47,26 @@ export const childParams = ({ id, parent = "parent_1", agent = "explore", descri
  * `tempDir()`.
  */
 export const tempDir = (prefix = "dynamic-task-") => mkdtempSync(join(tmpdir(), prefix));
+
+/**
+ * `tempDir`, with the removal attached.
+ *
+ * The creation and the cleanup are one decision, and splitting them across two
+ * `it` bodies is how a failing assertion leaves a directory behind for the next
+ * case to trip over — a leak that shows up as an unrelated failure much later.
+ *
+ * Async, always, rather than in a sync and an async twin: almost every caller
+ * awaits something inside, and a sync variant would only be right for the cases
+ * that do not, which is not a distinction worth encoding twice.
+ */
+export const withTempDir = async (work, prefix = "dynamic-task-") => {
+  const directory = tempDir(prefix);
+  try {
+    return await work(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
 
 /** A temp dir standing in for a project directory, which is what the host supplies. */
 export const tempProject = (prefix = "lane-project-") => tempDir(prefix);

@@ -35,6 +35,9 @@ dynamic_task(
   model="opencode-go/mimo-v2.5",   // providerID/modelID as spelled in opencode.jsonc (bare ids rejected)
   depends_on=["ses_t1", "ses_t2"]  // tasks start after deps complete (unknown ids pass)
   depends_on_settled=["ses_t3"]     // tasks start after deps settle, whatever the outcome
+                                      // a refused dispatch is HELD, and the settlement that
+                                      // answers it tells you to send it again — or that it
+                                      // never will run. You are not left polling for it.
 )
 
 task_continue(session_id="ses_child", prompt="Also check error handling")

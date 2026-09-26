@@ -19,7 +19,11 @@ Work proceeds in order. Each task doc is the spec for one unit of work — no co
 | 08 | `tasks/08-strong-types.md` | Untyped boundaries | `any` at four seams defeats review; close them with guard-first types | Complete |
 | 09 | `tasks/09-non-blocking-settlement.md` | Per-call clocks | Timeout-as-detector is masking; settlement is event-driven, the only bound is operator intent | Complete |
 | 10 | `tasks/10-parent-steer.md` | Parent→child steer | A queued follow-up races the running turn; stop-append-resubmit at the lifecycle gate | Complete |
-| 11 | `tasks/11-durability.md` | Durable liveness + delivery | Settlement is durable, delivery and actives are not — one schema migration, not four bugs | Design |
+| 11 | `tasks/11-durability.md` | Durable liveness + delivery | Settlement is durable, delivery and actives are not — one schema migration, not four bugs | Complete |
+| 12 | `tasks/12-subtree-interrupt.md` | Subtree stop | A stop that reaches one node reports success over work still running | Complete |
+| 13 | `tasks/13-dispatch-tree-read.md` | Fleet view shape | The dispatch is a tree; a flat list hid the runaway grandchild | Complete |
+| 14 | `tasks/14-blocked-settlement.md` | Blocked ≠ success | A child that asked a question was reported as completed successfully, in every view | Complete |
+| 15 | `tasks/15-dependency-waits.md` | Refused dispatch state | `depends_on` refused and forgot, making the parent's attention a clock | Complete |
 
 Each doc carries its proof (commands, results, decisions) in its Status section.
 

@@ -102,6 +102,30 @@ export interface TaskRecordBase extends TaskIdentity {
 // advisory fields below are lifecycle-written, so a registration cannot set them.
 export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
 
+/**
+ * The record minus the four fields a fresh process cannot verify, which is the
+ * only shape allowed to reach disk. A mid-flight notice and an activity
+ * heartbeat belong to the process that observed them, and turn attribution
+ * belongs to in-flight events that died with it: a fresh boot that inherited any
+ * of them would be trusting a claim it cannot verify — and would re-persist a
+ * heartbeat on every host event, putting a file write in the event head.
+ *
+ * The list lives HERE, with the fields it names, because two writers need it and
+ * the write that would drift is the one nobody is looking at. It was written out
+ * in the settle path and again on the durable write, in different orders, and a
+ * fifth advisory field added to the record had to be remembered in both places.
+ */
+export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
+  const {
+    lastNotice: _notice,
+    lastActivityAt: _activity,
+    turnLiveAt: _turnLive,
+    replacedAt: _replaced,
+    ...core
+  } = record;
+  return core;
+}
+
 export interface ActiveTaskState extends TaskRecordBase {
   state: "active";
   // Latest mid-flight notice from the child (advisory metadata, not a lifecycle
@@ -372,13 +396,7 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-          const {
-            lastNotice: _notice,
-            lastActivityAt: _activity,
-            replacedAt: _replaced,
-            turnLiveAt: _turnLive,
-            ...settled
-          } = active;
+          const settled = withoutAdvisory(active);
     const retained: RetainedTaskState = {
       ...settled,
       state: to,

@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
-import { TASK_STATES } from "./task-state.js";
+import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, isEventRecord } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
@@ -263,21 +263,10 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
   };
 }
 
-// The durable half of a running task. The advisory fields are dropped on the way
-// out and are never expected back: a mid-flight notice and an activity
-// heartbeat belong to the process that observed them, and turn attribution
-// belongs to in-flight events that died with it. A fresh boot that inherited any
-// of them would be trusting a claim it cannot verify — and would re-persist a
-// heartbeat on every host event, putting a file write in the event head.
+// The durable half of a running task: the core withoutAdvisory already
+// declares, forced to the one state a restored record may be in.
 export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
-  const {
-    lastNotice: _notice,
-    lastActivityAt: _activity,
-    turnLiveAt: _turnLive,
-    replacedAt: _replaced,
-    ...core
-  } = record;
-  return { ...core, state: "active" };
+  return { ...withoutAdvisory(record), state: "active" };
 }
 
 export function loadTaskLedger(filePath: string): TaskLedgerFile {

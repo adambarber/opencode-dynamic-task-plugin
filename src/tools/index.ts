@@ -4,12 +4,14 @@
 // session scope once and hands it to the executor. Bodies live beside their
 // hazards; this file owns the inventory the Task-00 fidelity gate reads.
 import { tool } from "@opencode-ai/plugin";
-import type { ToolContext } from "@opencode-ai/plugin";import { executeDynamicTask } from "./spawn.js";
+import type { ToolContext } from "@opencode-ai/plugin";
+import { executeDynamicTask } from "./spawn.js";
 import { executeTaskContinue } from "./continue.js";
 import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
 import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import type { Verdict } from "../shared/verdict.js";
 import { NOTICE_CLAIMS } from "../shared/task-state.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
@@ -36,7 +38,7 @@ export function buildToolMap(deps: ToolDeps) {
   const registeredTool = <T>(
     description: string,
     args: ToolArgs,
-    resolve: (raw: unknown) => { ok: true; input: T } | { ok: false; error: string },
+    resolve: (raw: unknown) => Verdict<T>,
     execute: (input: T, args: never, ctx: ToolContext) => Promise<string>,
   ) =>
     tool({

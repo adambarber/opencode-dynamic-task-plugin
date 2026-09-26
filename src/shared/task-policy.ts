@@ -4,12 +4,11 @@
 // All config is passed in via the DynamicTaskConfig parameter.
 
 import type { DynamicTaskConfig } from "./config.js";
+import type { Refusal } from "./verdict.js";
 
 // ─── PolicyResult ──────────────────────────────────────────────────
 
-export type PolicyResult =
-  | { ok: true }
-  | { ok: false; error: string };
+export type PolicyResult = { ok: true } | Refusal;
 
 // ─── normalizeAgentName ────────────────────────────────────────────
 // Normalizes agent name: lowercases, strips @ prefix, trims whitespace.

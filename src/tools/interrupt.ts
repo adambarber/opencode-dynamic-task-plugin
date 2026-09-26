@@ -23,6 +23,7 @@ import {
   subtreeTaskIds,
 } from "../shared/task-state.js";
 import { type ResolvedSessionScope } from "./context.js";
+import type { Refusal } from "../shared/verdict.js";
 import {
   interruptReport,
   interruptScopeRefused,
@@ -37,7 +38,7 @@ export type InterruptScope = "subtree" | "self";
 // understand is never defaulted: silently widening a stop kills work the caller
 // did not name, and silently narrowing one leaves a descendant running behind a
 // report that reads as success.
-export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | { ok: false; error: string } {
+export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
   const raw = (args as { scope?: unknown } | null | undefined)?.scope;
   if (raw === undefined) return { ok: true, scope: "subtree" };
   if (raw === "subtree" || raw === "self") return { ok: true, scope: raw };

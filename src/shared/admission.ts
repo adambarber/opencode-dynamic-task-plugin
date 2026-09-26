@@ -9,6 +9,7 @@ import type { DynamicTaskConfig } from "./config.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
+import type { Verdict } from "./verdict.js";
 import { hostPayload } from './session-lifecycle.js';
 import { isEventRecord } from './host-shape.js';
 import {
@@ -203,9 +204,7 @@ export function registerAdmittedTask(
  * the caller's early return is the one line every gate's caller already writes,
  * rather than a typeof check each prompt-bearing tool re-spells for itself.
  */
-export type ToolPromptAdmission =
-  | { ok: true; input: AdmittedPromptInput }
-  | { ok: false; error: string };
+export type ToolPromptAdmission = Verdict<AdmittedPromptInput>;
 
 export function admitToolPrompt(
   args: { prompt?: unknown; model?: unknown },

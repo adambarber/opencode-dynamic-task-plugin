@@ -8,6 +8,7 @@ import { findTask } from "../shared/task-state.js";
 import { resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { formatTaskResultSummary } from "../shared/task-formatting.js";
+import type { Refusal } from "../shared/verdict.js";
 
 export interface ToolDeps {
   client: OpenCodeClient;
@@ -38,9 +39,7 @@ export interface ResolvedSessionScope {
   config: DynamicTaskConfig;
 }
 
-export type SessionScope =
-  | { ok: true; scope: ResolvedSessionScope }
-  | { ok: false; error: string };
+export type SessionScope = { ok: true; scope: ResolvedSessionScope } | Refusal;
 
 export function openSessionScope(deps: ToolDeps, args: unknown): SessionScope {
   const missing = missingSessionId(args);

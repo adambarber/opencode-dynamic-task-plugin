@@ -432,31 +432,32 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
 });
 
 // --- the duplicate-detection gate ------------------------------------------------
-// The thresholds are not taste. 3 lines / 20 tokens is the strictest level that
-// this tree now passes, and it passes because every clone it reported was
-// ELIMINATED rather than tolerated: 43 when it was adopted (7 in production, 36
-// in tests), and every one of them was a restated decision — two hand-written
-// reverse message walks, an inline copy of the ledger's own declared type, two
-// copies of the retained-record lookup-and-edit, and two tools each spelling
-// the prompt-admission prologue out for themselves. One notch down is real
-// duplication, not tokenizer noise — 3/15 reports 86, headed by duplicated
-// interface declarations, with none of them import-shaped. So the gate is pinned
-// here: loosening it is a deliberate edit to a test that says what re-opens,
-// not a quiet edit to a config file.
+// The thresholds are not taste. 3 lines / 15 tokens is the strictest level this
+// tree passes, and it passes because every clone it reported was ELIMINATED
+// rather than tolerated: 43 at 3/20 when that level was adopted (7 in
+// production, 36 in tests), and 67 at 3/15 when this one was (16 in production,
+// 51 in tests). Every one of them was a restated decision, and the three
+// declarations of ChildRef, the two hand-written copies of a question's
+// rejection classification, and the four spellings of a retained record in the
+// test suites were each one place to change a shape that had a single owner.
+// The shape of the fixes is the point: a clone is eliminated by giving the
+// repeated idea ONE home, never by rewording a line until the tokenizer stops
+// matching. So the gate is pinned here: loosening it is a deliberate edit to a
+// test that says what re-opens, not a quiet edit to a config file.
 describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
   const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
 
-  it("enforces zero tolerance at 3 lines / 20 tokens", () => {
+  it("enforces zero tolerance at 3 lines / 15 tokens", () => {
     const loosened = [
       ["threshold", 0],
       ["minLines", 3],
-      ["minTokens", 20],
+      ["minTokens", 15],
     ].filter(([key, expected]) => config[key] !== expected);
     assert.deepStrictEqual(
       loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
       [],
-      `duplicate gate loosened. 3/20 reported 43 real clones when it was adopted and\n` +
-        `3/15 still reports 86, so this is the tree's actual clean level — reached by\n` +
+      `duplicate gate loosened. 3/20 reported 43 real clones when it was adopted,\n` +
+        `3/15 reported 67, and 3/15 is now the tree's actual clean level — reached by\n` +
         `eliminating the clones, never by moving the bar to hide them.`,
     );
   });

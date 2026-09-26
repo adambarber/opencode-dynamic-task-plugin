@@ -72,6 +72,15 @@ function scanLines(file, patterns, skips = []) {
 // about text that merely discusses code.
 const PROSE = Symbol("prose");
 
+// The timer primitives: any wall-clock wait in production. A file whitelist
+// grants an exemption, not an open door.
+const TIMER_PRIMITIVE = /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/;
+
+// Tenet 9: prompt.ts owns child prompts (Task 03 dance), notify.ts owns parent
+// writes (Task 05 gate). The legacy index-level helper is gone — no sanctioned
+// spans remain.
+const PROMPT_CALL = /client\.session\.prompt\s*\(/;
+
 function formatViolations(rule, hits) {
   return (
     `${rule.why}\n` +
@@ -123,27 +132,149 @@ const DOC_ADMISSION = "docs/tasks/07-admission-gate.md";
 const DOC_TYPES = "docs/tasks/08-strong-types.md";
 const DOC_FIDELITY = "docs/tasks/00-fidelity-ground-truth.md (Tenet 12)";
 
-// The timer primitives: any wall-clock wait in production. A file whitelist
-// grants an exemption, not an open door.
-const TIMER_PRIMITIVE = /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\s*\(/;
+/**
+ * A banned spelling, with the doctrine note and the claim it enforces. The three
+ * travel together because they are one gate: a rule that answers to the wrong
+ * note sends a reader of a red run to the wrong argument, and 14 rows were each
+ * re-typing which note they answered to. What a rule still has to say is WHERE
+ * it is read — the scope, which is the only part that genuinely varies.
+ */
+const gate = (patterns, doc, why, extra = {}) => ({ patterns, doc, why, ...extra });
+
+// (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle
+// fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/
+// turnLiveAt) belong to the state machine alone: outside task-state.ts they may
+// be read, never written.
+const LIFECYCLE_MUTATION = gate(
+  [
+    /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
+  ],
+  DOC_LIFECYCLE,
+  "Direct task-state mutation bypasses transitionState's matrix.",
+);
+const CLOCK_OWNERS = ["notify.ts", "execution-bound.ts"];
+const WALL_CLOCK_WAIT = gate(
+  [TIMER_PRIMITIVE],
+  DOC_SETTLEMENT,
+  "A wall-clock wait returned outside a bound funnel.",
+  { sanctioned: CLOCK_OWNERS },
+);
+// Two owners, one timer each: the notification retry's backoff and the deadline
+// in withBound. A second timer-shaped call in either means a new clock entered
+// the settlement layer.
+const CLOCK_OWNER_COUNT = gate(
+  [TIMER_PRIMITIVE],
+  DOC_SETTLEMENT,
+  "The clock owners hold exactly one wall-clock wait apiece (defaultSleep, withBound).",
+);
+const CHILD_SESSION_CREATE = gate(
+  [/client\.session\.create\s*\(/],
+  DOC_SETTLEMENT,
+  "Child sessions must be created only by the spawn executor.",
+);
+const CHILD_SESSION_ABORT = gate(
+  [/client\.session\.abort\s*\(/],
+  DOC_SETTLEMENT,
+  "Abort only via abortSession, so 404-versus-transport failure cannot drift between the steer and interrupt paths.",
+);
+const DELETED_TIMER_VOCABULARY = gate(
+  [/\btimeout_ms\b|\btimeoutBehavior\b|\bawait_response\b|\btimed_out_retained\b|\bcompleted_after_timeout\b|\bDYNAMIC_TASK_TIMEOUT\b|\bcreateTimerProvider\b|\bstealTimeoutHandle\b/],
+  DOC_SETTLEMENT,
+  "Pre-cutover timer vocabulary reappeared in production source.",
+);
+const PARENT_OR_CHILD_WRITE = gate(
+  [PROMPT_CALL],
+  DOC_NOTIFY,
+  "Direct session.prompt call sites (child prompts via invokePrompt, parent writes via notifyParent).",
+);
+const THE_ONLY_PARENT_WRITE = gate(
+  [PROMPT_CALL],
+  DOC_NOTIFY,
+  "The notification gate owns exactly one parent write.",
+);
+const LEGACY_NOTIFY_HELPER = gate([/notifyParentSession/], DOC_NOTIFY, "Legacy helper (notify via the gate).");
+const THE_ONLY_NOTIFY_OWNER = gate(
+  [/function\s+notifyParent\w*\s*\(/],
+  DOC_NOTIFY,
+  "Exactly one parent-notification owner.",
+);
+const PERSISTENCE_DANCES = ["session-lifecycle.ts", "debug-logger.ts"];
+const RAW_FILE_WRITE = gate(
+  [/writeFileSync|renameSync|appendFileSync/],
+  DOC_PERSISTENCE,
+  "File write outside the atomic-write dances.",
+  { sanctioned: PERSISTENCE_DANCES },
+);
+const STATE_PATH_LITERAL = gate(
+  [/"\.dynamic-task-(ledger|logs)/],
+  DOC_PERSISTENCE,
+  "State-path literal outside the dances (resolve via the host directory instead).",
+  { sanctioned: PERSISTENCE_DANCES },
+);
+const ADMISSION_BYPASS = gate(
+  [/registerActiveTask\s*\(|validateAgent\s*\(|validateLineage\s*\(|\bagents\s*\.\s*find\s*\(/],
+  DOC_ADMISSION,
+  "Direct admission calls (each must route via admitSpawn).",
+  { skip: [/function\s+(registerActiveTask|validateAgent|validateLineage)\s*\(/] },
+);
+const ANY_ANNOTATION = gate(
+  [/:\s*any\b|\bas\s+any\b|<any>|\bany\[\]/],
+  DOC_TYPES,
+  "`any` reopens an unvalidated boundary — take `unknown` and narrow it.",
+  { sanctioned: [], skip: [PROSE] },
+);
+const CATCH_ANY = gate(
+  [/catch\s*\([^)]*:\s*any\s*\)/],
+  DOC_TYPES,
+  "`catch (e: any)` opts out of useUnknownInCatchVariables — narrow unknown instead.",
+);
+const HARNESS_EVENT_NAME = gate(
+  [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
+  DOC_FIDELITY,
+  "A fixture that invents a host event name certifies a gate that listens for it.",
+  { corpus: () => [path.join(TESTS_DIR, "support", "harness.js")], skip: [PROSE] },
+);
+const PRODUCTION_EVENT_NAME = gate(
+  [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
+  DOC_FIDELITY,
+  "A host event name spelled in production bypasses the chokepoint that makes it checkable.",
+  { skip: [PROSE] },
+);
+// question-handling.ts owns the linkage state AND the two endpoints, so both
+// question gates sanction the same file: it is a fact about the module, not a
+// choice either rule makes for itself.
+const QUESTION_GATE_OWNER = ["question-handling.ts"];
+const QUESTION_LINKAGE_OWNER = gate(
+  [/questionIdToSessionId|questionSessions/],
+  DOC_QUESTIONS,
+  "Question linkage state outside the gate module.",
+  { sanctioned: QUESTION_GATE_OWNER },
+);
+const QUESTION_ENDPOINT_FUNNEL = gate(
+  [/client\.question\s*\.\s*(reply|reject)\s*\(/],
+  DOC_QUESTIONS,
+  "Direct question reply/reject bypasses the resolve-then-validate gate.",
+  { sanctioned: QUESTION_GATE_OWNER },
+);
+const TEST_LOCAL_PRODUCTION_COPY = gate(
+  [/^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText|registerBackgroundTask|handleChildLifecycleEvent)\s*\(/],
+  DOC_FIDELITY,
+  "Test-local copies of production functions — import from dist/ instead.",
+  { corpus: listTestFiles },
+);
+const STALE_DISPATCH_FILTER = gate(
+  [/===\s*["']subagent["']/],
+  DOC_FIDELITY,
+  "Stale dispatch filter — production accepts 'subagent'+'all' (isDispatchableAgent); import it instead.",
+  // Self-exclusion: this file discusses the banned pattern in prose.
+  { sanctioned: ["safety-invariants.test.js"], corpus: listTestFiles },
+);
 
 // --- Task 01: lifecycle funnel -------------------------------------------
 // Primitive: task-state mutation. Funnel: src/shared/task-state.ts owns every
 // Map write and every completed/timeoutNotified assignment (Tenets 1, 3, 5).
 describe("invariant: lifecycle mutations funnel through task-state (Task 01)", () => {
-  rule({
-    name: "no raw store/flag mutation outside task-state.ts",
-    // (?!=) excludes == / === reads: only real assignments are bypasses.
-    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/
-    // replacedAt/turnLiveAt) belong to the state machine alone: outside
-    // task-state.ts they may be read, never written.
-    patterns: [
-      /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
-    ],
-    sanctioned: ["task-state.ts"],
-    doc: DOC_LIFECYCLE,
-    why: "Direct task-state mutation bypasses transitionState's matrix.",
-  });
+  rule({ name: "no raw store/flag mutation outside task-state.ts", ...LIFECYCLE_MUTATION, sanctioned: ["task-state.ts"] });
 });
 
 // --- Task 09: non-blocking settlement -------------------------------------
@@ -152,48 +283,19 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
 // is the notification gate's fixed retry backoff (notify.ts). Everything else
 // is unrepresentable by invariance, and the deleted vocabulary may not return.
 describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", () => {
-  rule({
-    name: "no bare wall-clock waits outside the bound funnels",
-    // No lookbehind exemptions: any setTimeout-shaped call fails outside the
-    // two clock owners — including globalThis.*.
-    patterns: [TIMER_PRIMITIVE],
-    sanctioned: ["notify.ts", "execution-bound.ts"],
-    doc: DOC_SETTLEMENT,
-    why: "A wall-clock wait returned outside a bound funnel.",
-  });
-
-  rule({
-    name: "each clock owner keeps exactly one timer-shaped call site",
-    // Two owners, one timer each: the notification retry's backoff and the
-    // deadline in withBound. A second timer-shaped call in either means a new
-    // clock entered the settlement layer.
-    patterns: [TIMER_PRIMITIVE],
-    only: ["notify.ts", "execution-bound.ts"],
-    expect: 2,
-    doc: DOC_SETTLEMENT,
-    why: "The clock owners hold exactly one wall-clock wait apiece (defaultSleep, withBound).",
-  });
+  // No lookbehind exemptions: any setTimeout-shaped call fails outside the two
+  // clock owners — including globalThis.*. The two gates are one banned spelling
+  // read two ways: zero outside the owners, exactly one apiece inside them.
+  rule({ name: "no bare wall-clock waits outside the bound funnels", ...WALL_CLOCK_WAIT });
+  rule({ name: "each clock owner keeps exactly one timer-shaped call site", ...CLOCK_OWNER_COUNT, only: CLOCK_OWNERS, expect: 2 });
 
   // Tenet 9: create lives in the spawn executor — the ONLY site, because a
   // created session nobody registered runs unmonitored. Abort is funnelled
   // in session-lifecycle: the await stays at the call site that orders it
   // (steer beside its claim, interrupt beside its settle, spawn beside its
   // cleanup), but what a failure MEANS is decided once.
-  rule({
-    name: "child sessions are created only by the spawn executor",
-    patterns: [/client\.session\.create\s*\(/],
-    sanctioned: ["tools/spawn.ts"],
-    doc: DOC_SETTLEMENT,
-    why: "Child sessions must be created only by the spawn executor.",
-  });
-
-  rule({
-    name: "child sessions are aborted only via abortSession",
-    patterns: [/client\.session\.abort\s*\(/],
-    sanctioned: ["shared/session-lifecycle.ts"],
-    doc: DOC_SETTLEMENT,
-    why: "Abort only via abortSession, so 404-versus-transport failure cannot drift between the steer and interrupt paths.",
-  });
+  rule({ name: "child sessions are created only by the spawn executor", ...CHILD_SESSION_CREATE, sanctioned: ["tools/spawn.ts"] });
+  rule({ name: "child sessions are aborted only via abortSession", ...CHILD_SESSION_ABORT, sanctioned: ["shared/session-lifecycle.ts"] });
 
   // The SDK client resolves to { data, request, response }, so unwrapping it is
   // a transport fact, and a reader that reads a level too high fails by
@@ -210,9 +312,7 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
 
   rule({
     name: "deleted timer vocabulary never returns",
-    patterns: [/\btimeout_ms\b|\btimeoutBehavior\b|\bawait_response\b|\btimed_out_retained\b|\bcompleted_after_timeout\b|\bDYNAMIC_TASK_TIMEOUT\b|\bcreateTimerProvider\b|\bstealTimeoutHandle\b/],
-    doc: DOC_SETTLEMENT,
-    why: "Pre-cutover timer vocabulary reappeared in production source.",
+    ...DELETED_TIMER_VOCABULARY,
   });
 });
 
@@ -232,28 +332,12 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
 // divergent literal returns "" and the assertion breaks. The fixture is the only
 // place where both halves of the assertion are under the test's own control.
 describe("invariant: the host model invents no event names (Tenet 12)", () => {
-  // `type:` only. `name:` is the sync channel's own field, which production
-  // matches by substring on purpose ("spellings differ across releases"), so
-  // pinning it to one literal would be a false precision.
-  const INVENTED_TYPE = /\btype:\s*"(session|question|message|permission|file|storage|project|install)\./;
-
-  rule({
-    name: "the harness spells no host event type — it imports the pinned ones",
-    patterns: [INVENTED_TYPE],
-    corpus: () => [path.join(TESTS_DIR, "support", "harness.js")],
-    skip: [PROSE],
-    doc: DOC_FIDELITY,
-    why: "A fixture that invents a host event name certifies a gate that listens for it.",
-  });
-
-  rule({
-    name: "production pins every host event name against the SDK union",
-    patterns: [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
-    corpus: listProdFiles,
-    skip: [PROSE],
-    doc: DOC_FIDELITY,
-    why: "A host event name spelled in production bypasses the chokepoint that makes it checkable.",
-  });
+  // One spelling, two readers, and the asymmetry is the reason both exist: a
+  // fixture name that no host publishes makes a BROKEN gate look covered, which
+  // is the failure that shipped, while production is a chokepoint everyone must go
+  // through. The pattern is identical; what differs is who is being read.
+  rule({ name: "the harness spells no host event type — it imports the pinned ones", ...HARNESS_EVENT_NAME });
+  rule({ name: "production pins every host event name against the SDK union", ...PRODUCTION_EVENT_NAME });
 });
 
 // --- Task 03: prompt/hydration dance ---------------------------------------
@@ -261,55 +345,22 @@ describe("invariant: the host model invents no event names (Tenet 12)", () => {
 // there is no sanctioned caller — every site is reported so the migration
 // has a complete list (Tenets 1, 6).
 describe("invariant: session.prompt flows through funnels (Tasks 03/05)", () => {
-  // Tenet 9: prompt.ts owns child prompts (Task 03 dance), notify.ts owns
-  // parent writes (Task 05 gate). The legacy index-level helper is gone —
-  // no sanctioned spans remain.
-  const PROMPT_CALL = /client\.session\.prompt\s*\(/;
-
-  rule({
-    name: "no direct client.session.prompt outside prompt.ts and notify.ts",
-    patterns: [PROMPT_CALL],
-    sanctioned: ["prompt.ts", "notify.ts"],
-    doc: DOC_NOTIFY,
-    why: "Direct session.prompt call sites (child prompts via invokePrompt, parent writes via notifyParent).",
-  });
-
-  rule({
-    name: "the gate holds exactly one parent-write call",
-    patterns: [PROMPT_CALL],
-    only: ["notify.ts"],
-    expect: 1,
-    doc: DOC_NOTIFY,
-    why: "The notification gate owns exactly one parent write.",
-  });
-
-  rule({
-    name: "no legacy notifyParentSession helper remains",
-    patterns: [/notifyParentSession/],
-    doc: DOC_NOTIFY,
-    why: "Legacy helper (notify via the gate).",
-  });
+  // The same call site, read two ways: nothing but the two funnels, and exactly
+  // one write inside the notification gate — which is the only parent write the
+  // plugin is allowed to make.
+  rule({ name: "no direct client.session.prompt outside prompt.ts and notify.ts", ...PARENT_OR_CHILD_WRITE, sanctioned: ["prompt.ts", "notify.ts"] });  rule({ name: "the gate holds exactly one parent-write call", ...THE_ONLY_PARENT_WRITE, only: ["notify.ts"], expect: 1 });
+  rule({ name: "no legacy notifyParentSession helper remains", ...LEGACY_NOTIFY_HELPER });
 });
 
 // --- Task 04: question gate ------------------------------------------------
 // Primitive: answering child questions. Funnel: question-handling.ts owns the
 // only client.question.reply/reject calls (Tenets 1, 4).
 describe("invariant: question reply/reject funnel through question-handling (Task 04)", () => {
-  rule({
-    name: "linkage map lives in the gate module only",
-    patterns: [/questionIdToSessionId|questionSessions/],
-    sanctioned: ["question-handling.ts"],
-    doc: DOC_QUESTIONS,
-    why: "Question linkage state outside the gate module.",
-  });
-
-  rule({
-    name: "no direct client.question.reply/reject outside question-handling.ts",
-    patterns: [/client\.question\s*\.\s*(reply|reject)\s*\(/],
-    sanctioned: ["question-handling.ts"],
-    doc: DOC_QUESTIONS,
-    why: "Direct question reply/reject bypasses the resolve-then-validate gate.",
-  });
+  // One decision over two subjects: question-handling.ts owns the linkage state
+  // AND the two endpoints, so both gates sanction the same file and answer to the
+  // same doctrine note.
+  rule({ name: "linkage map lives in the gate module only", ...QUESTION_LINKAGE_OWNER });
+  rule({ name: "no direct client.question.reply/reject outside question-handling.ts", ...QUESTION_ENDPOINT_FUNNEL });
 });
 
 // --- Task 05: notification gate --------------------------------------------
@@ -317,13 +368,7 @@ describe("invariant: question reply/reject funnel through question-handling (Tas
 // owns them (notifyParentSession) until the Task 05 gate subsumes it
 // (Tenets 1, 6).
 describe("invariant: one parent-notification owner (Task 05)", () => {
-  rule({
-    name: "exactly one notifyParent* function exists",
-    patterns: [/function\s+notifyParent\w*\s*\(/],
-    expect: 1,
-    doc: DOC_NOTIFY,
-    why: "Exactly one parent-notification owner.",
-  });
+  rule({ name: "exactly one notifyParent* function exists", ...THE_ONLY_NOTIFY_OWNER, expect: 1 });
 });
 
 // --- Task 06: persistence dance --------------------------------------------
@@ -331,15 +376,7 @@ describe("invariant: one parent-notification owner (Task 05)", () => {
 // atomic ledger dance; debug-logger.ts owns diagnostics appends (Tenet 6).
 // No other module may write files.
 describe("invariant: file writes funnel through ledger/logger dances (Task 06)", () => {
-  const PERSISTENCE_SANCTIONED = ["session-lifecycle.ts", "debug-logger.ts"];
-
-  rule({
-    name: "no writeFileSync/renameSync/appendFileSync outside sanctioned dances",
-    patterns: [/writeFileSync|renameSync|appendFileSync/],
-    sanctioned: PERSISTENCE_SANCTIONED,
-    doc: DOC_PERSISTENCE,
-    why: "File write outside the atomic-write dances.",
-  });
+  rule({ name: "no writeFileSync/renameSync/appendFileSync outside sanctioned dances", ...RAW_FILE_WRITE });
 });
 
 // --- Task 06 amendment (2026-09-11 smoke finding): state scoping -----------
@@ -348,13 +385,7 @@ describe("invariant: file writes funnel through ledger/logger dances (Task 06)",
 // literals can re-establish CWD roots silently — the names belong to the
 // two persistence dances, nowhere else.
 describe("invariant: durable state paths derive from the project directory", () => {
-  rule({
-    name: "no bare state-file/dir literals outside the ledger/logger dances",
-    patterns: [/"\.dynamic-task-(ledger|logs)/],
-    sanctioned: ["session-lifecycle.ts", "debug-logger.ts"],
-    doc: DOC_PERSISTENCE,
-    why: "State-path literal outside the dances (resolve via the host directory instead).",
-  });
+  rule({ name: "no bare state-file/dir literals outside the ledger/logger dances", ...STATE_PATH_LITERAL });
 });
 
 // --- Task 07: admission gate ------------------------------------------------
@@ -362,15 +393,9 @@ describe("invariant: durable state paths derive from the project directory", () 
 // sanctioned caller of registration/validation — every site is reported
 // (Tenets 3, 4).
 describe("invariant: spawn admission flows through one gate (Task 07)", () => {
-  rule({
-    name: "no direct register/validate/agent-find outside the admission gate",
-    patterns: [/registerActiveTask\s*\(|validateAgent\s*\(|validateLineage\s*\(|\bagents\s*\.\s*find\s*\(/],
-    // Tenet 9: admission.ts IS the gate — its own definitions are the funnel.
-    skip: [/function\s+(registerActiveTask|validateAgent|validateLineage)\s*\(/],
-    sanctioned: ["admission.ts"],
-    doc: DOC_ADMISSION,
-    why: "Direct admission calls (each must route via admitSpawn).",
-  });
+  // Tenet 9: admission.ts IS the gate — its own definitions are the funnel, so
+  // they are skipped rather than sanctioned: this rule is about CALLS.
+  rule({ name: "no direct register/validate/agent-find outside the admission gate", ...ADMISSION_BYPASS, sanctioned: ["admission.ts"] });
 });
 
 // --- Tenet 12: pin contracts with the real primitive ------------------------
@@ -378,23 +403,8 @@ describe("invariant: spawn admission flows through one gate (Task 07)", () => {
 // drift — plugin.test.js carries its own agent-mode filter that contradicts
 // the eed3a04 dispatchability fix it should pin.
 describe("invariant: tests import production, never redefine it (Tenet 12)", () => {
-  rule({
-    name: "no production-function copies in test files",
-    patterns: [/^\s*(async\s+)?function\s+(buildAgentList|validateSessionResult|extractTextFromParts|resolveParentSessionId|fetchAgents|getMessageCount|readSessionMessages|truncateText|registerBackgroundTask|handleChildLifecycleEvent)\s*\(/],
-    corpus: listTestFiles,
-    doc: DOC_FIDELITY,
-    why: "Test-local copies of production functions — import from dist/ instead.",
-  });
-
-  rule({
-    name: "no stale subagent-only dispatch filter in tests",
-    patterns: [/===\s*["']subagent["']/],
-    // Self-exclusion: this file discusses the banned pattern in prose.
-    sanctioned: ["safety-invariants.test.js"],
-    corpus: listTestFiles,
-    doc: DOC_FIDELITY,
-    why: "Stale dispatch filter — production accepts 'subagent'+'all' (isDispatchableAgent); import it instead.",
-  });
+  rule({ name: "no production-function copies in test files", ...TEST_LOCAL_PRODUCTION_COPY });
+  rule({ name: "no stale subagent-only dispatch filter in tests", ...STALE_DISPATCH_FILTER });
 });
 
 // --- Task 00: documented capability inventory --------------------------------
@@ -487,19 +497,7 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
 // exemption needs a named reason inline (Tenet 9); the list starts and stays
 // empty — the whole point of the task is that it can.
 describe("invariant: production code has no `any` (Task 08)", () => {
-  rule({
-    name: "no any annotation, cast, or generic in production sources",
-    patterns: [/:\s*any\b|\bas\s+any\b|<any>|\bany\[\]/],
-    sanctioned: [], // file-suffix → reason; none sanctioned.
-    skip: [PROSE],
-    doc: DOC_TYPES,
-    why: "`any` reopens an unvalidated boundary — take `unknown` and narrow it.",
-  });
-
-  rule({
-    name: "catch variables are never typed any",
-    patterns: [/catch\s*\([^)]*:\s*any\s*\)/],
-    doc: DOC_TYPES,
-    why: "`catch (e: any)` opts out of useUnknownInCatchVariables — narrow unknown instead.",
-  });
+  // sanctioned: [] — file-suffix → reason; none sanctioned.
+  rule({ name: "no any annotation, cast, or generic in production sources", ...ANY_ANNOTATION });
+  rule({ name: "catch variables are never typed any", ...CATCH_ANY });
 });

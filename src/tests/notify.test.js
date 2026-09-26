@@ -37,24 +37,15 @@ const NO_SLEEP = async () => {};
 function gatedClient(gate, options = {}) {
   const unknown = Object.keys(options).filter((key) => key !== "throwFirst");
   if (unknown.length > 0) throw new Error(`gatedClient: unknown option(s) ${unknown.join(", ")}`);
-  const calls = [];
   let thrownOnce = false;
-  return {
-    calls,
-    client: {
-      session: {
-        prompt: async (args) => {
-          calls.push(args);
-          if (options.throwFirst && !thrownOnce) {
-            thrownOnce = true;
-            throw new Error("parent busy");
-          }
-          await gate.promise;
-          return { ok: true };
-        },
-      },
-    },
-  };
+  return recordingClient(async () => {
+    if (options.throwFirst && !thrownOnce) {
+      thrownOnce = true;
+      throw new Error("parent busy");
+    }
+    await gate.promise;
+    return { ok: true };
+  });
 }
 
 /**
@@ -77,22 +68,38 @@ function heldWriteClient() {
   };
 }
 
-function promptClient(script) {
-  // script: Array<"ok"|Error> consumed per prompt call.
+/**
+ * A client whose only method is the parent write, plus the list of writes that
+ * actually reached it. Every test in this file needs the same two things — a
+ * transport whose answer the test decides, and the count of writes that got
+ * there — and they were two hand-written client literals per test, so "dialed
+ * exactly once" was answered by whichever literal that test happened to copy. One
+ * wrapper, one recording: a test that wants the write to park, to throw, or to
+ * note its own ordering says so in `respond`, and the record is the same record.
+ */
+function recordingClient(respond) {
   const calls = [];
   return {
     calls,
     client: {
       session: {
-        prompt: async ({ path, body }) => {
-          calls.push({ to: path.id, text: body?.parts?.[0]?.text || "" });
-          const step = script.length > 0 ? script.shift() : "ok";
-          if (step instanceof Error) throw step;
-          return { ok: true };
+        prompt: async (args) => {
+          calls.push(args);
+          return respond(args);
         },
       },
     },
   };
+}
+
+/** The transport that answers at once — the default, and a script of outcomes when asked for one. */
+function answeredClient(script = []) {
+  // script: Array<"ok"|Error> consumed per prompt call.
+  return recordingClient(async () => {
+    const step = script.length > 0 ? script.shift() : "ok";
+    if (step instanceof Error) throw step;
+    return { ok: true };
+  });
 }
 
 
@@ -135,7 +142,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("delivers on first attempt and records success", async () => {
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_a1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(calls.length, 1);
@@ -147,7 +154,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("retries once, then records failure", async () => {
-    const { client, calls } = promptClient([new Error("down"), new Error("still down")]);
+    const { client, calls } = answeredClient([new Error("down"), new Error("still down")]);
     const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_b1", "error"));
     assert.strictEqual(delivered, false);
     assert.strictEqual(calls.length, 2, "exactly one retry");
@@ -156,7 +163,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("second-attempt success records delivered with attempts=2", async () => {
-    const { client } = promptClient([new Error("blip")]);
+    const { client } = answeredClient([new Error("blip")]);
     const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_c1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
@@ -222,17 +229,13 @@ describe("notify gate: notifyParent", () => {
 
   it("same-child deliveries serialize in claim order", async () => {
     const order = [];
-    const client = {
-      session: {
-        prompt: async ({ body }) => {
-          const text = body.parts[0].text;
-          order.push(`start:${text}`);
-          await new Promise((r) => setTimeout(r, 20));
-          order.push(`end:${text}`);
-          return { ok: true };
-        },
-      },
-    };
+    const { client } = recordingClient(async ({ body }) => {
+      const text = body.parts[0].text;
+      order.push(`start:${text}`);
+      await new Promise((r) => setTimeout(r, 20));
+      order.push(`end:${text}`);
+      return { ok: true };
+    });
     const opts = (kind) => ({ childSessionId: "ses_chain1", kind, sleep: NO_SLEEP });
     const [ra, rb] = await Promise.all([
       notifyParent(client, "p", "first", opts("completed")),
@@ -255,17 +258,10 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("settles deliver exactly once per kind", async () => {
-    const { client, calls } = promptClient([]);
-    const first = await notifyParent(client, "parent_1", "hello", {
-      childSessionId: "ses_d1",
-      kind: "completed",
-      sleep: NO_SLEEP,
-    });
-    const second = await notifyParent(client, "parent_1", "hello again", {
-      childSessionId: "ses_d1",
-      kind: "completed",
-      sleep: NO_SLEEP,
-    });
+    const { client, calls } = answeredClient([]);
+    const settled = (message) => notifyParent(client, "parent_1", message, gate("ses_d1", "completed"));
+    const first = await settled("hello");
+    const second = await settled("hello again");
     assert.strictEqual(first, true);
     assert.strictEqual(second, false);
     assert.strictEqual(calls.length, 1, "duplicate never reaches the parent");
@@ -276,14 +272,14 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("a distinct error can follow a delivered completion", async () => {
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     await notifyParent(client, "parent_1", "done", { childSessionId: "ses_e1", kind: "completed", sleep: NO_SLEEP });
     const escalated = await notifyParent(client, "parent_1", "actually failed", { childSessionId: "ses_e1", kind: "error", sleep: NO_SLEEP });
     assertDelivered(escalated, calls, 2);
   });
 
   it("notices dedup by message-derived key, not by kind", async () => {
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     const opts = (message) => ({
       childSessionId: "ses_f1",
       kind: "notice",
@@ -297,7 +293,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("revival clears settle-dedup so the next completion can deliver", async () => {
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     await notifyParent(client, "parent_1", "turn 1", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
     gateLedger.forgetChild("ses_g1");
     const second = await notifyParent(client, "parent_1", "turn 2", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
@@ -324,9 +320,10 @@ describe("notify gate: notifyParent", () => {
 
   it("delivery chains are FIFO-bounded like the dedup gate", async () => {
     const transportGate = deferred();
-    const client = {
-      session: { prompt: async () => { await transportGate; return { ok: true }; } },
-    };
+    const { client } = recordingClient(async () => {
+      await transportGate;
+      return { ok: true };
+    });
     const pending = [];
     for (let i = 0; i < 1005; i++) {
       pending.push(notifyParent(client, "p", `m${i}`, {
@@ -342,7 +339,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("ledger is bounded and latest-wins per child", async () => {
-    const { client } = promptClient([]);
+    const { client } = answeredClient([]);
     for (let i = 0; i < 205; i++) {
       await notifyParent(client, "parent_1", `msg ${i}`, { childSessionId: `ses_${i}`, kind: "completed", sleep: NO_SLEEP });
     }
@@ -355,7 +352,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("recent keys still dedupe after mass delivery (bounded window documented)", async () => {
-    const { client } = promptClient([]);
+    const { client } = answeredClient([]);
     for (let i = 0; i < 1005; i++) {
       await notifyParent(client, "p", `m${i}`, { childSessionId: `ses_ev${i}`, kind: "completed", sleep: NO_SLEEP });
     }
@@ -386,14 +383,10 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     // Ordering is the whole contract: an entry written after the dial is a
     // comment, not a guarantee. The client reads the queue mid-prompt.
     let atDial = null;
-    const client = {
-      session: {
-        prompt: async () => {
-          atDial = queuedFor("ses_pre").map((entry) => entry.kind);
-          return { ok: true };
-        },
-      },
-    };
+    const { client } = recordingClient(async () => {
+      atDial = queuedFor("ses_pre").map((entry) => entry.kind);
+      return { ok: true };
+    });
     await notifyParent(client, "parent_1", "settled", gate("ses_pre", "completed"));
     assert.deepStrictEqual(atDial, ["completed"], "queued before the dial, not after it");
   });
@@ -410,18 +403,18 @@ describe("durable pending delivery: the queue IS the crash window", () => {
   });
 
   it("a delivered write leaves nothing owed, a failed one neither", async () => {
-    const { client } = promptClient([]);
+    const { client } = answeredClient([]);
     await notifyParent(client, "parent_1", "ok", gate("ses_okq", "completed"));
     assert.deepStrictEqual(queuedFor("ses_okq"), [], "delivered: the debt is settled");
 
-    const failing = promptClient([new Error("down"), new Error("still down")]);
+    const failing = answeredClient([new Error("down"), new Error("still down")]);
     await notifyParent(failing.client, "parent_1", "no", gate("ses_noq", "error"));
     assert.deepStrictEqual(queuedFor("ses_noq"), [], "a known failure is a known outcome, not a debt");
     assert.strictEqual(getLatestNotification("ses_noq").delivered, false);
   });
 
   it("a suppressed repeat never dials and never queues", async () => {
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
     await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
     assert.strictEqual(calls.length, 1, "suppressed: nothing dialed");
@@ -432,7 +425,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     // The attempt count is the only visible signal that a parent keeps not
     // answering: reset to zero, a write held across five restarts would read as
     // five first tries and the escalation would be invisible.
-    const { client, calls } = promptClient([]);
+    const { client, calls } = answeredClient([]);
     await notifyParent(client, "parent_1", "owed", { ...gate("ses_carry", "completed"), carriedAttempts: 2 });
     assert.strictEqual(calls.length, 1, "one redelivery attempt, not three");
     assert.strictEqual(getLatestNotification("ses_carry").attempts, 3, "third attempt overall, not first");

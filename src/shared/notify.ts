@@ -94,10 +94,18 @@ const NOTIFY_LEDGER_MAX = 200;
  * and a failure — and the entry's own non-delivery (there is no parent to dial)
  * was assembling the record by hand beside it.
  */
+/**
+ * How a write ended: the record's own outcome fields, picked rather than written
+ * out. The three spellings this replaces were each a hand-maintained copy of four
+ * fields declared twenty lines above, so a fourth outcome could be added to the
+ * record and silently not reach the builder or the emit.
+ */
+export type DeliveryOutcome = Pick<NotificationRecord, "delivered" | "attempts" | "suppressed" | "pending">;
+
 export function notifyRecord(
   target: DeliveryTarget,
   message: string,
-  outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean },
+  outcome: DeliveryOutcome,
 ): NotificationRecord {
   return {
     ...target,
@@ -357,7 +365,7 @@ export async function notifyParent(
   const sleep = opts.sleep ?? defaultSleep;
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
-  const emit = (outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean }): void =>
+  const emit = (outcome: DeliveryOutcome): void =>
     record(notifyRecord({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, outcome));
   const generation = gateLedger.claim(opts.childSessionId, dedupKey);
   const epoch = gateEpoch;
@@ -382,7 +390,7 @@ export async function notifyParent(
     queuePending({ ...owed, attempts: carried + attempts });
     return attempt();
   };
-  const commit = (outcome: { delivered: boolean; attempts: number }) => {
+  const commit = (outcome: DeliveryOutcome) => {
     // Two kinds of staleness, checked before anything is written:
     // Generation-bound: a revival (forgetChild) between this claim and this
     // commit makes the generation stale — history is emitted, the key is not

@@ -17,6 +17,8 @@ import {
   withLoggedChild,
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
   resultForChild, resultForUnreadableChild, hostSaid, unclockedSaid,
+  abortedSessions, dialCount, notifiedNotes, promptText, promptsCarrying, promptsTo, promptsToCarrying,
+  declareNeedsInput, promptTextsTo, promptsSaying, sentPrompts, sessionBody, sessionCount, sessionIds, wasAborted, statusReadCount,
 } from './support/harness.js';
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
@@ -218,6 +220,18 @@ const stateOf = async (child) =>
   (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
 
 /**
+ * The claim a task that has not settled still carries. A mid-flight notice and a
+ * failed abort are different events, and both end in the same question — "does
+ * the record still say active?" — asked by reading the one view. The status is
+ * handed back because the caller usually asks something else of it too.
+ */
+const stillActive = async (child, why) => {
+  const status = await child.status();
+  answerSays(status, "active", why);
+  return status;
+};
+
+/**
  * One dispatch's tool input, for the raw `dynamic_task.execute` calls that
  * cannot go through a spawn helper. The argument shape IS the tool's contract,
  * and it was spelled out by hand at every one of these sites — so a required
@@ -357,12 +371,12 @@ describe("dynamic_task validation", () => {
 
   it("rejects bare model ids at admission, before creating a session", async () => {
     const h = await setupHarness();
-    const before = h.client._state.sessions.size;
+    const before = sessionCount(h.client);
     const out = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" });
     answerSays(out, "Invalid model");
     answerSays(out, "providerID/modelID", "names the shape");
     answerSays(out, "GLM-5.3-Flash", "names the suspect");
-    assert.strictEqual(h.client._state.sessions.size, before, "no session created for a bad id");
+    assert.strictEqual(sessionCount(h.client), before, "no session created for a bad id");
     });
 
   it("echoes a qualified model in the spawn confirmation", async () => {
@@ -439,14 +453,12 @@ describe("task_continue branches", () => {
     const out = await c.steer("follow up");
     answerSays(out, "Steer sent");
     answerSays(out, "task_interrupt", "names the stall recovery");
-    assert.ok(h.client._state.aborted.includes(id), "the running turn is stopped first");
-    const followUps = h.client._state.promptBodies.filter(
-    (p) => p.to === id && p.body.parts[0].text.includes("follow up"),
-    );
+    assert.ok(wasAborted(h.client, id), "the running turn is stopped first");
+    const followUps = promptsToCarrying(h.client, id, "follow up");
     assert.strictEqual(followUps.length, 1, "the message becomes the next turn");
     assert.ok(
-    followUps[0].body.parts[0].text.includes("[Parent steer"),
-    `framed as a preemption. got: ${followUps[0].body.parts[0].text}`,
+    promptText(followUps[0]).includes("[Parent steer"),
+    `framed as a preemption. got: ${promptText(followUps[0])}`,
     );
     assert.strictEqual(await stateOf(c), "State: active", "a steer never settles");
   });
@@ -525,7 +537,7 @@ describe("task_continue branches", () => {
       await sleep(20);
       answerMatches(await c.status(), /delivered in 1 attempt/, "the record ends up truthful");
       assert.strictEqual(
-        h.client._state.notifyCalls.length,
+        dialCount(h.client),
         1,
         "exactly one copy ever dialed: a held write is never retried behind the parent's back",
       );
@@ -558,7 +570,7 @@ describe("task_continue branches", () => {
       const out = await steer;
       answerSays(out, "revived", "closes the loop in one call");
       assert.strictEqual(
-        h.client._state.promptBodies.filter((p) => p.body.parts[0].text === "pivot").length,
+        promptTextsTo(h.client, c.id).filter((t) => t === "pivot").length,
         1,
         "the message fires as the fresh turn",
       );
@@ -573,11 +585,7 @@ describe("task_continue branches", () => {
     const { h, out } = await steerLosingToInterrupt();
     answerSays(out, "interrupted", "truthful report");
     answerOmits(out, "Steer sent", "must not claim a steer that never happened");
-    assert.strictEqual(
-    h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
-    0,
-    "no replacement prompt fires on a settled task",
-    );
+    assert.strictEqual(promptsSaying(h.client, "pivot"), 0, "no replacement prompt fires on a settled task");
     });
 
   it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
@@ -602,11 +610,7 @@ describe("task_continue branches", () => {
     const out = await c.steer("pivot");
     answerSays(out, "abort failed", "reports the gap");
     answerSays(out, "active", "admits the child may be live");
-    assert.strictEqual(
-    h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
-    0,
-    "no competing prompt races the live turn",
-    );
+    assert.strictEqual(promptsSaying(h.client, "pivot"), 0, "no competing prompt races the live turn");
     assert.strictEqual(await stateOf(c), "State: active", "stays settable");
     await h.settle(id);
     assertNoticeCount(h, 1, "the live turn still settles");
@@ -618,9 +622,7 @@ describe("task_continue branches", () => {
 
     const out = await c.steer("summarize");
     answerSays(out, "Follow-up sent");
-    const followUps = h.client._state.promptBodies.filter(
-    (p) => p.to === id && p.body.parts[0].text.includes("summarize"),
-    );
+    const followUps = promptsToCarrying(h.client, id, "summarize");
     assert.strictEqual(followUps.length, 1, "the same session is revived, not replaced");
 
     // The settled turn published its ending more than once, and the extra copy
@@ -661,7 +663,7 @@ describe("task_continue branches", () => {
     await h.settle(id);
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "other/thing-1" });
     answerSays(out, "Follow-up sent");
-    const routed = h.client._state.promptBodies.filter((p) => p.to === id);
+    const routed = promptsTo(h.client, id);
     assert.deepStrictEqual(routed[routed.length - 1].body.model, { providerID: "other", modelID: "thing-1" });
     const status = await c.status();
     answerSays(status, "Model: other/thing-1", "persists on the record");
@@ -669,10 +671,10 @@ describe("task_continue branches", () => {
 
   it("a bare model on continue fails without touching the task", async () => {
     const { h, c, id } = await withSettledChild();
-    const before = h.client._state.promptBodies.length;
+    const before = sentPrompts(h.client).length;
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "bare-id" });
     answerSays(out, "Invalid model");
-    assert.strictEqual(h.client._state.promptBodies.length, before, "no prompt fires");
+    assert.strictEqual(sentPrompts(h.client).length, before, "no prompt fires");
     const status = await c.status();
     answerSays(status, "completed", "still settled");
   });
@@ -700,8 +702,7 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(notes[0].message.includes("blocked: need DB credentials"));
 
     // A notice is not a settlement: the child still completes and reports.
-    const status = await c.status();
-    answerSays(status, "active", "task stays active");
+    const status = await stillActive(c, "task stays active");
     answerSays(status, "need DB credentials", "notice recorded on the task");
 
     await h.settle(id);
@@ -980,7 +981,7 @@ describe("task_result and task_interrupt paths", () => {
     const { h, c, id } = await withChild();
     const done = await c.interrupt();
     answerSays(done, "interrupted");
-    assert.ok(h.client._state.aborted.includes(id), "abort must reach the API");
+    assert.ok(wasAborted(h.client, id), "abort must reach the API");
     // P1a contract: the record survives (history preserved) and no event can
     // re-settle it — the synchronous claim happened BEFORE the abort.
     assert.strictEqual(await stateOf(c), "State: interrupted", "history preserved");
@@ -1001,8 +1002,7 @@ describe("task_result and task_interrupt paths", () => {
     const out = await c.interrupt();
     answerSays(out, "abort failed", "reports the abort gap");
     answerSays(out, "active", "admits the child may be live");
-    const status = await c.status();
-    answerSays(status, "active", "speculative claim withdrawn");
+    await stillActive(c, "speculative claim withdrawn");
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
     assertNoticeCount(h, 1, "natural completion delivers");
@@ -1027,7 +1027,7 @@ describe("task_result and task_interrupt paths", () => {
 describe("a child that needs input is not a success", () => {
   it("a child that declared it needs input settles as blocked, and the parent is told to answer", async () => {
     const { h, c, id } = await withChild();
-    await c.notify("I need the API key to continue.", { kind: "needs_input" });
+    await declareNeedsInput(c, "I need the API key to continue.");
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: blocked", "the record says what happened");
     const body = h.noticeBodies()[0];
@@ -1046,7 +1046,7 @@ describe("a child that needs input is not a success", () => {
 
   it("a failed turn outranks a needs-input declaration", async () => {
     const { h, c, id } = await withChild();
-    await c.notify("blocked on the key", { kind: "needs_input" });
+    await declareNeedsInput(c, "blocked on the key");
     await hostStatus(h, id, "error");
     assert.strictEqual(await stateOf(c), "State: error", "a failure is not a question");
   });
@@ -1056,7 +1056,7 @@ describe("a child that needs input is not a success", () => {
   // child that got its answer mid-turn would still be reported as waiting.
   it("a declaration belongs to the turn that made it", async () => {
     const { h, c, id } = await withChild();
-    await c.notify("which environment?", { kind: "needs_input" });
+    await declareNeedsInput(c, "which environment?");
     await c.steer("staging");
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: completed", "the answer moved it on");
@@ -1064,7 +1064,7 @@ describe("a child that needs input is not a success", () => {
 
   it("a blocked task is answerable: it revives and stops being blocked", async () => {
     const { h, c, id } = await withChild();
-    await c.notify("I need the key.", { kind: "needs_input" });
+    await declareNeedsInput(c, "I need the key.");
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: blocked");
     await c.steer("here is the key");
@@ -1197,9 +1197,9 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.strictEqual([r1, r2].filter((r) => r.includes("in background")).length, 1, "one winner");
     assert.strictEqual([r1, r2].filter((r) => r.includes("ERROR")).length, 1, "one loser");
     const winner = /Session: (\S+)/.exec([r1, r2].find((r) => r.includes("in background")))?.[1];
-    const loser = [...h.client._state.sessions].find((id) => id !== winner);
+    const loser = sessionIds(h.client).find((id) => id !== winner);
     assert.ok(loser, "loser session was created");
-    assert.ok(h.client._state.aborted.includes(loser), `loser aborted, no orphan. aborted=${h.client._state.aborted}`);
+    assert.ok(wasAborted(h.client, loser), `loser aborted, no orphan. aborted=${abortedSessions(h.client)}`);
     await sleep(50); // detached error-settlement delivery
     assertNoticeCount(h, 1, "the error settlement notifies");
     const note = h.noticeBodies()[0];
@@ -1222,7 +1222,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     const failing = await setupHarness({ hooks: hooks });
     const { id } = await failing.spawn({ description: "doomed task" });
     await sleep(50); // the fire-and-forget catch schedules the settlement
-    const notes = failing.client._state.notifications;
+    const notes = notifiedNotes(failing.client);
     assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
     answerMatches(notes[0].message, /ended with an error/i, "error-kind notification");
     const summary = await failing.tool.task_result.execute({ session_id: id });
@@ -1584,7 +1584,7 @@ describe("task fleet views", () => {
     it("the tree spends no host read", async () => {
       const { h } = await withDispatchTree();
       await h.tool.task_list.execute({});
-      assert.strictEqual(h.client._state.statusReads, 0, "a view of records the store already holds must not read the host");
+      assert.strictEqual(statusReadCount(h.client), 0, "a view of records the store already holds must not read the host");
     });
   });
 
@@ -1661,9 +1661,9 @@ describe("prompt routing contract", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "model task", model: "prov/model-x" });
     await sleep(0); // the fire-and-forget prompt records one microtask later
-    const created = h.client._state.sessionBodies.get(id);
+    const created = sessionBody(h.client, id);
     assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
-    const bodies = h.client._state.promptBodies.filter((p) => p.to === id);
+    const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1, "child prompt recorded");
     assert.strictEqual(bodies[0].body.agent, "explore");
     assert.deepStrictEqual(bodies[0].body.model, { providerID: "prov", modelID: "model-x" });
@@ -1673,7 +1673,7 @@ describe("prompt routing contract", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "plain task" });
     await sleep(0);
-    const bodies = h.client._state.promptBodies.filter((p) => p.to === id);
+    const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1);
     assert.strictEqual(bodies[0].body.agent, "explore");
     assert.ok(!("model" in bodies[0].body), `no model key. got: ${JSON.stringify(bodies[0].body)}`);
@@ -1683,7 +1683,7 @@ describe("prompt routing contract", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ prompt: "Review for bugs" });
     await sleep(0);
-    const text = h.client._state.promptBodies.find((p) => p.to === id).body.parts[0].text;
+    const text = promptTextsTo(h.client, id)[0];
     answerSays(text, "background child task", "wrapped");
     answerSays(text, "task_notify", "teaches the notify channel");
     answerSays(text, "Review for bugs", "carries the payload");
@@ -1896,8 +1896,8 @@ describe("boot redelivers what the last boot owed", () => {
   // queue cannot tell "not yet redelivered" from "redelivered and held".
   it("a redelivery the host still holds is not retried here — it waits for the next boot", async () => {
     const { directory, client } = await bootWithOwed([owedDebt()], { notifyTransport: { hang: new Promise(() => {}) } });
-    await waitFor(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
-    assert.strictEqual(client._state.notifyCalls.length, 1, "one dial, then the host holds it");
+    await waitFor(() => dialCount(client) > 0, "the redelivery to dial");
+    assert.strictEqual(dialCount(client), 1, "one dial, then the host holds it");
     assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
   });
 
@@ -1971,16 +1971,16 @@ describe("spawn resilience: no untracked child survives a failure", () => {
   it("a concurrency rejection leaves no orphan session behind", async () => {
     const h = await withSingleSlot();
     const first = await h.spawn({ description: "one" });
-    const before = new Set(h.client._state.sessions);
+    const before = new Set(sessionIds(h.client));
 
     const second = await h.trySpawn({ description: "two", subagent_type: "explore", prompt: "hi" });
     assert.ok(/cannot run more than|cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
 
     // Orphan-free invariant: any session the rejection created must be
     // aborted. (A pre-create check that never creates also passes.)
-    const created = [...h.client._state.sessions].filter((id) => !before.has(id));
+    const created = sessionIds(h.client).filter((id) => !before.has(id));
     for (const id of created) {
-      assert.ok(h.client._state.aborted.includes(id), `orphan ${id} must be aborted`);
+      assert.ok(wasAborted(h.client, id), `orphan ${id} must be aborted`);
       }
     });
 

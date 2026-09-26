@@ -683,20 +683,17 @@ describe("hostPayload", () => {
 
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
-    const result = formatTaskResultSummary({
-      sessionId: "ses_123", status: "busy", messageCount: 4,
-      latestText: "Still working", tracked: true,
-    });
+    const result = formatTaskResultSummary(resultRecord({ status: "busy" }));
     assert.match(result, /Recommended next action: use task_status for settleability/);
     assert.match(result, /Tracked: yes/);
   });
 
   it("renders the store state for active tasks with the sourced liveness beside it", () => {
-    const result = formatTaskResultSummary({
-      sessionId: "ses_123", status: "active", messageCount: 4,
-      latestText: "Still working", tracked: true, task: taskRecord(),
+    const result = formatTaskResultSummary(resultRecord({
+      status: "active",
+      task: taskRecord(),
       liveness: { hostState: "busy", lastMessageAt: Date.now() - 1000 },
-    });
+    }));
     assert.match(result, /Status: active/);
     assert.match(result, /Server status: busy/);
     assert.match(result, /Last child message: 1s ago/);
@@ -707,11 +704,11 @@ describe("formatTaskResultSummary", () => {
   });
 
   it("never infers a status the sources did not state", () => {
-    const result = formatTaskResultSummary({
-      sessionId: "ses_123", status: "completed", messageCount: 4,
-      latestText: "Done", tracked: true, task: taskRecord({ state: "completed" }),
+    const result = formatTaskResultSummary(resultRecord({
+      status: "completed",
+      task: taskRecord({ state: "completed" }),
       liveness: { hostState: null, lastMessageAt: null },
-    });
+    }));
     assert.match(result, /Status: completed/);
     assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);
     // A settled record with a quiet server has no liveness question left, so
@@ -720,30 +717,26 @@ describe("formatTaskResultSummary", () => {
   });
 
   it("renders read failures in the same voice with the error as data", () => {
-    const result = formatTaskResultSummary({
+    const result = formatTaskResultSummary(resultRecord({
       sessionId: "ses_gone", status: "error", messageCount: 0,
       latestText: "(See error above)", tracked: false, error: "boom (not retryable)",
-    });
+    }));
     assert.match(result, /^## Task Result/);
     assert.match(result, /Status: error/);
     assert.match(result, /Error: boom \(not retryable\)/);
   });
 
   it("includes recovery guidance for error status", () => {
-    const result = formatTaskResultSummary({
-      sessionId: "ses_123", status: "error", messageCount: 4,
-      latestText: "Failed", tracked: false,
-    });
+    const result = formatTaskResultSummary(resultRecord({ status: "error", tracked: false }));
     assert.match(result, /Recommended next action: inspect latest output/);
     assert.match(result, /Tracked: no/);
   });
 
   it("surfaces delivery attempts when provided", () => {
-    const result = formatTaskResultSummary({
-      sessionId: "ses_123", status: "idle", messageCount: 4,
-      latestText: "Done", tracked: true,
+    const result = formatTaskResultSummary(resultRecord({
+      status: "idle",
       notification: { kind: "completed", delivered: true, attempts: 2 },
-    });
+    }));
     assert.match(result, /Last notification: completed \(delivered in 2 attempt/);
   });
 });

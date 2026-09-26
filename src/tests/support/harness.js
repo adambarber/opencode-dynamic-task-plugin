@@ -663,6 +663,77 @@ export function renderedAgeSeconds(detail, label) {
   return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3]);
 }
 
+/**
+ * Questions about the fake host's recorded state, asked here instead of by 26
+ * hand-rolled reach-throughs.
+ *
+ * The harness owns `_state` — that is the whole point of it — and the tests were
+ * each re-deriving the same queries out of it: `filter((p) => p.to === id)`,
+ * `filter((p) => p.body.parts[0].text.includes("pivot"))`, `aborted.includes(id)`.
+ * The body shape and the field names then had 26 callers to keep in step, and a
+ * test that renames one gets a filter that matches nothing — which is the
+ * dangerous direction, because the common assertion is "this did NOT happen", so
+ * a broken predicate still passes.
+ *
+ * Each function below is one of those questions with its answer's shape decided
+ * once: which prompts reached a child, which carried a given text, whether a turn
+ * was aborted, how many dials the gate made. The client is the argument because a
+ * `failing` or `one` harness and the primary `h` are all equally valid subjects.
+ */
+
+/** Every prompt the host was asked to send, oldest first. */
+export const sentPrompts = (client) => client._state.promptBodies;
+
+/** The prompts addressed to one session — "which turns of this child fired". */
+export const promptsTo = (client, sessionId) => client._state.promptBodies.filter((p) => p.to === sessionId);
+
+/** The text of every prompt addressed to one session. */
+export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId).map(promptText);
+
+/** The text one prompt body carries, with the parts envelope stripped. */
+export const promptText = (body) => body.body.parts[0].text;
+
+/** "This prompt said these words" — the one predicate both prompt readers use. */
+const carries = (words) => (p) => promptText(p).includes(words);
+
+/** The prompts addressed to one session that carry the given words. */
+export const promptsToCarrying = (client, sessionId, words) => promptsTo(client, sessionId).filter(carries(words));
+
+/** Every prompt whose text contains the given words — "which turn said this". */
+export const promptsCarrying = (client, words) => sentPrompts(client).filter(carries(words));
+
+/** How many prompts said the given words — the count a "nothing fired" case asserts. */
+export const promptsSaying = (client, words) => promptsCarrying(client, words).length;
+
+/** Whether a turn was aborted, without leaking the array to compare against. */
+export const wasAborted = (client, sessionId) => client._state.aborted.includes(sessionId);
+
+/** The sessions aborted so far, for a failure message that wants the list. */
+export const abortedSessions = (client) => client._state.aborted;
+
+/** Every session the host has been asked to create. */
+export const sessionIds = (client) => [...client._state.sessions];
+
+/** How many sessions the host has been asked to create. */
+export const sessionCount = (client) => client._state.sessions.size;
+
+/** The create body recorded for one session — what the host was told to make. */
+export const sessionBody = (client, sessionId) => client._state.sessionBodies.get(sessionId);
+
+/** How many dials the gate made, held or not. */
+export const dialCount = (client) => client._state.notifyCalls.length;
+
+/** The parent notifications the plugin recorded. */
+export const notifiedNotes = (client) => client._state.notifications;
+
+/** How many times the host's status channel was read. */
+export const statusReadCount = (client) => client._state.statusReads;
+
+/** A child declaring it cannot continue without something. The `needs_input` kind is the
+ * production contract for that gesture, so it is spelled here once rather than at
+ * every site that needs a child to be stuck. */
+export const declareNeedsInput = (child, words) => child.notify(words, { kind: "needs_input" });
+
 // Harnesses booted during the current test, so one afterEach can release every
 // child any test spawned — including ones a test built inline rather than
 // through a shared beforeEach.

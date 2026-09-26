@@ -40,17 +40,59 @@ async function withShrunkBounds(fn) {
 const UNCLOCKED_MESSAGE = { info: { role: "user" }, parts: [{ type: "text", text: "go" }] };
 
 /**
+ * A plugin booted on a project whose durable state is a ledger the case wrote.
+ * Every restart case needs the same three things — a directory the plugin will
+ * read at boot, records in it dated against one clock, and the plugin itself —
+ * and each was assembling them by hand, so the ledger's name and version were
+ * being restated in five places. `seed` receives the clock; what the boot does
+ * with the document afterwards is the plugin's business, not the case's.
+ *
+ * The plugin is BOOTED when this is called, so a case whose boot depends on an
+ * environment variable must wrap the call rather than sit outside it — a
+ * variable read at boot is fixed for the life of the process, and a fixture that
+ * looked like it could be sequenced around that is a fixture that cannot.
+ */
+const bootOn = async (seed, { hooks = {} } = {}) => {
+  const directory = tmpProjectDir();
+  writeLedger(directory, seed(Date.now()));
+  return { directory, ...(await setupHarness({ hooks, directory })) };
+};
+
+/**
+ * Settle the child and let its durable write land. The settlement writes the
+ * ledger synchronously — the pause is for CI, not the contract — so it is said
+ * once here, where a reader can see which of the two it is, instead of as a
+ * private `sleep(30)` that reads like eventual consistency.
+ */
+const settledOnDisk = async (h, id, status) => {
+  await h.settle(id, status);
+  await sleep(30);
+};
+
+/**
  * A steer that will lose a race to an interrupt, and the report it hands back.
  * The steps are always the same — boot a child, park the steer's abort at the
  * gate, interrupt first, then let the steer land behind the winner — and two
  * cases were spelling them out, which is how a case ends up racing something
  * other than a settlement.
  */
-async function steerLosingToInterrupt(gateOpts) {
-  const { h, c, id } = await withChild();
+/**
+ * A steer that is already at the abort gate, ten milliseconds in. The gate is
+ * the whole point of these cases — the steer is supposed to LOSE, so it has to
+ * have reached its abort before the winner arrives — and that window was a
+ * literal in each case, which is a number a reader has nothing to check it
+ * against. One call, so the two races being tested are the same race.
+ */
+async function steerAtTheGate(h, c, gateOpts) {
   const { release } = h.client.gateAbort(gateOpts);
   const steer = c.steer("pivot");
   await sleep(10);
+  return { release, steer };
+}
+
+async function steerLosingToInterrupt(gateOpts) {
+  const { h, c, id } = await withChild();
+  const { release, steer } = await steerAtTheGate(h, c, gateOpts);
   await c.interrupt();
   release();
   return { h, c, id, out: await steer };
@@ -88,7 +130,7 @@ async function echoesCannotSettle(h, c, id, arm) {
   await h.fireEvent(events.idle(id));
   await h.fireEvent(events.idle(id));
   assert.strictEqual(await stateOf(c), "State: active", "an echo is not the replacement turn's ending");
-  assert.strictEqual(h.notices().length, before, "no premature completion is notified");
+  assertNoticeCount(h, before, "no premature completion is notified");
   await h.fireEvent(events.working(id));
   const note = await h.settledNotice(id);
   answerSays(note, "completed successfully", "the eventual ending is still a settlement");
@@ -178,14 +220,6 @@ const dispatchArgs = (description, over = {}) => ({ description, subagent_type: 
 const withSingleSlot = () => setupHarness({ options: { maxConcurrent: 1 } });
 
 /**
- * A fresh project directory, and the clock its records are aged against. The
- * durability cases write timestamps relative to a reading, so the directory and
- * the reading are one arrangement rather than two independent choices — and a
- * case that picks them apart is measuring nothing.
- */
-const projectWithClock = () => ({ directory: tmpProjectDir(), now: Date.now() });
-
-/**
  * What a tool's answer says. Every assertion in this file is a claim about the
  * prose a tool returned — a gate's refusal, a record's verdict, a settlement's
  * wording — and the answer is the only evidence there is, so it rides in the
@@ -194,6 +228,38 @@ const projectWithClock = () => ({ directory: tmpProjectDir(), now: Date.now() })
  */
 function answerSays(answer, reason, note) {
   assert.ok(answer.includes(reason), `${note ? `${note}. ` : ""}got: ${answer}`);
+}
+/**
+ * How many notices reached the parent. The count is the whole claim in these
+ * cases — told once, told twice, told nothing — and it is the one claim a
+ * notification bug cannot make visible by its own wording: a settlement that
+ * fires twice says exactly the right thing twice. So the count is read through
+ * one place, and the notice bodies ride in the failure, because "told twice" and
+ * "told the wrong thing twice" are different bugs wearing the same symptom.
+ */
+function assertNoticeCount(h, count, why) {
+  const notices = h.notices();
+  const bodies = notices.map((n) => n.message.split("\n")[1] ?? n.message);
+  assert.strictEqual(notices.length, count, `${why}. notices: ${bodies.join(" | ")}`);
+}
+/**
+ * A harness for a case with no dispatched child. The subject there is the host's
+ * event stream or a tool called directly, so the boot options ARE the whole
+ * arrangement — and spelled inline it was the most repeated line in this file,
+ * where a case that copied it could quietly carry hooks the case beside it did
+ * not have. A question no reader can answer by looking at the test.
+ */
+const eventHarness = (hooks = {}) => setupHarness({ hooks });
+
+/**
+ * A tool that acts on a named child, asked to act on nothing. The refusal is the
+ * same shape from every one of them, so the check is one: a case that called a
+ * tool with no id and asserted its own substring was one string away from a case
+ * that silently accepted the call.
+ */
+async function assertNeedsSessionId(toolUnderTest) {
+  const answer = await toolUnderTest.execute({});
+  answerSays(answer, "required", "a session-scoped tool refuses without an id");
 }
 /**
  * The durable reader's input, written as given. The file name and the version
@@ -298,16 +364,16 @@ describe("dynamic_task validation", () => {
     answerSays(out, "create failed");
     });
 
+  // The non-blocking promise, falsifiable: a hung child prompt must not
+  // hold the spawn call. No clock can rescue this — there is no clock.
   it("returns immediately even while the child prompt never settles", async () => {
-    // The non-blocking promise, falsifiable: a hung child prompt must not
-    // hold the spawn call. No clock can rescue this — there is no clock.
     const hooks = { promptHangIds: new Set() };
     const h = await setupHarness({ hooks: hooks });
     hooks.promptHangIds.add("ses_mock_1");
     const { out, id } = await h.spawn();
     answerSays(out, "in background");
     assert.ok(id, "session id returned synchronously with the spawn line");
-    assert.strictEqual(h.notices().length, 0, "nothing settles without an event");
+    assertNoticeCount(h, 0, "nothing settles without an event");
     });
 });
 
@@ -315,7 +381,7 @@ describe("task_continue branches", () => {
 
   it("rejects missing args and oversized prompts", async () => {
     const h = await setupHarness();
-    assert.ok((await h.tool.task_continue.execute({})).includes("required"));
+    await assertNeedsSessionId(h.tool.task_continue);
     const overlong = "x".repeat(100001);
     const long = await h.tool.task_continue.execute({ session_id: "ses_mock_1", prompt: overlong });
     answerSays(long, "Prompt too long");
@@ -359,7 +425,7 @@ describe("task_continue branches", () => {
       await disturb(ctx);
       const status = await ctx.c.status();
       answerSays(status, "active", "a non-terminal signal must not settle");
-      assert.strictEqual(ctx.h.notices().length, 0, "nothing is notified");
+      assertNoticeCount(ctx.h, 0, "nothing is notified");
       const note = await ctx.h.settledNotice(ctx.id);
       answerSays(note, "completed successfully", "the real event still settles");
     });
@@ -438,9 +504,7 @@ describe("task_continue branches", () => {
       const h = await setupHarness();
       const { release } = h.client.gateChildPrompt();
       const { c } = await h.spawn({ prompt: "turn one" });
-      const { release: releaseAbort } = h.client.gateAbort();
-      const steer = c.steer("pivot");
-      await sleep(10);
+      const { release: releaseAbort, steer } = await steerAtTheGate(h, c);
       await settle({ h, c, release });
       await sleep(30);
       releaseAbort(); // the abort lands; the steer re-validates and finds it settled
@@ -454,12 +518,7 @@ describe("task_continue branches", () => {
       await h.settle(c.id, "completed");
       await sleep(20);
       assert.match(await c.status(), /State: completed/, "the revived turn settles on its own");
-      assert.strictEqual(
-        h.notices().length,
-        2,
-        "the settlement the parent was told about, and the one that carries the outcome. got: "
-          + h.notices().map((n) => n.message.split("\n")[1]).join(" | "),
-      );
+      assertNoticeCount(h, 2, "the settlement the parent was told about, and the one that carries the outcome");
     });
   }
 
@@ -503,12 +562,12 @@ describe("task_continue branches", () => {
     );
     assert.strictEqual(await stateOf(c), "State: active", "stays settable");
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 1, "the live turn still settles");
+    assertNoticeCount(h, 1, "the live turn still settles");
   });
 
   it("revives a settled task and the new turn settles again", async () => {
     const { h, c, id } = await withSettledChild();
-    assert.strictEqual(h.notices().length, 1, "first turn settles");
+    assertNoticeCount(h, 1, "first turn settles");
 
     const out = await c.steer("summarize");
     answerSays(out, "Follow-up sent");
@@ -522,7 +581,7 @@ describe("task_continue branches", () => {
     // its own events before it can end.
     await h.fireEvent(events.status(id, "busy"));
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 2, "revival earns a fresh settlement");
+    assertNoticeCount(h, 2, "revival earns a fresh settlement");
     assert.ok(h.noticeBodies()[1].includes("completed successfully"));
   });
 
@@ -599,7 +658,7 @@ describe("task_notify: the child-to-parent channel", () => {
     answerSays(status, "need DB credentials", "notice recorded on the task");
 
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 2, "settlement still reports");
+    assertNoticeCount(h, 2, "settlement still reports");
   });
 
   it("distinct long notices sharing a prefix both deliver", async () => {
@@ -608,7 +667,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const second = await c.notify("a".repeat(200) + "2");
     answerSays(first, "Message sent to parent");
     answerSays(second, "Message sent to parent", "prefix collision must not suppress");
-    assert.strictEqual(h.notices().length, 2);
+    assertNoticeCount(h, 2, "two long notices sharing a prefix both deliver");
   });
 
   // One hypothesis: a repeat of an identical notice never redelivers, and the
@@ -619,7 +678,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const again = await c.notify("still working");
     answerSays(again, "duplicate suppressed", "keeps the kind");
     answerSays(again, "Say something new", "tells the child what to do");
-    assert.strictEqual(h.notices().length, 1, "the parent hears it once");
+    assertNoticeCount(h, 1, "the parent hears it once");
   });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
@@ -644,7 +703,7 @@ describe("task_notify: the child-to-parent channel", () => {
       harness: { hooks: { notifyTransport: { hold: new Promise(() => {}) } } },
     });
     const out = await withShrunkBounds(() => c.notify("are you there?"));
-    assert.strictEqual(h.notices().length, 1, "the host really did put it in the parent's context");
+    assertNoticeCount(h, 1, "the host really did put it in the parent's context");
     assert.ok(!out.includes("not sent"), `a held write was dialed, not lost. got: ${out}`);
     assert.ok(!/retry/i.test(out), `retrying a delivered notice duplicates it. got: ${out}`);
   });
@@ -683,7 +742,7 @@ describe("error settlement guidance", () => {
       });
     const { id, c } = await h.spawn();
     await h.fireEvent(events.error(id));
-    assert.strictEqual(h.notices().length, 1, "error settles exactly once");
+    assertNoticeCount(h, 1, "error settles exactly once");
     return h.noticeBodies()[0];
     }
 
@@ -704,8 +763,8 @@ describe("task_result and task_interrupt paths", () => {
 
   it("task_result requires a session id", async () => {
     const h = await setupHarness();
-    assert.ok((await h.tool.task_result.execute({})).includes("required"));
-    });
+    await assertNeedsSessionId(h.tool.task_result);
+  });
 
   // One hypothesis: task_result reports the STORE's state, and the liveness read
   // underneath it is the SERVER's own word plus the child's own last message —
@@ -785,9 +844,9 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(summary.startsWith("## Task Result"), `one format for all reads. got: ${summary}`);
     });
 
+  // The read that fails is the one the tool actually makes. A transport
+  // failure is reported as an error status, never as a quiet success.
   it("task_result maps a failed read to error state", async () => {
-    // The read that fails is the one the tool actually makes. A transport
-    // failure is reported as an error status, never as a quiet success.
     const failing = await setupHarness({ hooks: { messages: () => { throw new Error("boom"); } } });
     const summary = await failing.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: error");
@@ -801,10 +860,10 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(!summary.includes("Server status"), `no reading, no liveness block. got: ${summary}`);
   });
 
+  // Absence of a reading is not evidence of anything. The record renders; the
+  // stall line may fire on the plugin's own clock, but nothing claims to know
+  // what turn the server is on.
   it("a status channel that cannot be asked renders the record without a diagnosis", async () => {
-    // Absence of a reading is not evidence of anything. The record renders; the
-    // stall line may fire on the plugin's own clock, but nothing claims to know
-    // what turn the server is on.
     const { c } = await withChild({ harness: { hooks: { statusThrows: new Error("status down") } } });
     const status = await c.status();
     answerSays(status, "State: active");
@@ -840,15 +899,13 @@ describe("task_result and task_interrupt paths", () => {
     assert.match(summary, /Last child message: 4[0-9]s ago/, `the child's own clock. got: ${summary}`);
   });
 
+  // No record to reconcile and no server word: the only honest status is the
+  // absence of one. Reporting "completed" here is how a caller resumes a
+  // session that is still working.
   it("an untracked session with no status channel is unknown, not idle", async () => {
-    // No record to reconcile and no server word: the only honest status is the
-    // absence of one. Reporting "completed" here is how a caller resumes a
-    // session that is still working.
-    const h = await setupHarness({
-      hooks: {
-        statusThrows: new Error("status down"),
-        messages: () => [{ role: "assistant", parts: [{ type: "text", text: "working" }] }],
-      },
+    const h = await eventHarness({
+      statusThrows: new Error("status down"),
+      messages: () => [{ role: "assistant", parts: [{ type: "text", text: "working" }] }],
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
@@ -883,13 +940,13 @@ describe("task_result and task_interrupt paths", () => {
     // re-settle it — the synchronous claim happened BEFORE the abort.
     assert.strictEqual(await stateOf(c), "State: interrupted", "history preserved");
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 0, "the abort's own idle event must not notify");
+    assertNoticeCount(h, 0, "the abort's own idle event must not notify");
   });
 
   it("task_interrupt requires a session id and names missing sessions", async () => {
     const h = await setupHarness();
-    assert.ok((await h.tool.task_interrupt.execute({})).includes("required"));
-    const missing = await setupHarness({ hooks: { abortFailIds: new Set(["ses_ghost"]) } });
+    await assertNeedsSessionId(h.tool.task_interrupt);
+    const missing = await eventHarness({ abortFailIds: new Set(["ses_ghost"]) });
     const out = await missing.tool.task_interrupt.execute({ session_id: "ses_ghost" });
     answerSays(out, "not found");
     });
@@ -903,7 +960,7 @@ describe("task_result and task_interrupt paths", () => {
     answerSays(status, "active", "speculative claim withdrawn");
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 1, "natural completion delivers");
+    assertNoticeCount(h, 1, "natural completion delivers");
     assert.ok(h.noticeBodies()[0].includes("completed successfully"));
   });
 
@@ -917,12 +974,12 @@ describe("task_result and task_interrupt paths", () => {
     });
 });
 
+// The spawn contract tells a child to notify the parent when it is blocked.
+// When that child's turn then ended, the plugin recorded `completed` and told
+// the parent "Background task completed successfully" — a false success claim
+// about a task that did no work, in the ledger, the tree, and every read. The
+// child already knows it is blocked; the record has to be able to say so.
 describe("a child that needs input is not a success", () => {
-  // The spawn contract tells a child to notify the parent when it is blocked.
-  // When that child's turn then ended, the plugin recorded `completed` and told
-  // the parent "Background task completed successfully" — a false success claim
-  // about a task that did no work, in the ledger, the tree, and every read. The
-  // child already knows it is blocked; the record has to be able to say so.
   it("a child that declared it needs input settles as blocked, and the parent is told to answer", async () => {
     const { h, c, id } = await withChild();
     await c.notify("I need the API key to continue.", { kind: "needs_input" });
@@ -934,9 +991,9 @@ describe("a child that needs input is not a success", () => {
     assert.ok(!/completed successfully/.test(body), `never a success claim. got: ${body}`);
   });
 
+  // The guard on the whole change: the state is earned by a declaration, not
+  // assumed for every ending turn.
   it("a child that declared nothing still settles completed", async () => {
-    // The guard on the whole change: the state is earned by a declaration, not
-    // assumed for every ending turn.
     const { h, c, id } = await withChild();
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: completed");
@@ -949,10 +1006,10 @@ describe("a child that needs input is not a success", () => {
     assert.strictEqual(await stateOf(c), "State: error", "a failure is not a question");
   });
 
+  // A steer that lands AFTER the declaration is the answer: the ending turn
+  // made no new claim, so its ending is its own. Without the turn scoping a
+  // child that got its answer mid-turn would still be reported as waiting.
   it("a declaration belongs to the turn that made it", async () => {
-    // A steer that lands AFTER the declaration is the answer: the ending turn
-    // made no new claim, so its ending is its own. Without the turn scoping a
-    // child that got its answer mid-turn would still be reported as waiting.
     const { h, c, id } = await withChild();
     await c.notify("which environment?", { kind: "needs_input" });
     await c.steer("staging");
@@ -969,14 +1026,13 @@ describe("a child that needs input is not a success", () => {
     assert.strictEqual(await stateOf(c), "State: active", "answered tasks run again");
   });
 
+  // The durable reader once validated a restored record against its OWN
+  // hand-written list of states, so a state added to the machine was silently
+  // dropped on the next boot — the plugin forgetting, in one process, that it
+  // had ever asked a parent a question. The list is the machine's now, and
+  // this test fails the moment a new state is not in it.
   it("a blocked record survives a restart as blocked, and is still answerable", async () => {
-    // The durable reader once validated a restored record against its OWN
-    // hand-written list of states, so a state added to the machine was silently
-    // dropped on the next boot — the plugin forgetting, in one process, that it
-    // had ever asked a parent a question. The list is the machine's now, and
-    // this test fails the moment a new state is not in it.
-    const { directory, now } = projectWithClock();
-    writeLedger(directory, {
+    const h = await bootOn((now) => ({
       pending: [],
       tasks: {
         ses_blocked1: {
@@ -985,8 +1041,7 @@ describe("a child that needs input is not a success", () => {
           startedAt: now - 5000, retainedAt: now - 100,
         },
       },
-    });
-    const h = await setupHarness({ hooks: {}, directory });
+    }));
     const c = h.child("ses_blocked1");
     assert.strictEqual(await stateOf(c), "State: blocked", "the restored record is not dropped");
     const answer = await c.steer("here is the key");
@@ -1002,13 +1057,13 @@ describe("a child that needs input is not a success", () => {
   });
 });
 
+// A dispatch is a tree, so an interrupt that stops only the session it was
+// handed reports success while a descendant keeps spending tokens. Each case
+// names the set the plugin acted on, and each member's own truth.
+//
+// Two levels is the deepest tree reachable today (see withDispatchTree); the
+// walk is depth-agnostic, so nothing here is written to two levels.
 describe("subtree interrupt: stopping a task stops everything under it", () => {
-  // A dispatch is a tree, so an interrupt that stops only the session it was
-  // handed reports success while a descendant keeps spending tokens. Each case
-  // names the set the plugin acted on, and each member's own truth.
-  //
-  // Two levels is the deepest tree reachable today (see withDispatchTree); the
-  // walk is depth-agnostic, so nothing here is written to two levels.
   const stateOf = async (h, id) => h.tool.task_status.execute({ session_id: id });
 
   it("one interrupt stops the whole tree and names every member", async () => {
@@ -1043,11 +1098,11 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     answerSays(out, child.id, "the task the caller named is still answered");
   });
 
+  // The walk starts at the named session whatever state it is in, so a
+  // finished parent is not a wall: the grandchild it left running is exactly
+  // the work an interrupt is for, and reporting only "already settled" would
+  // hand back a clean answer over work that is still spending tokens.
   it("a settled task still has a live child below it, and the child is stopped", async () => {
-    // The walk starts at the named session whatever state it is in, so a
-    // finished parent is not a wall: the grandchild it left running is exactly
-    // the work an interrupt is for, and reporting only "already settled" would
-    // hand back a clean answer over work that is still spending tokens.
     const { h, child, grandchild } = await withDispatchTree();
     await h.settle(child.id);
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
@@ -1056,13 +1111,13 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     assert.ok((await stateOf(h, grandchild.id)).includes("interrupted"), "the grandchild is stopped");
   });
 
+  // The claim is what orders the echoes: a terminal event for a task whose
+  // interrupt claim has already been taken finds settled history instead of
+  // an active record, so it cannot report a completion the parent was just
+  // told about. With claims taken one abort at a time, the descendant is
+  // still active while the first abort is in flight — and this is the window
+  // the ordering makes unrepresentable.
   it("the whole tree is claimed before the first abort reaches the server", async () => {
-    // The claim is what orders the echoes: a terminal event for a task whose
-    // interrupt claim has already been taken finds settled history instead of
-    // an active record, so it cannot report a completion the parent was just
-    // told about. With claims taken one abort at a time, the descendant is
-    // still active while the first abort is in flight — and this is the window
-    // the ordering makes unrepresentable.
     const { h, child, grandchild } = await withDispatchTree();
     const gate = h.client.gateAbort();
     const pass = h.tool.task_interrupt.execute({ session_id: child.id });
@@ -1086,9 +1141,9 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.match(summary, /FAILED|delivered: false|no parent/, `deafness must be distinguishable from silence. got: ${summary}`);
     });
 
+  // Same-tick race through the advisory check: both spawns see an empty
+  // slot, both create, the loser hits the authoritative register gate.
   it("post-create registration failure notifies instead of stranding error", async () => {
-    // Same-tick race through the advisory check: both spawns see an empty
-    // slot, both create, the loser hits the authoritative register gate.
     const h = await withSingleSlot();
     const [r1, r2] = await Promise.all([
     h.tool.dynamic_task.execute(dispatchArgs("racer one"), { sessionID: "p1" }),
@@ -1101,7 +1156,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.ok(loser, "loser session was created");
     assert.ok(h.client._state.aborted.includes(loser), `loser aborted, no orphan. aborted=${h.client._state.aborted}`);
     await sleep(50); // detached error-settlement delivery
-    assert.strictEqual(h.notices().length, 1, "the error settlement notifies");
+    assertNoticeCount(h, 1, "the error settlement notifies");
     const note = h.noticeBodies()[0];
     answerSays(note, "ended with an error", "error kind");
     });
@@ -1136,7 +1191,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     const { h, c, id } = await withSettledChild();
     await h.settle(id);
     await h.fireEvent(events.status(id));
-    assert.strictEqual(h.notices().length, 1, "one settled turn, one notice");
+    assertNoticeCount(h, 1, "one settled turn, one notice");
   });
 
   it("init guard disables the plugin without required client APIs", async () => {
@@ -1211,11 +1266,11 @@ async function refusedDispatchScenario(kind) {
   return { h, edge: await refusedOnOneEdge(h, "consume the edge", kind) };
 }
 
+// A refused depends_on was advice in a string and nothing else. The plugin
+// forgot the dispatch, so the parent had to carry the wait in prose, be alive
+// when the dependency settled, and re-dispatch from memory. Every one of those
+// is the parent's context, which is exactly what the plugin exists to hold.
 describe("dependency waits are state, not prose the parent must remember", () => {
-  // A refused depends_on was advice in a string and nothing else. The plugin
-  // forgot the dispatch, so the parent had to carry the wait in prose, be alive
-  // when the dependency settled, and re-dispatch from memory. Every one of those
-  // is the parent's context, which is exactly what the plugin exists to hold.
   it("a refused dispatch is remembered and announced the moment its edge clears", async () => {
     const { h, edge } = await refusedDispatchScenario();
     const hint = await announcedAbout(h, "consume the edge", () => h.settle(edge.id));
@@ -1223,11 +1278,11 @@ describe("dependency waits are state, not prose the parent must remember", () =>
     assert.match(hint.message, /can go now/i, `in words that ask for the action. got: ${hint.message}`);
   });
 
+  // The edge can never satisfy a strict depends_on again — it will not run
+  // again. Announcing nothing would leave the parent waiting on a task that
+  // is gone; announcing it as ready would hand it a dispatch whose gate
+  // refuses, which reads as the plugin contradicting itself.
   it("a wait whose edge settled short of completed is announced as dead, not as ready", async () => {
-    // The edge can never satisfy a strict depends_on again — it will not run
-    // again. Announcing nothing would leave the parent waiting on a task that
-    // is gone; announcing it as ready would hand it a dispatch whose gate
-    // refuses, which reads as the plugin contradicting itself.
     const { h, edge } = await refusedDispatchScenario();
     const hint = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
     assert.match(hint.message, /never run/i, `named as unrunnable. got: ${hint.message}`);
@@ -1244,9 +1299,9 @@ describe("dependency waits are state, not prose the parent must remember", () =>
     await announcedAbout(h, "consume both", () => h.settle(two.id));
   });
 
+  // depends_on_settled waits for any terminal state, so a failed edge still
+  // releases it — the wait is about the gate's readiness, not about success.
   it("a wait cleared by settlement only, and announced exactly once", async () => {
-    // depends_on_settled waits for any terminal state, so a failed edge still
-    // releases it — the wait is about the gate's readiness, not about success.
     const { h, edge } = await refusedDispatchScenario("settled");
     const released = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
     assert.match(released.message, /can go now/i, `a settled edge is enough. got: ${released.message}`);
@@ -1261,14 +1316,14 @@ describe("dependency waits are state, not prose the parent must remember", () =>
 });
 
 describe("question gate: child questions settle", () => {
+  // Two claims, one subject: that the event the host ACTUALLY publishes
+  // reaches the gate at all, and that what it answers with is the shape the
+  // host accepts. Both used to be two tests, which is why they drifted — and
+  // the drift is the defect class: a gate that answers on a shape the host
+  // rejects looks identical to one that works, right up until a live child
+  // waits forever. `question.asked` is the spelling; /question/{requestID} and
+  // one entry per asked question are the contract.
   it("an active child with options is answered, at the host's own route and shape", async () => {
-    // Two claims, one subject: that the event the host ACTUALLY publishes
-    // reaches the gate at all, and that what it answers with is the shape the
-    // host accepts. Both used to be two tests, which is why they drifted — and
-    // the drift is the defect class: a gate that answers on a shape the host
-    // rejects looks identical to one that works, right up until a live child
-    // waits forever. `question.asked` is the spelling; /question/{requestID} and
-    // one entry per asked question are the contract.
     const { h } = await withAskedChild("q1", "yes", "no");
     const calls = h.questionCalls();
     assert.strictEqual(calls.length, 1, "question.asked must reach the gate — it is the spelling the host publishes");
@@ -1277,19 +1332,19 @@ describe("question gate: child questions settle", () => {
       { method: "reply", requestID: "q1", answers: [["yes"]] },
       "the first option is the answer, addressed at /question/{requestID}/reply",
     );
-    assert.strictEqual(h.notices().length, 0, "an answered question is not a block");
+    assertNoticeCount(h, 0, "an answered question is not a block");
   });
 
+  // Nothing to answer with means reject, not silence. The reject endpoint
+  // declares `body?: never` and returns a bare boolean, so a reason has no
+  // channel from this gate to the asking session — the promise this gate used to
+  // make, that the reason is the child's only description of what it can do
+  // next, was undeliverable by the very mechanism claiming it, and misaddressed
+  // besides: it told the READER (the parent) to call task_notify, a child-only
+  // tool. So the claim reaches the operator through the last-notice line, and
+  // must LEAD with the parent's remedy — that line truncates at 120 chars, and
+  // a diagnosis-first message told the operator what happened and not what to do.
   it("a question the gate cannot answer is rejected, and the claim is the parent's to act on", async () => {
-    // Nothing to answer with means reject, not silence. The reject endpoint
-    // declares `body?: never` and returns a bare boolean, so a reason has no
-    // channel from this gate to the asking session — the promise this gate used to
-    // make, that the reason is the child's only description of what it can do
-    // next, was undeliverable by the very mechanism claiming it, and misaddressed
-    // besides: it told the READER (the parent) to call task_notify, a child-only
-    // tool. So the claim reaches the operator through the last-notice line, and
-    // must LEAD with the parent's remedy — that line truncates at 120 chars, and
-    // a diagnosis-first message told the operator what happened and not what to do.
     const { h, c } = await withAskedChild("q2");
     const call = assertQuestionRejected(h);
     assert.strictEqual(call.requestID, "q2", "refused at the host's own route");
@@ -1305,16 +1360,16 @@ describe("question gate: child questions settle", () => {
     await h.fireEvent(events.questionAsked(undefined, { id: "q1", questions: [] }));
     await h.fireEvent(events.ask("ses_stranger", "q9", "yes"));
     await h.fireEvent(events.questionReplied({ requestID: "q1" }));
-    assert.strictEqual(h.notices().length, 0, "no parent traffic for questions");
+    assertNoticeCount(h, 0, "no parent traffic for questions");
     assert.strictEqual(h.questionCalls().length, 0, "never touches foreign questions");
   });
 
+  // `answers` is one entry per asked question, so the gate can satisfy a
+  // single-part ask and nothing else. Answering the first part of a two-part
+  // ask would retire the question with the child never having seen the second
+  // answer — a silent loss wearing a success, which is the exact failure the
+  // question gate exists to prevent. So a multi-part ask is a rejection.
   it("a multi-part ask is rejected, never half-answered", async () => {
-    // `answers` is one entry per asked question, so the gate can satisfy a
-    // single-part ask and nothing else. Answering the first part of a two-part
-    // ask would retire the question with the child never having seen the second
-    // answer — a silent loss wearing a success, which is the exact failure the
-    // question gate exists to prevent. So a multi-part ask is a rejection.
     const { h, id } = await withChild();
     await h.fireEvent(
       events.questionAsked(id, {
@@ -1326,13 +1381,13 @@ describe("question gate: child questions settle", () => {
     assert.strictEqual(call.requestID, "q-multi", "rejected by id, at the host's route");
   });
 
+  // The gate is the plugin BLOCKING the child: it refused the question, so it
+  // knows the child cannot finish on that point — it knows more than the child
+  // recorded. If the child does not itself call task_notify, the settlement read
+  // nothing and reported the block as a success — the same false success,
+  // arriving through a different door. The gate is the second source of the
+  // claim, and it must reach the same funnel.
   it("a question the gate could not answer is a block the settlement must not report as a success", async () => {
-    // The gate is the plugin BLOCKING the child: it refused the question, so it
-    // knows the child cannot finish on that point — it knows more than the child
-    // recorded. If the child does not itself call task_notify, the settlement read
-    // nothing and reported the block as a success — the same false success,
-    // arriving through a different door. The gate is the second source of the
-    // claim, and it must reach the same funnel.
     const { h, c, id } = await withAskedChild("q-block");
     assert.strictEqual(assertQuestionRejected(h).requestID, "q-block");
     await h.settle(id);
@@ -1345,17 +1400,16 @@ describe("question gate: child questions settle", () => {
     assert.strictEqual(await stateOf(c), "State: completed", `an answered question blocks nothing.`);
   });
 
+  // A settled child cannot answer its own question and its answer would be
+  // worthless anyway, so the question is closed. The guidance cannot ride the
+  // rejection (no body), so it is asserted in the log — the operator's copy.
   it("a settled child's question is rejected, and the reason is recorded where it can be read", async () => {
-    // A settled child cannot answer its own question and its answer would be
-    // worthless anyway, so the question is closed. The guidance cannot ride the
-    // rejection (no body), so it is asserted in the log — the operator's copy.
     await withLoggedChild({}, async ({ h, id, c, log }) => {
       await h.fireEvent(events.ask(id, "q3", "yes"));
       assertQuestionRejected(h);
       const text = log();
       assert.match(text, /question-retained-rejected/, `the settlement is logged as one. got: ${text}`);
       assert.match(text, /settled/i, `and it says the task is settled. got: ${text}`);
-      await c.interrupt();
     });
   });
 
@@ -1365,16 +1419,15 @@ describe("question gate: child questions settle", () => {
       const text = log();
       answerSays(text, "question-retained-reject-failed", "failure logged");
       assert.ok(!text.includes('"eventName":"question-retained-rejected"'), `must not claim rejection. got: ${text}`);
-      await c.interrupt();
     });
   });
 
+  // The gate used to remember which session owned which question id, and forget
+  // that when a reply arrived — a cross-event correlation the host makes
+  // unnecessary, because an asked question NAMES its session. A stale entry
+  // would divert a later question from someone else onto a task already
+  // answered. Reading the owner off the event cannot go stale.
   it("a question id already used by a tracked task cannot divert a foreign question onto it", async () => {
-    // The gate used to remember which session owned which question id, and forget
-    // that when a reply arrived — a cross-event correlation the host makes
-    // unnecessary, because an asked question NAMES its session. A stale entry
-    // would divert a later question from someone else onto a task already
-    // answered. Reading the owner off the event cannot go stale.
     const h = await setupHarness();
     const mine = await h.spawn({ description: "tracked owner" });
     const asked = { id: "q-shared", questions: [events.hostQuestion("Ship it?", ["yes"])] };
@@ -1411,19 +1464,19 @@ describe("notification delivery records", () => {
     const h = await setupHarness({ hooks: hooks });
     const { id, c } = await h.spawn({ description: "doomed parent task" });
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 0, "nothing delivered");
+    assertNoticeCount(h, 0, "nothing delivered");
     await sleep(600); // detached delivery runs the gate's 250ms retry cycle
     const summary = await c.result();
     answerSays(summary, "FAILED", "delivery failure surfaced");
     });
 
+  // p1's prompt fails ONLY on the first attempt (child prompt ok, parent
+  // notify attempt 1 fails, attempt 2 succeeds): the record is a history,
+  // not a veto — exactly-once is about successful deliveries.
   it("a failed delivery does not consume the settlement — redelivery can succeed", async () => {
-    // p1's prompt fails ONLY on the first attempt (child prompt ok, parent
-    // notify attempt 1 fails, attempt 2 succeeds): the record is a history,
-    // not a veto — exactly-once is about successful deliveries.
     const { h, c } = await withSettledChild({ harness: { hooks: { notifyTransport: { failTimes: 1 } } } });
     await sleep(500); // one retry cycle at the gate's fixed backoff
-    assert.strictEqual(h.notices().length, 1, "the retry delivered");
+    assertNoticeCount(h, 1, "the retry delivered");
     const summary = await c.result();
     answerSays(summary, "completed", "final record is a success");
     });
@@ -1468,11 +1521,11 @@ describe("task fleet views", () => {
       answerSays(list, grandchild.id, "history still has it");
     });
 
+    // Retention prunes finished records. When the pruned task is the parent of
+    // something still running, the child cannot be indented under a row that
+    // is gone — so it names the parent it lost instead of reading as a root.
+    // A root is a task whose parent nobody has stopped.
     it("a pruned parent is named, never silently dropped from the tree", async () => {
-      // Retention prunes finished records. When the pruned task is the parent of
-      // something still running, the child cannot be indented under a row that
-      // is gone — so it names the parent it lost instead of reading as a root.
-      // A root is a task whose parent nobody has stopped.
       const { h, child, grandchild } = await withDispatchTree({ options: { retainedTaskTtlMs: 1 } });
       await h.settle(child.id);
       await sleep(10);
@@ -1498,7 +1551,7 @@ describe("task fleet views", () => {
     answerSays(detail, "explore");
     const missing = await h.tool.task_status.execute({ session_id: "ses_ghost" });
     answerSays(missing, "unknown");
-    assert.ok((await h.tool.task_status.execute({})).includes("required"));
+    await assertNeedsSessionId(h.tool.task_status);
     });
 });
 
@@ -1604,8 +1657,7 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
 
     const h = await setupHarness({ hooks: {}, directory: dir });
     const { id, c } = await h.spawn({ description: "scoped" });
-    await h.settle(id);
-    await sleep(30); // onRetainedChange fires synchronously; sleep is for CI, not the contract.
+    await settledOnDisk(h, id);
 
     const ledgerFile = join(dir, ".dynamic-task-ledger.json");
     assert.ok(existsSync(ledgerFile), "ledger must be written inside the plugin directory");
@@ -1655,7 +1707,7 @@ describe("outcome correctness: failed turns never report success", () => {
   }
 
   it("session.error event notifies error even when hydration finds nothing", async () => {
-    const h = await setupHarness({ hooks: { messages: () => [] } });
+    const h = await eventHarness({ messages: () => [] });
     const { id, c } = await h.spawn({ description: "err evt" });
     const note = (await h.noticeAfter(
       events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
@@ -1664,7 +1716,7 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("a burst of terminal events notifies the parent exactly once", async () => {
-    const h = await setupHarness({ hooks: { messages: erroredMessages } });
+    const h = await eventHarness({ messages: erroredMessages });
     const { id, c } = await h.spawn({ description: "burst" });
     // The field log showed three terminal events within 1ms for one failure.
     await Promise.all([
@@ -1674,26 +1726,26 @@ describe("outcome correctness: failed turns never report success", () => {
     ]);
     await sleep(30);
 
-    assert.strictEqual(h.notices().length, 1, "single winner must notify once");
+    assertNoticeCount(h, 1, "single winner must notify once");
     assert.ok(h.noticeBodies()[0].includes("ended with an error"));
     });
 
 
 
+  // The poisoning window: turn 1's delivery fails attempt 1, the operator
+  // continues before the 250ms retry resolves, and the retry then succeeds —
+  // an in-flight commit from the old generation must not reserve the key
+  // that turn 2's settlement needs.
   it("a revived turn is never suppressed by its predecessor's late retry", async () => {
-    // The poisoning window: turn 1's delivery fails attempt 1, the operator
-    // continues before the 250ms retry resolves, and the retry then succeeds —
-    // an in-flight commit from the old generation must not reserve the key
-    // that turn 2's settlement needs.
     const { h, id } = await reviveAfterFailedDelivery();
     await sleep(350); // the stale retry lands and commits while the revival is live
     await h.settle(id);
     await assertBothTurnsDelivered(h);
     });
 
+  // Same harness, opposite timing: the revival lands BEFORE the retry
+  // resolves, so serialization — not generations — carries the order.
   it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
-    // Same harness, opposite timing: the revival lands BEFORE the retry
-    // resolves, so serialization — not generations — carries the order.
     const { h, id } = await reviveAfterFailedDelivery();
     await h.settle(id);
     await sleep(600);
@@ -1715,21 +1767,21 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("boot restore honors the configured retention cap", async () => {
-    const { directory, now } = projectWithClock();
-    const tasks = {};
-    for (let i = 1; i <= 4; i++) {
-      tasks[`ses_boot${i}`] = {
-        childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
-        description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
-      };
-    }
-    writeLedger(directory, { tasks });
     await withEnv("DYNAMIC_TASK_RETAINED_MAX_ENTRIES", "2", async () => {
-      const h = await setupHarness({ hooks: {}, directory });
+      const h = await bootOn((now) => {
+        const tasks = {};
+        for (let i = 1; i <= 4; i++) {
+          tasks[`ses_boot${i}`] = {
+            childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
+            description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
+          };
+        }
+        return { tasks };
+      });
       const list = await h.tool.task_list.execute({});
       answerSays(list, "Retained: 2", "configured cap honored");
     });
-    });
+  });
 
   it("clean completions still report success unchanged", async () => {
     const h = await setupHarness();
@@ -1761,20 +1813,15 @@ describe("boot redelivers what the last boot owed", () => {
 
   // Every case here is the same world with one debt in it, so the world is built
   // once: a project directory carrying an owed notice, and a plugin booted on it.
-  const bootWithOwed = async (owedEntries, hooks = {}) => {
-    const directory = tmpProjectDir();
-    writeLedger(directory, {
-      tasks: {
-        ses_owed: {
-          childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
-          description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
-        },
+  const bootWithOwed = (owedEntries, hooks = {}) => bootOn(() => ({
+    tasks: {
+      ses_owed: {
+        childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
+        description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
       },
-      pending: owedEntries,
-    });
-    const harness = await setupHarness({ hooks, directory });
-    return { directory, ...harness };
-  };
+    },
+    pending: owedEntries,
+  }), { hooks });
 
   const onDisk = (directory) => {
     try {
@@ -1800,13 +1847,13 @@ describe("boot redelivers what the last boot owed", () => {
     }, "the debt to be retired once the parent answered");
   });
 
+  // A held write re-arms its own debt inside the gate, so the queue is not
+  // empty afterwards: what must not happen is a SECOND dial in this boot. (The
+  // retry itself belongs to a refused write, covered where the transport can
+  // refuse: notify.test.js scripts the rejection.) The wait is on the DIAL,
+  // not on the queue — the restored ledger already holds the entry, so the
+  // queue cannot tell "not yet redelivered" from "redelivered and held".
   it("a redelivery the host still holds is not retried here — it waits for the next boot", async () => {
-    // A held write re-arms its own debt inside the gate, so the queue is not
-    // empty afterwards: what must not happen is a SECOND dial in this boot. (The
-    // retry itself belongs to a refused write, covered where the transport can
-    // refuse: notify.test.js scripts the rejection.) The wait is on the DIAL,
-    // not on the queue — the restored ledger already holds the entry, so the
-    // queue cannot tell "not yet redelivered" from "redelivered and held".
     const { directory, client } = await bootWithOwed([owed()], { notifyTransport: { hang: new Promise(() => {}) } });
     await waitFor(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
     assert.strictEqual(client._state.notifyCalls.length, 1, "one dial, then the host holds it");
@@ -1835,12 +1882,10 @@ describe("boot reconciles what the last boot was still running", () => {
     description: "running across restart", lineage: [], state: "active", startedAt: 1, ...overrides,
   });
 
-  const bootWithRunners = async (actives, hostStatusSeed) => {
-    const directory = tmpProjectDir();
-    writeLedger(directory, { tasks: {}, active: actives, pending: [] });
-    const harness = await setupHarness({ hooks: { hostStatusSeed }, directory });
-    return { directory, ...harness };
-  };
+  const bootWithRunners = (actives, hostStatusSeed) => bootOn(
+    () => ({ tasks: {}, active: actives, pending: [] }),
+    { hooks: { hostStatusSeed } },
+  );
 
   const ledgerActive = (directory) => JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8")).active;
 
@@ -1865,9 +1910,9 @@ describe("boot reconciles what the last boot was still running", () => {
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [], "nothing is left pretending to run");
   });
 
+  // The host says the turn is over and the transcript still reads: this is
+  // finished work, and settling it error would invent a failure nobody saw.
   it("a child that finished while the parent was down settles completed, not error", async () => {
-    // The host says the turn is over and the transcript still reads: this is
-    // finished work, and settling it error would invent a failure nobody saw.
     const { notices } = await bootWithRunners({ ses_idle: running("ses_idle") }, { ses_idle: "idle" });
     await waitFor(() => notices().length > 0, "the finished child to settle");
     assert.match(notices()[0].message, /completed successfully/);
@@ -1881,8 +1926,7 @@ describe("boot reconciles what the last boot was still running", () => {
     await sleep(30); // the spawn observer writes synchronously; the sleep is for CI, not the contract.
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [id], "a running child is durable");
 
-    await h.settle(id);
-    await sleep(30);
+    await settledOnDisk(h, id);
     assert.deepStrictEqual(ledgerActive(directory), {}, "and stops being a running task the moment it settles");
   });
 });
@@ -1905,7 +1949,7 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     });
 
   it("task_interrupt reports the server 404 without lingering active state", async () => {
-    const h = await setupHarness({ hooks: { abortFailIds: new Set(["ses_mock_1"]) } });
+    const h = await eventHarness({ abortFailIds: new Set(["ses_mock_1"]) });
     const { id, c } = await h.spawn({ description: "ghost" });
     const res = await c.interrupt();
     assert.ok(/not found/i.test(res), `reports the server 404. got: ${res}`);

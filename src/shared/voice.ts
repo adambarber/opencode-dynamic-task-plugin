@@ -68,10 +68,18 @@ export function dependenciesPending(pending: DependencyBlock[]): string {
 // named each one, so it is named back — the plugin never invents an id the
 // parent would have to learn, and the parent does not have to remember which of
 // its refusals this settlement answers.
+//
+// The dependency clause is deliberately UNCOUNTED. It used to vary singular or
+// plural on the number of RELEASED DISPATCHES, which is not what it describes: a
+// single dispatch waiting on three dependencies was told "the dependency has
+// completed", and a live smoke-test agent could not tell from that whether one
+// edge had cleared or all of them. The release predicate already requires every
+// dependency to be ready, so "everything it waited on has cleared" is both the
+// truer sentence and the shorter one.
 export function waitsReleasedBody(release: WaitRelease): string {
   return textBlock(
-    release.ready.length > 0 ? `Your dispatch${release.ready.length === 1 ? "" : "es"} of ${release.ready.map((w) => `"${w.description}"`).join(", ")} can go now — the dependenc${release.ready.length === 1 ? "y has" : "ies have"} completed. Send the same dynamic_task call again.` : undefined,
-    release.dead.length > 0 ? `Your dispatch${release.dead.length === 1 ? "" : "es"} of ${release.dead.map((w) => `"${w.description}"`).join(", ")} will never run: the dependenc${release.dead.length === 1 ? "y" : "ies"} it waited on finished without completing, and will not run again. Re-plan it against what did land, or drop the dependency.` : undefined,
+    release.ready.length > 0 ? `Your dispatch${release.ready.length === 1 ? "" : "es"} of ${release.ready.map((w) => `"${w.description}"`).join(", ")} can go now — everything it waited on has completed. Send the same dynamic_task call again.` : undefined,
+    release.dead.length > 0 ? `Your dispatch${release.dead.length === 1 ? "" : "es"} of ${release.dead.map((w) => `"${w.description}"`).join(", ")} will never run: what it waited on finished without completing, and will not run again. Re-plan it against what did land, or drop the dependency.` : undefined,
   );
 }
 

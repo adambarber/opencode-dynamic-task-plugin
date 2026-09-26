@@ -30,48 +30,34 @@ type ToolArgs = Parameters<typeof tool>[0]["args"];
 
 export function buildToolMap(deps: ToolDeps) {
   // The ONLY door into any registered tool, and the ONLY decision about what an
-  // executor runs against: a resolved session scope for a tool that acts on a
-  // named child, the dependency set for the two that do not. One builder, so an
-  // executor is reached the same way from both kinds and a new tool cannot invent
-  // a third call shape. The refusal is reported by the resolve step, before the
-  // executor exists.
-  const registeredTool = <T>(
-    description: string,
-    args: ToolArgs,
-    resolve: (raw: unknown) => Verdict<T>,
-    execute: (input: T, args: never, ctx: ToolContext) => Promise<string>,
-  ) =>
-    tool({
-      description,
-      args,
-      async execute(raw, ctx: ToolContext) {
-        const resolved = resolve(raw);
-        if (!resolved.ok) return resolved.error;
-        return execute(resolved.input, raw as never, ctx);
-      },
-    });
+  // executor runs against. Bound to its resolver, so a tool declares the input it
+  // runs against in one place and the executor that goes with it — the session-id
+  // guard is structurally present for every session tool rather than repeated
+  // (and driftable) inside four executors, and an executor's signature has no
+  // room for an unresolved id. The refusal is reported by the resolve step,
+  // before the executor exists.
+  const registeredTool = <T>(resolve: (raw: unknown) => Verdict<T>) =>
+    (description: string, args: ToolArgs, execute: (input: T, args: never, ctx: ToolContext) => Promise<string>) =>
+      tool({
+        description,
+        args,
+        async execute(raw, ctx: ToolContext) {
+          const resolved = resolve(raw);
+          if (!resolved.ok) return resolved.error;
+          return execute(resolved.input, raw as never, ctx);
+        },
+      });
 
-  // The scope is resolved here, once per call, and the executor receives it — so
-  // the session-id guard is structurally present for every session tool rather
-  // than repeated (and driftable) inside four executors, and an executor's
-  // signature has no room for an unresolved id.
-  const scopedTool = (
-    description: string,
-    args: ToolArgs,
-    execute: (scope: ResolvedSessionScope, args: never) => Promise<string>,
-  ) =>
-    registeredTool(description, args, (raw) => {
-      const opened = openSessionScope(deps, raw);
-      return opened.ok ? { ok: true as const, input: opened.scope } : opened;
-    }, execute);
-
-  // The two tools that run against the PLUGIN rather than a session scope: there
-  // is no session id to resolve, and the whole dependency set is the input.
-  const pluginTool = (
-    description: string,
-    args: ToolArgs,
-    execute: (deps: ToolDeps, args: never, ctx: ToolContext) => Promise<string>,
-  ) => registeredTool(description, args, () => ({ ok: true as const, input: deps }), execute);
+  // A tool that acts on a named child resolves the session id here, once per
+  // call. The two tools that run against the PLUGIN rather than a session scope
+  // have no session id to resolve, and the whole dependency set is the input.
+  const sessionInput = (raw: unknown): Verdict<ResolvedSessionScope> => {
+    const opened = openSessionScope(deps, raw);
+    return opened.ok ? { ok: true, input: opened.scope } : opened;
+  };
+  const pluginInput = (): Verdict<ToolDeps> => ({ ok: true, input: deps });
+  const scopedTool = registeredTool(sessionInput);
+  const pluginTool = registeredTool(pluginInput);
   const SESSION_ID = tool.schema.string().describe("Background task session ID (ses_...)");
   // One builder for the two dependency arguments. They are the same schema with
   // the same meaning — a list of child session ids — and differ only in what

@@ -14,6 +14,7 @@
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
 import { abortSession } from "../shared/session-lifecycle.js";
+import type { OpenCodeClient } from "../shared/client.js";
 import { safeLog } from "../shared/notify.js";
 import {
   transitionState,
@@ -50,6 +51,22 @@ interface InterruptClaim {
   claimTime: number;
 }
 
+/**
+ * An abort that failed on a child this plugin is still responsible for: log what
+ * the server said, with the circumstance that makes the failure mean something,
+ * and answer the one outcome both a withdrawn claim and an untracked child get.
+ * The `because` is a parameter because the two sites differ exactly there.
+ */
+function abortFailedActive(
+  client: OpenCodeClient,
+  sessionId: string,
+  message: string,
+  because: string,
+): InterruptOutcome {
+  void safeLog(client, "warn", `Interrupt: abort failed for ${sessionId} (${message}); ${because}.`);
+  return { kind: "abort-failed-active", message };
+}
+
 /** The synchronous half: settle the task before the server is told anything. */
 function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string): InterruptClaim {
   const claimTime = Date.now();
@@ -77,8 +94,7 @@ async function abortClaimed(
     // Untracked: transient abort failures are simply the caller's
     // transport error; nothing of ours is at stake.
     if (abortMessage) {
-      void safeLog(client, "warn", `Interrupt: abort failed for untracked ${sessionId}: ${abortMessage}`);
-      return { kind: "abort-failed-active", message: abortMessage };
+      return abortFailedActive(client, sessionId, abortMessage, "untracked child, so nothing of ours is at stake");
     }
     if (serverGone) return { kind: "gone" };
     return { kind: "untracked" };
@@ -94,8 +110,7 @@ async function abortClaimed(
     // ignorance — the newer success wins).
     if (claimed && store.retainedTasks.get(sessionId)?.state === "interrupted") {
       if (withdrawInterruptClaim(store, sessionId, claim.claimTime, config)) {
-        void safeLog(client, "warn", `Interrupt: abort failed for ${sessionId} (${abortMessage}); speculative claim withdrawn, child may still be live.`);
-        return { kind: "abort-failed-active", message: abortMessage };
+        return abortFailedActive(client, sessionId, abortMessage, "speculative claim withdrawn, child may still be live");
       }
       recordAbortError(store, sessionId, abortMessage);
       return { kind: "abort-failed-retained", message: abortMessage };

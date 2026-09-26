@@ -204,10 +204,12 @@ function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { sta
 // v3: durable delivery. v2 held settled records only, so a crash between
 // settling and telling the parent left a `completed` with no notice and no
 // evidence one was owed; `pending` is that evidence, written before each dial.
-// Retained kinds are the three terminal states. Every other version is
-// discarded wholesale — a partially-restored past reads as history, and is worse
-// than a clean boot.
-// File shape: { version, tasks: { [childSessionId]: entry }, pending: [owed write] }.
+// v3 also carries `active` — the running set — because a child that is still
+// working at the moment the process dies is exactly the record whose absence
+// leaves a next boot with nothing to reconcile. Retained kinds are the three
+// terminal states. Every other version is discarded wholesale — a
+// partially-restored past reads as history, and is worse than a clean boot.
+// File shape: { version, tasks: { [childSessionId]: entry }, active: { [childSessionId]: entry }, pending: [owed write] }.
 export const TASK_LEDGER_VERSION = 3;
 
 /** The whole durable file, as the one dance sees it. */

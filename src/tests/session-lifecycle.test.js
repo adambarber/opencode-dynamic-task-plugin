@@ -427,3 +427,41 @@ describe("task ledger persistence", () => {
   });
 
 });
+
+// --- The file shape the comment promises, checked against a real write -------
+// The version comment beside TASK_LEDGER_VERSION documents the on-disk shape in
+// prose, and it went stale: it listed { version, tasks, pending } and omitted
+// `active` entirely, which is the half a crash mid-run needs and the smoke test
+// found in the wild. Nothing detected it because a prose comment is not
+// something a type checker reads and the round-trip test only cares that the
+// reader understands what the writer wrote. So the shape is pinned from both
+// sides here — a real write names the keys, and the comment must name every one
+// of them.
+describe("the ledger's documented shape is the shape it writes", () => {
+  it("names every key the writer actually produces", async () => {
+    const file = `${tmpdir()}/dt-shape-${process.pid}.json`;
+    saveTaskLedger({ retained: new Map(), active: new Map(), pending: [] }, file);
+    const written = Object.keys(JSON.parse(readFileSync(file, "utf8")));
+
+    const source = readFileSync(
+      new URL("../../src/shared/session-lifecycle.ts", import.meta.url),
+      "utf8",
+    );
+    // Scoped to the line that CLAIMS to enumerate, not the whole comment block.
+    // A whole-block search passed against a comment that had dropped a key from
+    // its File shape line, because the key's name appeared in the prose above —
+    // so the first version of this gate was satisfied by the very drift it
+    // exists to catch.
+    const shape = /^\/\/ File shape:.*$/m.exec(source)?.[0];
+    assert.ok(shape, "could not find the 'File shape:' line above TASK_LEDGER_VERSION");
+
+    const undocumented = written.filter((key) => !shape.includes(key));
+    assert.deepStrictEqual(
+      undocumented,
+      [],
+      `the File shape line does not mention ${JSON.stringify(undocumented)}. The on-disk ledger ` +
+      `is ${JSON.stringify(written)}; a reader who trusts the comment is reading a past. ` +
+      `Found: ${shape}`,
+    );
+  });
+});

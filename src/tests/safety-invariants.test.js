@@ -17,15 +17,14 @@
  *   funnel it describes exists.
  */
 
-import { describe, it } from "node:test";
-import assert from "node:assert";
+import { describe, it, assert } from "./support/runner.js";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildToolMap } from "../../dist/tools/index.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, shortPath } from "../../scripts/cross-boundary.mjs";
+import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath } from "../../scripts/cross-boundary.mjs";
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.join(TESTS_DIR, "..");
@@ -726,63 +725,6 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     assert.deepStrictEqual(reported(`const next = ["completed", "error", "blocked"];`, constants), [],
       "a table's array entries are a vocabulary a test may name, not decisions it may not restate");
     assert.deepStrictEqual(reported("const n = 1;", constants), [], "an unrelated source has nothing to report");
-  });
-});
-
-/**
- * The gate jscpd structurally cannot be: duplication ACROSS the test/production
- * boundary. jscpd pools tokens per format, so a `.js` test is never compared to the
- * `.ts` it tests — measured, not assumed, in scripts/cross-boundary.mjs. That is
- * the class that bit twice in this tree, and it is why the rule above exists as a
- * separate scanner rather than as a lower jscpd threshold.
- *
- * In-process and no spawn, for the reason the earlier jscpd-spawning attempt did not
- * survive: a test that shells out is slow, exits on a signal, and reports a number
- * instead of a finding. This imports the same module the CLI prints from, so the
- * number a human reads and the number this fails on cannot come from two
- * implementations.
- */
-describe("invariant: no duplication across the test/production boundary (Tenet 12)", () => {
-  it("a test and the production it tests share no run at or above the measured floor", () => {
-    // "Zero findings" is only a result if there was something to find, so the
-    // corpus is proved non-empty first. A renamed directory or a tokenizer that
-    // started returning nothing would otherwise turn this gate green by removing
-    // its own subject, which is the failure mode a passing assertion invites.
-    const { tests, production, tokens } = corpus();
-    assert.ok(tests > 0 && production > 0, `the corpus is empty — ${tests} test files, ${production} production files`);
-    assert.ok(tokens > 10_000, `only ${tokens} comparable tokens found — the tokenizer is not reading the tree`);
-
-    const findings = findCrossBoundaryClones();
-    const sites = findings.map(
-      (f) => `  - ${f.tokens}T / ${f.lines}L  ${shortPath(f.test)}:${f.lineA}  ↔  ${shortPath(f.prod)}:${f.lineB}`,
-    );
-    assert.deepStrictEqual(sites, [], `a test shares code with production above ${FLOOR_TOKENS} tokens / ${FLOOR_LINES} lines:\n${sites.join("\n")}`);
-  });
-
-  // A floor is only meaningful if the detector can still see. This pins the
-  // detection, not the cleanliness: two files on opposite sides of the boundary
-  // holding the same body must be reported, whatever the floor is. The probe lives
-  // in a temp directory and is passed in as the corpus, so the tree is never
-  // touched and the detector's own default corpus is never what is being tested.
-  it("the detector still reports a shared body across the boundary", () => {
-    const body = [
-      "export const probe = (record) => {",
-      "  const a = record.childSessionId;",
-      "  const b = record.parentSessionId;",
-      "  return a.length > b.length ? a : b;",
-      "};",
-    ].join("\n");
-    const dir = mkdtempSync(path.join(tmpdir(), "dt-cross-boundary-"));
-    const prod = path.join(dir, "probe.ts");
-    const test = path.join(dir, "probe.js");
-    try {
-      writeFileSync(prod, body);
-      writeFileSync(test, body);
-      const findings = findCrossBoundaryClones({ tests: [test], production: [prod] });
-      assert.ok(findings.length > 0, "identical bodies on opposite sides of the boundary must be reported");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 

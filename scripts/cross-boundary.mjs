@@ -41,8 +41,9 @@
  * floor is a measurement of THAT tokenizer and is not automatically still true of a
  * different one.
  */
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
 const REPO = new URL("..", import.meta.url).pathname;
@@ -67,13 +68,23 @@ const walk = (dir) =>
  * The lines an import declaration occupies. An import is a list of names, so two
  * files importing the same names match on the import alone; that is a fact about
  * names, not about logic, and no refactor removes it.
+ *
+ * The line span is measured FROM THE MATCH, not from the top of the file. It used
+ * to walk forward from offset 0 and collect every line above the import as well,
+ * which meant each file's entire header docblock was thrown away as "imports" —
+ * 246 tokens across src/, including the one describing the fake server. That
+ * quietly shrank every per-file measurement, so the floor below was calibrated on
+ * a stream that had already discarded real text.
  */
 export const importLines = (source) => {
   const lines = new Set();
   const pattern = /import[\s\S]{0,400}?from\s*["'][^"']*["']|import\s*["'][^"']*["']/g;
   for (const match of source.matchAll(pattern)) {
-    const end = match.index + match[0].length;
-    for (let line = 1, at = 0; at < end; line++, at = source.indexOf("\n", at) + 1) lines.add(line);
+    // slice(0, index).split("\n").length is the 1-based line the match starts on:
+    // an empty prefix is line 1, and a match after n newlines is on line n+1.
+    const first = source.slice(0, match.index).split("\n").length;
+    const last = source.slice(0, match.index + match[0].length).split("\n").length;
+    for (let line = first; line <= last; line++) lines.add(line);
   }
   return lines;
 };
@@ -182,3 +193,23 @@ export const corpus = () => ({
   tokens: [...testFiles, ...productionFiles].reduce((sum, f) => sum + cachedStream(f).length, 0),
 });
 export const shortPath = (p) => relative(REPO, p);
+
+/**
+ * A two-file corpus holding the same body, for proving the detector can still SEE.
+ * The corpus shape is this module's own, so it is this module that builds one:
+ * a test that assembles the probe out of mkdtempSync and a hand-written join
+ * re-declares what a production file and a test file are, in the one place whose
+ * subject is exactly that question.
+ */
+export const withProbeCorpus = (body, fn) => {
+  const dir = mkdtempSync(join(tmpdir(), "dt-cross-boundary-"));
+  const prod = join(dir, "probe.ts");
+  const test = join(dir, "probe.js");
+  try {
+    writeFileSync(prod, body);
+    writeFileSync(test, body);
+    return fn({ tests: [test], production: [prod] });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};

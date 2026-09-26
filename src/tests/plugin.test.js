@@ -651,6 +651,15 @@ function resultRecord(overrides = {}) {
   return { sessionId: "s", status: "completed", messageCount: 1, latestText: "hi", tracked: true, ...overrides };
 }
 
+// The persistence signal a retained mutation must emit. Wiring the counter to
+// the store here means no test hand-rolls the callback and then has to read the
+// same counter it wrote.
+function countRetainedChanges(store) {
+  const counter = { calls: 0 };
+  store.onRetainedChange = () => { counter.calls++; };
+  return counter;
+}
+
 // The active-task record the fleet views read.
 function taskRecord(overrides = {}) {
   return { childSessionId: "ses_1", parentSessionId: "p", agentName: "a", description: "d", lineage: [], state: "active", ...overrides };
@@ -777,6 +786,12 @@ import {
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
+// A scratch file in the OS temp dir, cleaned up including the `.tmp` sidecar.
+// Named for intent at the call site: inLedgerFile for the ledger's own
+// on-disk shape, inTempFile for a fixture the parser reads.
+const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
+const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
+
 function retainedEntry(overrides = {}) {
   return {
     childSessionId: "ses_1",
@@ -802,7 +817,7 @@ describe("task ledger persistence", () => {
   // sidecar in the two sites that mattered, and the missing-file site skipped
   // cleanup entirely — withTempFile owns the whole lifetime.
   it("round-trips retained records through an injectable path", async () => {
-    await withTempFile(tmpLedgerPath(), async (file) => {
+    await inLedgerFile(async (file) => {
       saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.size, 1);
@@ -825,7 +840,7 @@ describe("task ledger persistence", () => {
   });
 
   it("save writes atomically via rename — no .tmp residue", async () => {
-    await withTempFile(tmpLedgerPath(), async (file) => {
+    await inLedgerFile(async (file) => {
       saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
       assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
       assert.strictEqual(loadTaskLedger(file).size, 1, "renamed content intact");
@@ -833,7 +848,7 @@ describe("task ledger persistence", () => {
   });
 
   it("rejects entries disagreeing with their map key", async () => {
-    await withTempFile(tmpLedgerPath(), async (file) => {
+    await inLedgerFile(async (file) => {
       writeFileSync(file, JSON.stringify({
         version: 2,
         tasks: { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } },
@@ -844,7 +859,7 @@ describe("task ledger persistence", () => {
   });
 
   it("rejects non-finite timestamps and mixed lineage wholesale", async () => {
-    await withTempFile(tmpLedgerPath(), async (file) => {
+    await inLedgerFile(async (file) => {
       const nanEntry = { ...retainedEntry(), startedAt: NaN };
       const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
       saveTaskLedger(new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), file);
@@ -855,7 +870,7 @@ describe("task ledger persistence", () => {
   });
 
   it("drops entries with unknown states or invalid ids", async () => {
-    await withTempFile(tmpLedgerPath(), async (file) => {
+    await inLedgerFile(async (file) => {
       writeFileSync(file, JSON.stringify({
         version: 2,
         tasks: {
@@ -971,7 +986,7 @@ describe("parseDynamicTaskJsonc", () => {
 
   it("returns null for empty or non-object payloads", async () => {
     assert.strictEqual(parseDynamicTaskJsonc(""), null);
-    await withTempFile(`${tmpdir()}/dt-array-${Date.now()}.jsonc`, async (file) => {
+    await inTempFile(async (file) => {
       writeFileSync(file, "[1, 2]");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
     });
@@ -1166,7 +1181,7 @@ import {
 } from "../../dist/shared/question-handling.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
-import { withEnv, withTempFile } from './support/harness.js';
+import { tmpFilePath, withEnv, withTempFile } from './support/harness.js';
 
 describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {
@@ -1285,12 +1300,20 @@ describe("task-state: revival and annotations", () => {
     transitionState(store, "ses_active", state);
   }
 
-  it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
+  // The subject of every withdrawInterruptClaim test: one task holding a
+  // speculative interrupt claim in the retained ledger, with the persistence
+  // signal already wired. Naming the arrangement is what lets each test state
+  // only the rule it is about.
+  function interruptClaim(cfg = config) {
     const store = createTaskStore();
-    const changes = { calls: 0 };
-    store.onRetainedChange = () => { changes.calls++; };
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "interrupted");
+    const changes = countRetainedChanges(store);
+    seedSesActive(store, cfg);
+    transitionState(store, "ses_active", "interrupted", cfg);
+    return { store, changes };
+  }
+
+  it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
+    const { store, changes } = interruptClaim();
     const before = changes.calls;
     withdrawInterruptClaim(store, "ses_active", Date.now(), config);
     assert.strictEqual(changes.calls, before + 1, "withdraw is a retained mutation and must persist");
@@ -1299,9 +1322,7 @@ describe("task-state: revival and annotations", () => {
 
   it("withdrawInterruptClaim refuses when full or superseded", () => {
     const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
-    const store = createTaskStore();
-    seedSesActive(store, limited);
-    transitionState(store, "ses_active", "interrupted", limited);
+    const { store } = interruptClaim(limited);
     fillBackgroundTasks(store, limited, ["ses_other"]);
     assert.strictEqual(
       withdrawInterruptClaim(store, "ses_active", Date.now(), limited), false,
@@ -1309,9 +1330,7 @@ describe("task-state: revival and annotations", () => {
     );
     assert.ok(store.retainedTasks.has("ses_active"), "stays retained when full");
 
-    const store2 = createTaskStore();
-    seedSesActive(store2, config);
-    transitionState(store2, "ses_active", "interrupted");
+    const { store: store2 } = interruptClaim();
     store2.retainedTasks.get("ses_active").lastAbortAt = Date.now();
     assert.strictEqual(
       withdrawInterruptClaim(store2, "ses_active", 0, config), false,
@@ -1322,9 +1341,7 @@ describe("task-state: revival and annotations", () => {
   it("withdrawInterruptClaim refuses when the abort landed in the same millisecond", () => {
     // Same-ms success is still knowledge: a withdraw stamped at the instant of
     // a successful abort must lose to it (>=, not >).
-    const store = createTaskStore();
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "interrupted");
+    const { store } = interruptClaim();
     const sameInstant = Date.now();
     store.retainedTasks.get("ses_active").lastAbortAt = sameInstant;
     assert.strictEqual(
@@ -1883,7 +1900,7 @@ describe("config: file and env edges", () => {
   });
 
   it("parseDynamicTaskJsonc returns null for non-object JSON", async () => {
-    await withTempFile(`${tmpdir()}/dt-array-${Date.now()}.jsonc`, async (file) => {
+    await inTempFile(async (file) => {
       writeFileSync(file, "[1, 2]");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
     });
@@ -2067,8 +2084,7 @@ describe("task store: retained-change callback", () => {
 
   it("notifies on retained writes, silent on active-only writes", () => {
     const store = createTaskStore();
-    const changes = { calls: 0 };
-    store.onRetainedChange = () => { changes.calls++; };
+    const changes = countRetainedChanges(store);
     seedActive(store, "s1");
     assert.strictEqual(changes.calls, 0, "active-only writes stay silent");
     transitionState(store, "s1", "completed");
@@ -2253,21 +2269,9 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
     const store = createTaskStore();
     // Add 3 retained tasks (max is 2) — all within TTL window (retainedAt near now)
     const now = Date.now();
-    store.retainedTasks.set("ses_a", {
-      childSessionId: "ses_a", parentSessionId: "p", agentName: "a",
-      description: "a", lineage: [],
-      state: "completed", retainedAt: now - 5,
-    });
-    store.retainedTasks.set("ses_b", {
-      childSessionId: "ses_b", parentSessionId: "p", agentName: "b",
-      description: "b", lineage: [],
-      state: "completed", retainedAt: now - 3,
-    });
-    store.retainedTasks.set("ses_c", {
-      childSessionId: "ses_c", parentSessionId: "p", agentName: "c",
-      description: "c", lineage: [],
-      state: "completed", retainedAt: now,
-    });
+    for (const [id, age] of [["ses_a", 5], ["ses_b", 3], ["ses_c", 0]]) {
+      store.retainedTasks.set(id, retainedEntry({ childSessionId: id, agentName: id, description: id, retainedAt: now - age }));
+    }
 
     const pruned = pruneRetainedTasks(store, config);
     assert.strictEqual(pruned, 1, "Should evict 1 oldest entry");

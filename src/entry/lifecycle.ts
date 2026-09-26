@@ -17,7 +17,6 @@ import {
 } from "../shared/prompt.js";
 import {
   notifyParent,
-  resolveNotifyKind,
   safeLog,
   formatParentNotification,
   recordNotification,
@@ -26,10 +25,12 @@ import {
 import {
   transitionState,
   noteLateOutcome,
+  declaredBlocked,
   terminalEventIsAttributable,
   type TaskStore,
-  type TaskState,
+  type SettlementVerdict,
 } from "../shared/task-state.js";
+import { settlementFallback } from "../shared/voice.js";
 
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
@@ -129,6 +130,29 @@ export interface SettlementSignal {
   cause?: string;
 }
 
+/**
+ * The one place a turn's ending is interpreted.
+ *
+ * Three inputs, one named verdict, and no fallible intermediate state: the host
+ * says what happened to the session, the event can carry a deletion the status
+ * word has not caught up with, and the child can declare that it stopped because
+ * it needs the parent. A failure outranks the declaration — a turn that broke is
+ * a failure whatever it was waiting for — and any other ending that is not a
+ * declared block is a completed turn, which is what the host's `idle` has always
+ * meant here. The boot pass passes the same words, so a task that vanished
+ * across a restart lands on `error` by the same rule as one that broke live.
+ */
+function settlementVerdict(input: {
+  status: string;
+  event: unknown;
+  declaredBlocked: boolean;
+}): SettlementVerdict {
+  if (input.status === "error" || input.status === "deleted" || (input.event !== undefined && eventLooksDeleted(input.event))) {
+    return "error";
+  }
+  return input.declaredBlocked ? "blocked" : "completed";
+}
+
 export async function settleRunningChild(
   client: OpenCodeClient,
   store: TaskStore,
@@ -151,31 +175,40 @@ export async function settleRunningChild(
   // Synchronous claim — no awaits before this. transitionState is the one
   // settlement gate: the winner replaces the active entry, so every
   // competing writer's transition throws and bows out.
-  const failed = status === "error" || status === "deleted"
-    || (signal.event !== undefined && eventLooksDeleted(signal.event));
-  const provisional: TaskState = failed ? "error" : "completed";
+  //
+  // ONE decision, in ONE named vocabulary, before anything is claimed: the
+  // host's own word and the child's own declaration become a single verdict that
+  // is already a state of the machine. Downstream — the claim, the notification
+  // kind, the fallback wording — all read the verdict. Three parallel booleans
+  // and a status string re-tested at each step is how a child that declared it
+  // was blocked came to be reported as a completed success.
+  let verdict = settlementVerdict({
+    status,
+    event: signal.event,
+    declaredBlocked: declaredBlocked(store, childSessionId),
+  });
   const parentSessionId = active.parentSessionId;
   const childDescription = active.description;
   try {
-    transitionState(store, childSessionId, provisional);
+    transitionState(store, childSessionId, verdict);
   } catch {
     void safeLog(client, "info", `Lost settlement race for ${childSessionId}, dropping`);
     return false;
   }
-  void safeLog(client, "info", `Settled ${childSessionId} as ${provisional}`);
+  void safeLog(client, "info", `Settled ${childSessionId} as ${verdict}`);
 
   const outcome = await hydrateLatestOutcome(client, childSessionId);
-  // Kind follows the SETTLED outcome, not the raw status text: a deleted
-  // session whose stale status still reads idle notifies error (F-R3).
-  let kind: NotifyKind = failed ? "error" : (resolveNotifyKind(status) ?? provisional);
-  if (kind === "completed" && outcome.errorDetail) {
+  // The kind IS the verdict: the wire vocabulary and the state vocabulary are
+  // the same words, so a settled `blocked` cannot be announced as a success.
+  let kind: NotifyKind = verdict;
+  if (verdict === "completed" && outcome.errorDetail) {
+    verdict = "error";
     kind = "error";
     if (!noteLateOutcome(store, childSessionId, "error")) {
       void safeLog(client, "info", `Late error already recorded for ${childSessionId}`);
     }
   }
-  const latestText = outcome.text
-    || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+  const latestText = outcome.text || settlementFallback(verdict, outcome.errorDetail);
   // The outcome is the point of this message, so a read that could not be
   // made says so instead of letting "(completed)" stand in for a quote the
   // parent never received. The record is settled either way; task_result

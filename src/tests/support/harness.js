@@ -627,8 +627,11 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: "p1" }) {
     status: () => tool("task_status")(),
     result: () => tool("task_result")(),
     revive: () => tool("task_revive")(),
-    // The child speaks to its parent, so notify routes by the CHILD's id.
-    notify: (message) => harness.tool.task_notify.execute({ message }, { sessionID: id ?? ctx.sessionID }),
+    // The child speaks to its parent, so notify routes by the CHILD's id. Extra
+    // args (a notice's payload kind) ride through, so a test never restates the
+    // envelope to say what kind of notice it is.
+    notify: (message, args = {}) =>
+      harness.tool.task_notify.execute({ message, ...args }, { sessionID: id ?? ctx.sessionID }),
     settle: () => harness.settle(id),
   };
 }

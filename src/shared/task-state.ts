@@ -7,6 +7,8 @@
 //
 //   active ──terminal event (transitionState)──▶ completed|error|interrupted ──▶ retained ──▶ pruned
 //     │                                              ▲ completed ──noteLateOutcome──▶ error (only rewrite edge)
+//     │                                              ├──blocked (declared needs_input)──▶ terminal, NOT rewritten:
+//     │                                              │    nothing to correct — it never claimed success
 //     │                                              └──revive (never interrupted)──▶ active, fresh startedAt
 //     ├──interrupt: sync claim ──▶ interrupted (abort-transport failure may withdraw back to active)
 //     └──steer claim ──▶ stays active (echo consumed; re-validated after abort)
@@ -24,11 +26,46 @@ import type { DynamicTaskConfig } from "./config.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
 
+/**
+ * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE
+ * child→parent channel (no purpose-specific tool): `progress` is information,
+ * `needs_input` is the child saying this turn cannot finish without the parent.
+ * The claim is what the settlement reads, so a child that ends its turn blocked
+ * is recorded as blocked — the alternative was reporting it as a success.
+ */
+export type NoticeClaim = "progress" | "needs_input";
+
+// The claims, as data: the tool validates its argument against this list, so an
+// unrecognized claim is refused rather than quietly downgraded to progress — a
+// typo'd `needs_input` would settle the child as a success.
+export const NOTICE_CLAIMS: readonly NoticeClaim[] = ["progress", "needs_input"];
+
 export type TaskState =
   | "active"
   | "completed"
   | "error"
+  // Ended its turn needing the parent's answer. Not a success and not a failure:
+  // the child worked, it could not finish, and the plugin recorded
+  // `completed` for exactly this case — a false success claim about a task that
+  // delivered no result. It is terminal (the turn is over) and revivable (the
+  // parent's answer is a new turn).
+  | "blocked"
   | "interrupted";
+
+// The states, as data: the durable reader validates a restored record against
+// this list, so a state cannot be added to the machine and forgotten by the
+// reader that has to understand it.
+export const TASK_STATES: readonly TaskState[] = ["active", "completed", "error", "blocked", "interrupted"];
+
+/**
+ * A settlement, named — and the names are the machine's OWN terminal states, so
+ * a verdict is directly claimable, notifiable, and renderable without a second
+ * lookup table translating between three parallel spellings of the same fact.
+ *
+ * `interrupted` is absent on purpose: it is claimed by the interrupt funnel, not
+ * arrived at by a turn ending.
+ */
+export type SettlementVerdict = Extract<TaskState, "completed" | "blocked" | "error">;
 
 export type LineageStep = string;
 export type LineagePath = LineageStep[];
@@ -56,8 +93,12 @@ export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
 
 export interface ActiveTaskState extends TaskRecordBase {
   state: "active";
-  // Latest mid-flight notice from the child (advisory metadata, not a lifecycle field).
-  lastNotice?: { message: string; at: number } | undefined;
+  // Latest mid-flight notice from the child (advisory metadata, not a lifecycle
+  // field). `claim` is what the child said about itself: `needs_input` means
+  // this turn is ending because it needs the parent, and the settlement reads it
+  // to record `blocked` instead of a false success. Last one wins, so a child
+  // that declares a block and then reports progress is believed again.
+  lastNotice?: { message: string; at: number; claim: NoticeClaim } | undefined;
   // Latest time the host emitted ANY event for this child's session — the
   // event funnel's own proof the turn is moving. Without it "last activity"
   // could only mean "spawned" or "called task_notify", so a child working
@@ -137,9 +178,10 @@ function removeActive(store: TaskStore, childSessionId: string): void {
 // noteLateOutcome, NOT by transitionState — this keeps the primary "does a
 // transition happen at all" question decidable from this matrix alone.
 const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
-  "active": ["completed", "error", "interrupted"],
+  "active": ["completed", "error", "blocked", "interrupted"],
   "completed": [],
   "error": [],
+  "blocked": [],
   "interrupted": [],
 };
 
@@ -349,10 +391,26 @@ export function noteActivity(
 
 // Notice announcements are recorded on the active entry by the gate module —
 // advisory metadata, never a lifecycle mutation.
-export function annotateNotice(store: TaskStore, childSessionId: string, message: string): boolean {
+export function annotateNotice(store: TaskStore, childSessionId: string, message: string, claim: NoticeClaim): boolean {
   return annotateActive(store, childSessionId, (active) => {
-    active.lastNotice = { message, at: Date.now() };
+    active.lastNotice = { message, at: Date.now(), claim };
   });
+}
+
+/**
+ * Whether this active task declared that its turn is ending blocked — the one
+ * input to the settlement that separates "finished the work" from "cannot
+ * finish without the parent".
+ *
+ * Scoped to the turn that made the declaration: a steer stamped AFTER the
+ * declaration IS the answer, so the ending turn (which declared nothing) is
+ * settled on its own claim. A turn replacement is the only boundary a record
+ * has, and a revival produces a new record with no declaration at all.
+ */
+export function declaredBlocked(store: TaskStore, childSessionId: string): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active?.lastNotice || active.lastNotice.claim !== "needs_input") return false;
+  return active.lastNotice.at > (active.replacedAt ?? 0);
 }
 
 // Turn attribution (parent→child turn replacement): armed synchronously by

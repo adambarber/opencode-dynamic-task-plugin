@@ -9,6 +9,7 @@
 // strings everywhere.
 
 import type { DependencyBlock } from "./admission.js";
+import type { SettlementVerdict } from "./task-state.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
@@ -19,7 +20,7 @@ export const TASK_CONTINUE_DESCRIPTION =
   "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. When the task settles mid-steer, the call revives it automatically unless interrupted; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers. A revived turn may override the model; steers keep the task's model.";
 
 export const TASK_NOTIFY_DESCRIPTION =
-  "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. If you are blocked, say exactly what would unblock you; the parent can reply via task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)";
+  "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. Pass kind:\"needs_input\" when this turn cannot finish without the parent: say exactly what would unblock you, and the task settles as blocked rather than as a success, and the parent can answer with task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)";
 
 export const MODEL_ARG_DESCRIPTION =
   "Optional model override as providerID/modelID exactly as spelled in opencode.jsonc (e.g. \"nvidia/z-ai/glm-5.3\"). Bare ids are rejected at admission.";
@@ -151,6 +152,13 @@ export function noticeTooLong(length: number): string {
   return `ERROR: message too long (${length} chars). Max: 4000 — this goes into the parent's conversation; summarize.`;
 }
 
+// A claim the channel does not have is refused, not downgraded: a typo'd
+// needs_input that silently became progress would settle a blocked child as a
+// success, which is the whole failure this channel's vocabulary exists to stop.
+export function noticeClaimRefused(value: string): string {
+  return `ERROR: kind "${value}" is not a notice claim. Use kind: "progress" (default) or kind: "needs_input" (this turn cannot finish without the parent).`;
+}
+
 export const NOT_A_TRACKED_TASK =
   "ERROR: Not a tracked task. Child-to-parent messages route through the task ledger; only sessions spawned by dynamic_task can notify.";
 
@@ -168,6 +176,21 @@ export const NOTICE_DUPLICATE_SUPPRESSED =
 
 export const NOTICE_PARENT_UNREACHABLE =
   "Message not sent: the parent did not acknowledge after 2 attempts. The notice is recorded locally; retry task_notify later.";
+
+// ─── Settlement ──────────────────────────────────────────────────────────
+
+// What the child said, for when it said nothing. One function over the verdict
+// vocabulary, in the file that owns operator words: the alternative was a
+// ternary chain in the settlement funnel where a fallback reading "completed"
+// where the truth was "blocked" would be a false success claim about a task that
+// delivered no result. The verdict decides the words, always.
+export function settlementFallback(verdict: SettlementVerdict, errorDetail?: string | undefined): string {
+  switch (verdict) {
+    case "error": return errorDetail || "(error — no detail)";
+    case "blocked": return "(blocked — the child said nothing further)";
+    case "completed": return "(completed)";
+  }
+}
 
 // ─── Interrupt ───────────────────────────────────────────────────────────
 

@@ -18,6 +18,7 @@ import {
 import {
   registerActiveTask,
   findTask,
+  TASK_STATES,
   type ActiveTaskState,
   type NewTaskRegistration,
   type TaskStore,
@@ -80,8 +81,18 @@ export function resolveAdmission(
 // aged out of the bounded retained history, and blocking forever on
 // garbage-collected history would deadlock planners.
 
+// Satisfaction is a DELIVERY claim, and only a delivered result is one: a
+// blocked dependency settled, but it produced nothing, so anything waiting on it
+// still waits. This list is the one place that says what "done" means, and it is
+// deliberately not derived from the machine — deriving it would make every new
+// state an unexamined dependency-satisfying state.
+//
+// Settlement, by contrast, IS derivable: a dependency that will not run again
+// cannot be waited on, whatever it settled as. Deriving it means a state added
+// to the machine is settled here by construction instead of by a second hand-
+// written list that drifts.
 const SATISFIED_DEPENDENCY_STATES: readonly string[] = ["completed"];
-const SETTLED_DEPENDENCY_STATES: readonly string[] = ["completed", "error", "interrupted"];
+const SETTLED_DEPENDENCY_STATES: readonly string[] = TASK_STATES.filter((state) => state !== "active");
 
 export interface DependencyBlock {
   id: string;

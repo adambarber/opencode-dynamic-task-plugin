@@ -823,6 +823,99 @@ describe("task_result and task_interrupt paths", () => {
     });
 });
 
+describe("a child that needs input is not a success", () => {
+  // The state line and nothing else: the status view also names the last
+  // notification's kind, which is history, and a substring over the whole
+  // report cannot tell a state claim from a mention of one.
+  const stateOf = async (child) =>
+    (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
+
+  // The spawn contract tells a child to notify the parent when it is blocked.
+  // When that child's turn then ended, the plugin recorded `completed` and told
+  // the parent "Background task completed successfully" — a false success claim
+  // about a task that did no work, in the ledger, the tree, and every read. The
+  // child already knows it is blocked; the record has to be able to say so.
+  it("a child that declared it needs input settles as blocked, and the parent is told to answer", async () => {
+    const { h, c, id } = await withChild();
+    await c.notify("I need the API key to continue.", { kind: "needs_input" });
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: blocked", "the record says what happened");
+    const body = h.noticeBodies()[0];
+    assert.match(body, /needs input|blocked/i, `the parent is told the task is waiting. got: ${body}`);
+    assert.match(body, /task_continue/, `and how to answer it. got: ${body}`);
+    assert.ok(!/completed successfully/.test(body), `never a success claim. got: ${body}`);
+  });
+
+  it("a child that declared nothing still settles completed", async () => {
+    // The guard on the whole change: the state is earned by a declaration, not
+    // assumed for every ending turn.
+    const { h, c, id } = await withChild();
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: completed");
+  });
+
+  it("a failed turn outranks a needs-input declaration", async () => {
+    const { h, c, id } = await withChild();
+    await c.notify("blocked on the key", { kind: "needs_input" });
+    await h.fireEvent(events.status(id, "error"));
+    assert.strictEqual(await stateOf(c), "State: error", "a failure is not a question");
+  });
+
+  it("a declaration belongs to the turn that made it", async () => {
+    // A steer that lands AFTER the declaration is the answer: the ending turn
+    // made no new claim, so its ending is its own. Without the turn scoping a
+    // child that got its answer mid-turn would still be reported as waiting.
+    const { h, c, id } = await withChild();
+    await c.notify("which environment?", { kind: "needs_input" });
+    await c.steer("staging");
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: completed", "the answer moved it on");
+  });
+
+  it("a blocked task is answerable: it revives and stops being blocked", async () => {
+    const { h, c, id } = await withChild();
+    await c.notify("I need the key.", { kind: "needs_input" });
+    await h.settle(id);
+    assert.strictEqual(await stateOf(c), "State: blocked");
+    await c.steer("here is the key");
+    assert.strictEqual(await stateOf(c), "State: active", "answered tasks run again");
+  });
+
+  it("a blocked record survives a restart as blocked, and is still answerable", async () => {
+    // The durable reader once validated a restored record against its OWN
+    // hand-written list of states, so a state added to the machine was silently
+    // dropped on the next boot — the plugin forgetting, in one process, that it
+    // had ever asked a parent a question. The list is the machine's now, and
+    // this test fails the moment a new state is not in it.
+    const directory = tmpProjectDir();
+    const now = Date.now();
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
+      version: 3,
+      pending: [],
+      tasks: {
+        ses_blocked1: {
+          childSessionId: "ses_blocked1", parentSessionId: "p1", agentName: "explore",
+          description: "waiting on the key", lineage: ["explore"], state: "blocked",
+          startedAt: now - 5000, retainedAt: now - 100,
+        },
+      },
+    }));
+    const h = await setupHarness({ hooks: {}, directory });
+    const c = h.child("ses_blocked1");
+    assert.strictEqual(await stateOf(c), "State: blocked", "the restored record is not dropped");
+    const answer = await c.steer("here is the key");
+    assert.match(answer, /Follow-up sent/, `still answerable after a restart. got: ${answer}`);
+    assert.strictEqual(await stateOf(c), "State: active", `got: ${await c.status()}`);
+  });
+
+  it("the declaration rides the notice channel, and an unknown claim is refused", async () => {
+    const { c } = await withChild();
+    const refused = await c.notify("asking", { kind: "urgent" });
+    assert.match(refused, /urgent/, `the rejected value is quoted back. got: ${refused}`);
+    assert.match(refused, /needs_input/, `the choices are named. got: ${refused}`);
+  });
+});
+
 describe("subtree interrupt: stopping a task stops everything under it", () => {
   // A dispatch is a tree, so an interrupt that stops only the session it was
   // handed reports success while a descendant keeps spending tokens. Each case

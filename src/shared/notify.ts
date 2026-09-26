@@ -24,7 +24,7 @@ export async function safeLog(
   }
 }
 
-export type NotifyKind = "completed" | "error" | "notice";
+export type NotifyKind = "completed" | "error" | "blocked" | "notice";
 
 export interface NotificationRecord {
   at: number;
@@ -92,7 +92,7 @@ export interface PendingDelivery {
 
 // The kinds, as data: the ledger reader validates a restored entry against this
 // list, so the two can never disagree about what a kind is.
-export const NOTIFY_KINDS: readonly NotifyKind[] = ["completed", "error", "notice"];
+export const NOTIFY_KINDS: readonly NotifyKind[] = ["completed", "error", "blocked", "notice"];
 
 const pendingDeliveries: PendingDelivery[] = [];
 // Installed once at boot by the persistence dance. Tenet 9: process-global by
@@ -150,14 +150,6 @@ export function clearNotifyLedger(): void {
   notifyLedger.length = 0;
   gateLedger.clear();
   gateEpoch++;
-}
-
-// Event-driven kinds only: terminal statuses map to the two settlement kinds;
-// deletion is a failure, never a success (a vanished session did not finish).
-export function resolveNotifyKind(status: string): NotifyKind | null {
-  if (status === "error" || status === "deleted") return "error";
-  if (status === "idle") return "completed";
-  return null;
 }
 
 export function defaultSleep(ms: number): Promise<void> {
@@ -421,6 +413,7 @@ export function noticeDedupKey(message: string): string {
 const NOTIFICATION_KINDS: Record<NotifyKind, { tag: string; header: string; bodyLabel: string; tail: string }> = {
   completed: { tag: "[dynamic-task-notify]", header: "Background task completed successfully.", bodyLabel: "Latest output", tail: "" },
   error: { tag: "[dynamic-task-notify]", header: "Background task ended with an error.", bodyLabel: "Latest output", tail: "Use task_result or task_continue to inspect or recover." },
+  blocked: { tag: "[dynamic-task-notify]", header: "Background task needs input from you — it stopped with its question, having delivered no result.", bodyLabel: "What it needs", tail: "Answer with task_continue(session_id=...): the task is settled as blocked and runs again on your answer. If it cannot be answered, task_interrupt ends it." },
   notice: { tag: "[dynamic-task-notice]", header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
 };
 

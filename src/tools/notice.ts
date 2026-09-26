@@ -3,7 +3,7 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
-import { pruneRetainedTasks, findTask, annotateNotice } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, annotateNotice, NOTICE_CLAIMS, type NoticeClaim } from "../shared/task-state.js";
 import type { ToolDeps } from "./context.js";
 import {
   CALLER_UNKNOWN,
@@ -15,10 +15,12 @@ import {
   NOTICE_SENT,
   NOTICE_DUPLICATE_SUPPRESSED,
   NOTICE_PARENT_UNREACHABLE,
+  noticeClaimRefused,
 } from "../shared/voice.js";
 
 export interface NotifyArgs {
   message?: unknown;
+  kind?: unknown;
 }
 
 export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: ToolContext): Promise<string> {
@@ -34,6 +36,14 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   if (message.length > 4000) {
     return noticeTooLong(message.length);
   }
+  // The claim this notice makes about the child's own state, on the ONE
+  // child→parent channel. Default is progress; an unrecognized kind is refused
+  // rather than downgraded, because a typo'd `needs_input` would settle the
+  // child as a success — the exact false claim the kind exists to prevent.
+  if (args.kind !== undefined && !NOTICE_CLAIMS.includes(args.kind as NoticeClaim)) {
+    return noticeClaimRefused(String(args.kind));
+  }
+  const claim = (args.kind as NoticeClaim | undefined) ?? "progress";
 
   pruneRetainedTasks(store, config);
   const task = findTask(store, callerId);
@@ -44,7 +54,7 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
     return alreadySettledNotice(task.state);
   }
 
-  annotateNotice(store, callerId, message);
+  annotateNotice(store, callerId, message, claim);
   if (task.parentSessionId === "unknown") {
     return NOTICE_PARENTLESS;
   }

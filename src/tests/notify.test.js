@@ -7,7 +7,6 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert";
 import {
-  resolveNotifyKind,
   notifyParent,
   getLatestNotification,
   clearNotifyLedger,
@@ -69,18 +68,6 @@ function promptClient(script) {
   };
 }
 
-describe("notify gate: resolveNotifyKind", () => {
-  it("errors and vanished sessions are failures", () => {
-    assert.strictEqual(resolveNotifyKind("error"), "error");
-    assert.strictEqual(resolveNotifyKind("deleted"), "error");
-  });
-
-  it("idle completes; anything else has no kind", () => {
-    assert.strictEqual(resolveNotifyKind("idle"), "completed");
-    assert.strictEqual(resolveNotifyKind("busy"), null);
-    assert.strictEqual(resolveNotifyKind(""), null);
-  });
-});
 
 // The gate's own inputs: which child, what kind, and no real backoff — the
 // retry count is the thing under test, so waiting for it proves nothing.

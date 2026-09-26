@@ -10,6 +10,7 @@ import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
 import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import { NOTICE_CLAIMS } from "../shared/task-state.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
   TASK_CONTINUE_DESCRIPTION,
@@ -86,6 +87,10 @@ export function buildToolMap(deps: ToolDeps) {
         description: TASK_NOTIFY_DESCRIPTION,
         args: {
           message: tool.schema.string().describe("What the parent needs to know"),
+          kind: tool.schema
+            .enum(NOTICE_CLAIMS)
+            .optional()
+            .describe("What this notice claims about your own state: 'progress' (default) or 'needs_input' when this turn cannot finish without the parent"),
         },
         async execute(args, ctx: ToolContext) {
           return executeTaskNotify(deps, args, ctx);

@@ -39,7 +39,7 @@ dynamic_task(
 
 task_continue(session_id="ses_child", prompt="Also check error handling")
 
-task_notify(message="blocked: need DB credentials to continue")  // from inside a child
+task_notify(message="need DB credentials to continue", kind="needs_input")  // from inside a child
 ```
 
 ## How Tasks Settle
@@ -62,11 +62,20 @@ just the one). `task_list` shows running tasks as that same tree, each indented
 under whatever spawned it, so a runaway child is recognizable as a grandchild;
 a task whose parent is no longer tracked says so instead of reading as a root.
 See `docs/tasks/12-subtree-interrupt.md` and `docs/tasks/13-dispatch-tree-read.md`.
+A child that cannot finish without the parent declares it
+(`task_notify(kind="needs_input")`) and settles as `blocked`, not `completed`;
+the parent's `task_continue` answer revives it. See
+`docs/tasks/14-blocked-settlement.md`.
 
 1. `dynamic_task` spawns a child session, wraps the prompt with
    background-task instructions, and returns the session id immediately.
-2. Mid-flight, the child may `task_notify` the parent — blocked, progress, or
-   anything worth surfacing before it converges.
+2. Mid-flight, the child may `task_notify` the parent — progress, or
+   `kind:"needs_input"` when this turn cannot finish without the parent. A
+   declared block is a claim about the child’s own state, and it settles the
+   task as `blocked` instead of `completed`: the plugin used to report a child
+   that ended its turn asking a question as a success. The declaration belongs
+   to the turn that made it, so a steer landing after it (the parent’s answer)
+   settles that turn on its own claim.
 3. On the child's terminal lifecycle event, the parent is notified once with
    the latest outcome (exactly-once, deduped per settled turn).
 4. `task_continue` steers a running child — its current turn aborts and the

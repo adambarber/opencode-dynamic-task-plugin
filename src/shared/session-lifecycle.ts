@@ -12,7 +12,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
-import type { RetainedTaskState, ActiveTaskState, TaskRecordBase } from "./task-state.js";
+import type { RetainedTaskState, ActiveTaskState, TaskRecordBase, TaskState } from "./task-state.js";
+import { TASK_STATES } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
 
 // Host event payloads are untyped JSON at this boundary. isEventRecord is the
@@ -173,7 +174,7 @@ interface ValidLedgerEntry {
   agentName: string;
   description: string;
   lineage: unknown[];
-  state: "active" | "completed" | "error" | "interrupted";
+  state: TaskState;
   startedAt: number;
   retainedAt?: unknown;
   dependsOn?: unknown;
@@ -200,7 +201,7 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
     && typeof description === "string"
     && Array.isArray(lineage)
     && lineage.every((s): s is string => typeof s === "string")
-    && (state === "active" || state === "completed" || state === "error" || state === "interrupted")
+    && TASK_STATES.includes(state as TaskState)
     && typeof startedAt === "number" && Number.isFinite(startedAt)
   );
 }

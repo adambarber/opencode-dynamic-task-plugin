@@ -8,6 +8,7 @@ import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } f
 import type { LedgerChange } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
+import { applyLaneOverlay, installLiveLanes, laneOverlayPath, readLaneOverlay } from "../shared/lane-overlay.js";
 import { hostTurnRunning, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
 import {
@@ -42,6 +43,18 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // tests and multi-project hosts is somebody else's tree.
   configureDebugRoot(directory);
   const ledgerPath = resolveTaskLedgerPath(directory);
+  installLiveLanes(() => {
+    const { raw, problem } = readLaneOverlay(directory);
+    // Reported once, at the one moment a client exists. The per-dispatch read is
+    // silent by design (a log line on every refusal would be noise), so without
+    // this a mangled overlay would simply never apply and the operator would see
+    // the old cap with no explanation anywhere.
+    if (problem !== null) {
+      void safeLog(client, "warn", `Dynamic task plugin: ignoring the lane overlay at ${laneOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
+      debugLog("plugin", "lanes", "lane-overlay-ignored", { path: laneOverlayPath(directory), reason: problem });
+    }
+    return { source: applyLaneOverlay(config, raw).source, problem };
+  });
 
   const ledger = loadTaskLedger(ledgerPath);
   // A discarded ledger is a LOST one, and the loss is only actionable if the

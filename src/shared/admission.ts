@@ -7,6 +7,7 @@
 
 import type { DynamicTaskConfig } from "./config.js";
 import { admissibleLaneNames, resolveLaneName } from "./config.js";
+import { liveLanes } from "./lane-overlay.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
@@ -129,7 +130,13 @@ function resolveLane(
   config: DynamicTaskConfig,
   requestedLane: unknown,
 ): { ok: true; lane: string } | { ok: false; reason: AdmissionDenial } {
-  const known = admissibleLaneNames(config);
+  // Live policy, for the same reason the capacity judgment is live: a lane
+  // created in the UI is admissible on the very next dispatch, so the accept-set
+  // is read from the overlay rather than from the config frozen at boot. A lane
+  // the UI just made would otherwise be refused by name for as long as the
+  // process lived, and the refusal would name the remedy as "declare it in the
+  // config" — advice that is already stale.
+  const known = admissibleLaneNames(liveLanes(config));
   if (typeof requestedLane !== "string" && requestedLane !== undefined) {
     return { ok: false, reason: unknownLane(String(requestedLane), known) };
   }

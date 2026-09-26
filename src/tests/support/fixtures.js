@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 /**
  * The fixtures every module's suite needs: a config, and a registration literal.
  *
@@ -33,3 +36,17 @@ export const singleSlotConfig = () => normalizeDynamicTaskConfig({ maxConcurrent
  */
 export const childParams = ({ id, parent = "parent_1", agent = "explore", description = "test", lineage = [] } = {}) =>
   ({ childSessionId: id, parentSessionId: parent, agentName: agent, description, lineage });
+
+/**
+ * A fresh directory under the OS temp dir, for a case that needs a real path.
+ *
+ * One helper because the idiom is four imports and a join: every suite that
+ * needed it spelled the sequence out, and the duplication gate correctly reported
+ * the shared import block as a clone twice over. A suite that needs a project
+ * directory says `tempProject()`; a suite that needs a bare temp dir says
+ * `tempDir()`.
+ */
+export const tempDir = (prefix = "dynamic-task-") => mkdtempSync(join(tmpdir(), prefix));
+
+/** A temp dir standing in for a project directory, which is what the host supplies. */
+export const tempProject = (prefix = "lane-project-") => tempDir(prefix);

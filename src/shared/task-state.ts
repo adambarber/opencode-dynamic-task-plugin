@@ -25,6 +25,7 @@
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import type { LaneConfigSource, DynamicTaskConfig } from "./config.js";
 import type { WaitRegistry } from "./dispatch-wait.js";
+import { liveLanes } from "./lane-overlay.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkLaneCapacity, resolveLane, resolveLaneName, DEFAULT_CONFIG } from "./config.js";
 
@@ -423,6 +424,14 @@ export function laneActiveCount(store: TaskStore, lane: string): number {
  * Same inputs, same answer, one function — the second caller asking its own
  * question here is how an advisory check and the gate that overrides it come to
  * disagree about what "full" means.
+ *
+ * It is also where LIVE policy enters, deliberately: this is the one function
+ * every claim goes through — a fresh spawn, a revival re-claiming its lane, the
+ * boot restore — so resolving the overlay here means an operator's edit applies
+ * to every claim without any of those callers knowing a project directory exists.
+ * Resolving it at the tool instead would leave a revival judged against the cap
+ * that was frozen at boot, which is the inconsistency an operator hits the first
+ * time they raise a cap and then revive something.
  */
 export function laneCapacityRefusal(
   store: TaskStore,
@@ -430,10 +439,11 @@ export function laneCapacityRefusal(
   config: LaneConfigSource | undefined,
 ): string | null {
   if (!config) return null;
+  const policy = liveLanes(config);
   return checkLaneCapacity(
     { laneActive: laneActiveCount(store, lane), totalActive: store.activeTasks.size },
-    resolveLane(config, lane),
-    config.maxConcurrent,
+    resolveLane(policy, lane),
+    policy.maxConcurrent,
   );
 }
 

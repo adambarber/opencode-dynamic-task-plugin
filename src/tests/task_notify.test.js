@@ -10,7 +10,7 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, declareNeedsInput, withChild, withSettledChild } from "./support/harness.js";
+import { bounded, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive } from "./support/assertions.js";
 import { bootOn, hostStatus } from "./support/integration.js";
 
@@ -188,5 +188,50 @@ describe("a child that needs input is not a success", () => {
     const refused = await c.notify("asking", { kind: "urgent" });
     answerMatches(refused, /urgent/, "the rejected value is quoted back");
     answerMatches(refused, /needs_input/, "the choices are named");
+  });
+});
+
+// --- The prompt must not promise a channel the child does not have ------------
+// The background opening tells every child it may call `task_notify`, which is
+// true of a child the host provisions with the task_* map and false of a
+// read-only agent. Found by a live smoke test: an @explore child, told to call
+// task_notify, replied in prose that the tool was not in its toolset and
+// "I will not fabricate a call to it" — then settled `completed`. That is the
+// harm: a child that is genuinely stuck, unable to declare `needs_input` because
+// the channel does not exist for it, is reported to the parent as a SUCCESS.
+//
+// Both directions are pinned. Absent knowledge keeps the instruction (silently
+// dropping it would blind the common child to its own voice, which is a far worse
+// failure than the one being fixed); only a positive declaration that the tool is
+// missing changes the text.
+describe("the background prompt tells a child the truth about its own voice", () => {
+  const agentDeclaring = (tools) => [{ name: "explore", mode: "subagent", tools }];
+
+  /** The opening text a freshly spawned child was sent. */
+  const openingFor = async (h, description) => {
+    const { id } = await h.spawn({ description });
+    await sleep(0);
+    return promptTextsTo(h.client, id)[0];
+  };
+
+  it("omits the task_notify order when the agent declares the tool absent", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true, glob: true }) } });
+    const prompt = await openingFor(h, "read-only worker");
+    // Asserted on the ORDER, not the bare word: the replacement text names the
+    // tool in order to explain its absence, which is more useful to the child
+    // than a sentence about a tool it has never heard of.
+    answerOmits(prompt, "call task_notify", "a channel the child provably lacks is not offered as an option");
+    answerOmits(prompt, "needs_input", "and it is not promised an outcome it cannot reach");
+    answerSays(prompt, "final message", "it is told where to put what it would have said");
+  });
+
+  it("honours an explicit false, not just an omission", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ task_notify: false }) } });
+    answerOmits(await openingFor(h, "tool switched off"), "call task_notify", "declared off is absent, not merely unlisted");
+  });
+
+  it("keeps the instruction when the agent says nothing about its tools", async () => {
+    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent" }] } });
+    answerSays(await openingFor(h, "unknown tool set"), "task_notify", "no declaration means no reason to hide the channel");
   });
 });

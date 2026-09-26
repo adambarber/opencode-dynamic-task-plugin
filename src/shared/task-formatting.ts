@@ -19,14 +19,24 @@ const PREMATURE_SETTLEMENT =
 // on it (Tenet 11: the degradation direction is "operator looks, then acts").
 export const STALE_TURN_AFTER_MS = 10 * 60 * 1000;
 
-export function buildBackgroundPrompt(prompt: string): string {
+/**
+ * The opening every background child is sent.
+ *
+ * `canNotify` is the child's own capability, not a preference: a read-only
+ * agent's children have no task_notify, and offering a channel they cannot reach
+ * is an order they must either disobey or fake. See `agentCanNotify` for why
+ * absent knowledge keeps the instruction.
+ */
+export function buildBackgroundPrompt(prompt: string, { canNotify = true }: { canNotify?: boolean } = {}): string {
   return textBlock(
     "You are running as a background child task.",
     "Return a final, self-contained answer.",
     "Do not wait for parent follow-up.",
     "The parent may steer you mid-run: a parent message preempts your current turn — read it first, then continue.",
     "Answer any question yourself with your best judgment, never wait.",
-    "If blocked mid-task, call task_notify with what you need and kind:\"needs_input\" — the task then settles as blocked instead of as a success, and the parent may answer via task_continue.",
+    canNotify
+      ? "If blocked mid-task, call task_notify with what you need and kind:\"needs_input\" — the task then settles as blocked instead of as a success, and the parent may answer via task_continue."
+      : "You have no task_notify tool, so there is no way to reach the parent mid-run. If something blocks you, say so plainly in your final message and name what you need — a task that settles without that will be read as a success.",
     "",
     prompt,
   );

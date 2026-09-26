@@ -11,6 +11,7 @@ import {
   fetchAgents,
   admitToolPrompt,
 } from "../shared/admission.js";
+import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
@@ -132,7 +133,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
 
     // Fire-and-forget: the lifecycle event owns settlement, the
     // catch owns delivery failure.
-    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(admitted.prompt));
+    // The opening describes the child to itself, so it must describe the tools
+    // the child actually has: `agent` is the admitted record, and its declared
+    // tool map is the only evidence available about what its sessions can call.
+    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent) }));
 
     debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,

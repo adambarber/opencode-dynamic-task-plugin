@@ -63,6 +63,38 @@ export function isDispatchableAgent(agent: AgentRecord): boolean {
   return mode === "subagent" || mode === "all";
 }
 
+// ─── agentCanNotify ──────────────────────────────────────────────
+// Whether a child of this agent can reach the plugin at all.
+//
+// Tool provisioning is per-AGENT on the host side and the plugin cannot change
+// it: a read-only agent's children get the default map, which carries no
+// task_notify. The background opening used to offer that channel to every child
+// regardless, and a live smoke test caught what that costs — an @explore child,
+// told to call task_notify, replied that the tool was not in its toolset and
+// "I will not fabricate a call to it". The worse half is the quiet one: a child
+// that is genuinely stuck has no way to declare needs_input, so it settles
+// `completed` and the parent is handed a success that never happened.
+//
+// The load-bearing claim is that a PRESENT tool map is a COMPLETE enumeration of
+// that agent's tools, so "present, no task_notify" means the tool is absent. The
+// SDK's Agent type declares it as a full `{ [key]: boolean }` map, and the live
+// read agrees: an @explore agent's map lists bash/glob/grep/read/webfetch/
+// websearch and nothing else. Reading a partial map as complete would produce the
+// same false negative this function exists to remove.
+//
+// ABSENT map is the only unknown, and it fails SAFE TOWARD THE CHANNEL: the
+// child is assumed to have the tool. Absence of knowledge must never blind a
+// child to its own voice — that would break the common case to fix the rare one.
+export function agentCanNotify(agent: AgentRecord, tool: string = "task_notify"): boolean {
+  const tools: unknown = agent?.tools;
+  if (tools === null || typeof tools !== "object" || Array.isArray(tools)) return true;
+  const entries = Object.entries(tools as Record<string, unknown>);
+  // Exact key first: the host may namespace the tool, and a loose match found
+  // first would otherwise let iteration order decide the answer.
+  const named = entries.find(([name]) => name === tool) ?? entries.find(([name]) => name.includes(tool));
+  return named ? named[1] !== false : false;
+}
+
 // ─── isSameAgent ───────────────────────────────────────────────────
 // Checks if parent and child agent names refer to the same agent.
 // Normalizes both names before comparison.

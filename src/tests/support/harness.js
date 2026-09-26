@@ -106,6 +106,26 @@ function assertQuestionSettlement(method, path, body, { carriesAnswers }) {
 }
 
 /**
+ * One of the two question endpoints, as the host's own contract makes them: the
+ * route is /question/{requestID} (`path.requestID`, not `path.id`), a reply
+ * carries `answers`, and a reject carries no body at all. A mock that accepts any
+ * shape is exactly what let four wrong field names (`path.id`, `body.answer`, a
+ * reject body) pass as a green suite, so this one refuses them the way a real
+ * host would, and records the call the plugin actually made.
+ */
+const questionEndpoint = (state, hooks, { method, carriesAnswers, throws: throwHook }) =>
+  async ({ path, body }) => {
+    if (hooks[throwHook]) throw new Error(`${method} failed`);
+    assertQuestionSettlement(method, path, body, { carriesAnswers });
+    state.questionCalls.push({
+      method,
+      requestID: path.requestID,
+      ...(carriesAnswers ? { answers: body.answers } : {}),
+    });
+    return { ok: true };
+  };
+
+/**
  * The envelope the real SDK client resolves every call to: its `responseStyle`
  * default is "fields", so a call resolves to `{ data, request, response }` and
  * never to the bare payload.
@@ -217,8 +237,11 @@ function armGate(state, name, { fails = false } = {}) {
  */
 const hostWord = (type) => ({ type, at: Date.now() });
 
+/** Put an entry in the host's status map, creating it for a session the host does not yet list. */
+const putHostStatus = (state, id, type) => state.hostStatus.set(id, hostWord(type));
+
 /**
- * The one place the mock moves a session's host status word: an abort parks the
+ * The one place the mock MOVES a session's host status word: an abort parks the
  * turn, a prompt starts it — the same two transitions the server makes, from
  * the same two calls, so a read that consults the map sees what the plugin's own
  * calls would have caused. Word only, never an event: the event a real server
@@ -227,7 +250,7 @@ const hostWord = (type) => ({ type, at: Date.now() });
  * come back from a status write.
  */
 function setHostTurn(state, id, type) {
-  if (state.hostStatus.has(id)) state.hostStatus.set(id, hostWord(type));
+  if (state.hostStatus.has(id)) putHostStatus(state, id, type);
 }
 
 /**
@@ -268,20 +291,27 @@ export function tmpProjectDir() {
 }
 
 /**
- * The server's lifecycle event shapes, declared once. Tests used to spell
- * these literals inline, which is how a test can end up asserting against a
- * shape the host never emits. `updated` and `error` take the inner status so
- * one declaration covers both the plain and error-valued payloads.
+ * A host event envelope: the type the server names, the session it is about, and
+ * whatever else it carries. The server's lifecycle event shapes below are all
+ * this, and tests used to spell the literals inline, which is how a test can end
+ * up asserting against a shape the host never emits.
+ */
+const hostEvent = (type, id, properties) => ({ type, properties: { sessionID: id, ...properties } });
+
+/**
+ * The server's lifecycle event shapes, declared once. `updated` and `error` take
+ * the inner status so one declaration covers both the plain and error-valued
+ * payloads.
  */
 export const events = {
   /**
    * `properties` rides through so a test can reproduce a slimmer host payload
    * (`events.idle(id, {})`) when the absence of a field is the point.
    */
-  idle: (id, properties = { status: "idle" }) => ({ type: SESSION_IDLE, properties: { sessionID: id, ...properties } }),
+  idle: (id, properties = { status: "idle" }) => hostEvent(SESSION_IDLE, id, properties),
   // The host's status channel, in the host's own nested spelling
   // (`status: {type}`), not the string shorthand it used to be declared with.
-  status: (id, status = "idle") => ({ type: SESSION_STATUS, properties: { sessionID: id, status: { type: status } } }),
+  status: (id, status = "idle") => hostEvent(SESSION_STATUS, id, { status: { type: status } }),
   /**
    * A turn at work: the host saying this session is running. It is the first
    * event a replacement turn produces, and therefore the life sign that lets
@@ -294,7 +324,7 @@ export const events = {
     properties: { sessionID: id },
   }),
   errorUpdate: (id) => events.updated(id, { type: "error" }),
-  deleted: (id, properties = {}) => ({ type: SESSION_DELETED, properties: { sessionID: id, ...properties } }),
+  deleted: (id, properties = {}) => hostEvent(SESSION_DELETED, id, properties),
   // EventSessionError carries an error detail, never a status field.
   error: (id, error) => ({
     type: SESSION_ERROR,
@@ -412,7 +442,7 @@ function createMockClient(hooks = {}) {
   // by definition — a session in the host's map is a session it lists.
   for (const [id, type] of Object.entries(hooks.hostStatusSeed ?? {})) {
     state.sessions.add(id);
-    state.hostStatus.set(id, hostWord(type));
+    putHostStatus(state, id, type);
   }
 
   return {
@@ -433,18 +463,8 @@ function createMockClient(hooks = {}) {
     // real host would: the route is /question/{requestID}, a reply carries
     // `answers: Array<QuestionAnswer>`, and a reject carries no body at all.
     question: {
-      reply: async ({ path, body }) => {
-        if (hooks.questionReplyThrows) throw new Error("reply failed");
-        assertQuestionSettlement("reply", path, body, { carriesAnswers: true });
-        state.questionCalls.push({ method: "reply", requestID: path.requestID, answers: body.answers });
-        return { ok: true };
-      },
-      reject: async ({ path, body }) => {
-        if (hooks.questionRejectThrows) throw new Error("reject failed");
-        assertQuestionSettlement("reject", path, body, { carriesAnswers: false });
-        state.questionCalls.push({ method: "reject", requestID: path.requestID });
-        return { ok: true };
-      },
+      reply: questionEndpoint(state, hooks, { method: "reply", carriesAnswers: true, throws: "questionReplyThrows" }),
+      reject: questionEndpoint(state, hooks, { method: "reject", carriesAnswers: false, throws: "questionRejectThrows" }),
     },
     session: {
       create: async ({ body }) => {
@@ -663,13 +683,23 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   // A step that must produce exactly one notice, counted against a baseline so
   // a suite that already has notices is judged only on this step. The sleep is
   // for CI scheduling, not the contract: delivery is a microtask away.
-  const oneNotice = async (action) => {
+  //
+  // The baseline reader is the shared half: notices are counted as WHAT THIS STEP
+  // ADDED, never as what the ledger happens to hold, and both notice assertions
+  // in this harness read through it rather than re-deriving the slice.
+  const noticesAfter = (action) => {
     const before = state.notifications.length;
-    await action();
+    return async () => {
+      await action();
+      return () => state.notifications.slice(before);
+    };
+  };
+  const oneNotice = async (action) => {
+    const fresh = await noticesAfter(action)();
     await sleep(30);
-    const fresh = state.notifications.slice(before);
-    assert.strictEqual(fresh.length, 1, "a terminal event notifies exactly once");
-    return fresh;
+    const notes = fresh();
+    assert.strictEqual(notes.length, 1, "a terminal event notifies exactly once");
+    return notes;
   };
   resetAgentCache();
   clearNotifyLedger();
@@ -693,9 +723,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * states a test cannot reach by delivering events (a session the plugin
      * never saw, or one the host has already forgotten).
      */
-    setHostStatus: (id, type) => {
-      state.hostStatus.set(id, { type, at: Date.now() });
-    },
+    setHostStatus: (id, type) => putHostStatus(state, id, type),
     /** Drop a session from the host's map entirely — no turn, no entry. */
     forgetHostStatus: (id) => state.hostStatus.delete(id),
     // The settlement funnel: a task settles only by the event the server
@@ -755,11 +783,10 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * chance. The bound exists so a missing notice FAILS instead of hanging.
      */
     async noticesMatching(match, action, expected = 1) {
-      const before = state.notifications.length;
-      await action();
-      const fresh = () => state.notifications.slice(before).filter((n) => match.test(n.message));
-      for (let waited = 0; waited < 40 && fresh().length < expected; waited += 2) await sleep(2);
-      return fresh();
+      const fresh = await noticesAfter(action)();
+      const matched = () => fresh().filter((n) => match.test(n.message));
+      for (let waited = 0; waited < 40 && matched().length < expected; waited += 2) await sleep(2);
+      return matched();
     },
     /**
      * The admission path's own call: the tool's answer, with no id and nothing

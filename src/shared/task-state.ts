@@ -357,18 +357,35 @@ export function createTaskStore(): TaskStore {
   };
 }
 
-// Register a task and claim the session id atomically. The maxConcurrent
-// check lives inside the choke point (Task 07) — no call site can forget it,
-// and every active task holds a slot regardless of who awaits it.
+/**
+ * The one place a slot is claimed.
+ *
+ * A fresh registration and a revival compete for the same limit, and this
+ * function is why they cannot disagree: the comment on registerActiveTask used
+ * to claim the check lived in a choke point, while reviveRetainedTask spelled
+ * the same check out a few lines away with its own `if (config)` guard. Two
+ * spellings of one budget, and the one nobody re-reads was the revival door —
+ * which is how maxConcurrent gets oversubscribed by continuing a task instead of
+ * spawning one.
+ *
+ * An absent config is a caller that does not enforce the limit at all (a
+ * revival path with no config in hand), not a limit of zero, so it returns
+ * rather than refusing.
+ */
+function claimSlot(store: TaskStore, config: ConcurrencyConfig | undefined): void {
+  if (!config) return;
+  const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
+  if (limitError) throw new Error(limitError);
+}
+
+// Register a task and claim the session id atomically. Every active task holds a
+// slot regardless of who awaits it, and the slot comes from claimSlot.
 export function registerActiveTask(
   store: TaskStore,
   task: NewTaskRegistration,
   config: ConcurrencyConfig,
 ): ActiveTaskState {
-  const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
-  if (limitError) {
-    throw new Error(limitError);
-  }
+  claimSlot(store, config);
   const record: ActiveTaskState = {
     ...task,
     state: "active",
@@ -447,10 +464,7 @@ export function reviveRetainedTask(
   if (retained.state === "interrupted") {
     throw new Error(`Task ${childSessionId} was interrupted by request; interrupted children are not revived — spawn a fresh dynamic_task instead.`);
   }
-  if (config) {
-    const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
-    if (limitError) throw new Error(limitError);
-  }
+  claimSlot(store, config);
   const revived = reclaimAsActive(store, childSessionId, retained, {
     // A revival REPLACES the turn, so the clock restarts: this is a new turn of
     // the same child, not the continuation of the one that ended.

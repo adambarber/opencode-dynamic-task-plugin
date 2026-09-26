@@ -13,10 +13,12 @@ import type { OpenCodeClient } from "./client.js";
 import { eventField, hostPayload } from "./session-lifecycle.js";
 import { extractMessages } from "./prompt.js";
 
-// The server's own words for a session's turn. It has three ("retry" is the
-// provider's own, carried through), and a session it does not list has no turn
-// running at all — which is a fact, not a gap.
-export type HostTurnState = "busy" | "idle" | "retry" | "error";
+// The server's own words for a session's turn, and the only ones it can say:
+// the status channel's value is a `SessionStatus` (busy | retry | idle), and a
+// session it does not list has no turn running at all — which is a fact, not a
+// gap. A fourth word here would be a shape this plugin invented, and a test
+// pinning it would be a test of fiction.
+export type HostTurnState = "busy" | "idle" | "retry";
 
 export interface LivenessReading {
   /** The server's word for this session, or null when it lists none. */
@@ -35,12 +37,12 @@ export function hostTurnRunning(reading: LivenessReading): boolean {
  * The status word for a session no store record covers. The server's word is
  * the answer here — with nothing to reconcile it against, the only honest
  * reading is the source's own, and a session it does not list is genuinely
- * unknown rather than quiet-but-alive. "error" folds into completed: the turn
- * is over, and the error text is on the record for anyone reading it.
+ * unknown rather than quiet-but-alive. "idle" reads as completed: the server
+ * is saying the turn is over, which is the reading this vocabulary has for it.
  */
 export function statusFromHostState(hostState: HostTurnState | null): "busy" | "completed" | "unknown" {
   if (hostState === "busy" || hostState === "retry") return "busy";
-  if (hostState === "idle" || hostState === "error") return "completed";
+  if (hostState === "idle") return "completed";
   return "unknown";
 }
 
@@ -50,7 +52,7 @@ export function statusFromHostState(hostState: HostTurnState | null): "busy" | "
 function hostTurnState(statusResult: unknown, childSessionId: string): HostTurnState | null {
   const entry = eventField(hostPayload(statusResult), childSessionId);
   const type = eventField(entry, "type");
-  return type === "busy" || type === "idle" || type === "retry" || type === "error" ? type : null;
+  return type === "busy" || type === "idle" || type === "retry" ? type : null;
 }
 
 // The child's own clock: when the last message it wrote finished, or began —

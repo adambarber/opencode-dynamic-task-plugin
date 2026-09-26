@@ -633,12 +633,15 @@ function taskRecord(overrides = {}) {
 // The server's own status vocabulary, as the read tools speak it. The words are
 // the host's, never ours: a status the server did not state cannot be rendered
 // as one, so this mapping is the whole of what an untracked session can say.
+// The channel's value is a SessionStatus — busy | retry | idle — and the last
+// row is a word it cannot send, which must read as unknown rather than be
+// coerced into an outcome.
 describe("liveness vocabulary", () => {
   const cases = [
     ["busy", "busy", true],
     ["retry", "busy", true],
     ["idle", "completed", false],
-    ["error", "completed", false],
+    ["error", "unknown", false],
     [null, "unknown", false],
   ];
   for (const [host, expected, running] of cases) {

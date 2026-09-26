@@ -87,6 +87,31 @@ const notifyLedger: NotificationRecord[] = [];// Tenet 9: process-global by desi
 // memory window is shared, which is benign.
 const NOTIFY_LEDGER_MAX = 200;
 
+/**
+ * What the gate knows when it writes a delivery down: the target, the exact text,
+ * and how the write ended. One assembly of a NotificationRecord, because the
+ * optional fields are the claim that distinguishes a suppression, a held write
+ * and a failure — and the entry's own non-delivery (there is no parent to dial)
+ * was assembling the record by hand beside it.
+ */
+export function notifyRecord(
+  target: DeliveryTarget,
+  message: string,
+  outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean },
+): NotificationRecord {
+  return {
+    at: Date.now(),
+    parentSessionId: target.parentSessionId,
+    childSessionId: target.childSessionId,
+    kind: target.kind,
+    message,
+    attempts: outcome.attempts,
+    delivered: outcome.delivered,
+    ...(outcome.suppressed ? { suppressed: true } : {}),
+    ...(outcome.pending ? { pending: true } : {}),
+  };
+}
+
 export function recordNotification(entry: NotificationRecord): void {
   notifyLedger.push(entry);
   if (notifyLedger.length > NOTIFY_LEDGER_MAX) notifyLedger.shift();
@@ -326,12 +351,7 @@ export async function notifyParent(
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
   const emit = (outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean }): void =>
-    record({
-      at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message,
-      attempts: outcome.attempts, delivered: outcome.delivered,
-      ...(outcome.suppressed ? { suppressed: true } : {}),
-      ...(outcome.pending ? { pending: true } : {}),
-    });
+    record(notifyRecord({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, outcome));
   const generation = gateLedger.claim(opts.childSessionId, dedupKey);
   const epoch = gateEpoch;
   if (generation === null) {

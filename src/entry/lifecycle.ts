@@ -21,6 +21,7 @@ import {
   notifyParent,
   safeLog,
   formatParentNotification,
+  notifyRecord,
   recordNotification,
   type NotifyKind,
 } from "../shared/notify.js";
@@ -59,15 +60,13 @@ export function deliverParent(
   if (isParentless(parentSessionId)) {
     // Nowhere to deliver — but the non-delivery is recorded, so deafness is
     // distinguishable from "no event yet" in task_result.
-    recordNotification({
-      at: Date.now(),
-      parentSessionId: parentSessionId || UNKNOWN_PARENT,
-      childSessionId,
-      kind,
-      message,
-      attempts: 0,
-      delivered: false,
-    });
+    recordNotification(
+      notifyRecord(
+        { parentSessionId: parentSessionId || UNKNOWN_PARENT, childSessionId, kind },
+        message,
+        { attempts: 0, delivered: false },
+      ),
+    );
     return Promise.resolve(false);
   }
   return notifyParent(client, parentSessionId, message, { childSessionId, kind });

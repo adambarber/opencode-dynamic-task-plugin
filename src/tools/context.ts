@@ -5,7 +5,7 @@ import type { OpenCodeClient } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskRecord, TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
-import { resolveParentSessionId } from "../shared/session-lifecycle.js";
+import { resolveParentSessionId, isParentless } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { formatTaskResultSummary } from "../shared/task-formatting.js";
 import type { Refusal } from "../shared/verdict.js";
@@ -76,7 +76,8 @@ export function unknownSessionResult(sessionId: string): string {
  */
 export function callerSessionId(ctx: ToolContext): string | undefined {
   const caller = resolveParentSessionId(ctx);
-  return !caller || caller === "unknown" ? undefined : caller;
+  if (isParentless(caller)) return undefined;
+  return caller ?? undefined;
 }
 
 /** The caller's own record, or undefined when there is no caller or it is not one of ours. */

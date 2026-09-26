@@ -345,6 +345,27 @@ export interface SessionContext {
   session_id?: string;
 }
 
+/**
+ * The parent a child records when there is none to name.
+ *
+ * It is a load-bearing word, not a placeholder: it is the only thing that makes
+ * a non-delivery read as "this child has no parent to notify" instead of "no
+ * event has arrived yet" in task_result. Four modules produced it and three
+ * tested for it, all as a bare literal in a `string` field, so nothing but a
+ * reader's memory kept the producer and the checkers in agreement — a change to
+ * the convention would have moved the writes and left the checks, and the
+ * rendering would have started calling a parentless child undelivered by some
+ * other reason.
+ *
+ * Produce it with `|| UNKNOWN_PARENT`, test it with isParentless.
+ */
+export const UNKNOWN_PARENT = "unknown";
+
+/** Whether a parent id names nobody: absent, or the recorded unknown. */
+export function isParentless(parentSessionId: string | null | undefined): boolean {
+  return !parentSessionId || parentSessionId === UNKNOWN_PARENT;
+}
+
 export function resolveParentSessionId(ctx: SessionContext): string | null {
   if (!isEventRecord(ctx)) return null;
   const record = ctx as Record<string, unknown>;

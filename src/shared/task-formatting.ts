@@ -4,6 +4,7 @@
 // one home each, imported here.
 import { truncateText, type NotificationRecord } from "./notify.js";
 import { formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
+import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading } from "./liveness.js";
 import { textBlock } from "./text-block.js";
 
@@ -87,7 +88,7 @@ function formatNotificationLine(notification: NotificationRecord): string {
   if (notification.suppressed) {
     return `Last notification: ${notification.kind} — Suppressed (duplicate — already delivered)`;
   }
-  if (!notification.delivered && notification.attempts === 0 && notification.parentSessionId === "unknown") {
+  if (!notification.delivered && notification.attempts === 0 && isParentless(notification.parentSessionId)) {
     return `Last notification: ${notification.kind} — Not delivered (no parent session)`;
   }
   if (notification.pending) {

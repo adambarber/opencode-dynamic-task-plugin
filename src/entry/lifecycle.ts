@@ -7,6 +7,8 @@ import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
   eventLooksDeleted,
+  isParentless,
+  UNKNOWN_PARENT,
 } from "../shared/session-lifecycle.js";
 import { debugLog } from "../debug-logger.js";
 import {
@@ -54,12 +56,12 @@ export function deliverParent(
   text: string,
 ): Promise<boolean> {
   const message = formatParentNotification({ childSessionId, description }, kind, text);
-  if (!parentSessionId || parentSessionId === "unknown") {
+  if (isParentless(parentSessionId)) {
     // Nowhere to deliver — but the non-delivery is recorded, so deafness is
     // distinguishable from "no event yet" in task_result.
     recordNotification({
       at: Date.now(),
-      parentSessionId: parentSessionId || "unknown",
+      parentSessionId: parentSessionId || UNKNOWN_PARENT,
       childSessionId,
       kind,
       message,

@@ -2,6 +2,7 @@
 // the active record, delivery through the gate — never a settlement.
 import type { ToolContext } from "@opencode-ai/plugin";
 import { isEventRecord } from "../shared/host-shape.js";
+import { isParentless } from "../shared/session-lifecycle.js";
 import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
 import { pruneRetainedTasks, findTask, annotateNotice, NOTICE_CLAIMS, type NoticeClaim } from "../shared/task-state.js";
 import { callerSessionId, type ToolDeps } from "./context.js";
@@ -56,7 +57,7 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   }
 
   annotateNotice(store, callerId, message, claim);
-  if (task.parentSessionId === "unknown") {
+  if (isParentless(task.parentSessionId)) {
     return NOTICE_PARENTLESS;
   }
   const parentMessage = formatParentNotification(

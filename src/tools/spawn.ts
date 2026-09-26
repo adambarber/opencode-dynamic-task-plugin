@@ -11,7 +11,7 @@ import {
   fetchAgents,
   admitToolPrompt,
 } from "../shared/admission.js";
-import { resolveParentSessionId, validateSessionResult, abortSession } from "../shared/session-lifecycle.js";
+import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import { transitionState, holdDispatchWait } from "../shared/task-state.js";
@@ -121,7 +121,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // Register in active state via the admission gate.
     const activeTask = registerAdmittedTask(store, {
       childSessionId,
-      parentSessionId: parentSessionId || "unknown",
+      parentSessionId: parentSessionId || UNKNOWN_PARENT,
       agentName: agent.name,
       description: args.description || `Task: ${agent.name}`,
       lineage: admission.newLineage,
@@ -134,7 +134,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // catch owns delivery failure.
     fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(admitted.prompt));
 
-    debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
+    debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,
     });
 
@@ -171,12 +171,12 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         : message;
       void deliverParent(
         client,
-        parentSessionId || "unknown",
+        parentSessionId || UNKNOWN_PARENT,
         failedChildSessionId,
         args.description || "background task",
         "error",
         spawnErrorText,
-      ).then((delivered) => debugLog(parentSessionId || "unknown", failedChildSessionId, "spawn-error-notify", { delivered }));
+      ).then((delivered) => debugLog(parentSessionId || UNKNOWN_PARENT, failedChildSessionId, "spawn-error-notify", { delivered }));
     }
     if (message.includes("not found")) {
       return agentGone(agent.name);

@@ -9,6 +9,7 @@
     "test": "npm run build && npm run test:duplication && node --test src/tests/*.test.js",
     "test:coverage": "npm run build && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
     "test:duplication": "jscpd src --config .jscpd.json",
+    "test:cross-boundary": "node scripts/cross-boundary-clones.mjs",
     "lint": "tsc --noEmit",
     "watch": "tsc --watch"
   },
@@ -21,6 +22,7 @@
   "type": "module",
   "license": "MIT",
   "devDependencies": {
+    "@jscpd/tokenizer": "4.2.6",
     "@opencode-ai/plugin": "^1.18.30",
     "@opencode-ai/sdk": "^1.18.30",
     "@types/node": "^26.5.1",

@@ -23,6 +23,11 @@ import {
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
+// The ledger's own name and root, resolved by the code that owns them. Six cases
+// here used to spell the filename out, which is a restatement of a production
+// constant: rename the ledger and they would read a path nothing writes, and a
+// read that finds nothing parses as an empty document rather than a failure.
+import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -330,7 +335,7 @@ async function assertNeedsSessionId(toolUnderTest) {
  * quietly ignores.
  */
 const writeLedger = (directory, document) =>
-  writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 3, ...document }));
+  writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ version: 3, ...document }));
 
 /**
  * Wait for an observable, and fail rather than hang. The bound is the only clock
@@ -1699,14 +1704,14 @@ describe("prompt routing contract", () => {
 describe("ledger follows the plugin directory, never the process cwd", () => {
   it("persists retained tasks under the provided directory only", async () => {
     const dir = tmpProjectDir();
-    const cwdLedger = join(process.cwd(), ".dynamic-task-ledger.json");
+    const cwdLedger = resolveTaskLedgerPath(process.cwd());
     const cwdBefore = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
 
     const h = await setupHarness({ hooks: {}, directory: dir });
     const { id, c } = await h.spawn({ description: "scoped" });
     await settledOnDisk(h, id);
 
-    const ledgerFile = join(dir, ".dynamic-task-ledger.json");
+    const ledgerFile = resolveTaskLedgerPath(dir);
     assert.ok(existsSync(ledgerFile), "ledger must be written inside the plugin directory");
     const ledger = JSON.parse(readFileSync(ledgerFile, "utf8"));
     assert.ok(ledger.tasks?.[id], "completed task must be retained in the project ledger");
@@ -1868,7 +1873,7 @@ describe("boot redelivers what the last boot owed", () => {
 
   const onDisk = (directory) => {
     try {
-      return JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8"));
+      return JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8"));
     } catch {
       return null;
     }
@@ -1905,7 +1910,7 @@ describe("boot redelivers what the last boot owed", () => {
 
   it("a v2 ledger boots clean rather than half-restored", async () => {
     const directory = tmpProjectDir();
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks: {} }));
+    writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ version: 2, tasks: {} }));
     const h = await setupHarness({ hooks: {}, directory });
     assert.deepStrictEqual(h.notices(), [], "nothing to redeliver from a past this build cannot read");
     assert.strictEqual(onDisk(directory).version, 2, "and no debt invented from it — the file is untouched");
@@ -1925,7 +1930,7 @@ describe("boot reconciles what the last boot was still running", () => {
     { hooks: { hostStatusSeed } },
   );
 
-  const ledgerActive = (directory) => JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8")).active;
+  const ledgerActive = (directory) => JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active;
 
   it("a child the host is still working stays active and settles on its own event", async () => {
     const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "busy" });

@@ -545,7 +545,7 @@ describe("invariant: record shapes are built, not re-declared (Tenet 12)", () =>
  * two constants happen to share a spelling with. A site is added here by someone
  * who has read why it is not a restatement.
  */
-describe("invariant: a test never retypes an exported production constant (Tenet 12)", () => {
+describe("invariant: a test never retypes a bound production value (Tenet 12)", () => {
   const SANCTIONED = [
     // The value IS the claim: this asserts the role reads back as the literal.
     'messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant"',
@@ -558,19 +558,60 @@ describe("invariant: a test never retypes an exported production constant (Tenet
     'answerSays(missing, "unknown")',
   ];
 
-  /** Every string literal production exports as a named constant, and where. */
-  function exportedConstants() {
-    const constants = new Map();
+  /**
+   * Every string production BINDS to a name, and where.
+   *
+   * Three forms, because the three that actually drifted were not the one this rule
+   * used to read:
+   *
+   *   1. an exported const bound to a literal;
+   *   2. a NON-exported const bound to a literal — DEBUG_DIR, the log directory, whose
+   *      drift cost a reader resolving to a path that matched nothing;
+   *   3. a const table row's direct string value — the notification tag, which is
+   *      bound inside a declaration table rather than by a bare assignment.
+   *
+   * A table's ARRAY entries and quoted keys are deliberately NOT read. VALID_TRANSITIONS
+   * holds `active: ["completed", "error", ...]` and that is a vocabulary, not a set of
+   * decisions: a test that writes `transitionState(store, id, "completed")` is naming the
+   * transition it exercises, and pinning the literal is what makes the test FAIL when the
+   * vocabulary changes — routing it through a constant would leave the test unable to
+   * fail at all. The same goes for a table KEY, which is a name the type declares.
+   */
+  function boundValues() {
+    const bound = new Map();
+    const add = (literal, name, file) => {
+      if (literal.length > 1 && !bound.has(literal)) bound.set(literal, { name, file });
+    };
     for (const file of listProdFiles()) {
       const source = readFileSync(file, "utf8");
-      const pattern = /export const ([A-Z_0-9]+)\s*(?::[^=]+)?=\s*"((?:[^"\\\n]|\\.)+)"/g;
-      for (const [, name, literal] of source.matchAll(pattern)) constants.set(literal, { name, file });
+      const forms = [
+        // (1) and (2): a const bound to a bare string literal, exported or not.
+        /(?:export\s+)?const\s+([A-Z_0-9]+)\s*(?::[^=]+)?=\s*"((?:[^"\\\n]|\\.)+)"/g,
+      ];
+      for (const pattern of forms) {
+        for (const [, name, literal] of source.matchAll(pattern)) add(literal, name, file);
+      }
+      // (3): a const table's row values, located brace by brace so the scan cannot run
+      // past the table into unrelated code.
+      for (const m of source.matchAll(/(?:export\s+)?const\s+([A-Z_0-9]+)\s*(?::[^=]+)?=\s*\{/g)) {
+        const start = m.index + m[0].length;
+        let depth = 1;
+        let end = start;
+        while (end < source.length && depth > 0) {
+          if (source[end] === "{") depth++;
+          else if (source[end] === "}") depth--;
+          end++;
+        }
+        for (const row of source.slice(start, end).matchAll(/([A-Za-z0-9_]+)\s*:\s*"((?:[^"\\\n]|\\.)+)"/g)) {
+          add(row[2], `${m[1]}.${row[1]}`, file);
+        }
+      }
     }
-    return constants;
+    return bound;
   }
 
   /**
-   * Every site in a test source that retypes an exported constant, with the claims
+   * Every site in a test source that retypes a bound value, with the claims
    * already applied. A function rather than an inline loop so the probe below can
    * hand it a source of its own — a rule that can only ever be run on the real tree
    * cannot be shown to see anything.
@@ -595,8 +636,8 @@ describe("invariant: a test never retypes an exported production constant (Tenet
   }
 
   it("reports no retyped constant", () => {
-    const constants = exportedConstants();
-    assert.ok(constants.size > 20, `only ${constants.size} exported string constants found — the extractor is not reading them`);
+    const constants = boundValues();
+    assert.ok(constants.size > 20, `only ${constants.size} bound string values found — the extractor is not reading them`);
     const findings = [];
     for (const file of listTestFiles().concat([path.join(TESTS_DIR, "support", "harness.js"), path.join(TESTS_DIR, "support", "records.js")])) {
       for (const finding of retypeFindings(readFileSync(file, "utf8"), constants)) {
@@ -606,15 +647,34 @@ describe("invariant: a test never retypes an exported production constant (Tenet
     assert.deepStrictEqual(findings, [], `a test retypes a production constant:\n${findings.join("\n")}`);
   });
 
-  // A rule that cannot fail is a comment. This runs the same comparison over a
-  // source written for the purpose, so the report is shown to be reachable.
-  it("a retyped constant is reported, and prose about one is not", () => {
-    const constants = exportedConstants();
-    const restated = `const part = { info: { role: "${ASSISTANT_ROLE}" } };`;
-    assert.ok(retypeFindings(restated, constants).length > 0, "a restatement must be reported");
-    assert.deepStrictEqual(retypeFindings("// the reader wants the assistant turn", constants), [],
+  // A rule that cannot fail is a comment. This runs the same comparison over sources
+  // written for the purpose, one per binding form, so each is shown to be reachable —
+  // and the two negatives, because a rule that reads a vocabulary as a decision is
+  // worse than no rule: it would push every state assertion through a constant.
+  it("every binding form is reported, and neither prose nor a vocabulary is", () => {
+    const constants = boundValues();
+    const reported = (source) => retypeFindings(source, constants);
+    // The probe values are DERIVED from what the extractor found, by the form that
+    // found them — hardcoding them here would restate the very values this rule
+    // exists to keep single, and a probe that copies its subject proves nothing.
+    const byForm = (predicate) => [...constants].find(([, owner]) => predicate(owner.name))?.[0];
+    const bareExport = byForm((name) => name === "ASSISTANT_ROLE");
+    const bareLocal = byForm((name) => name === "DEBUG_DIR");
+    const tableRow = byForm((name) => name.endsWith(".tag"));
+    assert.ok(bareExport && bareLocal && tableRow, `expected all three binding forms in production, got ${[bareExport, bareLocal, tableRow]}`);
+    // (1) exported const, (2) non-exported const, (3) a const table row value.
+    assert.ok(reported(`const part = { info: { role: ${JSON.stringify(bareExport)} } };`).length > 0,
+      "an exported const is reported");
+    assert.ok(reported(`const dir = ${JSON.stringify(bareLocal)};`).length > 0,
+      "a non-exported const is reported");
+    assert.ok(reported(`const t = { tag: ${JSON.stringify(tableRow)} };`).length > 0,
+      "a table row value is reported");
+    // Negatives: prose about a spelling, and the state vocabulary a table enumerates.
+    assert.deepStrictEqual(reported("// the reader wants the assistant turn", constants), [],
       "a comment discussing the spelling is prose, not a second declaration of it");
-    assert.deepStrictEqual(retypeFindings("const n = 1;", constants), [], "an unrelated source has nothing to report");
+    assert.deepStrictEqual(reported(`const next = ["completed", "error", "blocked"];`, constants), [],
+      "a table's array entries are a vocabulary a test may name, not decisions it may not restate");
+    assert.deepStrictEqual(reported("const n = 1;", constants), [], "an unrelated source has nothing to report");
   });
 });
 

@@ -284,7 +284,7 @@ export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
   return { ...core, state: "active" };
 }
 
-export function loadTaskLedger(filePath: string): { retained: Map<string, RetainedTaskState>; active: Map<string, ActiveTaskState>; pending: PendingDelivery[] } {
+export function loadTaskLedger(filePath: string): TaskLedgerFile {
   const retained = new Map<string, RetainedTaskState>();
   const active = new Map<string, ActiveTaskState>();
   const pending: PendingDelivery[] = [];

@@ -8,6 +8,7 @@
 import type { DynamicTaskConfig } from "./config.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
+import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import { hostPayload } from './session-lifecycle.js';
 import { isEventRecord } from './host-shape.js';
 import {
@@ -19,6 +20,7 @@ import {
 import {
   registerActiveTask,
   findTask,
+  pruneRetainedTasks,
   TASK_STATES,
   type ActiveTaskState,
   type NewTaskRegistration,
@@ -183,6 +185,32 @@ export function registerAdmittedTask(
   config: DynamicTaskConfig,
 ): ActiveTaskState {
   return registerActiveTask(store, params, config);
+}
+
+// ─── the shared opening for a prompt-bearing tool ───────────────────
+/**
+ * dynamic_task and task_continue are the only two tools that carry a prompt to a
+ * child, and they open the same way: validate the prompt and model under THIS
+ * tool's voice for an absent prompt, then prune retained history, then proceed.
+ * Both halves are ordering-sensitive and neither is optional — a prune ahead of
+ * the validation would let a rejected prompt act on the store, and a tool that
+ * skipped the prune would answer from a record past its TTL. Keeping the
+ * sequence in one function makes "a bad prompt fails before anything moves" a
+ * property of the tool rather than a habit at a call site.
+ *
+ * Returns the refusal as a STRING, ready to hand the parent verbatim — the same
+ * convention formatAdmissionError already uses — or the admitted pair.
+ */
+export function admitToolPrompt(
+  args: { prompt?: unknown; model?: unknown },
+  absentPromptVoice: string,
+  store: TaskStore,
+  config: DynamicTaskConfig,
+): AdmittedPromptInput | string {
+  const admitted = admitPromptInput(args.prompt, args.model, absentPromptVoice);
+  if (!admitted.ok) return admitted.error;
+  pruneRetainedTasks(store, config);
+  return admitted.input;
 }
 
 // ─── agent discovery ───────────────────────────────────────────────

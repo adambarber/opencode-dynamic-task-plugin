@@ -432,26 +432,32 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
 });
 
 // --- the duplicate-detection gate ------------------------------------------------
-// The thresholds are not taste. Measured on this tree: 3 lines / 25 tokens is the
-// strictest level that reports 0 clones. One notch down is real duplication, not
-// tokenizer noise — 3/20 finds 37 clones and 3/15 finds 86, headed by duplicated
-// interface declarations and duplicated steer-claim blocks, with zero of them
-// import-shaped. So the gate is pinned here: loosening it is a deliberate edit
-// to a test that says what re-opens, not a quiet edit to a config file.
+// The thresholds are not taste. 3 lines / 20 tokens is the strictest level that
+// this tree now passes, and it passes because every clone it reported was
+// ELIMINATED rather than tolerated: 43 when it was adopted (7 in production, 36
+// in tests), and every one of them was a restated decision — two hand-written
+// reverse message walks, an inline copy of the ledger's own declared type, two
+// copies of the retained-record lookup-and-edit, and two tools each spelling
+// the prompt-admission prologue out for themselves. One notch down is real
+// duplication, not tokenizer noise — 3/15 reports 86, headed by duplicated
+// interface declarations, with none of them import-shaped. So the gate is pinned
+// here: loosening it is a deliberate edit to a test that says what re-opens,
+// not a quiet edit to a config file.
 describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
   const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
 
-  it("enforces zero tolerance at 3 lines / 25 tokens", () => {
+  it("enforces zero tolerance at 3 lines / 20 tokens", () => {
     const loosened = [
       ["threshold", 0],
       ["minLines", 3],
-      ["minTokens", 25],
+      ["minTokens", 20],
     ].filter(([key, expected]) => config[key] !== expected);
     assert.deepStrictEqual(
       loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
       [],
-      `duplicate gate loosened. 3/20 reports 37 real clones and 3/15 reports 86,\n` +
-        `so these thresholds are the tree's actual clean level, not a preference.`,
+      `duplicate gate loosened. 3/20 reported 43 real clones when it was adopted and\n` +
+        `3/15 still reports 86, so this is the tree's actual clean level — reached by\n` +
+        `eliminating the clones, never by moving the bar to hide them.`,
     );
   });
 

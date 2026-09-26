@@ -213,11 +213,20 @@ export function extractMessages(result: unknown): unknown[] {
 // ─── getLatestAssistantText ────────────────────────────────────────
 // (Moved verbatim from index.ts.)
 
-export function getLatestAssistantText(messages: unknown): string {
-  if (!Array.isArray(messages) || messages.length === 0) return "";
+/**
+ * The ONE reverse walk over a message list. "The newest message decides" is a
+ * property of the data, not a rule each reader has to re-derive: two readers
+ * that each hand-wrote a backwards index loop could disagree about which end is
+ * first, and a disagreement there is a stale error reported as the current one.
+ * Total on a non-array — callers hand it whatever shape the host answered with.
+ */
+function* newestFirst(messages: unknown): Generator<unknown> {
+  if (!Array.isArray(messages)) return;
+  for (let i = messages.length - 1; i >= 0; i--) yield messages[i];
+}
 
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
+export function getLatestAssistantText(messages: unknown): string {
+  for (const msg of newestFirst(messages)) {
     if (!isMessage(msg)) continue;
     if (messageRoleOf(msg) !== ASSISTANT_ROLE) continue;
 
@@ -260,9 +269,7 @@ export function messageErrorDetail(message: unknown): string {
 // The newest message decides — walking past it would resurface stale errors
 // from earlier (retried) turns.
 function latestMessageErrorDetail(messages: unknown): string {
-  if (!Array.isArray(messages)) return "";
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i];
+  for (const message of newestFirst(messages)) {
     if (isMessage(message)) return messageErrorDetail(message);
   }
   return "";

@@ -10,6 +10,7 @@ import {
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
+  type FleetRow,
 } from "../shared/task-formatting.js";
 import { pruneRetainedTasks, findTask, listTasks, dispatchForest, type DispatchNode } from "../shared/task-state.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
@@ -108,7 +109,10 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   const { store, config } = deps;
   const pruned = pruneRetainedTasks(store, config);
   const { retained } = listTasks(store);
-  const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; startedAt: number }) => ({
+  // The row shape is FleetRow's, named rather than re-spelled: an inline
+  // signature here is a second declaration of the renderer's contract, and the
+  // two could disagree about which fields a row carries.
+  const toRow = (t: FleetRow): FleetRow => ({
     childSessionId: t.childSessionId,
     agentName: t.agentName,
     description: t.description,

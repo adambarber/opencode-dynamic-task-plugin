@@ -2,12 +2,11 @@
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
 import { abortSession, errorMessage } from "../shared/session-lifecycle.js";
-import { admitPromptInput } from "../shared/prompt.js";
+import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
 import { gateLedger } from "../shared/notify.js";
 import {
   transitionState,
-  pruneRetainedTasks,
   markTurnReplacement,
   clearTurnReplacement,
   reviveRetainedTask,
@@ -36,15 +35,12 @@ export interface ContinueArgs {
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
   const { client, store, config, sessionId } = scope;
 
-  // Prompt and model shape are validated before anything moves: a bad id
-  // fails without touching the task. The override applies to revivals only —
-  // steers keep the task's model (a mid-turn model swap is a new task, not a
-  // steer).
-  const admitted = admitPromptInput(args.prompt, args.model, PROMPT_REQUIRED);
-  if (!admitted.ok) return admitted.error;
-  const { prompt, modelOverride } = admitted.input;
-
-  pruneRetainedTasks(store, config);
+  // The shared opening for a prompt-bearing tool: validate the prompt and model
+  // before anything moves (a bad id fails without touching the task), then
+  // prune retained history. The model override applies to revivals only — steers
+  // keep the task's model (a mid-turn model swap is a new task, not a steer).
+  const admitted = admitToolPrompt(args, PROMPT_REQUIRED, store, config);
+  if (typeof admitted === "string") return admitted;
 
   // The state a revival was auto-triggered from, or undefined when the parent
   // simply followed up on a settled task. Set by the M9 arm below and read by
@@ -117,7 +113,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         "[Parent steer — read before continuing.]",
         "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
         "",
-        prompt,
+        admitted.prompt,
       ].join("\n");
       fireChildPrompt(client, store, {
         childSessionId: sessionId,
@@ -134,7 +130,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // M9 auto-revive above, differ only in the sentence that announces them.
   let task;
   try {
-    task = reviveRetainedTask(store, sessionId, config, modelOverride);
+    task = reviveRetainedTask(store, sessionId, config, admitted.modelOverride);
     // A revived task is a fresh settlement subject: clear its
     // settle-dedup so the next completion can be delivered.
     gateLedger.forgetChild(sessionId);
@@ -145,7 +141,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     return `ERROR: ${errorMessage(error)}`;
   }
 
-  fireChildPrompt(client, store, task, prompt);
+  fireChildPrompt(client, store, task, admitted.prompt);
   return autoRevivedFrom
     ? steerAutoRevived(sessionId, task.agentName, autoRevivedFrom)
     : followupSent(task.childSessionId, task.agentName);

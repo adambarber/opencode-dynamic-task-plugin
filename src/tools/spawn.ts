@@ -9,11 +9,11 @@ import {
   formatAdmissionError,
   buildAgentList,
   fetchAgents,
+  admitToolPrompt,
 } from "../shared/admission.js";
-import { admitPromptInput } from "../shared/prompt.js";
 import { resolveParentSessionId, validateSessionResult, errorMessage, abortSession } from "../shared/session-lifecycle.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, pruneRetainedTasks, holdDispatchWait } from "../shared/task-state.js";
+import { transitionState, holdDispatchWait } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
@@ -52,12 +52,12 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   }
   const agent = admission.agent;
 
-  // Prompt and model shape are admission-checked before the session exists:
-  // a bad id otherwise fails after creation, and the failure surfaces on the
-  // lifecycle path with nothing naming the suspect.
-  const admitted = admitPromptInput(args.prompt, args.model, INVALID_PROMPT);
-  if (!admitted.ok) return admitted.error;
-  const { prompt, modelOverride } = admitted.input;
+  // The shared opening for a prompt-bearing tool: prompt and model shape are
+  // admission-checked before the session exists (a bad id would otherwise fail
+  // after creation, surfacing on the lifecycle path with nothing naming the
+  // suspect), and retained history is pruned before anything reads it.
+  const admitted = admitToolPrompt(args, INVALID_PROMPT, store, config);
+  if (typeof admitted === "string") return admitted;
 
   if (typeof args.description === "string" && args.description.length > MAX_DESCRIPTION_CHARS) {
     return descriptionTooLong(args.description.length);
@@ -67,7 +67,6 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
 
   // Dependency readiness (temporal — after all static validation).
-  pruneRetainedTasks(store, config);
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
   if (!readiness.ok) {
     // The refusal is ALSO held as state. A sentence tells the parent it was
@@ -130,14 +129,14 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       agentName: agent.name,
       description: args.description || `Task: ${agent.name}`,
       lineage: admission.newLineage,
-      ...(modelOverride !== undefined ? { requestedModel: modelOverride } : {}),
+      ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
       ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
       ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
     }, config);
 
     // Fire-and-forget: the lifecycle event owns settlement, the
     // catch owns delivery failure.
-    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(prompt));
+    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(admitted.prompt));
 
     debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,

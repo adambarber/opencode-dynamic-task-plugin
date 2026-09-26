@@ -47,6 +47,12 @@ export function buildToolMap(deps: ToolDeps) {
       },
     });
   const SESSION_ID = tool.schema.string().describe("Background task session ID (ses_...)");
+  // One builder for the two dependency arguments. They are the same schema with
+  // the same meaning — a list of child session ids — and differ only in what
+  // waiting for them MEANS, which is the sentence, not the type. Spelling the
+  // chain twice is how the two arguments stop being the same kind of value.
+  const SESSION_ID_LIST = (description: string) =>
+    tool.schema.array(tool.schema.string()).optional().describe(description);
 
   return {
       dynamic_task: tool({
@@ -59,14 +65,12 @@ export function buildToolMap(deps: ToolDeps) {
             .string()
             .optional()
             .describe(MODEL_ARG_DESCRIPTION),
-          depends_on: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe("Task dependencies — session IDs this task depends on. Each must have completed."),
-          depends_on_settled: tool.schema
-            .array(tool.schema.string())
-            .optional()
-            .describe("Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on."),
+          depends_on: SESSION_ID_LIST(
+            "Task dependencies — session IDs this task depends on. Each must have completed.",
+          ),
+          depends_on_settled: SESSION_ID_LIST(
+            "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
+          ),
         },
         async execute(args, ctx: ToolContext) {
           return executeDynamicTask(deps, args, ctx);

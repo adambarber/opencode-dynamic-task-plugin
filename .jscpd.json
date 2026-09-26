@@ -1,7 +1,7 @@
 {
   "threshold": 0,
   "minLines": 3,
-  "minTokens": 25,
+  "minTokens": 20,
   "reporters": ["console"],
   "ignore": ["**/*.min.*", "**/*.map", "node_modules/**", "dist/**", "coverage/**"]
 }

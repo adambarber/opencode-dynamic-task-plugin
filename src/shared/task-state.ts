@@ -240,7 +240,7 @@ export function withdrawInterruptClaim(
   claimTimeMs: number,
   bounds?: Pick<DynamicTaskConfig, "maxConcurrent">,
 ): boolean {
-  const retained = store.retainedTasks.get(childSessionId);
+  const retained = retainedFor(store, childSessionId);
   if (!retained || retained.state !== "interrupted") return false;
   // >= not >: a successful abort landing in the same millisecond as the
   // claim is still knowledge — the newer (or same-instant) success wins.
@@ -255,14 +255,34 @@ export function withdrawInterruptClaim(
   return true;
 }
 
+/**
+ * The ONE way a retained (settled) record is edited in place. Both halves of
+ * that are load-bearing and neither is the caller's business: a record that is
+ * gone must be a no-op, and a record that changed must publish through the
+ * retained funnel, because the durable ledger is written from that event. A
+ * mutation that skipped the publish left a persisted record disagreeing with the
+ * store — a settled task that comes back wrong after a restart. The caller
+ * supplies the decision and the edit; the lookup and the publish live here.
+ */
+function amendRetained(
+  store: TaskStore,
+  childSessionId: string,
+  amend: (retained: RetainedTaskState) => boolean,
+): boolean {
+  const retained = retainedFor(store, childSessionId);
+  if (retained === undefined) return false; // nothing settled to edit
+  if (!amend(retained)) return false; // the amendment declined itself
+  emitRetainedChange(store);
+  return true;
+}
+
 // Stamp a successful abort landing on a retained record (F-R4): concurrent
 // interruptors observe it through withdrawInterruptClaim's guard.
 export function noteAbortLanded(store: TaskStore, childSessionId: string): boolean {
-  const retained = store.retainedTasks.get(childSessionId);
-  if (!retained) return false;
-  retained.lastAbortAt = Date.now();
-  emitRetainedChange(store);
-  return true;
+  return amendRetained(store, childSessionId, (retained) => {
+    retained.lastAbortAt = Date.now();
+    return true;
+  });
 }
 
 export function createTaskStore(): TaskStore {
@@ -334,7 +354,7 @@ export function transitionState(
   }
 
   // No active entry — reject based on the retained state, if any.
-  const retained = store.retainedTasks.get(childSessionId);
+  const retained = retainedFor(store, childSessionId);
   if (retained) {
     throw new Error(`Invalid transition: terminal state (${retained.state})`);
   }
@@ -345,13 +365,11 @@ export function transitionState(
 // Only a recorded success can be corrected to error: an interrupted or
 // errored task's own abort aftermath must never re-notify the parent.
 export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, "active">): boolean {
-  const retained = store.retainedTasks.get(childSessionId);
-  if (!retained) return false;
-  const allowed: Exclude<TaskState, "active">[] = retained.state === "completed" ? ["error"] : [];
-  if (!allowed.includes(outcome)) return false;
-  retained.state = outcome;
-  emitRetainedChange(store);
-  return true;
+  return amendRetained(store, childSessionId, (retained) => {
+    if (retained.state !== "completed" || outcome !== "error") return false;
+    retained.state = outcome;
+    return true;
+  });
 }
 
 // Continuation revival: a settled task earns a live turn by moving back to
@@ -366,7 +384,7 @@ export function reviveRetainedTask(
   config?: Pick<DynamicTaskConfig, "maxConcurrent">,
   model?: ModelOverride | undefined,
 ): ActiveTaskState {
-  const retained = store.retainedTasks.get(childSessionId);
+  const retained = retainedFor(store, childSessionId);
   if (!retained) {
     throw new Error(`Invalid transition: not found (no task for ${childSessionId})`);
   }
@@ -533,7 +551,7 @@ export function listTasks(store: TaskStore): {
 }
 
 export function findTask(store: TaskStore, childSessionId: string): TaskRecord | null {
-  return store.activeTasks.get(childSessionId) ?? store.retainedTasks.get(childSessionId) ?? null;
+  return store.activeTasks.get(childSessionId) ?? retainedFor(store, childSessionId) ?? null;
 }
 
 // ─── Dependency waits ───────────────────────────────────────────────────
@@ -619,10 +637,29 @@ export function releaseWaitsFor(
 // Transient abort failures are recorded on the retained entry: an
 // interrupted-but-still-live child must be visible, not silently stranded.
 export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
-  const retained = store.retainedTasks.get(childSessionId);
-  if (!retained) return; // already pruned — nothing to annotate
-  retained.abortError = error;
-  emitRetainedChange(store);
+  amendRetained(store, childSessionId, (retained) => {
+    retained.abortError = error;
+    return true;
+  });
+}
+
+// ─── the settled-record primitives ──────────────────────────────────
+// The read, the publish, and the edit. Every function in this module that
+// touches settled history goes through one of these three, which is what makes
+// "a retained record is only ever read here, changed there, and published once"
+// checkable by reading one screen instead of auditing every edge.
+
+/**
+ * The settled (retained) record for a child, or undefined. One accessor because
+ * "what is this child's settled record" is one question with one answer — and
+ * because each call site wrote the lookup with its own idea of what an absent
+ * record MEANS: one edge threw, one returned false, one built a refusal
+ * sentence. The absence signal is declared once here; the policy that answers it
+ * stays with the edge, because an internal rollback and a policy revival
+ * genuinely disagree about a missing record.
+ */
+function retainedFor(store: TaskStore, childSessionId: string): RetainedTaskState | undefined {
+  return store.retainedTasks.get(childSessionId);
 }
 
 function emitRetainedChange(store: TaskStore): void {
@@ -704,16 +741,18 @@ export function dispatchForest(store: TaskStore): DispatchNode[] {
   };
 
   const forest: DispatchNode[] = [];
-  for (const task of records.values()) {
-    if (records.has(task.parentSessionId)) continue;
-    forest.push(grow(task, 0, false, new Set()));
-  }
-  // A record whose parent links form a cycle has no root to be reached from; it
-  // becomes a root of its own rather than going missing from the view.
-  for (const task of records.values()) {
-    if (placed.has(task.childSessionId)) continue;
-    forest.push(grow(task, 0, false, new Set()));
-  }
+  // One root-finding pass, stated once: the two passes differ only in what they
+  // call a root. The first is the honest one — a task whose parent is tracked
+  // belongs under it. The second exists because a record set whose parent links
+  // form a cycle has no root to be reached from, and an unreached record would
+  // go missing from the view; it becomes a root of its own rather than vanish.
+  const pushRoots = (isRoot: (task: TaskRecord) => boolean): void => {
+    for (const task of records.values()) {
+      if (isRoot(task)) forest.push(grow(task, 0, false, new Set()));
+    }
+  };
+  pushRoots((task) => !records.has(task.parentSessionId));
+  pushRoots((task) => !placed.has(task.childSessionId));
   return forest;
 }
 

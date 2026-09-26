@@ -6,7 +6,13 @@ import { truncateText, type NotificationRecord } from "./notify.js";
 import { formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading } from "./liveness.js";
-import { textBlock } from "./text-block.js";
+import { textBlock, present } from "./text-block.js";
+
+// The one thing a settled record can still be told: the server is working on it,
+// so the settlement was premature and its output is not final. Named because it is
+// rendered in more than one status view and must read identically in both.
+const PREMATURE_SETTLEMENT =
+  "The server reports this session still working, so this settlement was premature — the child's output is not final.";
 
 // Stall visibility without clocks-as-decisions: past this age an active turn
 // with no activity renders a warning line. Display only — nothing branches
@@ -159,7 +165,7 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
           : undefined;
   return [
     `Last plugin event: ${formatAge(observed)} ago`,
-    ...(diagnosis ? [diagnosis] : []),
+    ...present(diagnosis),
   ];
 }
 
@@ -173,9 +179,7 @@ export function formatLivenessLines(
       ? activeTurnLines(task, liveness)
       : // A settled record the server still calls busy: the child is working, so
         // the settlement was premature and its output is not final.
-        liveness && hostTurnRunning(liveness)
-        ? ["The server reports this session still working, so this settlement was premature — the child's output is not final."]
-        : []),
+        present(liveness && hostTurnRunning(liveness) ? PREMATURE_SETTLEMENT : undefined)),
   ];
 }
 
@@ -209,16 +213,14 @@ export function formatTaskStatusDetail(
 function activeStatusLines(task: ActiveTaskState): string[] {
   return [
     `Started: ${formatAge(task.startedAt)} ago`,
-    ...(task.lastNotice
-      ? [`Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`]
-      : []),
+    ...present(task.lastNotice && `Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`),
   ];
 }
 
 function settledStatusLines(task: RetainedTaskState): string[] {
   return [
     `Settled: ${formatAge(task.retainedAt)} ago`,
-    ...(task.abortError ? [`Abort error: ${truncateText(task.abortError, 200)}`] : []),
+    ...present(task.abortError && `Abort error: ${truncateText(task.abortError, 200)}`),
   ];
 }
 

@@ -14,3 +14,16 @@
  */
 export const textBlock = (...parts: (string | string[] | undefined)[]): string =>
   parts.flat().filter((part): part is string => part !== undefined).join("\n");
+
+/**
+ * The same absence rule for a renderer that builds an ARRAY of lines instead of
+ * handing them straight to textBlock: a section that is not there contributes no
+ * line, and the array keeps its shape either way.
+ *
+ * `...(cond ? [line] : [])` was the hand-rolled spelling, four times in
+ * task-formatting alone. Each one is the same decision — this section may be
+ * absent — restated as a conditional array literal, which is a shape a reader
+ * has to parse to learn is a decision at all.
+ */
+export const present = (...lines: (string | undefined)[]): string[] =>
+  lines.filter((line): line is string => line !== undefined);

@@ -5,6 +5,7 @@ import { abortSession, errorMessage } from "../shared/session-lifecycle.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
 import { gateLedger } from "../shared/notify.js";
+import { textBlock } from "../shared/text-block.js";
 import {
   transitionState,
   markTurnReplacement,
@@ -108,12 +109,12 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // The turn is dead: fire the parent message as the next user turn.
       // Fire-and-forget like every prompt — the lifecycle event owns
       // settlement, and the prompt-failure path owns delivery failure.
-      const steerText = [
+      const steerText = textBlock(
         "[Parent steer — read before continuing.]",
         "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
         "",
         admitted.prompt,
-      ].join("\n");
+      );
       fireChildPrompt(client, store, {
         childSessionId: sessionId,
         parentSessionId: active.parentSessionId,

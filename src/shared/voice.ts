@@ -10,6 +10,7 @@
 
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease, SettlementVerdict } from "./task-state.js";
+import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
@@ -56,11 +57,11 @@ export const PERMISSION_DENIED = "ERROR: Permission denied.";
 // ─── Spawn ───────────────────────────────────────────────────────────────
 
 export function dependenciesPending(pending: DependencyBlock[]): string {
-  return [
+  return textBlock(
     `ERROR: Dependencies pending: ${pending.map((p) => `${p.id} (${p.state})`).join(", ")}.`,
     "Complete them first (unknown ids are treated as satisfied; depends_on_settled only waits for settlement).",
     "This dispatch is being held for you: when the last dependency clears, the plugin will say so here and you can send it again.",
-  ].join("\n");
+  );
 }
 
 // What a settlement did to the dispatches that were waiting on it. The parent
@@ -68,18 +69,10 @@ export function dependenciesPending(pending: DependencyBlock[]): string {
 // parent would have to learn, and the parent does not have to remember which of
 // its refusals this settlement answers.
 export function waitsReleasedBody(release: WaitRelease): string {
-  const lines: string[] = [];
-  if (release.ready.length > 0) {
-    lines.push(
-      `Your dispatch${release.ready.length === 1 ? "" : "es"} of ${release.ready.map((w) => `"${w.description}"`).join(", ")} can go now — the dependenc${release.ready.length === 1 ? "y has" : "ies have"} completed. Send the same dynamic_task call again.`,
-    );
-  }
-  if (release.dead.length > 0) {
-    lines.push(
-      `Your dispatch${release.dead.length === 1 ? "" : "es"} of ${release.dead.map((w) => `"${w.description}"`).join(", ")} will never run: the dependenc${release.dead.length === 1 ? "y" : "ies"} it waited on finished without completing, and will not run again. Re-plan it against what did land, or drop the dependency.`,
-    );
-  }
-  return lines.join("\n");
+  return textBlock(
+    release.ready.length > 0 ? `Your dispatch${release.ready.length === 1 ? "" : "es"} of ${release.ready.map((w) => `"${w.description}"`).join(", ")} can go now — the dependenc${release.ready.length === 1 ? "y has" : "ies have"} completed. Send the same dynamic_task call again.` : undefined,
+    release.dead.length > 0 ? `Your dispatch${release.dead.length === 1 ? "" : "es"} of ${release.dead.map((w) => `"${w.description}"`).join(", ")} will never run: the dependenc${release.dead.length === 1 ? "y" : "ies"} it waited on finished without completing, and will not run again. Re-plan it against what did land, or drop the dependency.` : undefined,
+  );
 }
 
 export function createFailed(response: unknown): string {
@@ -325,10 +318,10 @@ export function interruptSubtreeReport(
   rootSessionId: string,
   members: ReadonlyArray<{ sessionId: string; outcome: InterruptOutcome }>,
 ): string {
-  return [
+  return textBlock(
     `Stopped ${members.length} task(s) in the subtree rooted at ${rootSessionId}:`,
-    ...members.map(({ sessionId, outcome }) => `- ${interruptReport(sessionId, outcome)}`),
-  ].join("\n");
+    members.map(({ sessionId, outcome }) => `- ${interruptReport(sessionId, outcome)}`),
+  );
 }
 
 export function interruptScopeRefused(value: string): string {

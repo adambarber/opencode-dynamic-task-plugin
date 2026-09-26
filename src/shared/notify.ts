@@ -9,6 +9,7 @@
 // "never" are the same call from inside the gate.
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
+import { textBlock } from "./text-block.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -431,14 +432,14 @@ export function formatParentNotification(
     ? `${full.slice(0, NOTIFICATION_MAX_CHARS)}... [truncated — full output via task_result(session_id=${state.childSessionId})]`
     : full;
   const body = shape.bodyLabel ? `${shape.bodyLabel}: ${safeResult}` : safeResult;
-  return [
+  return textBlock(
     shape.tag,
     shape.header,
     `Session: ${state.childSessionId}`,
     `Description: ${state.description}`,
     body,
-    ...(shape.tail ? [shape.tail] : []),
-  ].join("\n");
+    shape.tail || undefined,
+  );
 }
 
 export function truncateText(text: string, maxChars = 1200): string {

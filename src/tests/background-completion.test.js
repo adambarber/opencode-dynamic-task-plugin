@@ -8,143 +8,29 @@
  * plugin arms no timers, and every task settles exactly once by event.
  */
 
-import { describe, it, beforeEach, afterEach } from "node:test";
+import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert";
-import { mkdtempSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { resetAgentCache } from "../../dist/shared/admission.js";
-import { clearNotifyLedger } from "../../dist/shared/notify.js";
-import { resetQuestionSessions } from "../../dist/shared/question-handling.js";
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Harness state must live in a fresh temp project dir, never CWD or a
-// shared path — see the ledger-scoping regression suite.
-const tmpProjectDir = () => mkdtempSync(join(tmpdir(), `dt-harness-${Date.now()}-${Math.floor(Math.random() * 1e6)}-`));
-
-// --- Production-shaped mock client -----------------------------------------
-// session.prompt routes by marker: parent notifications carry
-// [dynamic-task-notify]; everything else is child work.
-
-// Child session ids must be unique across the whole file: the notify gate
-// dedups per child for the process lifetime (exactly-once is global), so
-// per-mock counters would make later tests' first settlement look like a
-// duplicate. Real hosts never reuse session ids; the mock must not either.
-let globalChildId = 1;
-
-function createMockClient() {
-  const sessions = new Map();
-  const notifications = [];
-  const childPrompts = [];
-
-  return {
-    _sessions: sessions,
-    _notifications: notifications,
-    _childPrompts: childPrompts,
-    app: {
-      agents: async () => [{ name: "explore", mode: "subagent" }],
-      log: async () => {},
-    },
-    session: {
-      create: async ({ body }) => {
-        const id = `ses_bg_${globalChildId++}`;
-        sessions.set(id, body);
-        return { id };
-      },
-      prompt: async ({ path, body }) => {
-        const text = body?.parts?.[0]?.text || "";
-        if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
-          notifications.push({ to: path.id, message: text });
-        } else {
-          childPrompts.push({ to: path.id, message: text });
-        }
-        return { ok: true };
-      },
-      messages: async () => [
-        { role: "assistant", parts: [{ type: "text", text: "COMPLETED_OK" }] },
-      ],
-      get: async ({ path }) => {
-        if (!sessions.has(path.id)) {
-          const error = new Error(`Session "${path.id}" not found.`);
-          error.status = 404;
-          throw error;
-        }
-        // Production session.get() carries no status field.
-        return {};
-      },
-      abort: async () => ({ ok: true }),
-    },
-  };
-}
-
-async function setupHarness() {
-  const client = createMockClient();
-  resetAgentCache();
-  clearNotifyLedger();
-  resetQuestionSessions();
-  const mod = await import("../../dist/index.js");
-  const pluginFn = mod.default || mod;
-  const result = await pluginFn({ client, directory: tmpProjectDir() }, {});
-  assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
-  return { client, tool: result.tool, fireEvent: (event) => result.event({ event }) };
-}
-
-function extractSessionId(spawnOutput) {
-  const match = spawnOutput.match(/Session: (\S+)/);
-  assert.ok(match, `spawn output must contain a session id, got: ${spawnOutput}`);
-  return match[1];
-}
-
-// Rendered ages come back as "45s" / "12m" / "1h 5m" — parse them back to
-// seconds so a test can compare the two clocks instead of eyeballing text.
-function renderedAgeSeconds(detail, label) {
-  const match = detail.match(new RegExp(`^${label}: (?:(\\d+)h )?(?:(\\d+)m )?(\\d+)s ago$`, "m"));
-  assert.ok(match, `"${label}" must render an age. Got: ${detail}`);
-  return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3]);
-}
-
-// --- Tests -----------------------------------------------------------------
+import { events, renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 
 describe("Background Task Settlement", () => {
   let harness;
-  let spawned;
 
   beforeEach(async () => {
     harness = await setupHarness();
-    spawned = [];
   });
 
-  afterEach(async () => {
-    for (const id of spawned) {
-      try {
-        await harness.tool.task_interrupt.execute({ session_id: id });
-      } catch {
-        // Already settled — cleanup is best-effort.
-      }
-    }
-    spawned = [];
-  });
-
-  async function spawn(parentId, description = "bg task") {
-    const output = await harness.tool.dynamic_task.execute(
-      {
-        description,
-        subagent_type: "explore",
-        prompt: "Return DONE",
-      },
-      { sessionID: parentId },
-    );
-    assert.ok(output.includes("in background"), `expected spawn ack, got: ${output}`);
-    const childId = extractSessionId(output);
-    spawned.push(childId);
-    return childId;
-  }
+  // Children are released by the harness funnel (see support/harness.js), so
+  // no test can leak one by forgetting to register it.
+  const spawn = async (parentId, description = "bg task") => {
+    const { out, id } = await harness.spawn({ description }, { sessionID: parentId });
+    assert.ok(out.includes("in background"), `expected spawn ack, got: ${out}`);
+    return id;
+  };
 
   async function expectSingleSuccessNotification(parentId, description, buildEvent) {
     const childId = await spawn(parentId, description);
     await harness.fireEvent(buildEvent(childId));
-    const notes = harness.client._notifications;
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, 1, "exactly 1 completion notification");
     assert.ok(
       notes[0].message.includes("Background task completed successfully"),
@@ -157,11 +43,11 @@ describe("Background Task Settlement", () => {
     harness.client.app.log = () => new Promise(() => {});
     const childId = await spawn("parent_hung_log", "hung log task");
     const settled = await Promise.race([
-      harness.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } }).then(() => true),
+      harness.fireEvent(events.idle(childId)).then(() => true),
       sleep(2000).then(() => false),
     ]);
     assert.ok(settled, "the event head must not serialize on the log round-trip");
-    assert.strictEqual(harness.client._notifications.length, 1, "settlement still notifies");
+    assert.strictEqual(harness.client._state.notifications.length, 1, "settlement still notifies");
   });
 
   it("spawns return immediately with a session id", async () => {
@@ -173,15 +59,12 @@ describe("Background Task Settlement", () => {
 
   it("idle event notifies the parent with the child result", async () => {
     for (const parentId of ["parent_001", "parent_002", "parent_003"]) {
-      const before = harness.client._notifications.length;
+      const before = harness.client._state.notifications.length;
       const childId = await spawn(parentId, `Quick test ${parentId}`);
 
-      await harness.fireEvent({
-        type: "session.idle",
-        properties: { sessionID: childId, status: "idle" },
-      });
+      await harness.fireEvent(events.idle(childId));
 
-      const notes = harness.client._notifications;
+      const notes = harness.client._state.notifications;
       assert.strictEqual(notes.length, before + 1, `exactly 1 new notification [${childId}]`);
       const note = notes[notes.length - 1];
       assert.strictEqual(note.to, parentId, `must notify parent [${childId}]`);
@@ -192,19 +75,11 @@ describe("Background Task Settlement", () => {
   });
 
   it("session.status idle triggers completion", async () => {
-    await expectSingleSuccessNotification("parent_status", "Status event test", (childId) => ({
-      type: "session.status",
-      properties: { sessionID: childId, status: "idle" },
-    }));
+    await expectSingleSuccessNotification("parent_status", "Status event test", (childId) => (events.status(childId)));
   });
 
   it("sync session.updated idle triggers completion", async () => {
-    await expectSingleSuccessNotification("parent_sync", "Sync event test", (childId) => ({
-      type: "sync",
-      name: "session.updated.1",
-      data: { info: { status: "idle" } },
-      properties: { sessionID: childId },
-    }));
+    await expectSingleSuccessNotification("parent_sync", "Sync event test", (childId) => (events.updated(childId)));
   });
 
   it("multiple rapid completions each notify", async () => {
@@ -214,13 +89,10 @@ describe("Background Task Settlement", () => {
     }
 
     for (const { child } of children) {
-      await harness.fireEvent({
-        type: "session.idle",
-        properties: { sessionID: child, status: "idle" },
-      });
+      await harness.fireEvent(events.idle(child));
     }
 
-    const notes = harness.client._notifications;
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, 3, "3 notifications for 3 completions");
     for (const { parent, child } of children) {
       const note = notes.find((n) => n.message.includes(child));
@@ -232,14 +104,9 @@ describe("Background Task Settlement", () => {
   it("error status yields error-kind notification", async () => {
     const childId = await spawn("err_parent", "Error test");
 
-    await harness.fireEvent({
-      type: "sync",
-      name: "session.updated.1",
-      data: { info: { status: { type: "error" } } },
-      properties: { sessionID: childId },
-    });
+    await harness.fireEvent(events.errorUpdate(childId));
 
-    const notes = harness.client._notifications;
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, 1, "exactly 1 notification");
     assert.match(notes[0].message, /ended with an error/i, "error-kind notification");
     assert.ok(!notes[0].message.includes("completed successfully"), "must not be a success notification");
@@ -247,14 +114,11 @@ describe("Background Task Settlement", () => {
 
   it("deleted session is a failure, never a success", async () => {
     const childId = await spawn("del_parent", "Deletion test");
-    const before = harness.client._notifications.length;
+    const before = harness.client._state.notifications.length;
 
-    await harness.fireEvent({
-      type: "session.deleted",
-      properties: { info: { id: childId } },
-    });
+    await harness.fireEvent(events.deleted(childId));
 
-    const notes = harness.client._notifications;
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, before + 1);
     assert.match(notes[notes.length - 1].message, /ended with an error/i, "deletion must read as failure");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
@@ -264,12 +128,9 @@ describe("Background Task Settlement", () => {
   it("repeated idle events settle exactly once", async () => {
     const childId = await spawn("race_parent", "Race test");
     for (let i = 0; i < 3; i++) {
-      await harness.fireEvent({
-        type: "session.idle",
-        properties: { sessionID: childId, status: "idle" },
-      });
+      await harness.fireEvent(events.idle(childId));
     }
-    const notes = harness.client._notifications;
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, 1, "first event wins; later ones are no-ops");
     assert.match(notes[0].message, /completed/i);
   });
@@ -277,26 +138,26 @@ describe("Background Task Settlement", () => {
   it("the plugin arms no timers: silence follows a spawn until an event arrives", async () => {
     const childId = await spawn("patient_parent", "No-timer test");
     await sleep(250);
-    assert.strictEqual(harness.client._notifications.length, 0, "nothing settles without an event");
+    assert.strictEqual(harness.client._state.notifications.length, 0, "nothing settles without an event");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("active"), `task remains tracked and active. Got: ${detail}`);
   });
 
   it("a late error after success escalates the record and notifies once", async () => {
     const childId = await spawn("escalate_parent", "Escalation test");
-    await harness.fireEvent({ type: "session.idle", properties: { sessionID: childId, status: "idle" } });
-    assert.strictEqual(harness.client._notifications.length, 1, "success first");
+    await harness.fireEvent(events.idle(childId));
+    assert.strictEqual(harness.client._state.notifications.length, 1, "success first");
 
-    await harness.fireEvent({ type: "session.error", properties: { sessionID: childId, status: "error" } });
-    const notes = harness.client._notifications;
+    await harness.fireEvent(events.error(childId));
+    const notes = harness.client._state.notifications;
     assert.strictEqual(notes.length, 2, "the contradicting failure is reported");
     assert.match(notes[1].message, /ended with an error/i);
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `record escalates completed→error. Got: ${detail}`);
 
     // A second error event cannot re-notify or regress the record further.
-    await harness.fireEvent({ type: "session.error", properties: { sessionID: childId, status: "error" } });
-    assert.strictEqual(harness.client._notifications.length, 2, "escalation happens once");
+    await harness.fireEvent(events.error(childId));
+    assert.strictEqual(harness.client._state.notifications.length, 2, "escalation happens once");
   });
 
   it("a working child's own events count as recent activity", async () => {
@@ -326,13 +187,10 @@ describe("Background Task Settlement", () => {
 
   it("ignores events for untracked sessions", async () => {
     await spawn("parent_untracked", "Untracked test");
-    const before = harness.client._notifications.length;
+    const before = harness.client._state.notifications.length;
 
-    await harness.fireEvent({
-      type: "session.idle",
-      properties: { sessionID: "nonexistent_session", status: "idle" },
-    });
+    await harness.fireEvent(events.idle("nonexistent_session"));
 
-    assert.strictEqual(harness.client._notifications.length, before, "no notification for untracked session");
+    assert.strictEqual(harness.client._state.notifications.length, before, "no notification for untracked session");
   });
 });

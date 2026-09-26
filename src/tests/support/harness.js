@@ -324,16 +324,31 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     logs: () => state.logs,
     aborted: () => state.aborted,
     /**
-     * Settle a child and hand back the single notice the parent received.
+     * Deliver a terminal event and return the single notice it must produce.
      * Exactly-once delivery is part of the contract, so the count is asserted
      * here rather than repeated at every call site. The sleep is for CI
      * scheduling, not the contract: delivery is a microtask away.
      */
-    async settledNotice(id) {
-      await harness.settle(id);
+    async noticeAfter(event) {
+      await harness.fireEvent(event);
       await sleep(30);
-      assert.strictEqual(state.notifications.length, 1, "settlement delivers exactly one notice");
+      assert.strictEqual(state.notifications.length, 1, "a terminal event notifies exactly once");
       return state.notifications[0].message;
+    },
+    /**
+     * Settle a child and hand back the single notice the parent received — the
+     * common case of noticeAfter, where the terminal event is the idle event.
+     */
+    async settledNotice(id) {
+      return harness.noticeAfter(events.idle(id));
+    },
+    /**
+     * The admission path's own call: the tool's answer, with no id and nothing
+     * to clean up. A refusal test states the whole request, so any default here
+     * would fill in the very field under test.
+     */
+    trySpawn(args, ctx = { sessionID: "p1" }) {
+      return harness.tool.dynamic_task.execute(args, ctx);
     },
     /**
      * Spawn one child. Returns the id, the spawn confirmation, and the child's
@@ -346,7 +361,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
         ctx,
       );
       const id = extractSessionId(out);
-      spawned.push(id);
+      if (id) spawned.push(id);
       return { out, id, c: bindChild(harness, id, args, ctx) };
     },
     /**
@@ -400,6 +415,18 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: "p1" }) {
 export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: "p1" } } = {}) {
   const h = await setupHarness(harness);
   const { id, out, c } = await h.spawn(spawn, ctx);
+  return { h, c, id, out };
+}
+
+/**
+ * Boot, spawn one child, and settle it — the precondition for reading a
+ * child's settled state. Naming it keeps a test from spelling out the same
+ * three steps to ask the same question.
+ */
+export async function withSettledChild({ harness = {}, spawn = {}, ctx = { sessionID: "p1" } } = {}) {
+  const h = await setupHarness(harness);
+  const { id, out, c } = await h.spawn(spawn, ctx);
+  await h.settle(id);
   return { h, c, id, out };
 }
 

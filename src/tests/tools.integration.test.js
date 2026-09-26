@@ -12,7 +12,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withChild } from './support/harness.js';
+import {
+  deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir,
+  withChild, withSettledChild,
+} from './support/harness.js';
 
 // --- Tests -----------------------------------------------------------------
 
@@ -20,45 +23,30 @@ describe("dynamic_task validation", () => {
 
   it("rejects missing subagent_type with the available list", async () => {
     const h = await setupHarness();
-    const out = await h.tool.dynamic_task.execute(
-    { description: "task t", prompt: "hi" },
-    { sessionID: "p1" },
-    );
+    const out = await h.trySpawn({ description: "task t", prompt: "hi" });
     assert.ok(out.includes("No subagent_type"), `got: ${out}`);
     assert.ok(out.includes("explore"), `lists agents. got: ${out}`);
     });
 
   it("rejects unknown agents", async () => {
     const h = await setupHarness();
-    const out = await h.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "nope", prompt: "hi" },
-    { sessionID: "p1" },
-    );
+    const out = await h.trySpawn({ description: "task t", subagent_type: "nope", prompt: "hi" });
     assert.ok(out.includes('Agent "nope" not found'), `got: ${out}`);
     });
 
   it("rejects missing and oversized prompts", async () => {
     const h = await setupHarness();
-    const missing = await h.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "explore" },
-    { sessionID: "p1" },
-    );
+    const missing = await h.trySpawn({ description: "task t", subagent_type: "explore" });
     assert.ok(missing.includes("Invalid prompt"), `got: ${missing}`);
 
-    const long = await h.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "explore", prompt: "x".repeat(100001) },
-    { sessionID: "p1" },
-    );
+    const long = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "x".repeat(100001) });
     assert.ok(long.includes("Prompt too long"), `got: ${long}`);
     });
 
   it("rejects bare model ids at admission, before creating a session", async () => {
     const h = await setupHarness();
     const before = h.client._state.sessions.size;
-    const out = await h.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" },
-    { sessionID: "p1" },
-    );
+    const out = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" });
     assert.ok(out.includes("Invalid model"), `got: ${out}`);
     assert.ok(out.includes("providerID/modelID"), `names the shape. got: ${out}`);
     assert.ok(out.includes("GLM-5.3-Flash"), `names the suspect. got: ${out}`);
@@ -75,26 +63,19 @@ describe("dynamic_task validation", () => {
 
   it("rejects overlong descriptions at admission", async () => {
     const h = await setupHarness();
-    const out = await h.tool.dynamic_task.execute(
-    { description: "x".repeat(3000), subagent_type: "explore", prompt: "hi" },
-    { sessionID: "p1" },
-    );
+    const out = await h.trySpawn({ description: "x".repeat(3000), subagent_type: "explore", prompt: "hi" });
     assert.ok(out.includes("Description too long"), `labels stay short. got: ${out}`);
     });
 
   it("task_list names pruned expiries", async () => {
-    const { h, c, id } = await withChild({ harness: { options: { retainedTaskTtlMs: 1 } } });
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild({ harness: { options: { retainedTaskTtlMs: 1 } } });
     await sleep(5);
     const list = await h.tool.task_list.execute({});
     assert.ok(list.includes("Pruned: 1 expired"), `expiry is visible. got: ${list}`); });
 
   it("rejects blocked agents when the operator configures the blocklist", async () => {
     const h = await setupHarness({ options: { blockedAgents: ["general"] } });
-    const out = await h.tool.dynamic_task.execute(
-    { description: "task t", subagent_type: "general", prompt: "hi" },
-    { sessionID: "p1" },
-    );
+    const out = await h.trySpawn({ description: "task t", subagent_type: "general", prompt: "hi" });
     assert.ok(out.includes("blocked"), `got: ${out}`);
     });
 
@@ -265,8 +246,7 @@ describe("task_continue branches", () => {
     assert.strictEqual(h.notices().length, 1, "the live turn still settles"); });
 
   it("revives a settled task and the new turn settles again", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     assert.strictEqual(h.notices().length, 1, "first turn settles");
 
     const out = await c.steer("summarize");
@@ -288,8 +268,7 @@ describe("task_continue branches", () => {
     assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`); });
 
   it("a revived turn does not wear the previous turn's notification", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     await sleep(10);
     await c.steer("again");
     const status = await c.status();
@@ -310,8 +289,7 @@ describe("task_continue branches", () => {
     });
 
   it("a bare model on continue fails without touching the task", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     const before = h.client._state.promptBodies.length;
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "bare-id" });
     assert.ok(out.includes("Invalid model"), `got: ${out}`);
@@ -460,8 +438,7 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(!summary.includes("suggests: idle"), `no invented status. got: ${summary}`); });
 
   it("task_result reports settled state with no advisory block", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     const summary = await c.result();
     assert.ok(summary.includes("Status: completed"), `got: ${summary}`);
     assert.ok(!summary.includes("Live inference"), `nothing to contradict once settled. got: ${summary}`); });
@@ -480,8 +457,7 @@ describe("task_result and task_interrupt paths", () => {
     });
 
   it("interrupt on a settled task reports the settled state, not a fresh interrupt", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     const done = await c.interrupt();
     assert.ok(done.includes("already settled as completed"), `truthful report. got: ${done}`);
     assert.ok(!/^Session .* interrupted\.$/.test(done), `must not claim a fresh interrupt. got: ${done}`);
@@ -599,8 +575,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     });
 
   it("repeated terminal events notify exactly once", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     await h.settle(id);
     await h.fireEvent(events.status(id));
     assert.strictEqual(h.notices().length, 1, "one settled turn, one notice"); });
@@ -641,8 +616,7 @@ describe("question gate: child questions settle", () => {
     assert.ok(calls[0].reason.includes("task_continue"), `got: ${calls[0].reason}`); });
 
   it("settled task questions are rejected with settled guidance", async () => {
-    const { h, c, id } = await withChild();
-    await h.settle(id);
+    const { h, c, id } = await withSettledChild();
     await h.fireEvent(events.question(id, [{ text: "yes" }], { id: "q3" }));
     const calls = h.questionCalls();
     assert.strictEqual(calls.length, 1);
@@ -758,10 +732,7 @@ describe("admission dependencies", () => {
     const h = await setupHarness();
     const a = await h.spawn({ description: "dep task" });
 
-    const refused = await h.tool.dynamic_task.execute(
-    { description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] },
-    { sessionID: "p1" },
-    );
+    const refused = await h.trySpawn({ description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] });
     assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
     assert.ok(refused.includes(a.id));
 
@@ -775,10 +746,7 @@ describe("admission dependencies", () => {
     const a = await h.spawn({ description: "dep task" });
     await h.fireEvent(events.error(a.id));
 
-    const refused = await h.tool.dynamic_task.execute(
-    { description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] },
-    { sessionID: "p1" },
-    );
+    const refused = await h.trySpawn({ description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [a.id] });
     assert.ok(refused.includes("Dependencies pending"), `got: ${refused}`);
     assert.ok(refused.includes(`${a.id} (error)`), `names the terminal state. got: ${refused}`);
 
@@ -903,11 +871,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("idle terminal event over an errored message stream notifies error, not success", async () => {
     const h = await setupHarness({ hooks: { messages: erroredMessages } });
     const { id, c } = await h.spawn({ description: "A1 success-status axis" });
-    await h.fireEvent(events.idle(id, {}));
-    await sleep(30);
-
-    assert.strictEqual(h.notices().length, 1, "exactly one parent notification");
-    const note = h.noticeBodies()[0];
+    const note = await h.noticeAfter(events.idle(id, {}));
     assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
     assert.ok(note.includes("Too Many Requests"), `must carry provider detail. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
@@ -919,11 +883,9 @@ describe("outcome correctness: failed turns never report success", () => {
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await setupHarness({ hooks: { messages: () => [] } });
     const { id, c } = await h.spawn({ description: "err evt" });
-    await h.fireEvent(events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }));
-    await sleep(30);
-
-    assert.strictEqual(h.notices().length, 1);
-    const note = h.noticeBodies()[0];
+    const note = await h.noticeAfter(
+      events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
+    );
     assert.ok(note.includes("ended with an error"), `got: ${note}`);
     });
 
@@ -945,10 +907,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("deleted session with stale idle status notifies error, never success", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "vanishing child" });
-    await h.fireEvent(events.deleted(id, { info: { status: "idle" } }));
-    await sleep(30);
-    assert.strictEqual(h.notices().length, 1);
-    const note = h.noticeBodies()[0];
+    const note = await h.noticeAfter(events.deleted(id, { info: { status: "idle" } }));
     assert.ok(note.includes("ended with an error"), `vanished session is a failure. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     const status = await c.status();
@@ -976,10 +935,8 @@ describe("outcome correctness: failed turns never report success", () => {
     assert.ok(status.includes("active"), `retryable failure must not settle. got: ${status}`);
     assert.strictEqual(h.notices().length, 0, "no error notification for a retryable blip");
 
-    await h.settle(id);
-    await sleep(30);
-    assert.strictEqual(h.notices().length, 1, "the genuine terminal event settles it");
-    assert.ok(h.noticeBodies()[0].includes("completed successfully"));
+    const note = await h.settledNotice(id);
+    assert.ok(note.includes("completed successfully"));
     });
 
   it("a revived turn is never suppressed by its predecessor's late retry", async () => {
@@ -1075,11 +1032,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("clean completions still report success unchanged", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "clean" });
-    await h.settle(id);
-    await sleep(30);
-
-    assert.strictEqual(h.notices().length, 1);
-    const note = h.noticeBodies()[0];
+    const note = await h.settledNotice(id);
     assert.ok(note.includes("completed successfully"), `got: ${note}`);
     assert.ok(note.includes("COMPLETED_OK"), `carries assistant text. got: ${note}`);
     });
@@ -1087,11 +1040,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("a deleted session settles as error, never as success", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "deleted child" });
-    await h.fireEvent(events.deleted(id));
-    await sleep(30);
-
-    assert.strictEqual(h.notices().length, 1);
-    const note = h.noticeBodies()[0];
+    const note = await h.noticeAfter(events.deleted(id));
     assert.ok(note.includes("ended with an error"), `deletion is a failure. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     });
@@ -1103,10 +1052,7 @@ describe("spawn resilience: no untracked child survives a failure", () => {
     const first = await h.spawn({ description: "one" });
     const before = new Set(h.client._state.sessions);
 
-    const second = await h.tool.dynamic_task.execute(
-    { description: "two", subagent_type: "explore", prompt: "hi" },
-    { sessionID: "p1" },
-    );
+    const second = await h.trySpawn({ description: "two", subagent_type: "explore", prompt: "hi" });
     assert.ok(/cannot run more than|cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
 
     // Orphan-free invariant: any session the rejection created must be

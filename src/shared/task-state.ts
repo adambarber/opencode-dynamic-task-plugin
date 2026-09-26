@@ -22,6 +22,7 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
+import type { LedgerChange } from "./session-lifecycle.js";
 import type { ConcurrencyConfig, DynamicTaskConfig } from "./config.js";
 import { evictOldest } from "./bounded-map.js";
 import type { DependencyBlock } from "./admission.js";
@@ -235,13 +236,20 @@ export interface TaskStore {
    */
   waits: Map<string, DependencyWait>;
   // Durable-state observer (Task 06): invoked after retained entries change.
-  onRetainedChange?: (() => void) | undefined;
+  onRetainedChange?: LedgerChangeSink | undefined;
   // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
   // a running task — the set of what a crash would leave behind. Separate from
   // onRetainedChange because the two halves persist for different reasons, and
   // joined here so a settlement writes the whole file exactly once.
-  onActiveChange?: (() => void) | undefined;
+  onActiveChange?: LedgerChangeSink | undefined;
 }
+
+/**
+ * How the store tells its durable writer WHAT changed. Named once because the two
+ * observers share a shape and a reason, and a reader who meets the signature
+ * spelled out twice has to work out whether the halves really are one contract.
+ */
+export type LedgerChangeSink = (changes: readonly LedgerChange[]) => void;
 
 // The one write path into the running set. Every structural change to a live
 // task goes through here, so the durable ledger has exactly one place to learn
@@ -252,12 +260,12 @@ export interface TaskStore {
 // disk anyway (durableActiveTask), because a fresh process cannot verify them.
 function setActive(store: TaskStore, childSessionId: string, record: ActiveTaskState): void {
   store.activeTasks.set(childSessionId, record);
-  store.onActiveChange?.();
+  store.onActiveChange?.([{ kind: "running", id: childSessionId, record }]);
 }
 
 function removeActive(store: TaskStore, childSessionId: string): void {
   store.activeTasks.delete(childSessionId);
-  store.onActiveChange?.();
+  store.onActiveChange?.([{ kind: "stopped", id: childSessionId }]);
 }
 
 // State machine (the one true lifecycle matrix). Active tasks move to a terminal
@@ -451,7 +459,7 @@ export function transitionState(
           const retained = retainedRecord(active, to, Date.now());
     removeActive(store, childSessionId);
     store.retainedTasks.set(childSessionId, retained);
-    emitRetainedChange(store);
+    emitRetainedChange(store, { kind: "settled", id: childSessionId, record: retained });
     return { state: to, completed: true, task: retained };
   }
 
@@ -636,9 +644,13 @@ export function pruneRetainedTasks(
 ): number {
   const now = Date.now();
   let dropped = 0;
+  // Named, not counted: the ledger write says which ids it forgot, so a
+  // forgotten task leaves the SHARED file and not merely this process's view.
+  const forgotten: LedgerChange[] = [];
   for (const [id, task] of store.retainedTasks) {
     if (now - task.retainedAt >= config.retainedTaskTtlMs) {
       store.retainedTasks.delete(id);
+      forgotten.push({ kind: "forgotten", id });
       dropped++;
     }
   }
@@ -646,9 +658,10 @@ export function pruneRetainedTasks(
     const oldest = oldestRetainedId(store);
     if (oldest === null) break;
     store.retainedTasks.delete(oldest);
+    forgotten.push({ kind: "forgotten", id: oldest });
     dropped++;
   }
-  if (dropped > 0) emitRetainedChange(store);
+  if (forgotten.length > 0) emitRetainedChange(store, ...forgotten);
   return dropped;
 }
 
@@ -786,8 +799,9 @@ function retainedFor(store: TaskStore, childSessionId: string): RetainedTaskStat
   return store.retainedTasks.get(childSessionId);
 }
 
-function emitRetainedChange(store: TaskStore): void {
-  store.onRetainedChange?.();
+/** The one retained-write funnel: it states WHAT moved, not the resulting map. */
+function emitRetainedChange(store: TaskStore, ...changes: LedgerChange[]): void {
+  store.onRetainedChange?.(changes);
 }
 
 // Durability boundary: hydrate entries already validated by the ledger
@@ -806,10 +820,17 @@ function hydrate<T extends ActiveTaskState | RetainedTaskState>(
   records: Map<string, T>,
   place: (id: string, record: T) => void,
   outrankedBy: Map<string, ActiveTaskState | RetainedTaskState>,
+  superseded: string[] = [],
 ): number {
   let restored = 0;
   for (const [id, record] of records) {
-    if (outrankedBy.has(id)) continue;
+    if (outrankedBy.has(id)) {
+      // Declined, not placed — and the caller must be able to SAY so, or the
+      // entry stays in the shared file forever: this process will never place
+      // it, never settle it, and never claim it.
+      superseded.push(id);
+      continue;
+    }
     place(id, record);
     restored++;
   }
@@ -840,14 +861,47 @@ export function isRunning(store: TaskStore, childSessionId: string): boolean {
  * about work this process starts, and these tasks are already running
  * server-side. Over-cap actives block new admissions until they settle.
  */
-export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
-  const restored = hydrate(records, (id, record) => void store.activeTasks.set(id, record), store.retainedTasks);
-  if (restored > 0) store.onActiveChange?.();
+/**
+ * The one boot restore, for either half of the ledger.
+ *
+ * Three things are true of both halves and none of them is worth stating twice:
+ * placements are collected AS they happen (so there is no second pass over the
+ * records and no cast), an entry outranked by the other half is reported rather
+ * than left behind, and N placements become ONE write. A boot that wrote per
+ * record would read the shared file N times for no gain.
+ */
+function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
+  records: Map<string, T>,
+  outrankedBy: Map<string, ActiveTaskState | RetainedTaskState>,
+  place: (id: string, record: T, changes: LedgerChange[]) => void,
+  fire: LedgerChangeSink | undefined,
+): number {
+  const changes: LedgerChange[] = [];
+  const superseded: string[] = [];
+  const restored = hydrate(records, (id, record) => place(id, record, changes), outrankedBy, superseded);
+  for (const id of superseded) changes.push({ kind: "stopped", id });
+  if (changes.length > 0) fire?.(changes);
   return restored;
 }
 
 /**
- * The settled half of a boot restore, with the same one-write shape.
+ * The running half, restored as running tasks. Over-cap actives block new
+ * admissions until they settle.
+ */
+export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
+  return restoreInto(
+    records,
+    store.retainedTasks,
+    (id, record, changes) => {
+      store.activeTasks.set(id, record);
+      changes.push({ kind: "running", id, record });
+    },
+    store.onActiveChange,
+  );
+}
+
+/**
+ * The settled half, with the same one-write shape.
  *
  * `pruneIfBounded` is what stops this being a copy of the file: the cap can drop
  * a record, and a record the running half already holds is skipped, so the
@@ -858,25 +912,40 @@ export function restoreRetained(
   records: Map<string, RetainedTaskState>,
   maxEntries: number = DEFAULT_CONFIG.retainedTaskMaxEntries,
 ): number {
-  const restored = hydrate(
+  return restoreInto(
     records,
-    (id, record) => {
-      store.retainedTasks.set(id, pruneIfBounded(store, record, maxEntries));
-    },
     store.activeTasks,
+    (id, record, changes) => {
+      // The cap's drop is named rather than left inside `pruneIfBounded`, which
+      // has no way to hand it back: a record it drops must leave the shared file
+      // too, and "this process no longer has it" is not the same claim.
+      const dropped = pruneIfBounded(store, record, maxEntries);
+      store.retainedTasks.set(id, dropped.kept);
+      if (dropped.forgotten !== null) changes.push({ kind: "forgotten", id: dropped.forgotten });
+      changes.push({ kind: "settled", id, record: dropped.kept });
+    },
+    store.onRetainedChange === undefined
+      ? undefined
+      : (changes) => emitRetainedChange(store, ...changes),
   );
-  if (restored > 0) emitRetainedChange(store);
-  return restored;
 }
 
 // Restored entries bypass the runtime mutation choke points, so the cap is
 // enforced here (tenet: the cap cannot be escaped by any state path).
-function pruneIfBounded(store: TaskStore, record: RetainedTaskState, maxEntries: number): RetainedTaskState {
+function pruneIfBounded(
+  store: TaskStore,
+  record: RetainedTaskState,
+  maxEntries: number,
+): { kept: RetainedTaskState; forgotten: string | null } {
+  let forgotten: string | null = null;
   if (store.retainedTasks.size >= maxEntries) {
     const oldestId = oldestRetainedId(store);
-    if (oldestId) store.retainedTasks.delete(oldestId);
+    if (oldestId) {
+      store.retainedTasks.delete(oldestId);
+      forgotten = oldestId;
+    }
   }
-  return record;
+  return { kept: record, forgotten };
 }
 
 export function oldestRetainedId(store: TaskStore): string | null {

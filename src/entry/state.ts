@@ -5,7 +5,8 @@ import type { DynamicTaskConfig } from "../shared/config.js";
 import { normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
-import { loadTaskLedger, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
+import type { LedgerChange } from "../shared/session-lifecycle.js";
+import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { hostTurnRunning, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
@@ -58,12 +59,20 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // One writer for the whole file. Retained records and owed notices live in one
   // document, so they are written together: a persist that could update one and
   // lose the other is the same deafness this file exists to prevent.
-  const persistLedger = () => {
+  const persistLedger = (changes: readonly LedgerChange[]) => {
+    if (changes.length === 0) return;
     try {
-      saveTaskLedger(
-        { retained: store.retainedTasks, active: store.activeTasks, pending: getPendingDeliveries() },
-        ledgerPath,
-      );
+      // Re-read, apply, write. The read is the price of not being the process
+      // that deletes someone else's running task: this file is shared by every
+      // opencode process in the project, and a write that carried this process's
+      // whole private view would silently erase the others' records. See
+      // `mergeLedgerChange` for the policy and the ruling behind it.
+      //
+      // A ledger that cannot be read is treated as the one it was before the
+      // change rather than as an invitation to write a fresh slate over another
+      // process's children.
+      const current = loadTaskLedger(ledgerPath);
+      saveTaskLedger(mergeLedgerChange(current, changes), ledgerPath);
     } catch (error) {
       // Swallow so a durable-state failure can never break control flow — and
       // RECORD it, because silence here is the worst possible answer. The

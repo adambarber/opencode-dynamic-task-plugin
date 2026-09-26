@@ -17,7 +17,7 @@ import { answerMatches, answerSays } from "./support/assertions.js";
 import { bootOn, settledOnDisk, waitFor } from "./support/integration.js";
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 import { getDebugLogPath } from "../../dist/debug-logger.js";
-import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
+import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification } from "../../dist/shared/notify.js";
 
 /**
@@ -304,7 +304,59 @@ describe("boot reconciles what the last boot was still running", () => {
     await sleep(30); // the spawn observer writes synchronously; the sleep is for CI, not the contract.
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [id], "a running child is durable");
 
+    // Through the READER, not through raw JSON. The writer re-reads the file on
+    // every write now (two instances, one ledger), so a record it writes and its
+    // own reader then drops is a record the next write is built on top of as
+    // absent — a silent slide back to one process's view being the whole truth.
+    // "The key is in the file" is not that claim; "the reader keeps it" is.
+    const readBack = loadTaskLedger(resolveTaskLedgerPath(directory));
+    assert.strictEqual(readBack.discarded, null, "nothing about the record just written failed validation");
+    assert.ok(readBack.active.has(id), "and the reader still recognises it as a running task");
+
     await settledOnDisk(h, id);
-    assert.deepStrictEqual(ledgerActive(directory), {}, "and stops being a running task the moment it settles");
+    assert.deepStrictEqual(ledgerActive(directory), {}, "and it stops being a running task the moment it settles");
+    assert.ok(loadTaskLedger(resolveTaskLedgerPath(directory)).retained.has(id), "while the reader can still see it as settled");
   });
+});
+
+// ─── Two plugin instances, one project ───────────────────────────────────────
+//
+// The ledger is ONE file and every opencode process in a project writes it. That
+// is not a hypothetical: the operator running two windows on one repo is
+// ordinary, and refusing the second instance was ruled out. So the question this
+// file exists to answer is not "may two processes share it" but "what does the
+// second one do to the first one's records".
+//
+// Before the merge: each process re-serialized its own private view of the whole
+// document, so whichever wrote last deleted the other's running tasks outright —
+// with no error, and while the deleted process went on running the child. The
+// loss had no failure to find it by, which is the worst shape a data loss takes.
+describe("two plugin instances sharing one project", () => {
+  const activeIds = (directory) => Object.keys(JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active).sort();
+
+  it("neither deletes the other's running task", async () => {
+    const directory = tmpProjectDir();
+    const a = await setupHarness({ hooks: { sessionPrefix: "a" }, directory });
+    const b = await setupHarness({ hooks: { sessionPrefix: "b" }, directory });
+
+    const first = await a.spawn({ description: "work from the first window" });
+    const second = await b.spawn({ description: "work from the second window" });
+    await sleep(30);
+
+    assert.deepStrictEqual(
+      activeIds(directory),
+      [first.id, second.id].sort(),
+      "each instance's running task survives the other instance's write",
+    );
+  });
+
+  // There is deliberately NO settlement case here, and its absence is the
+  // finding rather than an omission. Settling owes a notice, and the owed
+  // queue is a module-level singleton — one per process in production, and
+  // one per process in a test too. So the second harness installs its own
+  // writer over the first one's, and the LAST write of a settlement comes
+  // from the wrong instance. A case written there passes for that reason and
+  // would have read as proof that a settlement is safe. It was written, it
+  // passed, and it proved nothing; the merge is pinned directly instead, where
+  // it is a pure function and nothing is hijacked (session-lifecycle.test.js).
 });

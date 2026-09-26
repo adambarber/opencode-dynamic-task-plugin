@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
-import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
 
@@ -376,6 +376,92 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
 // single-process control. The pid is the discriminator because the failure is
 // cross-process; within one process these writes are synchronous and cannot
 // interleave.
+/**
+ * ONE change to the durable document, stated rather than implied.
+ *
+ * The ledger is a SHARED file. Two opencode processes in one project each hold
+ * their own in-memory view of it, and the older writer re-serialized that whole
+ * private view — so whichever process wrote last deleted the other's running-task
+ * records outright, while the deleted process went on running the child. Nothing
+ * said so: the write succeeded. That is a loss with no failure to find it by.
+ *
+ * So a write says what changed and the merge applies it to whatever is actually
+ * on disk. Two processes touching two children then touch two keys, and neither
+ * can erase the other. This is read-modify-write, chosen because refusing to
+ * start a second instance in a project was ruled out: the operator running two
+ * windows on one repo is ordinary, and a plugin that punishes that with silent
+ * data loss is worse than one that costs an extra read per write.
+ *
+ * `settled` removes the record from `active` as well as writing it to
+ * `retained`, because those are the same event seen from two maps; `forgotten`
+ * clears both because that is what forgetting a task means.
+ *
+ * Two things this deliberately does NOT do, so that nobody reads them as
+ * oversights:
+ *
+ * 1. It never adopts. A process that boots reads the whole file, so it sees the
+ *    running tasks of any OTHER live process in the project and holds them as
+ *    its own — counting them against its own admission limit and listing them in
+ *    its own view. The merge keeps that process's WRITES from destroying those
+ *    records; it cannot stop that process from reading them, because nothing on
+ *    disk says whose they are. Fixing it means stamping each running record with
+ *    the process that owns it and adopting only the ones whose owner is gone,
+ *    which is durable-format work and its own decision.
+ * 2. It does not make the retained cap global. `retainedTaskMaxEntries` is
+ *    enforced against each process's own view, so N live processes can leave up
+ *    to N times that many settled records on disk. Each process bounds its own
+ *    history; the file bounds the sum only to the extent they do not overlap.
+ */
+export type LedgerChange =
+  | { readonly kind: "running"; readonly id: string; readonly record: ActiveTaskState }
+  | { readonly kind: "settled"; readonly id: string; readonly record: RetainedTaskState }
+  | { readonly kind: "stopped"; readonly id: string }
+  | { readonly kind: "forgotten"; readonly id: string }
+  | { readonly kind: "owed"; readonly record: PendingDelivery }
+  | { readonly kind: "delivered"; readonly record: PendingDelivery };
+
+/**
+ * What a set of changes does to a ledger. Pure, and the whole of the merge
+ * policy in one place: entries this process did not touch are carried through
+ * untouched, which is the entire claim.
+ */
+export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly LedgerChange[]): TaskLedgerFile {
+  const retained = new Map(onDisk.retained);
+  const active = new Map(onDisk.active);
+  const pending = [...onDisk.pending];
+  for (const change of changes) {
+    switch (change.kind) {
+      case "running":
+        active.set(change.id, change.record);
+        break;
+      case "settled":
+        retained.set(change.id, change.record);
+        active.delete(change.id);
+        break;
+      case "stopped":
+        active.delete(change.id);
+        break;
+      case "forgotten":
+        retained.delete(change.id);
+        active.delete(change.id);
+        break;
+      // One lookup for both: what makes two notices the SAME notice is
+      // `owedIdentity`, and the two cases differ only in what they do about it.
+      case "owed":
+      case "delivered": {
+        const identity = owedIdentity(change.record);
+        const at = pending.findIndex((owed) => owedIdentity(owed) === identity);
+        if (change.kind === "delivered") {
+          if (at !== -1) pending.splice(at, 1);
+        } else if (at === -1) pending.push(change.record);
+        else pending[at] = change.record;
+        break;
+      }
+    }
+  }
+  return { retained, active, pending };
+}
+
 export function saveTaskLedger(ledger: TaskLedgerFile, filePath: string): string {
   if (!filePath) {
     throw new Error("Task ledger path is required");

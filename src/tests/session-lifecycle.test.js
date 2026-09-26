@@ -10,7 +10,7 @@
 import { describe, it, assert } from "./support/runner.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, loadTaskLedger, normalizeStatus, resolveParentSessionId, saveTaskLedger, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
+import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, loadTaskLedger, mergeLedgerChange, normalizeStatus, resolveParentSessionId, saveTaskLedger, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
 // The host's event vocabulary, named by the module that owns it. A test firing a
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
@@ -463,5 +463,98 @@ describe("the ledger's documented shape is the shape it writes", () => {
       `is ${JSON.stringify(written)}; a reader who trusts the comment is reading a past. ` +
       `Found: ${shape}`,
     );
+  });
+});
+
+// ─── The merge that stopped one process deleting another's ──────────────────
+//
+// The ledger is one file, and every opencode process in a project writes it.
+// Refusing a second instance was ruled out, so the writer stopped re-serializing
+// its own view and started stating what changed. Pinned HERE, as a pure function,
+// because the integration route cannot reach it: the owed queue is a
+// module-level singleton, so a second in-process harness installs its own writer
+// over the first's and the last write of any settlement comes from the wrong
+// instance. boot.test.js carries the one case that does discriminate end to end.
+//
+// "Foreign" below means: written by another process, and never named by this
+// change. Every case asserts it survives, which is the entire claim.
+describe("a ledger change never touches an entry it does not name", () => {
+  const entry = (id, agent) => ({
+    childSessionId: id,
+    parentSessionId: "ses_p",
+    agentName: agent,
+    description: `work for ${agent}`,
+    lineage: [agent],
+    state: "active",
+    startedAt: 1000,
+  });
+  const ledgerWith = (over = {}) => ({ retained: new Map(), active: new Map(), pending: [], ...over });
+  const keys = (map) => [...map.keys()].sort();
+
+  it("a running task joins whatever else the file holds", () => {
+    // Seeded in ALL THREE halves, because a write that rebuilt any one of them
+    // from nothing would still look right to a case that only seeded the others.
+    const theirs = entry("ses_theirs", "general");
+    const onDisk = ledgerWith({
+      active: new Map([["ses_theirs", theirs]]),
+      retained: new Map([["ses_settled", { ...theirs, childSessionId: "ses_settled", state: "completed", retainedAt: 1 }]]),
+      pending: [{ childSessionId: "ses_theirs", parentSessionId: "ses_p", kind: "completion", text: "owed" }],
+    });
+    const merged = mergeLedgerChange(onDisk, [{ kind: "running", id: "ses_mine", record: entry("ses_mine", "general") }]);
+
+    assert.deepStrictEqual(keys(merged.active), ["ses_mine", "ses_theirs"], "the other process's running task is untouched");
+    assert.deepStrictEqual(keys(merged.retained), ["ses_settled"], "and so is its settled history");
+    assert.strictEqual(merged.pending.length, 1, "and the notice it is still owed");
+    assert.deepStrictEqual([...onDisk.active.keys()], ["ses_theirs"], "and the input is not mutated underneath the caller");
+  });
+
+  it("settling one task does not clear another process's running task", () => {
+    const onDisk = ledgerWith({
+      active: new Map([["ses_theirs", entry("ses_theirs", "general")], ["ses_mine", entry("ses_mine", "general")]]),
+    });
+    const settled = { ...entry("ses_mine", "general"), state: "completed", retainedAt: 2000 };
+    const merged = mergeLedgerChange(onDisk, [{ kind: "settled", id: "ses_mine", record: settled }]);
+    assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "the settled task left the running set");
+    assert.deepStrictEqual(keys(merged.retained), ["ses_mine"], "and is retained, in the same write");
+  });
+
+  it("forgetting a task clears it from both halves and nothing else", () => {
+    const onDisk = ledgerWith({
+      retained: new Map([["ses_mine", { ...entry("ses_mine", "general"), state: "completed", retainedAt: 1 }]]),
+      active: new Map([["ses_theirs", entry("ses_theirs", "general")]]),
+    });
+    const merged = mergeLedgerChange(onDisk, [{ kind: "forgotten", id: "ses_mine" }]);
+    assert.deepStrictEqual(keys(merged.retained), [], "the forgotten task is gone");
+    assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "and forgetting one task is not a reason to forget another");
+  });
+
+  it("an owed notice joins another process's, and delivering one drops only that one", () => {
+    const theirs = { childSessionId: "ses_theirs", parentSessionId: "ses_p", kind: "completion", text: "theirs" };
+    const mine = { childSessionId: "ses_mine", parentSessionId: "ses_p", kind: "completion", text: "mine" };
+    const onDisk = ledgerWith({ pending: [theirs] });
+
+    const owed = mergeLedgerChange(onDisk, [{ kind: "owed", record: mine }]);
+    assert.strictEqual(owed.pending.length, 2, "the other process's owed notice is still owed");
+
+    const delivered = mergeLedgerChange(owed, [{ kind: "delivered", record: mine }]);
+    assert.deepStrictEqual(delivered.pending, [theirs], "delivering mine left theirs owed");
+  });
+
+  it("the same notice owed twice is one notice, not two", () => {
+    const entry2 = { childSessionId: "ses_mine", parentSessionId: "ses_p", kind: "completion", text: "mine" };
+    const twice = mergeLedgerChange(ledgerWith(), [
+      { kind: "owed", record: entry2 },
+      { kind: "owed", record: { ...entry2 } },
+    ]);
+    assert.strictEqual(twice.pending.length, 1, "re-owing a notice replaces it rather than duplicating it");
+  });
+
+  it("a batch of changes lands as one write's worth of work", () => {
+    const onDisk = ledgerWith({ active: new Map([["ses_theirs", entry("ses_theirs", "general")]]) });
+    const merged = mergeLedgerChange(onDisk, [
+      { kind: "running", id: "ses_mine", record: entry("ses_mine", "general") },
+      { kind: "stopped", id: "ses_mine" },
+    ]);
+    assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "the batch applied in order, and stopped what running started");
   });
 });

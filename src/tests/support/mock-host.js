@@ -324,13 +324,16 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *   questionReplyThrows?: boolean,
  *   questionRejectThrows?: boolean,
  *   agentsList?: unknown[],
+ *   sessionPrefix?: string,            // tells two hosts apart in one project
  * }
  * Hook sets are read live: mutate them after setup to arm later phases.
  *
  * Session ids are per-host and numbered from 1, so a test can name
  * `ses_mock_1` and be sure it is the first child it created. They repeat
  * across hosts on purpose: the notify ledger is process-global, and the resets
- * in `harness.js` are what isolate it (production never resets anything).
+ * in `harness.js` are what isolate it (production never resets anything). A
+ * test that needs the two told apart — two plugin instances in one project, say
+ * — says so with `sessionPrefix` rather than renumbering.
  */
 export function createMockClient(hooks = {}) {
   const state = {
@@ -401,7 +404,11 @@ export function createMockClient(hooks = {}) {
           state.createThrown = true;
           throw new Error("create failed");
         }
-        const id = `ses_mock_${state.sessions.size + 1}`;
+        // Always `ses_`-prefixed, even when told to distinguish hosts: the
+        // ledger reader validates that shape and drops an entry without it, so a
+        // prefix in front would be a silent, self-inflicted data loss.
+        const prefix = hooks.sessionPrefix ? `ses_${hooks.sessionPrefix}_` : "ses_mock_";
+        const id = `${prefix}${state.sessions.size + 1}`;
         state.sessions.add(id);
         state.hostStatus.set(id, { type: "busy", at: Date.now() });
         state.sessionBodies.set(id, body);

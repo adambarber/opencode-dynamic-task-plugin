@@ -7,6 +7,7 @@
 // execution-bound, including the one on the parent prompt itself — the host
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
+import type { LedgerChange } from "./session-lifecycle.js";
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import { textBlock } from "./text-block.js";
@@ -171,9 +172,9 @@ export const NOTIFY_KINDS: readonly NotifyKind[] = ["completed", "error", "block
 const pendingDeliveries: PendingDelivery[] = [];
 // Installed once at boot by the persistence dance. Tenet 9: process-global by
 // design — every entry is keyed by a server-unique child session id.
-let persistPending: (() => void) | null = null;
+let persistPending: ((changes: readonly LedgerChange[]) => void) | null = null;
 
-export function configurePendingPersistence(persist: () => void): void {
+export function configurePendingPersistence(persist: (changes: readonly LedgerChange[]) => void): void {
   persistPending = persist;
 }
 
@@ -191,7 +192,12 @@ export function restorePendingDeliveries(entries: PendingDelivery[]): void {
 // by its text, which is exactly what the gate dedups notices on
 // (noticeDedupKey), so this reproduces the claim's identity without keeping a
 // second copy of the key. Two DIFFERENT notices from one child are two debts.
-function owedIdentity(entry: PendingDelivery): string {
+/**
+ * What makes two owed notices the SAME notice. Exported because the ledger merge
+ * has to answer that question too, and a second spelling of identity would let
+ * one notice be written as two and dropped as one.
+ */
+export function owedIdentity(entry: PendingDelivery): string {
   return entry.kind === "notice" ? `${entry.childSessionId}\u0000notice\u0000${entry.text}` : `${entry.childSessionId}\u0000${entry.kind}`;
 }
 
@@ -205,14 +211,16 @@ function queuePending(entry: PendingDelivery): void {
   const at = indexOfOwedEntry(entry);
   if (at === -1) pendingDeliveries.push(entry);
   else pendingDeliveries[at] = entry;
-  persistPending?.();
+  // The notice itself is the change, so the shared ledger is told which one was
+  // owed rather than being handed this process's whole queue to re-serialize.
+  persistPending?.([{ kind: "owed", record: entry }]);
 }
 
 function dropPending(entry: PendingDelivery): void {
   const at = indexOfOwedEntry(entry);
   if (at === -1) return;
   pendingDeliveries.splice(at, 1);
-  persistPending?.();
+  persistPending?.([{ kind: "delivered", record: entry }]);
 }
 
 function indexOfOwed(identity: string): number {

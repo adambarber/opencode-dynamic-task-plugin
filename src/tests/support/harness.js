@@ -124,6 +124,32 @@ function assertQuestionSettlement(method, path, body, { carriesAnswers }) {
 export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 200 } });
 
 /**
+ * Run `fn` with a seam installed, and put the seam back when the case ends —
+ * including when it throws. Every temporary seam in this suite is that shape (a
+ * deadline, an environment variable, a temp path), and each was spelling out its
+ * own try/finally, which is how one of them grows a restore clause the others
+ * lack. `install` is evaluated before the case runs and hands back the undo, so a
+ * seam that must snapshot what it replaces can snapshot it before it changes
+ * anything.
+ */
+async function withSeam(install, fn) {
+  const undo = install();
+  try {
+    return await fn();
+  } finally {
+    undo();
+  }
+}
+
+/**
+ * Run `fn` with every deadline shrunk to a value a test can outwait. The timer
+ * is real and still fires — only the patience changes, so a test that observes a
+ * bound proves the bound rather than proving a mocked clock. This is the only
+ * sanctioned way to shorten a deadline (see shrinkBoundsForTesting).
+ */
+export const bounded = (ms, fn) => withSeam(() => shrinkBoundsForTesting(ms), fn);
+
+/**
  * Set an env var for the duration of a test and put the host back exactly as
  * it was. The save/restore dance was copied per test, and one copy leaked:
  * a test that wrote a var without a finally left it set for every suite after
@@ -131,34 +157,17 @@ export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 
  * its value, so this owns that too — and `undefined` means "unset", so a case
  * table can say "not set" without reaching past this seam.
  */
-/**
- * Run `fn` with every deadline shrunk to a value a test can outwait. The timer
- * is real and still fires — only the patience changes, so a test that observes a
- * bound proves the bound rather than proving a mocked clock. The production
- * value is restored even when the case throws, which is the only sanctioned way
- * to shorten a deadline (see shrinkBoundsForTesting).
- */
-export async function bounded(ms, fn) {
-  const restore = shrinkBoundsForTesting(ms);
-  try {
-    return await fn();
-  } finally {
-    restore();
-  }
-}
-
-export async function withEnv(key, value, fn) {
-  const had = Object.hasOwn(process.env, key);
-  const prev = process.env[key];
-  if (value === undefined) delete process.env[key];
-  else process.env[key] = value;
-  try {
-    return await fn();
-  } finally {
-    if (had) process.env[key] = prev;
-    else delete process.env[key];
-  }
-}
+export const withEnv = (key, value, fn) =>
+  withSeam(() => {
+    const had = Object.hasOwn(process.env, key);
+    const prev = process.env[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+    return () => {
+      if (had) process.env[key] = prev;
+      else delete process.env[key];
+    };
+  }, fn);
 
 /**
  * Hand a test a path in the OS temp dir and clean up whatever the test left
@@ -166,10 +175,9 @@ export async function withEnv(key, value, fn) {
  * unlinked only the file, so a failing atomic write could leave the sidecar
  * behind; the absence check is the cleanup, not a hope.
  */
-export async function withTempFile(path, fn) {
-  try {
-    return await fn(path);
-  } finally {
+export const withTempFile = (path, fn) =>
+  // Nothing to install — the case is handed the path, and the undo is the cleanup.
+  withSeam(() => () => {
     for (const file of [path, `${path}.tmp`]) {
       try {
         unlinkSync(file);
@@ -177,8 +185,7 @@ export async function withTempFile(path, fn) {
         /* never created */
       }
     }
-  }
-}
+  }, () => fn(path));
 
 /** A unique path in the OS temp dir. The caller does not create it. */
 export const tmpFilePath = (label = "dt") =>

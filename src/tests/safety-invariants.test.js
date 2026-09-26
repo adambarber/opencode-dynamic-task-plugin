@@ -891,16 +891,41 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
 const MAX_LINES = 1000;
 
 /**
+ * How many lines a file actually has.
+ *
+ * `split("\n").length` counts the empty string AFTER a trailing newline, so every
+ * well-formed file — every file, really — reads one line longer than it is. That
+ * is not a rounding error here: it made the gate reject a file sitting exactly at
+ * the limit, which is the one thing a threshold must never do. It is also the kind
+ * of off-by-one that gets the THRESHOLD raised rather than the counter fixed, so
+ * the arithmetic is pinned by the test below instead of being left to chance.
+ */
+function lineCount(source) {
+  if (source.length === 0) return 0;
+  const parts = source.split("\n").length;
+  return source.endsWith("\n") ? parts - 1 : parts;
+}
+
+/**
  * Every file under src/, production and suite alike. The file-size rule is the
  * one invariant here that applies to both, because a grab-bag test file and a
  * grab-bag module fail the same way: neither has a subject a reader can hold.
  */
 describe("invariant: no file outgrows the point where a reader stops finding things", () => {
+  it("counts a file's lines, not its trailing newline", () => {
+    const body = "a\nb\nc";
+    assert.strictEqual(lineCount(body), 3, "no trailing newline");
+    assert.strictEqual(lineCount(body + "\n"), 3, "a trailing newline is not a line");
+    assert.strictEqual(lineCount(""), 0, "an empty file has no lines");
+    assert.strictEqual(lineCount("\n"), 1, "a lone newline is one empty line");
+    assert.strictEqual(lineCount(`\n${body}\n`), 4, "leading blank lines count");
+  });
+
   it(`keeps every file under src/ within ${MAX_LINES} lines`, () => {
     const files = listSourceFiles();
     assert.ok(files.length > 0, "the corpus resolved to nothing — a stale path");
     const over = files
-      .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: readFileSync(f, "utf8").split("\n").length }))
+      .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: lineCount(readFileSync(f, "utf8")) }))
       .filter(({ lines }) => lines > MAX_LINES)
       .sort((a, b) => b.lines - a.lines)
       .map(({ file, lines }) => `${file} (${lines} lines)`);

@@ -16,7 +16,7 @@
 // did nothing reads as a broken UI. For a floor that must survive a click, put
 // the number in the config file.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LaneConfigSource } from "./config.js";
 
@@ -126,6 +126,30 @@ export function readLaneOverlay(directory: string | undefined): { raw: unknown; 
   } catch (error) {
     return { raw: null, problem: `the overlay is not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
   }
+}
+
+// ─── the write side ────────────────────────────────────────────────────────
+
+/**
+ * Replace the overlay, atomically.
+ *
+ * Atomic because the reader is a DISPATCH PATH: it reads this file while work is
+ * in flight, and a half-written file is a parse failure that silently reverts
+ * every cap to the boot config — an operator's edit vanishing because a write
+ * was interrupted. Write to a pid-qualified temp file in the same directory and
+ * rename over the target, which is atomic within a filesystem; a plain write is
+ * not, and a same-directory temp file is not either if the name is shared
+ * between two live processes.
+ *
+ * `applyLaneOverlay` is deliberately NOT called on the way out. The caller has
+ * already validated, and re-validating here would drop the one shape that
+ * validation must preserve — a lane declared with no knobs of its own.
+ */
+export function writeLaneOverlay(directory: string | undefined, overlay: LaneOverlay): void {
+  const target = laneOverlayPath(directory);
+  const temp = `${target}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(overlay, null, 2)}\n`, "utf8");
+  renameSync(temp, target);
 }
 
 // ─── the live read ──────────────────────────────────────────────────────────

@@ -194,17 +194,25 @@ const THE_ONLY_NOTIFY_OWNER = gate(
   "Exactly one parent-notification owner.",
 );
 const PERSISTENCE_DANCES = ["session-lifecycle.ts", "debug-logger.ts"];
+// The lane overlay is a THIRD dance, and it is third deliberately: the other two
+// write this plugin's own state, while the overlay is an operator's edit to
+// policy that a dispatch path reads on every spawn. It needs the same
+// write-temp-then-rename discipline, but it is a different kind of thing, and
+// lumping it in with the ledger would make the exemption list claim the ledger's
+// justification covers a file the ledger knows nothing about.
+const LANE_OVERLAY_DANCE = "lane-overlay.ts";
+const SANCTIONED_DANCES = [...PERSISTENCE_DANCES, LANE_OVERLAY_DANCE];
 const RAW_FILE_WRITE = gate(
   [/writeFileSync|renameSync|appendFileSync/],
   DOC_PERSISTENCE,
   "File write outside the atomic-write dances.",
-  { sanctioned: PERSISTENCE_DANCES },
+  { sanctioned: SANCTIONED_DANCES },
 );
 const STATE_PATH_LITERAL = gate(
   [/"\.dynamic-task-(ledger|logs)/],
   DOC_PERSISTENCE,
   "State-path literal outside the dances (resolve via the host directory instead).",
-  { sanctioned: PERSISTENCE_DANCES },
+  { sanctioned: SANCTIONED_DANCES },
 );
 const ADMISSION_BYPASS = gate(
   [/registerActiveTask\s*\(|validateAgent\s*\(|validateLineage\s*\(|\bagents\s*\.\s*find\s*\(/],

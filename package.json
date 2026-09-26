@@ -8,7 +8,7 @@
     "build": "tsc",
     "test": "npm run build && npm run test:duplication && node --test src/tests/*.test.js",
     "test:coverage": "npm run build && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
-    "test:duplication": "jscpd src --config .jscpd.json",
+    "test:duplication": "node scripts/duplicate-gate.mjs",
     "test:cross-boundary": "node scripts/cross-boundary-clones.mjs",
     "lint": "tsc --noEmit",
     "watch": "tsc --watch"

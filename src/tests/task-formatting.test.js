@@ -8,13 +8,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import {
-  buildBackgroundPrompt,
-  formatTaskListSummary,
-  formatTaskResultSummary,
-  formatTaskStatusDetail,
-  taskResultRecord,
-} from "../../dist/shared/task-formatting.js";
+import { buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { noticeRecord } from "../../dist/shared/task-state.js";
 import { notifiedAs } from "./support/records.js";
 

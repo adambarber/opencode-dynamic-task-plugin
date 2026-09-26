@@ -2,16 +2,17 @@
  * The shared assertion vocabulary — what a reader in this suite ANSWERS with, and
  * the one assertion per answer shape.
  *
- * These were scattered through `plugin.test.js`, which is why that file grew to
- * 2600 lines: every module's suite carried its own copy of the claim helpers, so
- * the helpers were neither one thing nor anywhere in particular. A reader here
- * answers with a word, an empty string, nothing at all, a boolean, a list, or a
- * verdict object — and an assertion that does not say which claim it is making is
- * the same assertion to the reader of a red run, however different the function
- * under it. So the claim IS the assertion, and there is one per answer shape.
+ * These were scattered through the two grab-bag suites, which is why those files
+ * grew past 2000 lines: every subject's suite carried its own copy of the claim
+ * helpers, so the helpers were neither one thing nor anywhere in particular. A
+ * reader here answers with a word, an empty string, nothing at all, a boolean, a
+ * list, a verdict, or a block of prose — and an assertion that does not say which
+ * claim it is making is the same assertion to the reader of a red run, however
+ * different the function under it. So the claim IS the assertion, and there is
+ * one per answer shape.
  *
- * Every failure line carries the answer. A claim whose failure message leaves out
- * what the reader actually said is a claim nobody can diagnose.
+ * Dependency-free on purpose: this module is what everything else asserts with, so
+ * it asserts with nothing.
  */
 
 import assert from "node:assert";
@@ -62,3 +63,133 @@ export function verdict(result, expected, why) {
 
 export const refuses = (result, why) => verdict(result, false, why);
 export const admits = (result, why) => verdict(result, true, why);
+
+// --- Claims whose subject is a running harness -------------------------------
+// The integration suites assert against prose a live tool returned, so their
+// claims carry the same rule: the answer rides in the failure. These read a
+// harness or a bound child, which is why they live apart from the pure claims
+// above — the subject decides, not the assertion.
+
+/**
+ * The failure line every prose claim shares: the case's own claim, then the
+ * answer as the only evidence there is. Composed once so a new kind of claim
+ * cannot leave the answer out of its own failure.
+ */
+export const proseFailure = (note, answer, extra = "") => `${note ? `${note}. ` : ""}${extra}got: ${answer}`;
+
+export function answerSays(answer, reason, note) {
+  assert.ok(answer.includes(reason), proseFailure(note, answer));
+}
+
+/**
+ * As `answerSays`, for a claim that is a shape rather than a word. Same reason:
+ * the answer is the only evidence there is, so it rides in the failure.
+ */
+export function answerMatches(answer, pattern, note) {
+  assert.match(answer, pattern, proseFailure(note, answer));
+}
+
+/**
+ * As `answerSays`, for the claim that is a word that must NOT be there — no
+ * resume hint on a fatal error, no success claim on a vanished child. An absence
+ * is a claim too, and it is the one a notification bug makes invisible, so the
+ * whole text is in the failure rather than a bare false.
+ */
+export function answerOmits(answer, reason, note) {
+  assert.ok(!answer.includes(reason), proseFailure(note, answer, `must not say ${reason}. `));
+}
+
+/**
+ * How many notices reached the parent. The count is the whole claim in these
+ * cases — told once, told twice, told nothing — and it is the one claim a
+ * notification bug cannot make visible by its own wording: a settlement that
+ * fires twice says exactly the right thing twice. So the count is read through
+ * one place, and the notice bodies ride in the failure, because "told twice" and
+ * "told the wrong thing twice" are different bugs wearing the same symptom.
+ */
+export function assertNoticeCount(h, count, why) {
+  const notices = h.notices();
+  const bodies = notices.map((n) => n.message.split("\n")[1] ?? n.message);
+  assert.strictEqual(notices.length, count, `${why}. notices: ${bodies.join(" | ")}`);
+}
+
+/**
+ * What the nth notice says. The count is `assertNoticeCount`; this is the prose,
+ * read from the same ledger in the same way, because "notified once" and
+ * "notified the right thing" are the two halves of a settlement's claim.
+ */
+export const noticeSays = (h, index, reason, note) => answerSays(h.noticeBodies()[index], reason, note);
+
+/**
+ * The state line and nothing else. The status view also names the last
+ * notification's kind, which is history, so a substring over the whole report
+ * cannot tell a state claim from a mention of one. One reader, because every
+ * settlement test asks the same question of the same view.
+ */
+export const stateOf = async (child) =>
+  (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
+
+/**
+ * The claim a child's status view makes, and the view itself handed back.
+ *
+ * Reading the status view and asserting a word over it was spelled inline at a
+ * dozen sites across the tool suites — `const status = await c.status();
+ * answerSays(status, …)` — which is a dozen chances to assert against a different
+ * view than the case set up, and the state line is the one place a settlement's
+ * outcome is legible. The view comes back because a caller usually asks something
+ * else of it too.
+ */
+const statusClaim = (claim) => async (child, reason, note) => {
+  const status = await child.status();
+  claim(status, reason, note);
+  return status;
+};
+
+export const statusSays = statusClaim(answerSays);
+
+/**
+ * As `statusSays`, for the claim that is a word the status view must NOT carry —
+ * no resume hint on a fatal settlement, no liveness block when nothing was read.
+ * An absence is a claim too, and it is the one a notification bug makes invisible.
+ */
+export const statusOmits = statusClaim(answerOmits);
+
+/**
+ * The claim a task that has not settled still carries. A mid-flight notice and a
+ * failed abort are different events, and both end in the same question — "does
+ * the record still say active?" — asked by reading the one view.
+ */
+export const stillActive = (child, why) => statusSays(child, "active", why);
+
+/**
+ * A tool that acts on a named child, asked to act on nothing. The refusal is the
+ * same shape from every one of them, so the check is one: a case that called a
+ * tool with no id and asserted its own substring was one string away from a case
+ * that silently accepted the call.
+ */
+export async function assertNeedsSessionId(toolUnderTest) {
+  const answer = await toolUnderTest.execute({});
+  answerSays(answer, "required", "a session-scoped tool refuses without an id");
+}
+
+/**
+ * Assert that the gate settled a question by rejecting it exactly once, and
+ * return the recorded host call.
+ *
+ * It asserts; it does not fire. Firing is the caller's job, through
+ * `withAskedChild` or a hand-built event for the cases a plain ask cannot express
+ * (a settled child, a multi-part ask) — so the one assertion every refusal needs
+ * lives in one place and a new caller cannot quietly skip it.
+ *
+ * It returns no rejection REASON: the host's reject endpoint takes no body, so
+ * there is no channel from the gate to the asking session, and a reason asserted
+ * on the wire would be asserting something the contract makes impossible. The
+ * reason is asserted where it lands instead — the operator's block claim, or the
+ * debug log.
+ */
+export function assertQuestionRejected(h) {
+  const calls = h.questionCalls();
+  assert.strictEqual(calls.length, 1, "one rejection, never a silent stall");
+  assert.strictEqual(calls[0].method, "reject");
+  return calls[0];
+}

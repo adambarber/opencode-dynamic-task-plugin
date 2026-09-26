@@ -8,21 +8,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import {
-  classifyPromptError,
-  describeModelShapeError,
-  extractTextFromParts,
-  getLatestAssistantText,
-  hydrateLatestOutcome,
-  invokePrompt,
-  isMessage,
-  isTextPart,
-  isTransientOutcomeError,
-  messageErrorDetail,
-  messageRoleOf,
-  parseModelOverride,
-  ASSISTANT_ROLE,
-} from "../../dist/shared/prompt.js";
+import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, isTransientOutcomeError, messageErrorDetail, messageRoleOf, parseModelOverride } from "../../dist/shared/prompt.js";
 import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 
 // The smallest shapes the reader tests are about, stated once: a text part, and

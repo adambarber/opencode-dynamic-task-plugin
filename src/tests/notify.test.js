@@ -7,20 +7,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import {
-  formatParentNotification,
-  isParentNotification,
-  noticeDedupKey,
-  notificationTag,
-  notifyParent,
-  getLatestNotification,
-  clearNotifyLedger,
-  gateLedger,
-  notifyChainCount,
-  getPendingDeliveries,
-  restorePendingDeliveries,
-  truncateText,
-} from "../../dist/shared/notify.js";
+import { clearNotifyLedger, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
 import { deferred, promptText } from './support/mock-host.js';
 

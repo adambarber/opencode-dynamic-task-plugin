@@ -8,16 +8,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import {
-  buildAgentList,
-  fetchAgents,
-  formatAdmissionError,
-  parseAgentList,
-  registerAdmittedTask,
-  resolveAdmission,
-  resolveDependencies,
-  resetAgentCache,
-} from "../../dist/shared/admission.js";
+import { buildAgentList, fetchAgents, formatAdmissionError, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses } from "./support/assertions.js";

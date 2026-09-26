@@ -8,12 +8,7 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
-import {
-  ENV,
-  checkConcurrencyLimit,
-  normalizeDynamicTaskConfig,
-  parseDynamicTaskJsonc,
-} from "../../dist/shared/config.js";
+import { ENV, checkConcurrencyLimit, normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
 

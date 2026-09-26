@@ -10,17 +10,7 @@
 import { describe, it, assert } from "./support/runner.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import {
-  getEventLifecycleStatus,
-  getSessionIdFromEvent,
-  hostPayload,
-  isTerminalSessionEvent,
-  loadTaskLedger,
-  normalizeStatus,
-  resolveParentSessionId,
-  saveTaskLedger,
-  validateSessionResult,
-} from "../../dist/shared/session-lifecycle.js";
+import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, loadTaskLedger, normalizeStatus, resolveParentSessionId, saveTaskLedger, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
 // The host's event vocabulary, named by the module that owns it. A test firing a
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.

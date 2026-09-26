@@ -9,24 +9,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import {
-  ADVISORY_FIELDS,
-  annotateNotice,
-  createTaskStore,
-  findTask,
-  listTasks,
-  markTurnReplacement,
-  noteActivity,
-  noteLateOutcome,
-  oldestRetainedId,
-  pruneRetainedTasks,
-  recordAbortError,
-  registerActiveTask,
-  restoreRetained,
-  reviveRetainedTask,
-  transitionState,
-  withdrawInterruptClaim,
-} from "../../dist/shared/task-state.js";
+import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, noteLateOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { retainedEntry } from "./support/records.js";
 import { assertIs, assertNothing } from "./support/assertions.js";

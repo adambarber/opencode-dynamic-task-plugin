@@ -6,6 +6,7 @@ import { normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../shared/con
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
 import { loadTaskLedger, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
+import { errorMessage } from "../shared/host-shape.js";
 import { hostTurnRunning, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
 import {
@@ -17,7 +18,7 @@ import {
   safeLog,
 } from "../shared/notify.js";
 import type { OpenCodeClient } from "../shared/client.js";
-import { configureDebugRoot } from "../debug-logger.js";
+import { configureDebugRoot, debugLog } from "../debug-logger.js";
 
 // Plugin-level state store (ephemeral — lost on restart)
 export interface PluginState {
@@ -51,8 +52,24 @@ export function initPluginState(directory: string, options: PluginOptions | unde
         { retained: store.retainedTasks, active: store.activeTasks, pending: getPendingDeliveries() },
         ledgerPath,
       );
-    } catch {
-      // best-effort persistence; the next mutation retries
+    } catch (error) {
+      // Swallow so a durable-state failure can never break control flow — and
+      // RECORD it, because silence here is the worst possible answer. The
+      // comment above promises "the next mutation retries", and that promise has
+      // a hole: on a run whose last mutation is the one that fails (a child
+      // settles, the operator quits), there is no next mutation, the settlement
+      // never reaches the disk, and the next boot finds a child still active
+      // with a completion notice nobody was told about. The plugin's whole claim
+      // is that it does not lose track of a child, so a lost write is the one
+      // thing it may not lose quietly.
+      //
+      // Project-level, not task-level: a write carries every record at once, so
+      // it belongs to no single child. One well-known file is more findable than
+      // the same line scattered across a hundred task logs.
+      debugLog("plugin", "ledger", "ledger-write-failed", {
+        path: ledgerPath,
+        error: errorMessage(error),
+      });
     }
   };
   // Ledger sync: every retained mutation and every change to the running set

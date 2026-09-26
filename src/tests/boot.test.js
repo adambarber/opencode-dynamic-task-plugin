@@ -10,13 +10,73 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dialCount, setupHarness, sleep, tmpProjectDir } from "./support/harness.js";
-import { answerMatches } from "./support/assertions.js";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
+import { answerMatches, answerSays } from "./support/assertions.js";
 import { bootOn, settledOnDisk, waitFor } from "./support/integration.js";
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
+import { getDebugLogPath } from "../../dist/debug-logger.js";
 import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification } from "../../dist/shared/notify.js";
+
+/**
+ * A write that CANNOT land, blocked in a way that does not depend on the name the
+ * writer stages through: the ledger path itself is occupied by a non-empty
+ * directory, so the rename onto it fails however the temp file is called. An
+ * earlier version blocked `${ledger}.tmp` directly and went on passing for the
+ * wrong reason the moment the writer was given a per-process temp name — a test
+ * coupled to the implementation it is meant to police.
+ */
+const blockTheLedgerWrite = (directory) => {
+  const ledgerPath = resolveTaskLedgerPath(directory);
+  mkdirSync(ledgerPath, { recursive: true });
+  writeFileSync(path.join(ledgerPath, "occupied"), "not a ledger");
+};
+
+// --- When the write cannot land ---------------------------------------------
+// `persistLedger` swallows a write failure so that a durable-state problem can
+// never break control flow, which is right — and which made the failure
+// invisible. A settlement that did not reach the disk, on a run with no later
+// mutation to retry it, leaves a child active in the ledger forever and a
+// completion notice the parent is never told about. Nothing said so. Silence is
+// the worst possible answer here, because the plugin's whole claim is that it
+// does not lose track of a child.
+//
+// Both cases are the same world, so it is built once: a project whose ledger
+// write cannot land, a plugin booted on it, and a child spawned and settled —
+// which is what makes the write fail. `debug` wraps the whole thing rather than
+// the assertions because `debugLog` gates at CALL time, so a log enabled only
+// while reading would hand back a file frozen before the failure happened.
+async function bootWithUnwritableLedger({ debug = false } = {}) {
+  const directory = tmpProjectDir();
+  blockTheLedgerWrite(directory);
+  const run = async () => {
+    const h = await setupHarness({ directory });
+    const { id } = await h.spawn({ description: "unpersistable" });
+    await h.settle(id);
+    return { h, id, directory };
+  };
+  return debug ? withEnv("DYNAMIC_TASK_DEBUG", "1", run) : run();
+}
+
+describe("a ledger write that cannot land is recorded, not swallowed", () => {
+  it("logs the failure and names the cause", async () => {
+    await bootWithUnwritableLedger({ debug: true });
+    const log = readFileSync(getDebugLogPath("plugin", "ledger"), "utf8");
+    answerSays(log, "ledger-write-failed", "the failure is on the record");
+    answerMatches(log, /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "and it names the cause, not just that it failed");
+    // Which project, not which child: one write carries every record at once, so
+    // there is no single child to name. The path is what an operator needs.
+    answerSays(log, ".dynamic-task-ledger.json", "and which project's ledger lost the write");
+  });
+
+  it("settles the child anyway — a failed write must not strand it", async () => {
+    const { h, id } = await bootWithUnwritableLedger();
+    const status = await h.child(id).status();
+    answerSays(status, "State: completed", "in-memory state is the authority while the process lives");
+  });
+});
 
 // --- State scoping (contamination regression) -------------------------------
 // Root cause of the poisoned repo ledger: persistence resolved against the

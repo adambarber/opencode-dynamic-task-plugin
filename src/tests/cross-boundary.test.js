@@ -67,12 +67,25 @@ describe("invariant: no duplication across the test/production boundary (Tenet 1
 // The import filter the measurement rests on. It had an off-by-one that walked
 // forward from offset 0 instead of from the match, so every line ABOVE an import
 // was discarded as if it were one — which is every module's header docblock, 246
-// tokens across src/. No clone was hiding behind that (the corrected gate still
-// reports zero), but FLOOR_TOKENS above was calibrated against a stream that had
+// tokens across src/. FLOOR_TOKENS above was calibrated against a stream that had
 // already thrown away real text, so the floor was measuring the wrong thing.
 describe("the cross-boundary import filter", () => {
+  /**
+   * The one claim both cases make: given these source lines, the filter claims
+   * exactly these of them.
+   *
+   * Written out per case they were the same assertion over the same array-shaped
+   * fixture in two layouts, and the fixture was the only thing they had in common —
+   * so `[...importLines(source)].sort(...)` became duplicated text rather than a
+   * decision stated twice. The numbered comments stay at the call site on purpose:
+   * every case here asserts on LINE NUMBERS, so the source has to stay readable
+   * against the numbers it is asserting.
+   */
+  const claimsOnly = (expected, why, ...lines) =>
+    assert.deepStrictEqual([...importLines(lines.join("\n"))].sort((x, y) => x - y), expected, why);
+
   it("claims the import's own lines and nothing before them", () => {
-    const source = [
+    claimsOnly([5], "an import is one line of names; the four lines above it are not",
       "/**",                          // 1
       " * The header a reader needs.",  // 2
       " */",                          // 3
@@ -80,23 +93,17 @@ describe("the cross-boundary import filter", () => {
       'import { a } from "./a.js";',   // 5
       "",                             // 6
       "export const x = 1;",          // 7
-    ].join("\n");
-    assert.deepStrictEqual(
-      [...importLines(source)].sort((x, y) => x - y),
-      [5],
-      "an import is one line of names; the four lines above it are not",
     );
   });
 
   it("claims every line of an import that wraps", () => {
-    const source = [
+    claimsOnly([1, 2, 3, 4], "a wrapped import is four lines, not one",
       "import {",             // 1
       "  a,",                 // 2
       "  b,",                 // 3
       '} from "./a.js";',      // 4
       "export const x = 1;",  // 5
-    ].join("\n");
-    assert.deepStrictEqual([...importLines(source)].sort((x, y) => x - y), [1, 2, 3, 4]);
+    );
   });
 
   it("leaves a real module's header in the comparison", () => {

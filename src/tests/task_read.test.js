@@ -335,40 +335,43 @@ describe("task fleet views", () => {
       { name: "explore", mode: "subagent" },
     ];
 
+    // One name for the three steps every case below is: build a harness, list,
+    // hand back the text. Written out, it was the file's most-repeated block — and
+    // because the repeated part was the arrangement rather than the decision, the
+    // duplication gate reported pairs of cases that share nothing but their plumbing.
+    const listed = async (options, hooks = { agentsList: AGENTS }) => {
+      const h = await setupHarness({ options, hooks });
+      return h.tool.task_list.execute({});
+    };
+
     it("shows the default lane even with none declared, so a cap is always visible", async () => {
-      const h = await setupHarness({ options: { maxDepth: 2 }, hooks: { agentsList: AGENTS } });
-      const list = await h.tool.task_list.execute({});
+      const list = await listed({ maxDepth: 2 });
       answerSays(list, "Lanes (active/cap):", "the section is present with no lanes configured");
       assert.match(list, /- default 0\/4 · depth 2/, "occupancy, cap, and the depth in force");
     });
 
     it("counts a running task against the lane it was dispatched into", async () => {
+      // Not `listed`, because the case is about what a SPAWN does to the count, so
+      // it has to hold the harness to spawn through rather than have one built for it.
       const h = await setupHarness({ options: { lanes: { build: { maxConcurrent: 3 } } }, hooks: { agentsList: AGENTS } });
       await h.spawn({ description: "in the build lane", lane: "build" });
-      const list = await h.tool.task_list.execute({});
-      assert.match(list, /- build 1\/3/, "the task is charged to the lane it named");
+      assert.match(await h.tool.task_list.execute({}), /- build 1\/3/, "the task is charged to the lane it named");
     });
 
     it("names the constraint that caps depth, because the cap alone is not in force", async () => {
       // The config says 4 and the number in force is 3. Printing "4" would print
       // the number that does not apply.
-      const h = await setupHarness({ options: { maxDepth: 4 }, hooks: { agentsList: AGENTS } });
-      const list = await h.tool.task_list.execute({});
-      assert.match(list, /depth 3 \(agent set binds; cap is 4\)/,
+      assert.match(await listed({ maxDepth: 4 }), /depth 3 \(agent set binds; cap is 4\)/,
         "the effective depth and the reason it is lower than the cap");
     });
 
     it("a BLOCKED agent cannot lengthen a chain, so it does not raise the depth", async () => {
-      const h = await setupHarness({ options: { maxDepth: 9, blockedAgents: ["coder"] }, hooks: { agentsList: AGENTS } });
-      const list = await h.tool.task_list.execute({});
-      assert.match(list, /depth 2 \(agent set binds; cap is 9\)/,
+      assert.match(await listed({ maxDepth: 9, blockedAgents: ["coder"] }), /depth 2 \(agent set binds; cap is 9\)/,
         "three published agents, one of them unusable, is depth 2 — not 3");
     });
 
     it("a host that cannot list agents leaves the depth UNKNOWN, not zero", async () => {
-      const h = await setupHarness({ options: { maxDepth: 4 }, hooks: { agentsListThrows: true } });
-      const list = await h.tool.task_list.execute({});
-      assert.match(list, /depth 4 \(dispatchable agents unknown\)/,
+      assert.match(await listed({ maxDepth: 4 }, { agentsListThrows: true }), /depth 4 \(dispatchable agents unknown\)/,
         "an unreadable agent set is an unknown; saying 0 would claim no delegation is possible");
     });
   });

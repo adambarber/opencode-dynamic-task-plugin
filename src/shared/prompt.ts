@@ -157,6 +157,7 @@ export type MessageRole = "user" | "assistant" | "system" | "error";
 // raw payloads stay data (messageRoleOf returns them unvalidated), never
 // type claims.
 export const ASSISTANT_ROLE: MessageRole = "assistant";
+export const ERROR_ROLE: MessageRole = "error";
 
 export interface TextPart {
   type: "text";
@@ -264,7 +265,7 @@ export function messageErrorDetail(message: unknown): string {
     return detail.trim();
   }
   if (typeof error === "string" && error.trim()) return error.trim();
-  if (messageRoleOf(message) === "error") return extractTextFromParts(message.parts).trim();
+  if (messageRoleOf(message) === ERROR_ROLE) return extractTextFromParts(message.parts).trim();
   return "";
 }
 

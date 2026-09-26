@@ -16,9 +16,20 @@ import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import type { OpenCodeClient } from "./client.js";
 
+/**
+ * What answering a question amounts to. An enum rather than a string-literal
+ * union, because the caller branches on it to choose which host method to
+ * invoke — a raw literal in that branch is a rename that compiles clean and
+ * silently answers the wrong way.
+ */
+export enum QuestionAction {
+  Reply = "reply",
+  Reject = "reject",
+}
+
 export type QuestionDecision =
-  | { action: "reply"; answer: string }
-  | { action: "reject"; reason: string };
+  | { action: QuestionAction.Reply; answer: string }
+  | { action: QuestionAction.Reject; reason: string };
 
 export interface QuestionResult {
   succeeded: boolean;
@@ -39,12 +50,12 @@ export function decideQuestion(
   answer: string | null,
 ): QuestionDecision {
   if (taskState === "retained") {
-    return { action: "reject", reason: QUESTION_SETTLED };
+    return { action: QuestionAction.Reject, reason: QUESTION_SETTLED };
   }
   if (answer === null || answer.length === 0) {
-    return { action: "reject", reason: QUESTION_NO_ANSWER };
+    return { action: QuestionAction.Reject, reason: QUESTION_NO_ANSWER };
   }
-  return { action: "reply", answer };
+  return { action: QuestionAction.Reply, answer };
 }
 
 // Settlement transport: guards on inputs, and an "already resolved" answer

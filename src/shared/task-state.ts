@@ -22,42 +22,69 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
-import type { LedgerChange } from "./session-lifecycle.js";
+import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import type { LaneConfigSource, DynamicTaskConfig } from "./config.js";
 import type { WaitRegistry } from "./dispatch-wait.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkLaneCapacity, resolveLane, resolveLaneName, DEFAULT_CONFIG } from "./config.js";
 
 /**
+/**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE
  * child→parent channel (no purpose-specific tool): `progress` is information,
  * `needs_input` is the child saying this turn cannot finish without the parent.
  * The claim is what the settlement reads, so a child that ends its turn blocked
  * is recorded as blocked — the alternative was reporting it as a success.
+ *
+ * An enum rather than a string-literal union, because a union invites `claim
+ * === "needs_input"` and a raw literal in a comparison is a rename that compiles
+ * clean and a value nobody updates. The member is the value; the string is only
+ * what crosses the wire.
  */
-export type NoticeClaim = "progress" | "needs_input";
+export enum NoticeClaim {
+  Progress = "progress",
+  NeedsInput = "needs_input",
+}
 
 // The claims, as data: the tool validates its argument against this list, so an
 // unrecognized claim is refused rather than quietly downgraded to progress — a
 // typo'd `needs_input` would settle the child as a success.
-export const NOTICE_CLAIMS: readonly NoticeClaim[] = ["progress", "needs_input"];
+export const NOTICE_CLAIMS: readonly NoticeClaim[] = Object.values(NoticeClaim);
 
-export type TaskState =
-  | "active"
-  | "completed"
-  | "error"
-  // Ended its turn needing the parent's answer. Not a success and not a failure:
-  // the child worked, it could not finish, and the plugin recorded
-  // `completed` for exactly this case — a false success claim about a task that
-  // delivered no result. It is terminal (the turn is over) and revivable (the
-  // parent's answer is a new turn).
-  | "blocked"
-  | "interrupted";
+/**
+ * Is this a claim? A predicate rather than a list lookup behind a cast: the tool
+ * receives `unknown` from the host, and a cast is a promise that someone else
+ * checked. This is the check, and it narrows the value in the same breath.
+ */
+export function isNoticeClaim(value: unknown): value is NoticeClaim {
+  return typeof value === "string" && Object.values<string>(NoticeClaim).includes(value);
+}
+
+/**
+ * A task's lifecycle state.
+ *
+ * `blocked` is a state of its own: the child ended its turn needing the parent's
+ * answer. Not a success and not a failure — the child worked, it could not
+ * finish, and the plugin recorded `completed` for exactly this case, a false
+ * success claim about a task that delivered no result. It is terminal (the turn
+ * is over) and revivable (the parent's answer is a new turn).
+ *
+ * An enum, not a string-literal union, for the same reason as NoticeClaim: a
+ * union is an invitation to compare against a raw literal, and the wire string is
+ * the only place a literal belongs.
+ */
+export enum TaskState {
+  Active = "active",
+  Completed = "completed",
+  Error = "error",
+  Blocked = "blocked",
+  Interrupted = "interrupted",
+}
 
 // The states, as data: the durable reader validates a restored record against
 // this list, so a state cannot be added to the machine and forgotten by the
 // reader that has to understand it.
-export const TASK_STATES: readonly TaskState[] = ["active", "completed", "error", "blocked", "interrupted"];
+export const TASK_STATES: readonly TaskState[] = Object.values(TaskState);
 
 /**
  * A settlement, named — and the names are the machine's OWN terminal states, so
@@ -67,7 +94,7 @@ export const TASK_STATES: readonly TaskState[] = ["active", "completed", "error"
  * `interrupted` is absent on purpose: it is claimed by the interrupt funnel, not
  * arrived at by a turn ending.
  */
-export type SettlementVerdict = Extract<TaskState, "completed" | "blocked" | "error">;
+export type SettlementVerdict = Extract<TaskState, TaskState.Completed | TaskState.Blocked | TaskState.Error>;
 
 export type LineageStep = string;
 export type LineagePath = LineageStep[];
@@ -148,7 +175,7 @@ export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
 }
 
 export interface ActiveTaskState extends TaskRecordBase {
-  state: "active";
+  state: TaskState.Active;
   // Latest mid-flight notice from the child (advisory metadata, not a lifecycle
   // field). `claim` is what the child said about itself: `needs_input` means
   // this turn is ending because it needs the parent, and the settlement reads it
@@ -233,12 +260,12 @@ export type LedgerChangeSink = (changes: readonly LedgerChange[]) => void;
 // disk anyway (durableActiveTask), because a fresh process cannot verify them.
 function setActive(store: TaskStore, childSessionId: string, record: ActiveTaskState): void {
   store.activeTasks.set(childSessionId, record);
-  store.onActiveChange?.([{ kind: "running", id: childSessionId, record }]);
+  store.onActiveChange?.([{ kind: LedgerChangeKind.Running, id: childSessionId, record }]);
 }
 
 function removeActive(store: TaskStore, childSessionId: string): void {
   store.activeTasks.delete(childSessionId);
-  store.onActiveChange?.([{ kind: "stopped", id: childSessionId }]);
+  store.onActiveChange?.([{ kind: LedgerChangeKind.Stopped, id: childSessionId }]);
 }
 
 // State machine (the one true lifecycle matrix). Active tasks move to a terminal
@@ -247,11 +274,11 @@ function removeActive(store: TaskStore, childSessionId: string): void {
 // noteLateOutcome, NOT by transitionState — this keeps the primary "does a
 // transition happen at all" question decidable from this matrix alone.
 const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
-  "active": ["completed", "error", "blocked", "interrupted"],
-  "completed": [],
-  "error": [],
-  "blocked": [],
-  "interrupted": [],
+  [TaskState.Active]: [TaskState.Completed, TaskState.Error, TaskState.Blocked, TaskState.Interrupted],
+  [TaskState.Completed]: [],
+  [TaskState.Error]: [],
+  [TaskState.Blocked]: [],
+  [TaskState.Interrupted]: [],
 };
 
 // Withdraw a speculative interrupt claim after an abort transport failure
@@ -271,7 +298,7 @@ export function withdrawInterruptClaim(
   bounds?: LaneConfigSource,
 ): boolean {
   return decideRetained(store, childSessionId, (retained) => {
-    if (retained.state !== "interrupted") return false;
+    if (retained.state !== TaskState.Interrupted) return false;
     // >= not >: a successful abort landing in the same millisecond as the
     // claim is still knowledge — the newer (or same-instant) success wins.
     if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
@@ -311,7 +338,7 @@ function reclaimAsActive(
   overrides: Partial<ActiveTaskState> = {},
 ): ActiveTaskState {
   const { state: _settled, retainedAt: _at, abortError: _err, lastAbortAt: _abort, ...carried } = retained;
-  const reclaimed: ActiveTaskState = { ...carried, state: "active", ...overrides };
+  const reclaimed: ActiveTaskState = { ...carried, state: TaskState.Active, ...overrides };
   store.retainedTasks.delete(childSessionId);
   setActive(store, childSessionId, reclaimed);
   return reclaimed;
@@ -428,7 +455,7 @@ function claimSlot(store: TaskStore, record: { readonly lane: string }, config: 
  * and then stop.
  */
 export function activeRecord(registration: NewTaskRegistration, startedAt: number): ActiveTaskState {
-  return { ...registration, state: "active", startedAt };
+  return { ...registration, state: TaskState.Active, startedAt };
 }
 
 /**
@@ -489,7 +516,7 @@ export function transitionState(
           const retained = retainedRecord(active, to, Date.now());
     removeActive(store, childSessionId);
     store.retainedTasks.set(childSessionId, retained);
-    emitRetainedChange(store, { kind: "settled", id: childSessionId, record: retained });
+    emitRetainedChange(store, { kind: LedgerChangeKind.Settled, id: childSessionId, record: retained });
     return { state: to, completed: true, task: retained };
   }
 
@@ -506,7 +533,7 @@ export function transitionState(
 // errored task's own abort aftermath must never re-notify the parent.
 export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, "active">): boolean {
   return decideRetained(store, childSessionId, (retained) => {
-    if (retained.state !== "completed" || outcome !== "error") return false;
+    if (retained.state !== TaskState.Completed || outcome !== TaskState.Error) return false;
     retained.state = outcome;
     return true;
   });
@@ -528,7 +555,7 @@ export function reviveRetainedTask(
   if (!retained) {
     throw new Error(`Invalid transition: not found (no task for ${childSessionId})`);
   }
-  if (retained.state === "interrupted") {
+  if (retained.state === TaskState.Interrupted) {
     throw new Error(`Task ${childSessionId} was interrupted by request; interrupted children are not revived — spawn a fresh dynamic_task instead.`);
   }
   // The lane the settled record was running in, not a fresh default: a revival
@@ -611,7 +638,7 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
  */
 export function declaredBlocked(store: TaskStore, childSessionId: string): boolean {
   const active = store.activeTasks.get(childSessionId);
-  if (!active?.lastNotice || active.lastNotice.claim !== "needs_input") return false;
+  if (!active?.lastNotice || active.lastNotice.claim !== NoticeClaim.NeedsInput) return false;
   return active.lastNotice.at > (active.replacedAt ?? 0);
 }
 
@@ -683,7 +710,7 @@ export function pruneRetainedTasks(
   for (const [id, task] of store.retainedTasks) {
     if (now - task.retainedAt >= config.retainedTaskTtlMs) {
       store.retainedTasks.delete(id);
-      forgotten.push({ kind: "forgotten", id });
+      forgotten.push({ kind: LedgerChangeKind.Forgotten, id });
       dropped++;
     }
   }
@@ -691,7 +718,7 @@ export function pruneRetainedTasks(
     const oldest = oldestRetainedId(store);
     if (oldest === null) break;
     store.retainedTasks.delete(oldest);
-    forgotten.push({ kind: "forgotten", id: oldest });
+    forgotten.push({ kind: LedgerChangeKind.Forgotten, id: oldest });
     dropped++;
   }
   if (forgotten.length > 0) emitRetainedChange(store, ...forgotten);
@@ -837,7 +864,7 @@ function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
   const changes: LedgerChange[] = [];
   const superseded: string[] = [];
   const restored = hydrate(records, (id, record) => place(id, record, changes), outrankedBy, superseded);
-  for (const id of superseded) changes.push({ kind: "stopped", id });
+  for (const id of superseded) changes.push({ kind: LedgerChangeKind.Stopped, id });
   if (changes.length > 0) fire?.(changes);
   return restored;
 }
@@ -852,7 +879,7 @@ export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskS
     store.retainedTasks,
     (id, record, changes) => {
       store.activeTasks.set(id, record);
-      changes.push({ kind: "running", id, record });
+      changes.push({ kind: LedgerChangeKind.Running, id, record });
     },
     store.onActiveChange,
   );
@@ -879,8 +906,8 @@ export function restoreRetained(
       // too, and "this process no longer has it" is not the same claim.
       const dropped = pruneIfBounded(store, record, maxEntries);
       store.retainedTasks.set(id, dropped.kept);
-      if (dropped.forgotten !== null) changes.push({ kind: "forgotten", id: dropped.forgotten });
-      changes.push({ kind: "settled", id, record: dropped.kept });
+      if (dropped.forgotten !== null) changes.push({ kind: LedgerChangeKind.Forgotten, id: dropped.forgotten });
+      changes.push({ kind: LedgerChangeKind.Settled, id, record: dropped.kept });
     },
     store.onRetainedChange === undefined
       ? undefined

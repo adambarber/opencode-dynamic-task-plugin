@@ -5,7 +5,7 @@ import type { DynamicTaskConfig } from "../shared/config.js";
 import { normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
-import type { LedgerChange } from "../shared/session-lifecycle.js";
+import type { LedgerChange } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { hostTurnRunning, readLiveness } from "../shared/liveness.js";

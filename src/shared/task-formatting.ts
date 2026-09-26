@@ -3,7 +3,7 @@
 // truncateText and formatAge live in notify.ts / task-state.ts respectively —
 // one home each, imported here.
 import { truncateText, type NotificationRecord } from "./notify.js";
-import { formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
+import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading } from "./liveness.js";
 import { textBlock, present } from "./text-block.js";
@@ -140,7 +140,7 @@ function formatNotificationLine(notification: NotificationRecord): string {
  * beside a task that is already settled reads as a fault in a view that has none.
  */
 function sourcedLivenessLines(task: TaskRecord, liveness: LivenessReading | null): string[] {
-  if (!liveness || !(task.state === "active" || hostTurnRunning(liveness))) return [];
+  if (!liveness || !(task.state === TaskState.Active || hostTurnRunning(liveness))) return [];
   return [
     `Server status: ${liveness.hostState ?? "(not listed by the server)"}`,
     liveness.lastMessageAt === null
@@ -185,7 +185,7 @@ export function formatLivenessLines(
 ): string[] {
   return [
     ...sourcedLivenessLines(task, liveness),
-    ...(task.state === "active"
+    ...(task.state === TaskState.Active
       ? activeTurnLines(task, liveness)
       : // A settled record the server still calls busy: the child is working, so
         // the settlement was premature and its output is not final.
@@ -211,7 +211,7 @@ export function formatTaskStatusDetail(
     `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
     task.dependsOnSettled && task.dependsOnSettled.length > 0 ? `Depends on (settled): ${task.dependsOnSettled.join(", ")}` : undefined,
     formatLivenessLines(task, liveness ?? null),
-    ...(task.state === "active" ? activeStatusLines(task) : settledStatusLines(task)),
+    ...(task.state === TaskState.Active ? activeStatusLines(task) : settledStatusLines(task)),
     notification ? formatNotificationLine(notification) : undefined,
   );
 }
@@ -245,6 +245,13 @@ function settledStatusLines(task: RetainedTaskState): string[] {
  */
 export interface TaskResultRecord {
   sessionId: string;
+  /**
+   * Which vocabulary this field is speaking. A `string` because it is a union
+   * of a store state and a host word and neither is a subtype of the other, and
+   * a lie about that (`TaskState`, or a private union) would put the burden back
+   * on every reader. Typed as the union the two producers actually emit, so
+   * formatTaskResultSummary is the single place that has to know what each means.
+   */
   status: string;
   messageCount: number;
   latestText: string;
@@ -284,14 +291,20 @@ export const API_UNAVAILABLE = "(API unavailable)";
 export const NO_SESSION_RECORD = "(No session record found)";
 
 export function formatTaskResultSummary(input: TaskResultRecord): string {
-  const running = input.status === "busy" || input.status === "active";
+  // Three questions, three named answers. `TaskResultRecord.status` used to be
+  // one `string` field carrying TWO vocabularies — a store state when the
+  // session is tracked, a host word when it is not — so "is it running" had to
+  // guess at both sets of words, and `statusFromHostState`'s own vocabulary was
+  // a third. The field is now the union the two halves actually produce, and
+  // this is the one place that decides what each member MEANS.
+  const running = input.status === "busy" || input.status === TaskState.Active;
   // task_status is the settleability authority (it renders the same liveness
   // block beside the store's own state), so a running child is pointed there
   // rather than back at this tool, which cannot answer the question.
   const action =
     running
       ? "Recommended next action: use task_status for settleability, or task_result again later."
-      : input.status === "error"
+      : input.status === TaskState.Error
         ? "Recommended next action: inspect latest output, then use task_continue if recovery is possible."
         : "Recommended next action: no follow-up needed unless you want to continue the child session.";
 

@@ -10,7 +10,7 @@
 
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
-import type { SettlementVerdict } from "./task-state.js";
+import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
@@ -154,7 +154,7 @@ export function steerAutoRevived(sessionId: string, agentName: string, state: st
 }
 
 export function steerSettledMidway(state: string): string {
-  const remedy = state === "interrupted"
+  const remedy = state === TaskState.Interrupted
     ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"
     : "use task_continue to revive it for another turn";
   return `Message not sent: the task settled as ${state} while its turn was stopping; ${remedy}.`;
@@ -265,9 +265,9 @@ export const QUESTION_SETTLED =
 // delivered no result. The verdict decides the words, always.
 export function settlementFallback(verdict: SettlementVerdict, errorDetail?: string | undefined): string {
   switch (verdict) {
-    case "error": return errorDetail || "(error — no detail)";
-    case "blocked": return "(blocked — the child said nothing further)";
-    case "completed": return "(completed)";
+    case TaskState.Error: return errorDetail || "(error — no detail)";
+    case TaskState.Blocked: return "(blocked — the child said nothing further)";
+    case TaskState.Completed: return "(completed)";
   }
 }
 

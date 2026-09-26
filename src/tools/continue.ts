@@ -5,9 +5,10 @@ import { abortSession } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
-import { gateLedger } from "../shared/notify.js";
+import { gateLedger, NotifyKind } from "../shared/notify.js";
 import { textBlock } from "../shared/text-block.js";
 import {
+  TaskState,
   transitionState,
   markTurnReplacement,
   clearTurnReplacement,
@@ -67,7 +68,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // notification) stands, and the report names it instead of
       // double-notifying an error over the winner.
       let weSettled = false;
-      try { transitionState(store, sessionId, "error"); weSettled = true; } catch { /* settled concurrently */ }
+      try { transitionState(store, sessionId, TaskState.Error); weSettled = true; } catch { /* settled concurrently */ }
       if (!weSettled) {
         const state = store.retainedTasks.get(sessionId)?.state;
         if (state) {
@@ -76,7 +77,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         return steerStateUnknown(sessionId);
       }
       const missing = steerMissing(sessionId);
-      void deliverParent(client, active.parentSessionId, sessionId, active.description, "error", missing.notify)
+      void deliverParent(client, active.parentSessionId, sessionId, active.description, NotifyKind.Error, missing.notify)
         .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
       return missing.report;
     }
@@ -97,7 +98,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // No disarm needed: the stamps live on the active record and
       // transitionState strips them, so nothing is armed anymore by construction.
       const settled = store.retainedTasks.get(sessionId);
-      if (settled && settled.state !== "interrupted") {
+      if (settled && settled.state !== TaskState.Interrupted) {
         // M9: close the loop the abort-race opened. The abort landed, so the
         // session proved live — revive in this same call instead of demanding
         // a second round-trip. Falling through to the shared revival below,

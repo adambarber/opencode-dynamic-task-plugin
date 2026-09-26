@@ -12,7 +12,9 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
-import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
+import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
+import { TaskState } from "./task-state.js";
+import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
@@ -139,6 +141,23 @@ export function getEventLifecycleStatus(event: unknown): string {
   return source.includes(".") ? (source.split(".").pop() ?? "").toLowerCase() : source.toLowerCase();
 }
 
+/**
+ * The two lifecycle words that end a task BADLY rather than successfully.
+ *
+ * The lifecycle status itself is an OPEN vocabulary — it is whatever the host
+ * said, lowercased — so it cannot be an enum, and that means a comparison against
+ * these two words is a raw literal in a place that has to know them. So they are
+ * named here, once, and every caller asks the question instead of restating the
+ * answer. A caller that spells its own copy of this pair is a caller whose idea
+ * of "the child died" can drift from everyone else's.
+ */
+const ENDED_BADLY = ["error", "deleted"] as const;
+
+/** Did this lifecycle status end the task in failure rather than in success? */
+export function endedBadly(status: string): boolean {
+  return (ENDED_BADLY as readonly string[]).includes(status);
+}
+
 const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
 
 // The turn-ending events are named in host-events.ts against the SDK's own union
@@ -198,7 +217,7 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
 // one must NOT: `retainedAt` on an active entry would mean nothing.
 function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { state: Exclude<RetainedTaskState["state"], "active">; retainedAt: number } {
   return isValidLedgerEntry(value)
-    && value.state !== "active"
+    && value.state !== TaskState.Active
     && typeof value.retainedAt === "number"
     && Number.isFinite(value.retainedAt);
 }
@@ -303,7 +322,7 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
 // The durable half of a running task: the core withoutAdvisory already
 // declares, forced to the one state a restored record may be in.
 export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
-  return { ...withoutAdvisory(record), state: "active" };
+  return { ...withoutAdvisory(record), state: TaskState.Active };
 }
 
 export function loadTaskLedger(filePath: string): LoadedTaskLedger {
@@ -335,8 +354,8 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
         }
         if (isEventRecord(parsed["active"])) {
           for (const [key, entry] of Object.entries(parsed["active"])) {
-            if (isValidLedgerEntry(entry) && entry.state === "active" && entry.childSessionId === key) {
-              active.set(key, { ...hydratedBase(entry), state: "active" });
+            if (isValidLedgerEntry(entry) && entry.state === TaskState.Active && entry.childSessionId === key) {
+              active.set(key, { ...hydratedBase(entry), state: TaskState.Active });
             } else {
               dropped++;
             }
@@ -418,13 +437,7 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
  *    to N times that many settled records on disk. Each process bounds its own
  *    history; the file bounds the sum only to the extent they do not overlap.
  */
-export type LedgerChange =
-  | { readonly kind: "running"; readonly id: string; readonly record: ActiveTaskState }
-  | { readonly kind: "settled"; readonly id: string; readonly record: RetainedTaskState }
-  | { readonly kind: "stopped"; readonly id: string }
-  | { readonly kind: "forgotten"; readonly id: string }
-  | { readonly kind: "owed"; readonly record: PendingDelivery }
-  | { readonly kind: "delivered"; readonly record: PendingDelivery };
+
 
 /**
  * What a set of changes does to a ledger. Pure, and the whole of the merge
@@ -437,27 +450,27 @@ export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly Ledg
   const pending = [...onDisk.pending];
   for (const change of changes) {
     switch (change.kind) {
-      case "running":
+      case LedgerChangeKind.Running:
         active.set(change.id, change.record);
         break;
-      case "settled":
+      case LedgerChangeKind.Settled:
         retained.set(change.id, change.record);
         active.delete(change.id);
         break;
-      case "stopped":
+      case LedgerChangeKind.Stopped:
         active.delete(change.id);
         break;
-      case "forgotten":
+      case LedgerChangeKind.Forgotten:
         retained.delete(change.id);
         active.delete(change.id);
         break;
       // One lookup for both: what makes two notices the SAME notice is
       // `owedIdentity`, and the two cases differ only in what they do about it.
-      case "owed":
-      case "delivered": {
+      case LedgerChangeKind.Owed:
+      case LedgerChangeKind.Delivered: {
         const identity = owedIdentity(change.record);
         const at = pending.findIndex((owed) => owedIdentity(owed) === identity);
-        if (change.kind === "delivered") {
+        if (change.kind === LedgerChangeKind.Delivered) {
           if (at !== -1) pending.splice(at, 1);
         } else if (at === -1) pending.push(change.record);
         else pending[at] = change.record;

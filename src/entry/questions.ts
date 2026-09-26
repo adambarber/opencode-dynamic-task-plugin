@@ -8,10 +8,10 @@
 // bridge an `asked` event that carried no session id — a shape the host has
 // never published.
 import type { OpenCodeClient } from "../shared/client.js";
-import { annotateNotice, findTask, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
+import { annotateNotice, findTask, NoticeClaim, TaskState, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { isQuestionAsked, readAskedQuestion } from "../shared/host-events.js";
-import { replyToQuestion, rejectQuestion, decideQuestion } from "../shared/question-handling.js";
+import { replyToQuestion, rejectQuestion, decideQuestion, QuestionAction } from "../shared/question-handling.js";
 
 // One reporting tail for every rejection: a rejected question is logged by
 // outcome and the tag names which arm of the gate refused it. Both rejection arms
@@ -62,10 +62,10 @@ export async function handleQuestionEvent(
   // preference in a call site, which is how it would come to disagree.
   const task = findTask(store, sessionId);
 
-  if (task?.state === "active") {
+  if (task?.state === TaskState.Active) {
     const active = task;
     const decision = decideQuestion("active", answer);
-    if (decision.action === "reply") {
+    if (decision.action === QuestionAction.Reply) {
       const result = await replyToQuestion(client, questionId, decision.answer);
       if (result.succeeded) {
         debugLog(active.parentSessionId, sessionId, "question-auto-answered", {
@@ -92,7 +92,7 @@ export async function handleQuestionEvent(
     // The claim IS the reason, with no wrapper: a preamble saying what the
     // reason already says only pushes the parent's remedy further out, and the
     // status view truncates.
-    annotateNotice(store, sessionId, decision.reason, "needs_input");
+    annotateNotice(store, sessionId, decision.reason, NoticeClaim.NeedsInput);
     await reportRefusal(client, asked, active, "question-auto", decision.reason);
     return true;
   }
@@ -101,7 +101,7 @@ export async function handleQuestionEvent(
     // A settled child cannot answer its own question, and its answer would be
     // worthless anyway — so the question is closed rather than left open.
     const decision = decideQuestion("retained", answer);
-    if (decision.action === "reject") {
+    if (decision.action === QuestionAction.Reject) {
       await reportRefusal(client, asked, task, "question-retained", decision.reason);
     }
     return true;

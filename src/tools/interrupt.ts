@@ -17,6 +17,7 @@ import { abortSession } from "../shared/session-lifecycle.js";
 import type { OpenCodeClient } from "../shared/client.js";
 import { safeLog } from "../shared/notify.js";
 import {
+  TaskState,
   transitionState,
   withdrawInterruptClaim,
   noteAbortLanded,
@@ -32,8 +33,22 @@ import {
   type InterruptOutcome,
 } from "../shared/voice.js";
 
-/** How far a stop reaches. `subtree` is the default and the honest one. */
-export type InterruptScope = "subtree" | "self";
+/**
+ * How far a stop reaches. `subtree` is the default and the honest one.
+ *
+ * An enum because the scope is a decision the plugin makes about work it did not
+ * start, and a raw literal in that comparison is how a stop silently narrows or
+ * widens. The wire values are the literals the tool argument is spelled with.
+ */
+export enum InterruptScope {
+  Subtree = "subtree",
+  Self = "self",
+}
+
+/** A scope the tool understands, as a predicate — the argument arrives `unknown`. */
+function isInterruptScope(value: unknown): value is InterruptScope {
+  return value === InterruptScope.Subtree || value === InterruptScope.Self;
+}
 
 // A recognized scope, or the value that was refused. A scope the tool does not
 // understand is never defaulted: silently widening a stop kills work the caller
@@ -41,8 +56,8 @@ export type InterruptScope = "subtree" | "self";
 // report that reads as success.
 export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
   const raw = (args as { scope?: unknown } | null | undefined)?.scope;
-  if (raw === undefined) return { ok: true, scope: "subtree" };
-  if (raw === "subtree" || raw === "self") return { ok: true, scope: raw };
+  if (raw === undefined) return { ok: true, scope: InterruptScope.Subtree };
+  if (isInterruptScope(raw)) return { ok: true, scope: raw };
   return { ok: false, error: interruptScopeRefused(String(raw)) };
 }
 
@@ -72,7 +87,7 @@ function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string)
   const claimTime = Date.now();
   if (!store.activeTasks.get(sessionId)) return { claimed: false, claimTime };
   try {
-    transitionState(store, sessionId, "interrupted");
+    transitionState(store, sessionId, TaskState.Interrupted);
     return { claimed: true, claimTime };
   } catch {
     return { claimed: false, claimTime }; // settled concurrently
@@ -108,7 +123,7 @@ async function abortClaimed(
     // Withdrawal additionally requires no newer abort to have landed
     // since the claim (F-R4: success is knowledge, failure is
     // ignorance — the newer success wins).
-    if (claimed && store.retainedTasks.get(sessionId)?.state === "interrupted") {
+    if (claimed && store.retainedTasks.get(sessionId)?.state === TaskState.Interrupted) {
       if (withdrawInterruptClaim(store, sessionId, claim.claimTime, config)) {
         return abortFailedActive(client, sessionId, abortMessage, "speculative claim withdrawn, child may still be live");
       }
@@ -117,7 +132,7 @@ async function abortClaimed(
     }
     // A success record is never annotated with abort noise — the gap
     // belongs in the operator-visible report, not on the outcome.
-    if (retained && retained.state !== "completed") recordAbortError(store, sessionId, abortMessage);
+    if (retained && retained.state !== TaskState.Completed) recordAbortError(store, sessionId, abortMessage);
     return { kind: "abort-failed-settled", state: retained?.state ?? "unknown", message: abortMessage };
   }
   if (serverGone) return { kind: "server-gone" };
@@ -144,7 +159,7 @@ export async function executeTaskInterrupt(scope: ResolvedSessionScope, args?: u
   // and a line of noise in the report. The walk itself passes through settled
   // records (subtreeTaskIds), so a live grandchild under a finished child is
   // still reached.
-  const targets = (reach.scope === "self"
+  const targets = (reach.scope === InterruptScope.Self
     ? [sessionId]
     : subtreeTaskIds(store, sessionId)).filter((id) => id === sessionId || store.activeTasks.has(id));
 

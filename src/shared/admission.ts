@@ -24,6 +24,7 @@ import {
   findTask,
   pruneRetainedTasks,
   TASK_STATES,
+  TaskState,
   type ActiveTaskState,
   type NewTaskRegistration,
   type TaskStore,
@@ -157,7 +158,7 @@ function resolveLane(
 // to the machine is settled here by construction instead of by a second hand-
 // written list that drifts.
 const SATISFIED_DEPENDENCY_STATES: readonly string[] = ["completed"];
-const SETTLED_DEPENDENCY_STATES: readonly string[] = TASK_STATES.filter((state) => state !== "active");
+const SETTLED_DEPENDENCY_STATES: readonly string[] = TASK_STATES.filter((state) => state !== TaskState.Active);
 
 export interface DependencyBlock {
   id: string;

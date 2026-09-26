@@ -7,12 +7,13 @@
 // execution-bound, including the one on the parent prompt itself — the host
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
-import type { LedgerChange } from "./session-lifecycle.js";
+import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import { textBlock } from "./text-block.js";
 import { evictOldest } from "./bounded-map.js";
 import { errorMessage } from "./host-shape.js";
+import { TaskState, type SettlementVerdict } from "./task-state.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -53,7 +54,18 @@ export async function containFailure(
   await safeLog(client, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
 }
 
-export type NotifyKind = "completed" | "error" | "blocked" | "notice";
+/**
+ * What a settlement or a mid-flight notice tells the parent, as an enum rather
+ * than a string-literal union: a union invites `kind === "notice"`, and a raw
+ * literal in a comparison is a rename that compiles clean. The member is the
+ * value; the literal is only what the parent reads on the wire.
+ */
+export enum NotifyKind {
+  Completed = "completed",
+  Error = "error",
+  Blocked = "blocked",
+  Notice = "notice",
+}
 
 /**
  * Who a delivery is for. The two records that carry a delivery each spelled this
@@ -167,7 +179,28 @@ export interface PendingDelivery extends DeliveryTarget {
 
 // The kinds, as data: the ledger reader validates a restored entry against this
 // list, so the two can never disagree about what a kind is.
-export const NOTIFY_KINDS: readonly NotifyKind[] = ["completed", "error", "blocked", "notice"];
+export const NOTIFY_KINDS: readonly NotifyKind[] = Object.values(NotifyKind);
+
+/**
+ * The one place a settlement's verdict and its notification kind meet.
+ *
+ * They are the same three words, and they are two types because they are two
+ * different facts: the verdict is what the RECORD says happened, the kind is
+ * what the PARENT is told. A switch rather than a lookup table so adding a
+ * verdict is a compile error here, in the one function that has to answer for
+ * it — a table would default and let a new ending be announced as something it
+ * is not, which is the false-success claim this plugin exists to avoid.
+ */
+export function settlementKind(verdict: SettlementVerdict): NotifyKind {
+  switch (verdict) {
+    case TaskState.Completed:
+      return NotifyKind.Completed;
+    case TaskState.Error:
+      return NotifyKind.Error;
+    case TaskState.Blocked:
+      return NotifyKind.Blocked;
+  }
+}
 
 const pendingDeliveries: PendingDelivery[] = [];
 // Installed once at boot by the persistence dance. Tenet 9: process-global by
@@ -198,7 +231,7 @@ export function restorePendingDeliveries(entries: PendingDelivery[]): void {
  * one notice be written as two and dropped as one.
  */
 export function owedIdentity(entry: PendingDelivery): string {
-  return entry.kind === "notice" ? `${entry.childSessionId}\u0000notice\u0000${entry.text}` : `${entry.childSessionId}\u0000${entry.kind}`;
+  return entry.kind === NotifyKind.Notice ? `${entry.childSessionId}\u0000notice\u0000${entry.text}` : `${entry.childSessionId}\u0000${entry.kind}`;
 }
 
 // "Is this one already owed, and where" — the single read both queue writers need,
@@ -213,14 +246,14 @@ function queuePending(entry: PendingDelivery): void {
   else pendingDeliveries[at] = entry;
   // The notice itself is the change, so the shared ledger is told which one was
   // owed rather than being handed this process's whole queue to re-serialize.
-  persistPending?.([{ kind: "owed", record: entry }]);
+  persistPending?.([{ kind: LedgerChangeKind.Owed, record: entry }]);
 }
 
 function dropPending(entry: PendingDelivery): void {
   const at = indexOfOwedEntry(entry);
   if (at === -1) return;
   pendingDeliveries.splice(at, 1);
-  persistPending?.([{ kind: "delivered", record: entry }]);
+  persistPending?.([{ kind: LedgerChangeKind.Delivered, record: entry }]);
 }
 
 function indexOfOwed(identity: string): number {

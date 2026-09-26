@@ -12,7 +12,8 @@ import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, laneCapacityRefusal } from "../shared/task-state.js";
+import { transitionState, laneCapacityRefusal, TaskState } from "../shared/task-state.js";
+import { NotifyKind } from "../shared/notify.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
@@ -160,7 +161,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     if (createdSessionId) {
       const failedChildSessionId = createdSessionId;
       if (store.activeTasks.has(failedChildSessionId)) {
-        try { transitionState(store, failedChildSessionId, "error"); } catch { /* already terminal */ }
+        try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* already terminal */ }
       } else {
         // Best-effort: the child is already untracked, so the outcome
         // changes nothing here — it cannot be notified, only left running.
@@ -178,7 +179,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         parentSessionId || UNKNOWN_PARENT,
         failedChildSessionId,
         args.description || "background task",
-        "error",
+        NotifyKind.Error,
         spawnErrorText,
       ).then((delivered) => debugLog(parentSessionId || UNKNOWN_PARENT, failedChildSessionId, "spawn-error-notify", { delivered }));
     }

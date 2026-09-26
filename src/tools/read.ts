@@ -16,7 +16,7 @@ import {
   API_UNAVAILABLE,
   type FleetRow,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, listTasks, TaskState } from "../shared/task-state.js";
 import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
@@ -139,7 +139,7 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   // running descendant needs it to hold its place.
   const liveBranch = (node: DispatchNode): DispatchNode[] => {
     const below = node.children.flatMap(liveBranch);
-    return node.task.state === "active" || below.length > 0 ? [node, ...below] : [];
+    return node.task.state === TaskState.Active || below.length > 0 ? [node, ...below] : [];
   };
   const branch = dispatchForest(store).flatMap(liveBranch);
   return formatTaskListSummary({
@@ -149,7 +149,7 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
       parentSessionId: node.task.parentSessionId,
       parentTracked: node.parentTracked,
     })),
-    activeCount: branch.filter((node) => node.task.state === "active").length,
+    activeCount: branch.filter((node) => node.task.state === TaskState.Active).length,
     retained: retained.map(toRow),
     maxConcurrent: config.maxConcurrent,
     pruned,

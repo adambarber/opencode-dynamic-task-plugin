@@ -3,8 +3,8 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless } from "../shared/session-lifecycle.js";
-import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
-import { pruneRetainedTasks, findTask, annotateNotice, NOTICE_CLAIMS, type NoticeClaim } from "../shared/task-state.js";
+import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification, NotifyKind } from "../shared/notify.js";
+import { pruneRetainedTasks, findTask, annotateNotice, isNoticeClaim, NoticeClaim, TaskState } from "../shared/task-state.js";
 import { callerSessionId, type ToolDeps } from "./context.js";
 import {
   CALLER_UNKNOWN,
@@ -42,17 +42,18 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   // child→parent channel. Default is progress; an unrecognized kind is refused
   // rather than downgraded, because a typo'd `needs_input` would settle the
   // child as a success — the exact false claim the kind exists to prevent.
-  if (args.kind !== undefined && !NOTICE_CLAIMS.includes(args.kind as NoticeClaim)) {
+  const claimed = args.kind === undefined ? NoticeClaim.Progress : args.kind;
+  if (!isNoticeClaim(claimed)) {
     return noticeClaimRefused(String(args.kind));
   }
-  const claim = (args.kind as NoticeClaim | undefined) ?? "progress";
+  const claim = claimed;
 
   pruneRetainedTasks(store, config);
   const task = findTask(store, callerId);
   if (!task) {
     return NOT_A_TRACKED_TASK;
   }
-  if (task.state !== "active") {
+  if (task.state !== TaskState.Active) {
     return alreadySettledNotice(task.state);
   }
 
@@ -62,12 +63,12 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   }
   const parentMessage = formatParentNotification(
     { childSessionId: task.childSessionId, description: task.description },
-    "notice",
+    NotifyKind.Notice,
     message,
   );
   const delivered = await notifyParent(client, task.parentSessionId, parentMessage, {
     childSessionId: task.childSessionId,
-    kind: "notice",
+    kind: NotifyKind.Notice,
     dedupKey: noticeDedupKey(message),
   });
   if (delivered) return NOTICE_SENT;

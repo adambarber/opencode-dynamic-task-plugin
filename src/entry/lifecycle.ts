@@ -6,6 +6,7 @@ import type { OpenCodeClient } from "../shared/client.js";
 import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
+  endedBadly,
   eventLooksDeleted,
   isParentless,
   UNKNOWN_PARENT,
@@ -23,7 +24,8 @@ import {
   formatParentNotification,
   notifyRecord,
   recordNotification,
-  type NotifyKind,
+  NotifyKind,
+  settlementKind,
 } from "../shared/notify.js";
 import {
   transitionState,
@@ -36,6 +38,7 @@ import {
   type TaskIdentity,
   type TaskRecordBase,
   type SettlementVerdict,
+  TaskState,
 } from "../shared/task-state.js";
 import { releaseWaitsFor, type DependencyWait } from "../shared/dispatch-wait.js";
 import { resolveDependencies } from "../shared/admission.js";
@@ -97,7 +100,7 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
     if (classified.retryable) return;
     let settled = false;
     try {
-      transitionState(store, task.childSessionId, "error");
+      transitionState(store, task.childSessionId, TaskState.Error);
       settled = true;
     } catch { /* a lifecycle event won the settlement */ }
     if (settled) {
@@ -105,7 +108,7 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
       const modelSuffix = task.requestedModel
         ? `\nRequested model: ${task.requestedModel.providerID}/${task.requestedModel.modelID}`
         : "";
-      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, "error", `${classified.message}${modelSuffix}`)
+      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, NotifyKind.Error, `${classified.message}${modelSuffix}`)
         .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
     }
   };
@@ -150,10 +153,10 @@ function settlementVerdict(input: {
   event: unknown;
   declaredBlocked: boolean;
 }): SettlementVerdict {
-  if (input.status === "error" || input.status === "deleted" || (input.event !== undefined && eventLooksDeleted(input.event))) {
-    return "error";
+  if (endedBadly(input.status) || (input.event !== undefined && eventLooksDeleted(input.event))) {
+    return TaskState.Error;
   }
-  return input.declaredBlocked ? "blocked" : "completed";
+  return input.declaredBlocked ? TaskState.Blocked : TaskState.Completed;
 }
 
 export async function settleRunningChild(
@@ -176,7 +179,7 @@ export async function settleRunningChild(
   // an unknown one — and the record the settlement needs is the record the guard
   // was asked about, not a second lookup.
   const task = findTask(store, childSessionId);
-  if (task?.state !== "active") return false;
+  if (task?.state !== TaskState.Active) return false;
   // Synchronous claim — no awaits before this. transitionState is the one
   // settlement gate: the winner replaces the active entry, so every
   // competing writer's transition throws and bows out.
@@ -205,11 +208,11 @@ export async function settleRunningChild(
   const outcome = await hydrateLatestOutcome(client, childSessionId);
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
   // the same words, so a settled `blocked` cannot be announced as a success.
-  let kind: NotifyKind = verdict;
-  if (verdict === "completed" && outcome.errorDetail) {
-    verdict = "error";
-    kind = "error";
-    if (!noteLateOutcome(store, childSessionId, "error")) {
+  let kind: NotifyKind = settlementKind(verdict);
+  if (verdict === TaskState.Completed && outcome.errorDetail) {
+    verdict = TaskState.Error;
+    kind = NotifyKind.Error;
+    if (!noteLateOutcome(store, childSessionId, TaskState.Error)) {
       void safeLog(client, "info", `Late error already recorded for ${childSessionId}`);
     }
   }
@@ -226,7 +229,7 @@ export async function settleRunningChild(
   // killed the turn usually resumes cleanly via task_continue, while a
   // fatal cause must not invite a blind retry. Advisory only — kind and
   // state are already decided above.
-  const resumeHint = kind === "error" && isTransientOutcomeError(outcome.errorDetail)
+  const resumeHint = kind === NotifyKind.Error && isTransientOutcomeError(outcome.errorDetail)
     ? "\n\nThis failure looks transient (network/provider blip) — task_continue can usually resume the child from here."
     : "";
   // Detached: the synchronous claim above is the settlement guarantee;
@@ -277,7 +280,7 @@ function releaseWaitingDispatches(
     // A wait is a property of the PARENT's dispatch, so the child session id
     // this rides on is the edge that answered it — which is what lets the
     // parent see it next to the settlement that released it.
-    void deliverParent(client, waitingParent, settledChildSessionId, "a dispatch you asked for", "notice", body)
+    void deliverParent(client, waitingParent, settledChildSessionId, "a dispatch you asked for", NotifyKind.Notice, body)
       .then((delivered) => debugLog(waitingParent, settledChildSessionId, "wait-released", { delivered }));
   }
 }
@@ -306,15 +309,15 @@ export async function handleChildLifecycleEvent(
     // abort's echo, not a discovery, and escalating them would notify the
     // parent of a "failure" it deliberately caused.
     const status = getEventLifecycleStatus(event);
-    if (status !== "error" && status !== "deleted") return;
-    if (retained.state !== "completed") return;
+    if (!endedBadly(status)) return;
+    if (retained.state !== TaskState.Completed) return;
     const outcome = await hydrateLatestOutcome(client, childSessionId);
     const current = store.retainedTasks.get(childSessionId);
-    if (!current || current.state !== "completed") return; // lost the escalation race
-    noteLateOutcome(store, childSessionId, "error");
+    if (!current || current.state !== TaskState.Completed) return; // lost the escalation race
+    noteLateOutcome(store, childSessionId, TaskState.Error);
     const errorDetail = outcome.errorDetail
       || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
-    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, "error", errorDetail)
-      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error", delivered }));
+    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, errorDetail)
+      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: NotifyKind.Error, delivered }));
   }
 }

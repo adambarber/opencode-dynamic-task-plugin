@@ -21,6 +21,31 @@ import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
+// The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
+// is `satisfies Event["type"]` in host-events.ts, so the harness cannot fire an
+// event the host does not publish — which is the one thing a fixture must never
+// be able to do, because a fixture that invents an event certifies a gate that
+// listens for it. That is exactly how `question.created` shipped.
+import {
+  QUESTION_ASKED,
+  QUESTION_REJECTED,
+  QUESTION_REPLIED,
+  SESSION_DELETED,
+  SESSION_ERROR,
+  SESSION_IDLE,
+  SESSION_STATUS,
+} from "../../../dist/shared/host-events.js";
+
+/** The host's event names, for a test that must name one directly. */
+export const HOST_EVENT = {
+  QUESTION_ASKED,
+  QUESTION_REJECTED,
+  QUESTION_REPLIED,
+  SESSION_DELETED,
+  SESSION_ERROR,
+  SESSION_IDLE,
+  SESSION_STATUS,
+};
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -160,18 +185,18 @@ function applyHostStatus(state, event) {
   const id = event.properties?.sessionID;
   if (typeof id !== "string") return;
   const current = state.hostStatus.get(id);
-  if (event.type === "session.deleted") {
+  if (event.type === SESSION_DELETED) {
     state.hostStatus.delete(id);
     return;
   }
   if (!current) return;
   const status = event.properties?.status;
   const word = typeof status === "string" ? status : status?.type;
-  if (event.type === "session.error") {
+  if (event.type === SESSION_ERROR) {
     setHostTurn(state, id, "error");
-  } else if (event.type === "session.idle" || (event.type === "session.status" && word)) {
+  } else if (event.type === SESSION_IDLE || (event.type === SESSION_STATUS && word)) {
     // The idle event carries no word of its own — the event's name IS the word.
-    setHostTurn(state, id, event.type === "session.idle" ? "idle" : word);
+    setHostTurn(state, id, event.type === SESSION_IDLE ? "idle" : word);
   } else if (current.type === "busy") {
     setHostTurn(state, id, "busy");
   }
@@ -196,10 +221,10 @@ export const events = {
    * `properties` rides through so a test can reproduce a slimmer host payload
    * (`events.idle(id, {})`) when the absence of a field is the point.
    */
-  idle: (id, properties = { status: "idle" }) => ({ type: "session.idle", properties: { sessionID: id, ...properties } }),
+  idle: (id, properties = { status: "idle" }) => ({ type: SESSION_IDLE, properties: { sessionID: id, ...properties } }),
   // The host's status channel, in the host's own nested spelling
   // (`status: {type}`), not the string shorthand it used to be declared with.
-  status: (id, status = "idle") => ({ type: "session.status", properties: { sessionID: id, status: { type: status } } }),
+  status: (id, status = "idle") => ({ type: SESSION_STATUS, properties: { sessionID: id, status: { type: status } } }),
   /**
    * A turn at work: the host saying this session is running. It is the first
    * event a replacement turn produces, and therefore the life sign that lets
@@ -214,10 +239,10 @@ export const events = {
     properties: { sessionID: id },
   }),
   errorUpdate: (id) => events.updated(id, { type: "error" }),
-  deleted: (id, properties = {}) => ({ type: "session.deleted", properties: { sessionID: id, ...properties } }),
+  deleted: (id, properties = {}) => ({ type: SESSION_DELETED, properties: { sessionID: id, ...properties } }),
   // EventSessionError carries an error detail, never a status field.
   error: (id, error) => ({
-    type: "session.error",
+    type: SESSION_ERROR,
     properties: { sessionID: id, ...(error ? { error } : {}) },
   }),
   /**
@@ -235,7 +260,7 @@ export const events = {
    * so the fixture is the host's own shape verbatim.
    */
   questionAsked: (sessionID, properties) => ({
-    type: "question.asked",
+    type: QUESTION_ASKED,
     properties: { ...(sessionID ? { sessionID } : {}), ...properties },
   }),
   /** A question the host published, spelled as the SDK types it. */
@@ -254,8 +279,8 @@ export const events = {
   ask: (sessionID, questionId, ...options) =>
     events.questionAsked(sessionID, { id: questionId, questions: [events.hostQuestion("Ship it?", options)] }),
   /** The reply that retires a question — the host spells the id `requestID`. */
-  questionReplied: (props) => ({ type: "question.replied", properties: props }),
-  questionRejected: (props) => ({ type: "question.rejected", properties: props }),
+  questionReplied: (props) => ({ type: QUESTION_REPLIED, properties: props }),
+  questionRejected: (props) => ({ type: QUESTION_REJECTED, properties: props }),
 };
 
 /**

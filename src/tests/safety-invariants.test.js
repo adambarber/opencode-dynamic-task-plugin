@@ -216,6 +216,46 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
   });
 });
 
+// Tenet 12. The question gate shipped matching `question.created`, an event no
+// host version publishes, and the suite stayed green because a FIXTURE invented
+// it: the fixture asserted the gate answered, the gate answered the fixture, and
+// neither party had ever spoken to a host. That failure is not a typo — it is a
+// missing chokepoint, and the chokepoint in production (host-events.ts, every
+// name `satisfies Event["type"]`) cannot reach a name the suite invents for
+// itself.
+//
+// So the harness draws its event types from production. Scoped to the fixture
+// layer on purpose, because the asymmetry is real: a fixture name that no host
+// publishes makes a BROKEN gate look covered, which is the failure that shipped,
+// while a unit test's hand-written input to a pure reader can only fail loudly —
+// the reader it feeds is production code keyed on the pinned constant, so a
+// divergent literal returns "" and the assertion breaks. The fixture is the only
+// place where both halves of the assertion are under the test's own control.
+describe("invariant: the host model invents no event names (Tenet 12)", () => {
+  // `type:` only. `name:` is the sync channel's own field, which production
+  // matches by substring on purpose ("spellings differ across releases"), so
+  // pinning it to one literal would be a false precision.
+  const INVENTED_TYPE = /\btype:\s*"(session|question|message|permission|file|storage|project|install)\./;
+
+  rule({
+    name: "the harness spells no host event type — it imports the pinned ones",
+    patterns: [INVENTED_TYPE],
+    corpus: () => [path.join(TESTS_DIR, "support", "harness.js")],
+    skip: [PROSE],
+    doc: DOC_FIDELITY,
+    why: "A fixture that invents a host event name certifies a gate that listens for it.",
+  });
+
+  rule({
+    name: "production pins every host event name against the SDK union",
+    patterns: [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
+    corpus: listProdFiles,
+    skip: [PROSE],
+    doc: DOC_FIDELITY,
+    why: "A host event name spelled in production bypasses the chokepoint that makes it checkable.",
+  });
+});
+
 // --- Task 03: prompt/hydration dance ---------------------------------------
 // Primitive: client.session.prompt. Until the Task 03 dance module exists
 // there is no sanctioned caller — every site is reported so the migration

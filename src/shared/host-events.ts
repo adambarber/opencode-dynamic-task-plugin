@@ -42,6 +42,10 @@ export const QUESTION_V2_REJECTED = "question.v2.rejected" satisfies HostEventTy
 export const SESSION_IDLE = "session.idle" satisfies HostEventType;
 export const SESSION_ERROR = "session.error" satisfies HostEventType;
 export const SESSION_DELETED = "session.deleted" satisfies HostEventType;
+// The host's status channel — how liveness is read. It is here because the test
+// harness had to spell it: a chokepoint with a hole in it is a chokepoint the
+// caller routes around, and the caller then owns a name nothing checks.
+export const SESSION_STATUS = "session.status" satisfies HostEventType;
 
 /** True when the host published an asked question, under either spelling. */
 export function isQuestionAsked(type: string): boolean {

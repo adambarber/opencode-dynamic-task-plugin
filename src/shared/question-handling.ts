@@ -86,11 +86,15 @@ function unsent(reason: string): Promise<QuestionResult> {
   return Promise.resolve({ succeeded: false, reason });
 }
 
+/**
+ * Answer a question on behalf of a child.
+ *
+ * The host routes /question/{requestID}/reply — `requestID`, not `id` — and wants
+ * `answers`: one entry per asked question, each the list of chosen labels. A bare
+ * `answer` string is silently the wrong shape.
+ */
 export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
   if (!questionId || !answer) return unsent("missing question id or answer");
-  // The host routes /question/{requestID}/reply — `requestID`, not `id` — and
-  // wants `answers`: one entry per asked question, each the list of chosen
-  // labels. A bare `answer` string is silently the wrong shape.
   return sendQuestionSettlement(questionId, () =>
     client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer]] } }),
   );

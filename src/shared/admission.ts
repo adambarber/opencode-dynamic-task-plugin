@@ -243,11 +243,15 @@ let agentCacheEpoch = 0;
 
 const CACHE_TTL = 300000;
 
+/**
+ * The agent list as one comma-joined line for a prompt.
+ *
+ * Total on malformed input: the host may invoke named exports outside the
+ * default-export lifecycle (observed: called with a non-array while the plugin
+ * entry never ran), and a throw here fails the entire plugin boot. Never throw;
+ * degrade to the empty-list marker.
+ */
 export function buildAgentList(agents: unknown): string {
-  // Total on malformed input: the host may invoke named exports outside the
-  // default-export lifecycle (observed: called with a non-array while the
-  // plugin entry never ran), and a throw here fails the entire plugin boot.
-  // Never throw; degrade to the empty-list marker.
   if (!Array.isArray(agents)) return "(none discovered)";
   const names = agents.filter(isAgentRecord).map((a) => a.name);
   if (names.length === 0) return "(none discovered)";

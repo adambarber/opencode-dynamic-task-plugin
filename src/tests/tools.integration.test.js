@@ -836,7 +836,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("idle terminal event over an errored message stream notifies error, not success", async () => {
     const h = await setupHarness({ hooks: { messages: erroredMessages } });
     const { id, c } = await h.spawn({ description: "A1 success-status axis" });
-    const note = await h.noticeAfter(events.idle(id, {}));
+    const note = (await h.noticeAfter(events.idle(id, {}))).message;
     assert.ok(note.includes("ended with an error"), `must report error. got: ${note}`);
     assert.ok(note.includes("Too Many Requests"), `must carry provider detail. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
@@ -848,9 +848,9 @@ describe("outcome correctness: failed turns never report success", () => {
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await setupHarness({ hooks: { messages: () => [] } });
     const { id, c } = await h.spawn({ description: "err evt" });
-    const note = await h.noticeAfter(
+    const note = (await h.noticeAfter(
       events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
-    );
+    )).message;
     assert.ok(note.includes("ended with an error"), `got: ${note}`);
     });
 
@@ -872,7 +872,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("deleted session with stale idle status notifies error, never success", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "vanishing child" });
-    const note = await h.noticeAfter(events.deleted(id, { info: { status: "idle" } }));
+    const note = (await h.noticeAfter(events.deleted(id, { info: { status: "idle" } }))).message;
     assert.ok(note.includes("ended with an error"), `vanished session is a failure. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     const status = await c.status();
@@ -990,7 +990,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("a deleted session settles as error, never as success", async () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ description: "deleted child" });
-    const note = await h.noticeAfter(events.deleted(id));
+    const note = (await h.noticeAfter(events.deleted(id))).message;
     assert.ok(note.includes("ended with an error"), `deletion is a failure. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     });

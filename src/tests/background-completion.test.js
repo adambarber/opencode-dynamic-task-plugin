@@ -59,14 +59,8 @@ describe("Background Task Settlement", () => {
 
   it("idle event notifies the parent with the child result", async () => {
     for (const parentId of ["parent_001", "parent_002", "parent_003"]) {
-      const before = harness.notices().length;
       const childId = await spawn(parentId, `Quick test ${parentId}`);
-
-      await harness.fireEvent(events.idle(childId));
-
-      const notes = harness.noticeBodies();
-      assert.strictEqual(notes.length, before + 1, `exactly 1 new notification [${childId}]`);
-      const note = harness.noticeFor(childId);
+      const note = await harness.noticeAfter(events.idle(childId));
       assert.strictEqual(note.to, parentId, `must notify parent [${childId}]`);
       assert.ok(note.message.includes("COMPLETED_OK"), `notification must carry the child result text [${childId}]`);
       assert.ok(note.message.includes("Background task completed successfully"), `success notification [${childId}]`);
@@ -113,13 +107,8 @@ describe("Background Task Settlement", () => {
 
   it("deleted session is a failure, never a success", async () => {
     const childId = await spawn("del_parent", "Deletion test");
-    const before = harness.notices().length;
-
-    await harness.fireEvent(events.deleted(childId));
-
-    const notes = harness.noticeBodies();
-    assert.strictEqual(notes.length, before + 1);
-    assert.match(notes[notes.length - 1], /ended with an error/i, "deletion must read as failure");
+    const note = await harness.noticeAfter(events.deleted(childId));
+    assert.match(note.message, /ended with an error/i, "deletion must read as failure");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `retained state must be error. Got: ${detail}`);
   });

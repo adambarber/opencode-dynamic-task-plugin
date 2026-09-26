@@ -354,23 +354,27 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     logs: () => state.logs,
     aborted: () => state.aborted,
     /**
-     * Deliver a terminal event and return the single notice it must produce.
-     * Exactly-once delivery is part of the contract, so the count is asserted
-     * here rather than repeated at every call site. The sleep is for CI
-     * scheduling, not the contract: delivery is a microtask away.
+     * Deliver a terminal event and return the ONE notice it produced. Exactly
+     * once is the contract, so the count is asserted here rather than at each
+     * call site — and counted against a baseline, because a suite may already
+     * have notices. The routing target is part of the notice, so the record
+     * comes back whole. The sleep is for CI scheduling, not the contract:
+     * delivery is a microtask away.
      */
     async noticeAfter(event) {
+      const before = state.notifications.length;
       await harness.fireEvent(event);
       await sleep(30);
-      assert.strictEqual(state.notifications.length, 1, "a terminal event notifies exactly once");
-      return state.notifications[0].message;
+      const fresh = state.notifications.slice(before);
+      assert.strictEqual(fresh.length, 1, "a terminal event notifies exactly once");
+      return fresh[0];
     },
     /**
      * Settle a child and hand back the single notice the parent received — the
      * common case of noticeAfter, where the terminal event is the idle event.
      */
     async settledNotice(id) {
-      return harness.noticeAfter(events.idle(id));
+      return (await harness.noticeAfter(events.idle(id))).message;
     },
     /**
      * The admission path's own call: the tool's answer, with no id and nothing

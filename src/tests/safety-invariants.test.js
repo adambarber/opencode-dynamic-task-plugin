@@ -442,33 +442,44 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
 });
 
 // --- the duplicate-detection gate ------------------------------------------------
-// The thresholds are not taste. 3 lines / 15 tokens is the strictest level this
+// The thresholds are not taste. 3 lines / 12 tokens is the strictest level this
 // tree passes, and it passes because every clone it reported was ELIMINATED
 // rather than tolerated: 43 at 3/20 when that level was adopted (7 in
-// production, 36 in tests), and 67 at 3/15 when this one was (16 in production,
-// 51 in tests). Every one of them was a restated decision, and the three
-// declarations of ChildRef, the two hand-written copies of a question's
-// rejection classification, and the four spellings of a retained record in the
-// test suites were each one place to change a shape that had a single owner.
+// production, 36 in tests), 67 at 3/15 when that one was (16 production, 51
+// tests), and 10 more at 3/12. Every one of them was a restated decision, and
+// the three declarations of ChildRef, the two hand-written copies of a question's
+// rejection classification, the four spellings of a retained record in the test
+// suites, and 21 invariant rules that each re-typed which doctrine note they
+// answer to were each one place to change a shape that had a single owner.
 // The shape of the fixes is the point: a clone is eliminated by giving the
 // repeated idea ONE home, never by rewording a line until the tokenizer stops
 // matching. So the gate is pinned here: loosening it is a deliberate edit to a
 // test that says what re-opens, not a quiet edit to a config file.
+//
+// 12 is the frontier, not a round number. At 3/10 the scan reports 142 clones,
+// and they are not restated decisions: they are the same short idiom in two
+// places (`return out.timedOut ? X : Y`, a ternary over two record fields).
+// Below 12 the tokenizer matches expression SHAPE rather than a decision, and
+// eliminating those means inventing a helper per expression — the opposite of
+// naming a decision once.
 describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
   const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
 
-  it("enforces zero tolerance at 3 lines / 15 tokens", () => {
+  it("enforces zero tolerance at 3 lines / 12 tokens", () => {
     const loosened = [
       ["threshold", 0],
       ["minLines", 3],
-      ["minTokens", 15],
+      ["minTokens", 12],
     ].filter(([key, expected]) => config[key] !== expected);
     assert.deepStrictEqual(
       loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
       [],
       `duplicate gate loosened. 3/20 reported 43 real clones when it was adopted,\n` +
-        `3/15 reported 67, and 3/15 is now the tree's actual clean level — reached by\n` +
-        `eliminating the clones, never by moving the bar to hide them.`,
+        `3/15 reported 67, 3/12 reported 10, and 3/12 is now the tree's actual clean\n` +
+        `level — reached by eliminating the clones, never by moving the bar to hide\n` +
+        `them. At 3/10 the 142 hits are expression shapes, not restated decisions:\n` +
+        `below 12 the gate would demand a helper per expression, which is the thing\n` +
+        `this rule exists to prevent.`,
     );
   });
 

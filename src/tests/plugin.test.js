@@ -803,11 +803,12 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 // Named for intent at the call site: inLedgerFile for the ledger's own
 // on-disk shape, inTempFile for a fixture the parser reads.
 const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
-// inLedgerFile, with one record already saved. Durability is checked in two
-// places — what comes back out, and what is left on disk — and both start here.
+// inLedgerFile, with one record and one owed notice already saved. Durability is
+// checked in two places — what comes back out, and what is left on disk — and
+// both start here.
 const withSavedLedger = (fn) =>
   inLedgerFile((file) => {
-    saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
+    saveTaskLedger({ retained: new Map([["ses_1", retainedEntry()]]), pending: [owedEntry()] }, file);
     return fn(file);
   });
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
@@ -827,6 +828,19 @@ function retainedEntry(overrides = {}) {
   };
 }
 
+// A delivery the plugin owes and has not landed: the exact write, not a recipe
+// to rebuild one, plus how many attempts the previous boot already spent.
+function owedEntry(overrides = {}) {
+  return {
+    parentSessionId: "parent_1",
+    childSessionId: "ses_1",
+    kind: "completed",
+    text: "[dynamic-task-notify]\nsession owed",
+    attempts: 1,
+    ...overrides,
+  };
+}
+
 function tmpLedgerPath() {
   return `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
 }
@@ -839,28 +853,57 @@ describe("task ledger persistence", () => {
   it("round-trips retained records through an injectable path", () =>
     withSavedLedger(async (file) => {
       const loaded = loadTaskLedger(file);
-      assert.strictEqual(loaded.size, 1);
-      assert.strictEqual(loaded.get("ses_1").agentName, "explore");
-      assert.strictEqual(loaded.get("ses_1").state, "completed");
-      assert.strictEqual(loaded.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
+      assert.strictEqual(loaded.retained.size, 1);
+      assert.strictEqual(loaded.retained.get("ses_1").agentName, "explore");
+      assert.strictEqual(loaded.retained.get("ses_1").state, "completed");
+      assert.strictEqual(loaded.retained.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
+    }));
+
+  it("round-trips the owed-notice queue, exact write and attempt count intact", () =>
+    withSavedLedger(async (file) => {
+      const loaded = loadTaskLedger(file);
+      assert.deepStrictEqual(loaded.pending, [owedEntry()], "the owed write survives verbatim");
+    }));
+
+  // One hypothesis: a queued write is all-or-nothing. An entry missing any of
+  // its fields cannot be redelivered (no parent, no text, or an unknown kind),
+  // and half of one is worse than none — the boot would dial a message nobody
+  // can account for.
+  it("drops a queue entry missing any field, never half of it", () =>
+    inLedgerFile(async (file) => {
+      const broken = { ...owedEntry(), pending: [
+        owedEntry({ childSessionId: "ses_noparent", parentSessionId: undefined }),
+        owedEntry({ childSessionId: "ses_notext", text: "" }),
+        owedEntry({ childSessionId: "ses_badkind", kind: "shout" }),
+        owedEntry({ childSessionId: "ses_noid", childSessionId: 42 }),
+        owedEntry(),
+      ] };
+      writeFileSync(file, JSON.stringify({ version: 3, tasks: {}, ...broken }));
+      const loaded = loadTaskLedger(file);
+      assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
     }));
 
   it("returns empty for missing, corrupt, and unknown-version files", async () => {
-    assert.strictEqual(loadTaskLedger(`${tmpdir()}/dt-nope-${Date.now()}.json`).size, 0);
+    const empty = (file) => {
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.retained.size, 0);
+      assert.deepStrictEqual(loaded.pending, []);
+    };
+    empty(`${tmpdir()}/dt-nope-${Date.now()}.json`);
     await withTempFile(tmpLedgerPath(), async (bad) => {
       writeFileSync(bad, "{ nope");
-      assert.strictEqual(loadTaskLedger(bad).size, 0);
+      empty(bad);
     });
     await withTempFile(tmpLedgerPath(), async (future) => {
-      writeFileSync(future, JSON.stringify({ version: 999, tasks: {} }));
-      assert.strictEqual(loadTaskLedger(future).size, 0);
+      writeFileSync(future, JSON.stringify({ version: 999, tasks: {}, pending: [owedEntry()] }));
+      empty(future);
     });
   });
 
   it("save writes atomically via rename — no .tmp residue", () =>
     withSavedLedger(async (file) => {
       assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
-      assert.strictEqual(loadTaskLedger(file).size, 1, "renamed content intact");
+      assert.strictEqual(loadTaskLedger(file).retained.size, 1, "renamed content intact");
     }));
 
   // One hypothesis: an entry survives only if it is well-formed AND agrees with
@@ -878,8 +921,8 @@ describe("task ledger persistence", () => {
   for (const [name, tasks, keepers] of survived) {
     it(name, async () => {
       await inLedgerFile(async (file) => {
-        writeFileSync(file, JSON.stringify({ version: 2, tasks }));
-        assert.deepStrictEqual([...loadTaskLedger(file).keys()], keepers);
+        writeFileSync(file, JSON.stringify({ version: 3, tasks, pending: [] }));
+        assert.deepStrictEqual([...loadTaskLedger(file).retained.keys()], keepers);
       });
     });
   }
@@ -888,12 +931,27 @@ describe("task ledger persistence", () => {
     await inLedgerFile(async (file) => {
       const nanEntry = { ...retainedEntry(), startedAt: NaN };
       const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
-      saveTaskLedger(new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), file);
-      const loaded = loadTaskLedger(file);
+      saveTaskLedger({ retained: new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), pending: [] }, file);
+      const loaded = loadTaskLedger(file).retained;
       assert.strictEqual(loaded.has("ses_nan"), false, "NaN does not survive the durability boundary");
       assert.strictEqual(loaded.has("ses_mix"), false, "mixed lineage is rejected, not silently shortened");
     });
   });
+
+  // The version policy, stated once: a past this reader cannot fully understand
+  // is discarded wholesale, because a partially-restored past is worse than a
+  // clean boot — a retained history that silently lost entries reads as history.
+  it("a v2 ledger is discarded whole, retained records and owed notices alike", () =>
+    inLedgerFile(async (file) => {
+      writeFileSync(file, JSON.stringify({
+        version: 2,
+        tasks: { ses_1: retainedEntry() },
+        pending: [owedEntry()],
+      }));
+      const loaded = loadTaskLedger(file);
+      assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
+      assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
+    }));
 
 });
 

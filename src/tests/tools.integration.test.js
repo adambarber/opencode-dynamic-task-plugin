@@ -1232,7 +1232,7 @@ describe("outcome correctness: failed turns never report success", () => {
         description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
       };
     }
-    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks }));
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 3, tasks, pending: [] }));
     await withEnv("DYNAMIC_TASK_RETAINED_MAX_ENTRIES", "2", async () => {
       const h = await setupHarness({ hooks: {}, directory });
       const list = await h.tool.task_list.execute({});
@@ -1255,6 +1255,92 @@ describe("outcome correctness: failed turns never report success", () => {
     assert.ok(note.includes("ended with an error"), `deletion is a failure. got: ${note}`);
     assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
     });
+});
+
+// ─── Durable delivery (docs/tasks/11-durability.md, M2) ──────────────────
+// The hole this closes: the plugin settled a task and THEN dialed the parent, so
+// a crash in between left a `completed` record with no notice and no evidence one
+// was owed. The debt is written before the dial now, which makes a crash cost a
+// duplicate notice — visible, and the direction the spec takes deliberately.
+describe("boot redelivers what the last boot owed", () => {
+  const owedLedger = (directory, owed) =>
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
+      version: 3,
+      tasks: {
+        ses_owed: {
+          childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
+          description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
+        },
+      },
+      pending: owed,
+    }));
+
+  const owed = (overrides = {}) => ({
+    parentSessionId: "ses_parent", childSessionId: "ses_owed", kind: "completed",
+    text: "[dynamic-task-notify]\nsession ses_owed owed this", attempts: 1, ...overrides,
+  });
+
+  // Every case here is the same world with one debt in it, so the world is built
+  // once: a project directory carrying an owed notice, and a plugin booted on it.
+  const bootWithOwed = async (owedEntries, hooks = {}) => {
+    const directory = tmpProjectDir();
+    owedLedger(directory, owedEntries);
+    const harness = await setupHarness({ hooks, directory });
+    return { directory, ...harness };
+  };
+
+  const onDisk = (directory) => {
+    try {
+      return JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8"));
+    } catch {
+      return null;
+    }
+  };
+  // Boot does not block on redelivery (a held parent must not delay every tool
+  // by the write bound), so the observable is waited on — never a sleep standing
+  // in for a contract.
+  const until = async (predicate, what) => {
+    for (let tries = 0; tries < 300; tries++) {
+      if (predicate()) return;
+      await sleep(1);
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+
+  it("an owed notice is delivered once at boot and retired from disk", async () => {
+    const { directory, notices } = await bootWithOwed([owed()]);
+
+    assert.deepStrictEqual(
+      notices().map((n) => [n.to, n.message.includes("owed this")]),
+      [["ses_parent", true]],
+      "exactly the owed write, to the parent it was addressed to",
+    );
+    await until(() => {
+      const ledger = onDisk(directory);
+      return Array.isArray(ledger?.pending) && ledger.pending.length === 0;
+    }, "the debt to be retired once the parent answered");
+  });
+
+  it("a redelivery the host still holds is not retried here — it waits for the next boot", async () => {
+    // A held write re-arms its own debt inside the gate, so the queue is not
+    // empty afterwards: what must not happen is a SECOND dial in this boot. (The
+    // retry itself belongs to a refused write, covered where the transport can
+    // refuse: notify.test.js scripts the rejection.) The wait is on the DIAL,
+    // not on the queue — the restored ledger already holds the entry, so the
+    // queue cannot tell "not yet redelivered" from "redelivered and held".
+    const { directory, client } = await bootWithOwed([owed()], { notifyTransport: { hang: new Promise(() => {}) } });
+    await until(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
+    assert.strictEqual(client._state.notifyCalls.length, 1, "one dial, then the host holds it");
+    assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
+  });
+
+  it("a v2 ledger boots clean rather than half-restored", async () => {
+    const directory = tmpProjectDir();
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ version: 2, tasks: {} }));
+    const h = await setupHarness({ hooks: {}, directory });
+    assert.deepStrictEqual(h.notices(), [], "nothing to redeliver from a past this build cannot read");
+    assert.strictEqual(onDisk(directory).version, 2, "and no debt invented from it — the file is untouched");
+  });
 });
 
 describe("spawn resilience: no untracked child survives a failure", () => {

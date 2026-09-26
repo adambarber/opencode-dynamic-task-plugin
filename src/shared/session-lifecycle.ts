@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState } from "./task-state.js";
+import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
 
 // Host event payloads are untyped JSON at this boundary. isEventRecord is the
 // only sanctioned narrowing; field access goes through eventField/eventString
@@ -203,10 +204,20 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
   );
 }
 
-// v2: non-blocking cutover. Retained kinds are the three terminal states;
-// timeout kinds never existed here and v1 ledgers are discarded wholesale.
-// File shape: { version, tasks: { [childSessionId]: entry } }.
-export const TASK_LEDGER_VERSION = 2;
+// v3: durable delivery. v2 held settled records only, so a crash between
+// settling and telling the parent left a `completed` with no notice and no
+// evidence one was owed; `pending` is that evidence, written before each dial.
+// Retained kinds are the three terminal states. Every other version is
+// discarded wholesale — a partially-restored past reads as history, and is worse
+// than a clean boot.
+// File shape: { version, tasks: { [childSessionId]: entry }, pending: [owed write] }.
+export const TASK_LEDGER_VERSION = 3;
+
+/** The whole durable file, as the one dance sees it. */
+export interface TaskLedgerFile {
+  retained: Map<string, unknown>;
+  pending: PendingDelivery[];
+}
 
 const FALLBACK_LEDGER_ROOT = join(homedir(), ".local", "share", "opencode-dynamic-task");
 
@@ -218,13 +229,35 @@ export function resolveTaskLedgerPath(directory: string): string {
   return join(FALLBACK_LEDGER_ROOT, "ledger.json");
 }
 
-export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState> {
-  const entries = new Map<string, RetainedTaskState>();
-  if (!filePath || !existsSync(filePath)) return entries;
+// An owed write is all-or-nothing: the boot must be able to deliver it exactly,
+// so a missing parent, an empty text, an unknown kind, or a non-finite attempt
+// count disqualifies the whole entry. Half an entry would dial a message nobody
+// can account for.
+function isPendingDelivery(value: unknown): value is PendingDelivery {
+  if (!isEventRecord(value)) return false;
+  const { parentSessionId, childSessionId, kind, text, attempts } = value;
+  return (
+    typeof parentSessionId === "string" && parentSessionId.length > 0
+    && typeof childSessionId === "string" && childSessionId.startsWith("ses_")
+    && typeof kind === "string" && NOTIFY_KINDS.some((known) => known === kind)
+    && typeof text === "string" && text.length > 0
+    && typeof attempts === "number" && Number.isFinite(attempts)
+  );
+}
+
+export function loadTaskLedger(filePath: string): { retained: Map<string, RetainedTaskState>; pending: PendingDelivery[] } {
+  const retained = new Map<string, RetainedTaskState>();
+  const pending: PendingDelivery[] = [];
+  if (!filePath || !existsSync(filePath)) return { retained, pending };
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
     if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
-      return entries;
+      return { retained, pending };
+    }
+    if (Array.isArray(parsed["pending"])) {
+      for (const entry of parsed["pending"]) {
+        if (isPendingDelivery(entry)) pending.push(entry);
+      }
     }
     for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
       if (!isValidLedgerEntry(entry) || !key.startsWith("ses_")) continue;
@@ -256,18 +289,18 @@ export function loadTaskLedger(filePath: string): Map<string, RetainedTaskState>
           : {}),
         ...(typeof abortError === "string" ? { abortError } : {}),
       };
-      entries.set(key, typed);
+      retained.set(key, typed);
     }
   } catch {
     // ignore
   }
-  return entries;
+  return { retained, pending };
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the
 // retry decision). Atomic: write tmp, then rename over the target — a crash
 // between the two leaves the previous complete ledger, never a truncation.
-export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: string): string {
+export function saveTaskLedger(ledger: TaskLedgerFile, filePath: string): string {
   if (!filePath) {
     throw new Error("Task ledger path is required");
   }
@@ -275,9 +308,11 @@ export function saveTaskLedger(retainedTasks: Map<string, unknown>, filePath: st
   if (dir && dir !== ".") {
     mkdirSync(dir, { recursive: true });
   }
-  const entries = Object.fromEntries(retainedTasks);
   const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: entries }, null, 2));
+  writeFileSync(
+    tmpPath,
+    JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: Object.fromEntries(ledger.retained), pending: ledger.pending }, null, 2),
+  );
   renameSync(tmpPath, filePath);
   return filePath;
 }

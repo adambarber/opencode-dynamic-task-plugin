@@ -50,7 +50,7 @@ export default async function dynamicTaskPlugin(
   // instance's events into another project's store. Debug root and
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
-  const { config, store } = initPluginState(directory, options);
+  const { config, store } = initPluginState(directory, options, client);
   const deps = { client, store, config, directory };
 
   await safeLog(client, "info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");

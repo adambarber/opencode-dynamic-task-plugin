@@ -88,15 +88,17 @@ Set via environment variables, `.opencode/dynamic-task-plugin.jsonc`, or the plu
 
 Both live in the **project directory the host provides** (never the process CWD — running the test suite writes no state into the repo):
 
-- `.dynamic-task-ledger.json` — retained-task crash recovery, written atomically on every retained mutation.
+- `.dynamic-task-ledger.json` — retained-task crash recovery plus the queue of
+  notices the plugin still owes a parent, written atomically on every change.
 - `.dynamic-task-logs/` — per-session debug logs, only created when `DYNAMIC_TASK_DEBUG=1`.
 
-**Only settled records persist.** Active tasks live in process memory, so
-restarting the parent mid-child leaves that child running with no record: its
-terminal events find nothing to settle and drop, and nothing can be read about
-it afterwards. Retained (settled) records survive the restart, which is what
-makes the ledger useful for reading history. Closing the active-task half is
-specified, not implemented — see `docs/tasks/11-durability.md`.
+**Settled records and owed notices survive a restart; live tasks do not yet.**
+Active tasks live in process memory, so restarting the parent mid-child leaves
+that child running with no record: its terminal events find nothing to settle
+and drop, and nothing can be read about it afterwards. A notice the plugin owed
+when it stopped *is* redelivered at the next boot — at-least-once, so a crash
+during a write can cost a duplicate notice, never a missing one. Closing the
+active-task half is specified, not implemented — see `docs/tasks/11-durability.md`.
 
 ## Architecture
 

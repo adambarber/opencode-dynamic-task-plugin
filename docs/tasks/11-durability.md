@@ -1,4 +1,4 @@
-# 11 — Durable Liveness and Delivery (DESIGN — not yet implemented)
+# 11 — Durable Liveness and Delivery (DESIGN — M2 implemented, M1 next)
 
 **Doctrine:** Tenets 6 (one dance), 11 (deliberate degradation), 5 (shared state owns its scope). This is the M1/M2/M5/M10 epic: the ledger captures *settlement state* but neither *liveness* (actives vanish on restart) nor *delivery state* (a crash between `transitionState` and `deliverParent` leaves `completed`-forever with no notice and no evidence of the gap).
 
@@ -7,6 +7,12 @@
 - **M1.** Only retained records persist. Post-restart, still-running children keep running server-side; their terminal events find no record and drop silently. The store is the only index of "what was I running," and it is empty for actives.
 - **M2.** `notifyLedger` is process memory. Crash inside the transition→delivery window strands a settled record with no notice and no trace of the missing notice.
 - **M5/M10 fall out** once delivery state is durable: failed spawn-error notices become redeliverable, and notification history becomes auditable post-restart.
+
+## Implementation notes (deviations from the design, and why)
+
+- **The v3 file carries `pending` first; `active` joins it in the M1 cycle.** Split rather than half-wired: a reader that hydrated `active` with nothing writing it would be dead code, and a writer emitting `active: {}` while real actives existed would be a lie. The key is additive within v3 because there is exactly one reader (this plugin) — the wholesale-discard policy is for *versions*, not for keys added by the same version.
+- **`pending` entries carry `parentSessionId`.** The design's `{ childSessionId, kind, text, attempts }` has no routing target, so a boot could not deliver the entry without looking the parent up out of the retained record — and a debt whose record was pruned would become undeliverable. The target belongs to the write, so the write carries it.
+- **A held redelivery escalates by count instead of being capped.** A refused redelivery is dropped, as designed. A redelivery the host *holds* re-arms its own entry with `attempts` carried forward, so the next boot tries again with a visibly higher count. A hard cap would silently drop an undelivered notice — the exact deafness this epic exists to remove — so the count is the signal and the operator is the decider.
 
 ## Decisions (binding on the implementation)
 
@@ -36,4 +42,6 @@ Pull the process plug between a child's last turn and its notice: after reboot t
 
 ## Status
 
-**Design** — 2026-09-22. No code. Implementation order behind Batches A–C; M5/M10 ride along, M7/M13/lockfile stay declined.
+**Cycle 1 (M2, durable delivery, 2026-09-26):** ledger v3 `{ version, tasks, pending }`; `queuePending`/`dropPending` in the gate, entry written before every dial and retired on a known outcome only; boot hydrates the queue and pays it oldest-first, fire-and-forget so a held parent cannot delay tool registration; `carriedAttempts` makes a re-offered write escalate instead of resetting. Suite: 419 passing, 0 clones, coverage gate green.
+
+**M1 (durable active set + boot reconciliation) is next; M5/M10 ride along, M7/M13/lockfile stay declined.**

@@ -45,8 +45,7 @@ export interface NotificationRecord {
   pending?: boolean;
 }
 
-const notifyLedger: NotificationRecord[] = [];
-// Tenet 9: process-global by design — every key is a server-unique child
+const notifyLedger: NotificationRecord[] = [];// Tenet 9: process-global by design — every key is a server-unique child
 // session id, so two plugin instances cannot share a key; only the bounded
 // memory window is shared, which is benign.
 const NOTIFY_LEDGER_MAX = 200;
@@ -71,6 +70,73 @@ export function getTurnNotification(childSessionId: string, turnStartedAt: numbe
   const latest = getLatestNotification(childSessionId);
   if (!latest || latest.at < turnStartedAt) return null;
   return latest;
+}
+
+// ── Durable delivery queue (docs/tasks/11-durability.md, M2) ──────────────
+// The delivery ledger above is process memory, so a crash between "the task
+// settled" and "the parent was told" left a record reading `completed` with no
+// notice and no evidence one was owed — the one failure mode the gate cannot
+// otherwise see. This queue is that missing evidence: an entry is written BEFORE
+// the dial and retired only when the outcome is known, so a crash costs a
+// duplicate notice, which is visible, instead of a silent deafness, which is not.
+// At-least-once across a restart, exactly-once within a boot — deliberately.
+export interface PendingDelivery {
+  parentSessionId: string;
+  childSessionId: string;
+  kind: NotifyKind;
+  /** The exact text owed. A redelivery must not have to reconstruct it. */
+  text: string;
+  /** How many attempts the boots before this one already spent. */
+  attempts: number;
+}
+
+// The kinds, as data: the ledger reader validates a restored entry against this
+// list, so the two can never disagree about what a kind is.
+export const NOTIFY_KINDS: readonly NotifyKind[] = ["completed", "error", "notice"];
+
+const pendingDeliveries: PendingDelivery[] = [];
+// Installed once at boot by the persistence dance. Tenet 9: process-global by
+// design — every entry is keyed by a server-unique child session id.
+let persistPending: (() => void) | null = null;
+
+export function configurePendingPersistence(persist: () => void): void {
+  persistPending = persist;
+}
+
+export function getPendingDeliveries(): PendingDelivery[] {
+  return pendingDeliveries.slice();
+}
+
+/** Boot hydration: what the ledger owed becomes what this process owes. */
+export function restorePendingDeliveries(entries: PendingDelivery[]): void {
+  pendingDeliveries.length = 0;
+  pendingDeliveries.push(...entries);
+}
+
+// One owed write per gate claim. A settlement is identified by its kind; a notice
+// by its text, which is exactly what the gate dedups notices on
+// (noticeDedupKey), so this reproduces the claim's identity without keeping a
+// second copy of the key. Two DIFFERENT notices from one child are two debts.
+function owedIdentity(entry: PendingDelivery): string {
+  return entry.kind === "notice" ? `${entry.childSessionId}\u0000notice\u0000${entry.text}` : `${entry.childSessionId}\u0000${entry.kind}`;
+}
+
+function queuePending(entry: PendingDelivery): void {
+  const at = indexOfOwed(owedIdentity(entry));
+  if (at === -1) pendingDeliveries.push(entry);
+  else pendingDeliveries[at] = entry;
+  persistPending?.();
+}
+
+function dropPending(entry: PendingDelivery): void {
+  const at = indexOfOwed(owedIdentity(entry));
+  if (at === -1) return;
+  pendingDeliveries.splice(at, 1);
+  persistPending?.();
+}
+
+function indexOfOwed(identity: string): number {
+  return pendingDeliveries.findIndex((owed) => owedIdentity(owed) === identity);
 }
 
 // Bumped by every reset. A claim remembers the epoch it was issued under, so an
@@ -108,6 +174,10 @@ interface NotifyParentOptions {
   childSessionId: string;
   kind: NotifyKind;
   dedupKey?: string;
+  // Attempts earlier boots already spent on this exact write, restored from the
+  // durable queue. Counting from there is what makes a redelivery that keeps
+  // getting held escalate visibly instead of looking like a fresh first try.
+  carriedAttempts?: number;
 }
 
 interface GateLedger {
@@ -244,6 +314,24 @@ export async function notifyParent(
       path: { id: parentSessionId },
       body: { parts: [{ type: "text", text: message }] },
     });
+  // The owed write, built once: the queue holds the exact text, so a boot that
+  // redelivers it has nothing to reconstruct and no way to say something else.
+  // Attempts count from the last boot's, so the record and the queue agree on
+  // how many times this parent has already been dialed for this write.
+  const carried = opts.carriedAttempts ?? 0;
+  const owed: PendingDelivery = {
+    parentSessionId,
+    childSessionId: opts.childSessionId,
+    kind,
+    text: message,
+    attempts: carried,
+  };
+  // Owed BEFORE the dial, every attempt: the debt must be on disk while the
+  // request is in flight, because that window is the crash this exists for.
+  const dial = async (attempts: number) => {
+    queuePending({ ...owed, attempts: carried + attempts });
+    return attempt();
+  };
   const commit = (outcome: { delivered: boolean; attempts: number }) => {
     // Two kinds of staleness, checked before anything is written:
     // Generation-bound: a revival (forgetChild) between this claim and this
@@ -255,6 +343,9 @@ export async function notifyParent(
     if (epoch !== gateEpoch) return outcome.delivered;
     gateLedger.release(opts.childSessionId, dedupKey, generation);
     if (outcome.delivered) gateLedger.record(opts.childSessionId, dedupKey, generation);
+    // Retire the debt, then write the receipt: a crash in between costs a
+    // redelivery the operator can see, never a record with no notice behind it.
+    dropPending({ ...owed, attempts: outcome.attempts });
     emit(outcome);
     return outcome.delivered;
   };
@@ -262,32 +353,32 @@ export async function notifyParent(
     // The request is made ONCE and kept, because "slow" and "never" are the
     // same call from here: its answer may arrive long after this returns, and
     // the ledger must be able to say so rather than guess which it was.
-    const request = attempt();
+    const request = dial(1);
     const bounded = await withBound(WRITE_BOUNDS.parentPrompt, () => request, () => null).catch(() => null);
     if (bounded?.timedOut) {
       // Same epoch rule as commit(): the held write is recorded only while the
       // gate still knows the child it belongs to.
-      if (epoch === gateEpoch) emit({ delivered: false, attempts: 1, pending: true });
+      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
       // A held write is NOT retried — the host may still deliver it, and a
       // second copy of the same kind is the duplicate this gate exists to
       // prevent. The claim stays held while the request is outstanding, so
       // nothing slips in behind it, and the record ends up truthful whenever
       // the host finally answers.
       void request.then(
-        () => commit({ delivered: true, attempts: 1 }),
-        () => commit({ delivered: false, attempts: 2 }),
+        () => commit({ delivered: true, attempts: carried + 1 }),
+        () => commit({ delivered: false, attempts: carried + 2 }),
       );
       return false;
     }
-    if (bounded) return commit({ delivered: true, attempts: 1 });
+    if (bounded) return commit({ delivered: true, attempts: carried + 1 });
     // The request FAILED rather than merely ran long — a busy parent can also
     // refuse outright, and one retry has always been the gate's answer to that.
     await sleep(NOTIFY_RETRY_DELAY_MS);
     try {
-      await attempt();
-      return commit({ delivered: true, attempts: 2 });
+      await dial(2);
+      return commit({ delivered: true, attempts: carried + 2 });
     } catch {
-      return commit({ delivered: false, attempts: 2 });
+      return commit({ delivered: false, attempts: carried + 2 });
     }
   };
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();

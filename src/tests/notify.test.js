@@ -13,6 +13,8 @@ import {
   clearNotifyLedger,
   gateLedger,
   notifyChainCount,
+  getPendingDeliveries,
+  restorePendingDeliveries,
 } from "../../dist/shared/notify.js";
 import { deferred } from './support/harness.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
@@ -355,5 +357,96 @@ describe("notify gate: notifyParent", () => {
     }
     const again = await notifyParent(client, "p", "again", { childSessionId: "ses_ev1004", kind: "completed", sleep: NO_SLEEP });
     assert.strictEqual(again, false, "in-window keys still dedupe; eviction only touches the oldest");
+  });
+});
+
+// The crash window this queue exists to close: the plugin used to move a task to
+// `completed` and then dial the parent, so a crash in between left a record that
+// read as finished with no notice and no evidence one was owed — the one failure
+// mode the gate's own delivery ledger is blind to. The entry is therefore written
+// BEFORE the dial and retired only when the outcome is known, which makes a
+// duplicate after a crash the visible, accepted cost: a missing notice is silent
+// deafness, a duplicate is a line the operator can read.
+describe("durable pending delivery: the queue IS the crash window", () => {
+  // The queue is process-global, so each case states its own starting world
+  // rather than inheriting whatever ran before it.
+  beforeEach(() => {
+    clearNotifyLedger();
+    restorePendingDeliveries([]);
+  });
+
+  const queuedFor = (childSessionId) =>
+    getPendingDeliveries().filter((entry) => entry.childSessionId === childSessionId);
+
+  it("the write is already on the queue at the moment it dials", async () => {
+    // Ordering is the whole contract: an entry written after the dial is a
+    // comment, not a guarantee. The client reads the queue mid-prompt.
+    let atDial = null;
+    const client = {
+      session: {
+        prompt: async () => {
+          atDial = queuedFor("ses_pre").map((entry) => entry.kind);
+          return { ok: true };
+        },
+      },
+    };
+    await notifyParent(client, "parent_1", "settled", gate("ses_pre", "completed"));
+    assert.deepStrictEqual(atDial, ["completed"], "queued before the dial, not after it");
+  });
+
+  it("a held write stays queued until the host answers, then leaves", async () => {
+    await withHeldWrites(async ({ client, release }) => {
+      await notifyParent(client, "parent_1", "held", gate("ses_heldq", "completed"));
+      assert.strictEqual(queuedFor("ses_heldq").length, 1, "an unanswered write is still owed");
+      assert.strictEqual(getLatestNotification("ses_heldq").pending, true, "and the record says so");
+      await release();
+      assert.strictEqual(queuedFor("ses_heldq").length, 0, "the answer retires the debt");
+      assert.strictEqual(getLatestNotification("ses_heldq").delivered, true);
+    });
+  });
+
+  it("a delivered write leaves nothing owed, a failed one neither", async () => {
+    const { client } = promptClient([]);
+    await notifyParent(client, "parent_1", "ok", gate("ses_okq", "completed"));
+    assert.deepStrictEqual(queuedFor("ses_okq"), [], "delivered: the debt is settled");
+
+    const failing = promptClient([new Error("down"), new Error("still down")]);
+    await notifyParent(failing.client, "parent_1", "no", gate("ses_noq", "error"));
+    assert.deepStrictEqual(queuedFor("ses_noq"), [], "a known failure is a known outcome, not a debt");
+    assert.strictEqual(getLatestNotification("ses_noq").delivered, false);
+  });
+
+  it("a suppressed repeat never dials and never queues", async () => {
+    const { client, calls } = promptClient([]);
+    await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
+    await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
+    assert.strictEqual(calls.length, 1, "suppressed: nothing dialed");
+    assert.deepStrictEqual(queuedFor("ses_supp"), [], "nothing dialed, nothing owed");
+  });
+
+  it("a redelivery counts on from the last boot's attempts, not from zero", async () => {
+    // The attempt count is the only visible signal that a parent keeps not
+    // answering: reset to zero, a write held across five restarts would read as
+    // five first tries and the escalation would be invisible.
+    const { client, calls } = promptClient([]);
+    await notifyParent(client, "parent_1", "owed", { ...gate("ses_carry", "completed"), carriedAttempts: 2 });
+    assert.strictEqual(calls.length, 1, "one redelivery attempt, not three");
+    assert.strictEqual(getLatestNotification("ses_carry").attempts, 3, "third attempt overall, not first");
+  });
+
+  it("a restored queue keeps its attempts and its order — oldest debt first", () => {
+    // Boot reads this array and redelivers in order, so both properties belong
+    // to the redelivery's correctness, not to the reader's tidiness.
+    restorePendingDeliveries([
+      { parentSessionId: "p1", childSessionId: "ses_old", kind: "completed", text: "a", attempts: 2 },
+      { parentSessionId: "p1", childSessionId: "ses_new", kind: "error", text: "b", attempts: 1 },
+    ]);
+    const restored = getPendingDeliveries();
+    assert.deepStrictEqual(
+      restored.map((entry) => [entry.childSessionId, entry.attempts]),
+      [["ses_old", 2], ["ses_new", 1]],
+      "attempts and FIFO order both survive the durability boundary",
+    );
+    assert.strictEqual(restored[0].text, "a", "the owed text is the exact write, not a recipe to rebuild it");
   });
 });

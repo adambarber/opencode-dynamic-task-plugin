@@ -823,25 +823,6 @@ const withSavedLedger = (fn) =>
     return fn(file);
   });
 
-// A task the last boot was still running. The advisory fields below are the
-// point of the case: none of them may reach disk, because none of them survive
-// a restart (a fresh process has no in-flight claims, no heartbeat to trust).
-function activeEntry(overrides = {}) {
-  return {
-    childSessionId: "ses_2",
-    parentSessionId: "parent_1",
-    agentName: "general",
-    description: "still running",
-    lineage: ["general"],
-    state: "active",
-    startedAt: 1700000000000,
-    lastNotice: { message: "mid-flight", at: 1700000000500 },
-    lastActivityAt: 1700000000900,
-    turnLiveAt: 1700000000900,
-    replacedAt: 1700000000100,
-    ...overrides,
-  };
-}
 /** withRawLedger's middle, for the case that already holds the file. */
 const withRawLedgerSync = (document, file) => {
   writeFileSync(file, JSON.stringify({ version: 3, ...document }));
@@ -872,34 +853,6 @@ const assertJsoncRejected = async (contents) => {
     assert.strictEqual(parseDynamicTaskJsonc(file), null, `must refuse ${JSON.stringify(contents)}`);
   });
 };
-
-function retainedEntry(overrides = {}) {
-  return {
-    childSessionId: "ses_1",
-    parentSessionId: "parent_1",
-    agentName: "explore",
-    description: "t",
-    lineage: [],
-    state: "completed",
-    startedAt: 1,
-    retainedAt: 2,
-    timeoutNotified: true,
-    ...overrides,
-  };
-}
-
-// A delivery the plugin owes and has not landed: the exact write, not a recipe
-// to rebuild one, plus how many attempts the previous boot already spent.
-function owedEntry(overrides = {}) {
-  return {
-    parentSessionId: "parent_1",
-    childSessionId: "ses_1",
-    kind: "completed",
-    text: "[dynamic-task-notify]\nsession owed",
-    attempts: 1,
-    ...overrides,
-  };
-}
 
 function tmpLedgerPath() {
   return `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
@@ -1320,6 +1273,7 @@ import { readAskedQuestion } from "../../dist/shared/host-events.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile, sessionUpdatedEnvelope } from './support/harness.js';
+import { retainedEntry, activeEntry, owedEntry } from './support/records.js';
 
 describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {

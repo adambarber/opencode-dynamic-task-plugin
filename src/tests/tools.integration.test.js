@@ -18,6 +18,7 @@ import {
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
   resultForChild, resultForUnreadableChild, hostSaid, unclockedSaid,
 } from './support/harness.js';
+import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 
 /**
@@ -1805,19 +1806,19 @@ describe("outcome correctness: failed turns never report success", () => {
 // was owed. The debt is written before the dial now, which makes a crash cost a
 // duplicate notice — visible, and the direction the spec takes deliberately.
 describe("boot redelivers what the last boot owed", () => {
-  const owed = (overrides = {}) => ({
-    parentSessionId: "ses_parent", childSessionId: "ses_owed", kind: "completed",
-    text: "[dynamic-task-notify]\nsession ses_owed owed this", attempts: 1, ...overrides,
+  const owedDebt = () => owedEntry({
+    parentSessionId: "ses_parent", childSessionId: "ses_owed",
+    text: "[dynamic-task-notify]\nsession ses_owed owed this",
   });
 
   // Every case here is the same world with one debt in it, so the world is built
   // once: a project directory carrying an owed notice, and a plugin booted on it.
   const bootWithOwed = (owedEntries, hooks = {}) => bootOn(() => ({
     tasks: {
-      ses_owed: {
-        childSessionId: "ses_owed", parentSessionId: "ses_parent", agentName: "general",
-        description: "owed", lineage: [], state: "completed", startedAt: 1, retainedAt: 2,
-      },
+      ses_owed: retainedEntry({
+        childSessionId: "ses_owed", parentSessionId: "ses_parent",
+        agentName: "general", description: "owed",
+      }),
     },
     pending: owedEntries,
   }), { hooks });
@@ -1833,7 +1834,7 @@ describe("boot redelivers what the last boot owed", () => {
   // by the write bound), so the observable is waited on — never a sleep standing
   // in for a contract.
   it("an owed notice is delivered once at boot and retired from disk", async () => {
-    const { directory, notices } = await bootWithOwed([owed()]);
+    const { directory, notices } = await bootWithOwed([owedDebt()]);
 
     assert.deepStrictEqual(
       notices().map((n) => [n.to, n.message.includes("owed this")]),
@@ -1853,7 +1854,7 @@ describe("boot redelivers what the last boot owed", () => {
   // not on the queue — the restored ledger already holds the entry, so the
   // queue cannot tell "not yet redelivered" from "redelivered and held".
   it("a redelivery the host still holds is not retried here — it waits for the next boot", async () => {
-    const { directory, client } = await bootWithOwed([owed()], { notifyTransport: { hang: new Promise(() => {}) } });
+    const { directory, client } = await bootWithOwed([owedDebt()], { notifyTransport: { hang: new Promise(() => {}) } });
     await waitFor(() => client._state.notifyCalls.length > 0, "the redelivery to dial");
     assert.strictEqual(client._state.notifyCalls.length, 1, "one dial, then the host holds it");
     assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
@@ -1876,11 +1877,6 @@ describe("boot redelivers what the last boot owed", () => {
 // happened to it. No clocks, no polling: the host's own status words are the
 // answer, and each cell below is a different set of words.
 describe("boot reconciles what the last boot was still running", () => {
-  const running = (childSessionId, overrides = {}) => ({
-    childSessionId, parentSessionId: "ses_parent", agentName: "general",
-    description: "running across restart", lineage: [], state: "active", startedAt: 1, ...overrides,
-  });
-
   const bootWithRunners = (actives, hostStatusSeed) => bootOn(
     () => ({ tasks: {}, active: actives, pending: [] }),
     { hooks: { hostStatusSeed } },
@@ -1889,7 +1885,7 @@ describe("boot reconciles what the last boot was still running", () => {
   const ledgerActive = (directory) => JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8")).active;
 
   it("a child the host is still working stays active and settles on its own event", async () => {
-    const h = await bootWithRunners({ ses_live: running("ses_live") }, { ses_live: "busy" });
+    const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "busy" });
     const status = await h.tool.task_status.execute({ session_id: "ses_live" }, { sessionID: "ses_parent" });
     assert.match(status, /State: active/, "still running is still active");
     assert.deepStrictEqual(h.noticeBodies(), [], "no notice for a task that is not over");
@@ -1899,7 +1895,7 @@ describe("boot reconciles what the last boot was still running", () => {
   });
 
   it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
-    const { directory, notices } = await bootWithRunners({ ses_gone: running("ses_gone") }, {});
+    const { directory, notices } = await bootWithRunners({ ses_gone: runningEntry("ses_gone") }, {});
     await waitFor(() => notices().length > 0, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
@@ -1912,7 +1908,7 @@ describe("boot reconciles what the last boot was still running", () => {
   // The host says the turn is over and the transcript still reads: this is
   // finished work, and settling it error would invent a failure nobody saw.
   it("a child that finished while the parent was down settles completed, not error", async () => {
-    const { notices } = await bootWithRunners({ ses_idle: running("ses_idle") }, { ses_idle: "idle" });
+    const { notices } = await bootWithRunners({ ses_idle: runningEntry("ses_idle") }, { ses_idle: "idle" });
     await waitFor(() => notices().length > 0, "the finished child to settle");
     assert.match(notices()[0].message, /completed successfully/);
     assert.doesNotMatch(notices()[0].message, /ended with an error/);

@@ -28,6 +28,31 @@ import {
   messageErrorDetail,
 } from "../../dist/shared/prompt.js";
 
+// The smallest shapes the reader tests are about, stated once: a text part, and
+// a message carrying one. A case should be able to say what it means ("an
+// assistant turn that said X") instead of the envelope that carries it — the
+// envelope is an implementation detail of the host, and restating it per case
+// is how two cases end up asserting different things under the same name.
+const textPart = (text) => ({ type: "text", text });
+const said = (role, text) => ({ role, parts: [textPart(text)] });
+
+/**
+ * The safe config defaults, asserted as a set. They are one contract — two
+ * limits, a blocklist, a flag and three positive TTLs — and the ladder was
+ * hand-written at each site that cared, so a new default could be added without
+ * any of them noticing. Reused by the cases that feed garbage in and expect
+ * exactly these values back.
+ */
+function assertSafeDefaults(config) {
+  assert.strictEqual(config.maxDepth, 2);
+  assert.strictEqual(config.maxConcurrent, 4);
+  assert.deepStrictEqual(config.blockedAgents, []);
+  assert.strictEqual(config.allowSameAgentRecursion, false);
+  assert.ok(config.agentCacheTtlMs > 0);
+  assert.ok(config.retainedTaskTtlMs > 0);
+  assert.ok(config.retainedTaskMaxEntries > 0);
+}
+
 // --- Tests ---
 describe("buildAgentList", () => {
   it("returns agent names joined by comma", () => {
@@ -85,19 +110,11 @@ describe("validateSessionResult", () => {
 
 describe("extractTextFromParts", () => {
   it("joins text parts", () => {
-    const parts = [
-      { type: "text", text: "Hello " },
-      { type: "text", text: "World" },
-    ];
-    assert.strictEqual(extractTextFromParts(parts), "Hello \nWorld");
+    assert.strictEqual(extractTextFromParts([textPart("Hello "), textPart("World")]), "Hello \nWorld");
   });
 
   it("filters non-text parts", () => {
-    const parts = [
-      { type: "text", text: "Hello" },
-      { type: "file", url: "http://example.com" },
-    ];
-    assert.strictEqual(extractTextFromParts(parts), "Hello");
+    assert.strictEqual(extractTextFromParts([textPart("Hello"), { type: "file", url: "http://example.com" }]), "Hello");
   });
 
   it("handles empty array", () => {
@@ -105,13 +122,7 @@ describe("extractTextFromParts", () => {
   });
 
   it("handles null/undefined in parts", () => {
-    const parts = [
-      { type: "text", text: "Hello" },
-      null,
-      undefined,
-      { type: "text", text: "World" },
-    ];
-    assert.strictEqual(extractTextFromParts(parts), "Hello\nWorld");
+    assert.strictEqual(extractTextFromParts([textPart("Hello"), null, undefined, textPart("World")]), "Hello\nWorld");
   });
 });
 
@@ -172,6 +183,14 @@ describe("fetchAgents", () => {
     return client;
   }
 
+  /**
+   * The dispatchable agent names a client yields — the answer every case here
+   * actually asserts on, in one expression. Spelled three ways in this file
+   * (`result.length`, `result[0].name`, `result.map(...)`), so which of those
+   * was the actual contract was ambiguous; now it is names, always.
+   */
+  const agentNames = async (client) => (await fetchAgents(client)).map((a) => a.name);
+
   it("dispatches subagent and all modes, rejects primary", async () => {
     const mockClient = clientWith([
       { name: "explore", mode: "subagent" },
@@ -180,9 +199,8 @@ describe("fetchAgents", () => {
       { name: "build", mode: "primary" },
     ]);
 
-    const result = await fetchAgents(mockClient);
     assert.deepStrictEqual(
-      result.map((a) => a.name).sort(),
+      (await agentNames(mockClient)).sort(),
       ["architect", "explore", "unannotated"]
     );
   });
@@ -192,8 +210,7 @@ describe("fetchAgents", () => {
       throw new Error("Network error");
     });
 
-    const result = await fetchAgents(mockClient);
-    assert.strictEqual(result.length, 0);
+    assert.deepStrictEqual(await agentNames(mockClient), []);
   });
 
   // The host probes entry exports outside the plugin lifecycle; the
@@ -210,10 +227,9 @@ describe("fetchAgents", () => {
       return [{ name: "explore", mode: "subagent" }];
     });
 
-    const result = await fetchAgents(mockClient);
+    const names = await agentNames(mockClient);
     assert.strictEqual(mockClient.agentCalls, 2, "one immediate retry");
-    assert.strictEqual(result.length, 1);
-    assert.strictEqual(result[0].name, "explore");
+    assert.deepStrictEqual(names, ["explore"]);
   });
 
   // One hypothesis: whichever envelope the host wraps the list in, exactly the
@@ -229,9 +245,7 @@ describe("fetchAgents", () => {
         { name: "excluded", mode: "primary" },
       ] });
 
-      const result = await fetchAgents(mockClient);
-      assert.strictEqual(result.length, 1, "primary agents are not dispatchable");
-      assert.strictEqual(result[0].name, kept);
+      assert.deepStrictEqual(await agentNames(mockClient), [kept], "primary agents are not dispatchable");
     });
   }
 
@@ -411,26 +425,31 @@ describe("getEventLifecycleStatus", () => {
 // turn still has role "assistant" with empty text. The reader must dig the
 // info envelope (dual-era, like messageRoleOf) and surface a human detail.
 describe("messageErrorDetail", () => {
+  // The envelope the reader must dig. A failed turn still has role
+  // "assistant", and the human detail is one level down inside info.error — no
+  // part carries it. Stated once so two cases cannot pass for different reasons.
+  const assistantTurn = (error, parts = []) => ({
+    info: error === undefined ? { role: "assistant" } : { role: "assistant", error },
+    parts,
+  });
+
   it("extracts ApiError.data.message from the info envelope", () => {
     assert.strictEqual(
-      messageErrorDetail({
-        info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } } },
-        parts: [],
-      }),
+      messageErrorDetail(assistantTurn({ name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } })),
       "Too Many Requests",
     );
   });
 
   it("falls back to the error name when no message", () => {
     assert.strictEqual(
-      messageErrorDetail({ info: { role: "assistant", error: { name: "MessageAbortedError" } }, parts: [] }),
+      messageErrorDetail(assistantTurn({ name: "MessageAbortedError" })),
       "MessageAbortedError",
     );
   });
 
   it("returns empty for a clean assistant message", () => {
     assert.strictEqual(
-      messageErrorDetail({ info: { role: "assistant" }, parts: [{ type: "text", text: "done" }] }),
+      messageErrorDetail(assistantTurn(undefined, [textPart("done")])),
       "",
     );
   });
@@ -833,6 +852,20 @@ function activeEntry(overrides = {}) {
 }
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
 
+/**
+ * A .jsonc file the parser must refuse. One idea with several spellings — the
+ * wrong shape, malformed JSON — so the temp file, the write and the refusal are
+ * one helper. A case that hand-rolls it is a case that can quietly assert
+ * against a file that was never written, or through a second temp-file idiom
+ * that is not the one the rest of the file cleans up after.
+ */
+const assertJsoncRejected = async (contents) => {
+  await inTempFile(async (file) => {
+    writeFileSync(file, contents);
+    assert.strictEqual(parseDynamicTaskJsonc(file), null, `must refuse ${JSON.stringify(contents)}`);
+  });
+};
+
 function retainedEntry(overrides = {}) {
   return {
     childSessionId: "ses_1",
@@ -870,20 +903,19 @@ describe("task ledger persistence", () => {
   // old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`
   // sidecar in the two sites that mattered, and the missing-file site skipped
   // cleanup entirely — withTempFile owns the whole lifetime.
-  it("round-trips retained records through an injectable path", () =>
-    withSavedLedger(async (file) => {
-      const loaded = loadTaskLedger(file);
-      assert.strictEqual(loaded.retained.size, 1);
-      assert.strictEqual(loaded.retained.get("ses_1").agentName, "explore");
-      assert.strictEqual(loaded.retained.get("ses_1").state, "completed");
-      assert.strictEqual(loaded.retained.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
-    }));
+  const itRoundTrips = (name, check) => it(name, () => withSavedLedger((file) => check(loadTaskLedger(file))));
 
-  it("round-trips the owed-notice queue, exact write and attempt count intact", () =>
-    withSavedLedger(async (file) => {
-      const loaded = loadTaskLedger(file);
-      assert.deepStrictEqual(loaded.pending, [owedEntry()], "the owed write survives verbatim");
-    }));
+  itRoundTrips("round-trips retained records through an injectable path", (loaded) => {
+    const record = loaded.retained.get("ses_1");
+    assert.strictEqual(loaded.retained.size, 1);
+    assert.strictEqual(record.agentName, "explore");
+    assert.strictEqual(record.state, "completed");
+    assert.strictEqual(record.timeoutNotified, undefined, "the reader strips transient fields");
+  });
+
+  itRoundTrips("round-trips the owed-notice queue, exact write and attempt count intact", (loaded) => {
+    assert.deepStrictEqual(loaded.pending, [owedEntry()], "the owed write survives verbatim");
+  });
 
   it("round-trips a running task, and strips every advisory field from it", () =>
     withSavedLedger(async (file) => {
@@ -1021,14 +1053,7 @@ import {
 
 describe("normalizeDynamicTaskConfig", () => {
   it("returns safe defaults when given empty options", () => {
-    const config = normalizeDynamicTaskConfig({});
-    assert.strictEqual(config.maxDepth, 2);
-    assert.strictEqual(config.maxConcurrent, 4);
-    assert.deepStrictEqual(config.blockedAgents, []);
-    assert.strictEqual(config.allowSameAgentRecursion, false);
-    assert.ok(config.agentCacheTtlMs > 0);
-    assert.ok(config.retainedTaskTtlMs > 0);
-    assert.ok(config.retainedTaskMaxEntries > 0);
+    assertSafeDefaults(normalizeDynamicTaskConfig({}));
   });
 
   it("returns safe defaults when given null/undefined options", () => {
@@ -1109,10 +1134,7 @@ describe("parseDynamicTaskJsonc", () => {
 
   it("returns null for empty or non-object payloads", async () => {
     assert.strictEqual(parseDynamicTaskJsonc(""), null);
-    await inTempFile(async (file) => {
-      writeFileSync(file, "[1, 2]");
-      assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    });
+    await assertJsoncRejected("[1, 2]");
   });
 
   it("strips comments and parses objects", async () => {
@@ -1130,9 +1152,9 @@ describe("config field parsing edges", () => {
   });
 
   it("rejects non-positive numbers everywhere", () => {
-    const config = normalizeDynamicTaskConfig({ maxDepth: 0, maxConcurrent: -3, agentCacheTtlMs: NaN });
-    assert.strictEqual(config.maxDepth, 2);
-    assert.strictEqual(config.maxConcurrent, 4);
+    // NaN is the interesting one: it is a number, and a `<= 0` guard would let it
+    // through, so the whole "safe" claim would rest on a TTL of NaN.
+    assertSafeDefaults(normalizeDynamicTaskConfig({ maxDepth: 0, maxConcurrent: -3, agentCacheTtlMs: NaN }));
   });
 
   it("ignores non-boolean allowSameAgentRecursion", () => {
@@ -1178,21 +1200,22 @@ describe("normalizeAgentName", () => {
 describe("validateAgent", () => {
   const config = normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
 
-  it("rejects a configured blocked agent", () => {
-    const result = validateAgent("general", config);
-    assert.strictEqual(result.ok, false);
-    if (!result.ok) assert.match(result.error, /general/i);
-  });
-
-  it("rejects @General (normalized)", () => {
-    const result = validateAgent("@General", config);
-    assert.strictEqual(result.ok, false);
-  });
-
-  it("allows non-blocked agents", () => {
-    const result = validateAgent("reviewer", config);
-    assert.strictEqual(result.ok, true);
-  });
+  // Admission is one decision over one input, so the cases are a table: a new
+  // spelling of "blocked" is a new row, not a fourth copy of the same three
+  // lines. The optional pattern is for the message a refusal carries — the one
+  // thing an `ok: false` alone does not pin down.
+  const admissions = [
+    ["rejects a configured blocked agent", "general", false, /general/i],
+    ["rejects @General (normalized)", "@General", false],
+    ["allows non-blocked agents", "reviewer", true],
+  ];
+  for (const [name, agent, ok, refusedWith] of admissions) {
+    it(name, () => {
+      const result = validateAgent(agent, config);
+      assert.strictEqual(result.ok, ok);
+      if (refusedWith) assert.match(result.error, refusedWith);
+    });
+  }
 
   it("allows agents not in blockedAgents", () => {
     const customConfig = normalizeDynamicTaskConfig({ blockedAgents: ["coder"] });
@@ -1371,6 +1394,22 @@ function storeSettledAs(state, cfg) {
   return store;
 }
 
+/** A config that permits exactly one running child — the gate, in one option. */
+function singleSlotConfig() {
+  return normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+}
+
+/**
+ * The exactly-once claim about a settled record, asserted once: a second
+ * settlement throws, and the record still holds the outcome that landed first.
+ * Two sites guarded this with slightly different patterns, which is two chances
+ * to accept a weaker pattern than the sentence claims.
+ */
+function assertSettlementIsFinal(store) {
+  assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid|not found/i);
+  assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
+}
+
 /** formatTaskResultSummary over a settled record carrying this notification. */
 function summaryWith(notification) {
   return formatTaskResultSummary({ ...resultRecord(), notification });
@@ -1402,8 +1441,7 @@ describe("task-state: transitionState", () => {
 
   it("settle is exactly-once: a second settlement throws and cannot regress retention", () => {
     transitionState(store, "ses_active", "completed");
-    assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid|not found/i);
-    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
+    assertSettlementIsFinal(store);
   });
 
   it("settlement strips advisory activity metadata — the ledger carries no heartbeat", () => {
@@ -1521,10 +1559,8 @@ describe("task-state: revival and annotations", () => {
   });
 
   it("revival passes through the concurrency gate", () => {
-    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
-    const store = createTaskStore();
-    seedSesActive(store, limited);
-    transitionState(store, "ses_active", "completed", limited);
+    const limited = singleSlotConfig();
+    const store = storeSettledAs("completed", limited);
     registerActiveTask(store, childParams({ id: "ses_other", agent: "a2" }), limited);
     assert.throws(() => reviveRetainedTask(store, "ses_active", limited), /Concurrency/);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed", "rejected revival leaves the record untouched");
@@ -1746,17 +1782,11 @@ describe("admission gate: registerAdmittedTask", () => {
   const config = normalizeDynamicTaskConfig({});
 
   it("registers through the funnel and enforces the concurrency limit", () => {
-    const limited = normalizeDynamicTaskConfig({ maxConcurrent: 1 });
+    const limited = singleSlotConfig();
     const store = createTaskStore();
-    const task = registerAdmittedTask(store, {
-      childSessionId: "ses_1", parentSessionId: "parent_1",
-      agentName: "explore", description: "t1", lineage: [],
-    }, limited);
+    const task = registerAdmittedTask(store, childParams({ id: "ses_1", description: "t1" }), limited);
     assert.strictEqual(task.agentName, "explore");
-    assert.throws(() => registerAdmittedTask(store, {
-      childSessionId: "ses_2", parentSessionId: "parent_1",
-      agentName: "explore", description: "t2", lineage: [],
-    }, limited), /Concurrency/);
+    assert.throws(() => registerAdmittedTask(store, childParams({ id: "ses_2", description: "t2" }), limited), /Concurrency/);
   });
 });
 
@@ -2051,8 +2081,7 @@ describe("task policy: invalid inputs", () => {
     // (active -> terminal), so a late error after a reported completion can
     // only arrive through noteLateOutcome, never through transitionState.
     const store = storeSettledAs("completed", config);
-    assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid/i);
-    assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
+    assertSettlementIsFinal(store);
   });
 });
 
@@ -2067,73 +2096,62 @@ describe("prompt dance: extractor shape coverage", () => {
 
 describe("config: file and env edges", () => {
   it("parseDynamicTaskJsonc returns null for malformed JSON", async () => {
-    await withTempFile(`${tmpdir()}/dt-malformed-${Date.now()}.jsonc`, async (file) => {
-      writeFileSync(file, "{ not json,");
-      assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    });
+    await assertJsoncRejected("{ not json,");
   });
 });
 
 
 
 describe("prompt dance: getLatestAssistantText", () => {
-  const assistant = (text) => ({ role: "assistant", parts: [{ type: "text", text }] });
-  const user = (text) => ({ role: "user", parts: [{ type: "text", text }] });
-
   it("returns the newest assistant text", () => {
     assert.strictEqual(
-      getLatestAssistantText([assistant("first"), user("q"), assistant("second")]),
+      getLatestAssistantText([said("assistant", "first"), said("user", "q"), said("assistant", "second")]),
       "second"
     );
   });
 
   it("reads the latest assistant text, skipping empties", () => {
-    assert.strictEqual(getLatestAssistantText([assistant("old"), assistant("new")]), "new");
-    assert.strictEqual(getLatestAssistantText([assistant(""), user("q")]), "");
+    assert.strictEqual(getLatestAssistantText([said("assistant", "old"), said("assistant", "new")]), "new");
+    assert.strictEqual(getLatestAssistantText([said("assistant", ""), said("user", "q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
     assert.strictEqual(getLatestAssistantText(null), "");
   });
 });
 
 describe("prompt dance: hydrateLatestOutcome", () => {
+  // The reader's one dependency is a message list, so that is the only thing
+  // these clients declare: a reader that grew a second dependency would have to
+  // be faked differently, and this is where that would show.
+  const clientReading = (read) => ({ session: { messages: async () => read() } });
+
+  // The outcome is a fixed shape — text, errorDetail, unreadable — and a case
+  // states only the part that moved. The full default is written once, so a new
+  // field on the outcome is one edit here instead of a three-field literal at
+  // every site, any of which could disagree about what "empty" means.
+  const assertHydrated = async (read, expected) => assert.deepStrictEqual(
+    await hydrateLatestOutcome(clientReading(read), "ses_1"),
+    { text: "", errorDetail: "", unreadable: false, ...expected },
+  );
+
   it("reads the latest assistant text from the session", async () => {
-    const client = {
-      session: {
-        messages: async () => [{ role: "assistant", parts: [{ type: "text", text: "CHILD_SAYS" }] }],
-      },
-    };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
-      text: "CHILD_SAYS",
-      errorDetail: "",
-      unreadable: false,
-    });
+    await assertHydrated(() => [said("assistant", "CHILD_SAYS")], { text: "CHILD_SAYS" });
   });
 
   it("surfaces the message-level error detail from the same read", async () => {
-    const client = {
-      session: {
-        messages: async () => [{
-          info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } },
-          parts: [],
-        }],
-      },
-    };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
-      text: "",
-      errorDetail: "Too Many Requests",
-      unreadable: false,
-    });
+    const failedTurn = [{
+      info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      parts: [],
+    }];
+    await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });
   });
 
   // A read that could not be made is not a read that found nothing, and the
   // notification has to be able to say which one it is quoting.
   it("falls back to empty fields and admits the read failed when messages fail", async () => {
-    const client = { session: { messages: async () => { throw new Error("gone"); } } };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
-      text: "",
-      errorDetail: "",
-      unreadable: true,
-    });
+    const gone = () => {
+      throw new Error("gone");
+    };
+    await assertHydrated(gone, { unreadable: true });
   });
 });
 
@@ -2387,47 +2405,36 @@ describe("task-state: concurrency helper", () => {
 describe("pruneRetainedTasks — TTL and max entry eviction", () => {
   const config = normalizeDynamicTaskConfig({ retainedTaskTtlMs: 50, retainedTaskMaxEntries: 2 });
 
-  it("removes expired retained tasks by TTL", async () => {
+  // Retention prunes on `retainedAt`, so an age IS the fixture, and every record
+  // in a store must be aged against the same clock the prune will read. Stated
+  // once, through the shared record shape: a hand-written record here could omit
+  // `state` and then be asserting about pruning something that was never settled.
+  const storeAged = (...agesById) => {
     const store = createTaskStore();
-    // Add a retained task with a past retainedAt
-    const oldTask = {
-      childSessionId: "ses_old", parentSessionId: "parent_1", agentName: "reviewer",
-      description: "old", lineage: [], timeoutHandle: null, startedAt: 0,
-      state: "completed" , retainedAt: Date.now() - 100000,
-    };
-    store.retainedTasks.set("ses_old", oldTask );
+    const now = Date.now();
+    for (const [id, age] of agesById) {
+      store.retainedTasks.set(id, retainedEntry({ childSessionId: id, retainedAt: now - age }));
+    }
+    return store;
+  };
 
-    const pruned = pruneRetainedTasks(store, config);
-    assert.strictEqual(pruned, 1, "Should prune 1 expired entry");
+  it("removes expired retained tasks by TTL", () => {
+    const store = storeAged(["ses_old", 100000]);
+    assert.strictEqual(pruneRetainedTasks(store, config), 1, "Should prune 1 expired entry");
     assert.strictEqual(store.retainedTasks.size, 0);
   });
 
   it("evicts oldest entries when over max", () => {
-    const store = createTaskStore();
-    // Add 3 retained tasks (max is 2) — all within TTL window (retainedAt near now)
-    const now = Date.now();
-    for (const [id, age] of [["ses_a", 5], ["ses_b", 3], ["ses_c", 0]]) {
-      store.retainedTasks.set(id, retainedEntry({ childSessionId: id, agentName: id, description: id, retainedAt: now - age }));
-    }
-
-    const pruned = pruneRetainedTasks(store, config);
-    assert.strictEqual(pruned, 1, "Should evict 1 oldest entry");
+    // max is 2, all three within the TTL window — so only the max can prune here.
+    const store = storeAged(["ses_a", 5], ["ses_b", 3], ["ses_c", 0]);
+    assert.strictEqual(pruneRetainedTasks(store, config), 1, "Should evict 1 oldest entry");
     assert.strictEqual(store.retainedTasks.size, 2);
-    // Oldest (ses_a) should be gone
-    assert.ok(!store.retainedTasks.has("ses_a"));
+    assert.ok(!store.retainedTasks.has("ses_a"), "the oldest entry is the one that goes");
   });
 
   it("prunes nothing when under limits", () => {
-    const store = createTaskStore();
-    const now = Date.now();
-    store.retainedTasks.set("ses_1", {
-      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "1", lineage: [],
-      state: "completed", retainedAt: now,
-    } );
-
-    const pruned = pruneRetainedTasks(store, config);
-    assert.strictEqual(pruned, 0);
+    const store = storeAged(["ses_1", 0]);
+    assert.strictEqual(pruneRetainedTasks(store, config), 0);
     assert.strictEqual(store.retainedTasks.size, 1);
   });
 });
@@ -2442,12 +2449,9 @@ describe("findTask — edge cases", () => {
   it("finds active task before retained task", () => {
     const store = createTaskStore();
     registerActiveTask(store, childParams({ id: "ses_dup", description: "t" }), normalizeDynamicTaskConfig({}));
-    // Add same key to retained (should not happen in practice but test priority)
-    store.retainedTasks.set("ses_dup", {
-      childSessionId: "ses_dup", parentSessionId: "p", agentName: "a",
-      description: "t", lineage: [],
-      state: "completed", retainedAt: Date.now(),
-    } );
+    // Same key in both maps — should not happen in practice — and while the task
+    // runs, the running record is the truth.
+    store.retainedTasks.set("ses_dup", retainedEntry({ childSessionId: "ses_dup", description: "t" }));
 
     const result = findTask(store, "ses_dup");
     assert.strictEqual(result?.state, "active", "Should find active before retained");

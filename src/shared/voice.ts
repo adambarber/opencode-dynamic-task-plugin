@@ -9,7 +9,7 @@
 // strings everywhere.
 
 import type { DependencyBlock } from "./admission.js";
-import type { DependencyWait, SettlementVerdict } from "./task-state.js";
+import type { WaitRelease, SettlementVerdict } from "./task-state.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
@@ -67,7 +67,7 @@ export function dependenciesPending(pending: DependencyBlock[]): string {
 // named each one, so it is named back — the plugin never invents an id the
 // parent would have to learn, and the parent does not have to remember which of
 // its refusals this settlement answers.
-export function waitsReleasedBody(release: { ready: DependencyWait[]; dead: DependencyWait[] }): string {
+export function waitsReleasedBody(release: WaitRelease): string {
   const lines: string[] = [];
   if (release.ready.length > 0) {
     lines.push(

@@ -83,21 +83,15 @@ export interface TaskIdentity {
   description: string;
 }
 
-// A model override as the parent spelled it. Named because the record, the
-// reference, and the confirmation that renders it all need the same pair, and an
-// inline spelling in each is three places for a rename to miss.
-export interface RequestedModel {
-  providerID: string;
-  modelID: string;
-}
-
-// The fields every record carries, whatever state it is in. Declared once, so
-// the active and retained shapes cannot drift and what admission hands the
-// registry is derived from the record instead of re-typed alongside it.
+// A model override as the parent spelled it, as a PAIR — the record, the route
+// and the confirmation that renders it all need the same one, so it is named once
+// where the parse that produces it lives (ModelOverride, in prompt.ts) rather than
+// declared a second time beside the field that holds it. An inline spelling in
+// each is three places for a rename to miss.
 export interface TaskRecordBase extends TaskIdentity {
   startedAt: number;
   lineage: LineagePath;
-  requestedModel?: RequestedModel | undefined;
+  requestedModel?: ModelOverride | undefined;
   dependsOn?: string[] | undefined;
   // Admission-time only: ids that needed settlement, not success, before this
   // task spawned. Persisted so status renders the full dependency picture.
@@ -543,7 +537,7 @@ export function clearTurnReplacement(store: TaskStore, childSessionId: string): 
  * precedes it.
  */
 export function turnReplacementPending(
-  task: { replacedAt?: number | undefined; turnLiveAt?: number | undefined } | undefined,
+  task: Pick<ActiveTaskState, "replacedAt" | "turnLiveAt"> | undefined,
 ): boolean {
   if (!task || task.replacedAt === undefined) return false;
   return (task.turnLiveAt ?? 0) < task.replacedAt;

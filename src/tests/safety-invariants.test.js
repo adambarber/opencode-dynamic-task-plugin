@@ -651,23 +651,28 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
 describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
   const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
 
-  it("enforces zero tolerance at 3 lines / 16 tokens", () => {
+  it("enforces zero tolerance at 3 lines / 14 tokens", () => {
     const loosened = [
       ["threshold", 0],
       ["minLines", 3],
-      ["minTokens", 16],
+      ["minTokens", 14],
     ].filter(([key, expected]) => config[key] !== expected);
     assert.deepStrictEqual(
       loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
       [],
-      `duplicate gate loosened. 3/20 reported 43 real clones when it was adopted,\n` +
+      `duplicate gate loosened. The history is one of eliminating clones, never of\n` +
+        `moving the bar to hide them: 3/20 reported 43 real clones when it was adopted,\n` +
         `3/15 reported 67, 3/12 reported 10, and 2/20 reported 86 more arrangements\n` +
         `below the line floor — including 26 hand-rolled queries into the test\n` +
-        `harness's recorded state, now behind named readers. 3/16 is the tree's\n` +
-        `actual clean level, reached by eliminating the clones, never by moving the\n` +
-        `bar to hide them. At 3/10 the 142 hits are expression shapes, not restated\n` +
-        `decisions: below 16 tokens the gate would demand a helper per expression,\n` +
-        `which is the thing this rule exists to prevent.`,
+        `harness's recorded state, now behind named readers. 3/16 was the tree's clean\n` +
+        `level at the time it was measured; 3/14 is the tree's clean level now, after\n` +
+        `the record shapes were built by production instead of by hand. The number is\n` +
+        `a MEASUREMENT, so it has to be re-measured and re-pinned when it stops holding\n` +
+        `rather than left to drift: 3/13 is not clean, and the 13 it reports is two\n` +
+        `type-predicate preambles — \`function isX(v: unknown): v is Y { if (!isEventRecord(v))\n` +
+        `return false; }\` — a structural idiom whose remainder is each predicate's own\n` +
+        `fields. Factoring that would mean inventing a generic type-guard combinator,\n` +
+        `which is the helper-per-expression this rule exists to prevent.`,
     );
   });
 

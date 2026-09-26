@@ -15,10 +15,12 @@ import {
   getPendingDeliveries,
   restorePendingDeliveries,
 } from "../../dist/shared/notify.js";
-import { deferred } from './support/harness.js';
-import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
+import { bounded, deferred } from './support/harness.js';
 
 const NO_SLEEP = async () => {};
+
+/** The answer a host gives a write it accepted — stated once, because "accepted" is the claim. */
+const accepted = () => ({ ok: true });
 
 /**
  * The gated parent transport, in its two forms. Every write records its args
@@ -54,8 +56,7 @@ function gatedClient(gate, options = {}) {
  * the field. `release` answers the held write and waits one macrotask turn,
  * which is exactly long enough for the continuations already queued against that
  * answer to have run — an observable, not a sleep.
- */
-function heldWriteClient() {
+ */function heldWriteClient() {
   const gate = deferred();
   const held = gatedClient(gate);
   return {
@@ -126,14 +127,14 @@ function assertDelivered(verdict, calls, expectedCalls, why) {
  * patience changes.
  */
 async function withHeldWrites(body) {
-  const restore = shrinkBoundsForTesting(20);
-  const held = heldWriteClient();
-  try {
-    return await body(held);
-  } finally {
-    await held.release();
-    restore();
-  }
+  return bounded(20, async () => {
+    const held = heldWriteClient();
+    try {
+      return await body(held);
+    } finally {
+      await held.release();
+    }
+  });
 }
 
 describe("notify gate: notifyParent", () => {
@@ -236,10 +237,9 @@ describe("notify gate: notifyParent", () => {
       order.push(`end:${text}`);
       return { ok: true };
     });
-    const opts = (kind) => ({ childSessionId: "ses_chain1", kind, sleep: NO_SLEEP });
     const [ra, rb] = await Promise.all([
-      notifyParent(client, "p", "first", opts("completed")),
-      notifyParent(client, "p", "second", opts("error")),
+      notifyParent(client, "p", "first", gate("ses_chain1", "completed")),
+      notifyParent(client, "p", "second", gate("ses_chain1", "error")),
     ]);
     assert.strictEqual(ra && rb, true, "both deliver");
     assert.deepStrictEqual(order, ["start:first", "end:first", "start:second", "end:second"]);
@@ -248,7 +248,7 @@ describe("notify gate: notifyParent", () => {
   it("concurrent same-key writes deliver once — in-flight claims close the race", async () => {
     const parked = deferred();
     const { client, calls } = gatedClient(parked);
-    const opts = { childSessionId: "ses_race1", kind: "completed", sleep: NO_SLEEP };
+    const opts = gate("ses_race1", "completed");
     const first = notifyParent(client, "parent_1", "hello", opts);
     const second = notifyParent(client, "parent_1", "hello", opts);
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
@@ -273,19 +273,14 @@ describe("notify gate: notifyParent", () => {
 
   it("a distinct error can follow a delivered completion", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "done", { childSessionId: "ses_e1", kind: "completed", sleep: NO_SLEEP });
-    const escalated = await notifyParent(client, "parent_1", "actually failed", { childSessionId: "ses_e1", kind: "error", sleep: NO_SLEEP });
+    await notifyParent(client, "parent_1", "done", gate("ses_e1", "completed"));
+    const escalated = await notifyParent(client, "parent_1", "actually failed", gate("ses_e1", "error"));
     assertDelivered(escalated, calls, 2);
   });
 
   it("notices dedup by message-derived key, not by kind", async () => {
     const { client, calls } = answeredClient([]);
-    const opts = (message) => ({
-      childSessionId: "ses_f1",
-      kind: "notice",
-      dedupKey: `notice:${message}`,
-      sleep: NO_SLEEP,
-    });
+    const opts = (message) => ({ ...gate("ses_f1", "notice"), dedupKey: `notice:${message}` });
     assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), true);
     assert.strictEqual(await notifyParent(client, "parent_1", "blocked on Y", opts("blocked on Y")), true);
     assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), false);
@@ -294,9 +289,9 @@ describe("notify gate: notifyParent", () => {
 
   it("revival clears settle-dedup so the next completion can deliver", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "turn 1", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
+    await notifyParent(client, "parent_1", "turn 1", gate("ses_g1", "completed"));
     gateLedger.forgetChild("ses_g1");
-    const second = await notifyParent(client, "parent_1", "turn 2", { childSessionId: "ses_g1", kind: "completed", sleep: NO_SLEEP });
+    const second = await notifyParent(client, "parent_1", "turn 2", gate("ses_g1", "completed"));
     assertDelivered(second, calls, 2);
   });
 
@@ -306,7 +301,7 @@ describe("notify gate: notifyParent", () => {
     // may emit history but must not reserve the key the revived turn needs.
     const retryGate = deferred();
     const { client } = gatedClient(retryGate, { throwFirst: true });
-    const opts = { childSessionId: "ses_gen1", kind: "completed", sleep: NO_SLEEP };
+    const opts = gate("ses_gen1", "completed");
     const first = notifyParent(client, "parent_1", "turn 1", opts);
     await new Promise((r) => setTimeout(r, 10)); // the retry has dialed and is held
     gateLedger.forgetChild("ses_gen1");          // revival: new generation, cleared pending
@@ -326,9 +321,7 @@ describe("notify gate: notifyParent", () => {
     });
     const pending = [];
     for (let i = 0; i < 1005; i++) {
-      pending.push(notifyParent(client, "p", `m${i}`, {
-        childSessionId: `ses_ch${i}`, kind: "completed", sleep: NO_SLEEP,
-      }));
+      pending.push(notifyParent(client, "p", `m${i}`, gate(`ses_ch${i}`, "completed")));
     }
     assert.strictEqual(notifyChainCount(), 1000, `chain map FIFO-capped. got ${notifyChainCount()}`);
     transportGate.resolve();
@@ -341,7 +334,7 @@ describe("notify gate: notifyParent", () => {
   it("ledger is bounded and latest-wins per child", async () => {
     const { client } = answeredClient([]);
     for (let i = 0; i < 205; i++) {
-      await notifyParent(client, "parent_1", `msg ${i}`, { childSessionId: `ses_${i}`, kind: "completed", sleep: NO_SLEEP });
+      await notifyParent(client, "parent_1", `msg ${i}`, gate(`ses_${i}`, "completed"));
     }
     assert.ok(getLatestNotification("ses_204"), "newest retained");
     assert.strictEqual(getLatestNotification("ses_0"), null, "oldest evicted");
@@ -354,9 +347,9 @@ describe("notify gate: notifyParent", () => {
   it("recent keys still dedupe after mass delivery (bounded window documented)", async () => {
     const { client } = answeredClient([]);
     for (let i = 0; i < 1005; i++) {
-      await notifyParent(client, "p", `m${i}`, { childSessionId: `ses_ev${i}`, kind: "completed", sleep: NO_SLEEP });
+      await notifyParent(client, "p", `m${i}`, gate(`ses_ev${i}`, "completed"));
     }
-    const again = await notifyParent(client, "p", "again", { childSessionId: "ses_ev1004", kind: "completed", sleep: NO_SLEEP });
+    const again = await notifyParent(client, "p", "again", gate("ses_ev1004", "completed"));
     assert.strictEqual(again, false, "in-window keys still dedupe; eviction only touches the oldest");
   });
 });

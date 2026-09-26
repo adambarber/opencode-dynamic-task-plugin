@@ -214,8 +214,31 @@ const withSingleSlot = () => setupHarness({ options: { maxConcurrent: 1 } });
  * failure: a red case must show what the tool actually said, not that some word
  * was missing from it. `note` is the case's own claim on top of the reason.
  */
+/**
+ * The failure line every prose claim in this file shares: the case's own claim,
+ * then the answer as the only evidence there is. Composed once so a new kind of
+ * claim cannot leave the answer out of its own failure.
+ */
+const proseFailure = (note, answer, extra = "") => `${note ? `${note}. ` : ""}${extra}got: ${answer}`;
+
 function answerSays(answer, reason, note) {
-  assert.ok(answer.includes(reason), `${note ? `${note}. ` : ""}got: ${answer}`);
+  assert.ok(answer.includes(reason), proseFailure(note, answer));
+}
+/**
+ * As `answerSays`, for a claim that is a shape rather than a word. Same reason:
+ * the answer is the only evidence there is, so it rides in the failure.
+ */
+function answerMatches(answer, pattern, note) {
+  assert.match(answer, pattern, proseFailure(note, answer));
+}
+/**
+ * As `answerSays`, for the claim that is a word that must NOT be there — no
+ * resume hint on a fatal error, no success claim on a vanished child. An absence
+ * is a claim too, and it is the one a notification bug makes invisible, so the
+ * whole text is in the failure rather than a bare false.
+ */
+function answerOmits(answer, reason, note) {
+  assert.ok(!answer.includes(reason), proseFailure(note, answer, `must not say ${reason}. `));
 }
 /**
  * How many notices reached the parent. The count is the whole claim in these
@@ -441,11 +464,11 @@ describe("task_continue branches", () => {
     await sleep(20);
     const notice = h.noticeFor(id);
     assert.ok(notice, "the outcome is the parent's only route to the child — it cannot ride behind a read");
-    assert.match(notice.message, /completed successfully/, `the settlement still notifies. got: ${notice.message}`);
-    assert.match(
+    answerMatches(notice.message, /completed successfully/, "the settlement still notifies");
+    answerMatches(
       notice.message,
       /transcript could not be read/,
-      `and names the missing quote instead of passing "(completed)" off as one. got: ${notice.message}`,
+      `names the missing quote instead of passing "(completed)" off as one`,
     );
   });
 
@@ -459,12 +482,12 @@ describe("task_continue branches", () => {
       const { id, c } = await h.spawn({ prompt: "turn one" });
       await h.settle(id, "completed");
       await sleep(40);
-      assert.match(await c.status(), /PENDING/, "the parent can SEE that its child spoke and it has not arrived");
+      answerMatches(await c.status(), /PENDING/, "the parent can SEE that its child spoke and it has not arrived");
       assert.doesNotMatch(await c.status(), /FAILED/, "held is not failed — the host may still deliver it");
       held.resolve();
       await held.promise;
       await sleep(20);
-      assert.match(await c.status(), /delivered in 1 attempt/, `the record ends up truthful. got: ${await c.status()}`);
+      answerMatches(await c.status(), /delivered in 1 attempt/, "the record ends up truthful");
       assert.strictEqual(
         h.client._state.notifyCalls.length,
         1,
@@ -505,7 +528,7 @@ describe("task_continue branches", () => {
       );
       await h.settle(c.id, "completed");
       await sleep(20);
-      assert.match(await c.status(), /State: completed/, "the revived turn settles on its own");
+      answerMatches(await c.status(), /State: completed/, "the revived turn settles on its own");
       assertNoticeCount(h, 2, "the settlement the parent was told about, and the one that carries the outcome");
     });
   }
@@ -513,7 +536,7 @@ describe("task_continue branches", () => {
   it("a task settling mid-steer never receives the replacement prompt", async () => {
     const { h, out } = await steerLosingToInterrupt();
     answerSays(out, "interrupted", "truthful report");
-    assert.ok(!out.includes("Steer sent"), `must not claim a steer that never happened. got: ${out}`);
+    answerOmits(out, "Steer sent", "must not claim a steer that never happened");
     assert.strictEqual(
     h.client._state.promptBodies.filter((p) => p.body.parts[0].text.includes("pivot")).length,
     0,
@@ -524,7 +547,7 @@ describe("task_continue branches", () => {
   it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
     const { h, out } = await steerLosingToInterrupt({ fails: true });
     answerSays(out, "interrupted", "reports the actual winner");
-    assert.ok(!out.includes("settled as error"), `no false error claim. got: ${out}`);
+    answerOmits(out, "settled as error", "no false error claim");
     assert.strictEqual(
     h.notices().filter((n) => n.message.includes("Steer failed")).length,
     0,
@@ -591,9 +614,9 @@ describe("task_continue branches", () => {
     await sleep(10);
     await c.steer("again");
     const status = await c.status();
-    assert.ok(!status.includes("Last notification"), `new turn, nothing reported yet. got: ${status}`);
+    answerOmits(status, "Last notification", "new turn, nothing reported yet");
     const summary = await c.result();
-    assert.ok(!summary.includes("Last notification"), `same for result reads. got: ${summary}`);
+    answerOmits(summary, "Last notification", "same for result reads");
   });
 
   it("reviving with a model override reroutes and persists it", async () => {
@@ -673,7 +696,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const { h, c, id } = await withChild({ harness: { hooks: { promptFailIds: new Set(["p1"]) } } });
     const out = await c.notify("hello?");
     answerSays(out, "did not acknowledge", "names the failure");
-    assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`);
+    answerOmits(out, "duplicate", "never confuses the two");
   });
 
   // A held write is the case the PARENT-facing record already learned to name
@@ -692,7 +715,7 @@ describe("task_notify: the child-to-parent channel", () => {
     });
     const out = await bounded(20, () => c.notify("are you there?"));
     assertNoticeCount(h, 1, "the host really did put it in the parent's context");
-    assert.ok(!out.includes("not sent"), `a held write was dialed, not lost. got: ${out}`);
+    answerOmits(out, "not sent", "a held write was dialed, not lost");
     assert.ok(!/retry/i.test(out), `retrying a delivered notice duplicates it. got: ${out}`);
   });
 
@@ -706,7 +729,7 @@ describe("task_notify: the child-to-parent channel", () => {
     summary.includes("Suppressed (duplicate — already delivered)"),
     `the duplicate must read as suppression. got: ${summary}`,
     );
-    assert.ok(!summary.includes("FAILED"), `suppression is not a delivery failure. got: ${summary}`);
+    answerOmits(summary, "FAILED", "suppression is not a delivery failure");
   });
 
   it("refuses untracked callers and settled tasks", async () => {
@@ -743,7 +766,7 @@ describe("error settlement guidance", () => {
   it("fatal error settlements carry no resume hint", async () => {
     const note = await settleWithMessageError("permission denied for model");
     answerSays(note, "permission denied", "keeps the cause");
-    assert.ok(!note.includes("transient"), `no resume hint for fatal. got: ${note}`);
+    answerOmits(note, "transient", "no resume hint for fatal");
     });
 });
 
@@ -845,7 +868,7 @@ describe("task_result and task_interrupt paths", () => {
     const summary = await resultForUnreadableChild();
     answerSays(summary, "Status: active", "the store is the authority");
     answerSays(summary, "(API unavailable)", "the failed read says so");
-    assert.ok(!summary.includes("Server status"), `no reading, no liveness block. got: ${summary}`);
+    answerOmits(summary, "Server status", "no reading, no liveness block");
   });
 
   // Absence of a reading is not evidence of anything. The record renders; the
@@ -856,8 +879,8 @@ describe("task_result and task_interrupt paths", () => {
     const status = await c.status();
     answerSays(status, "State: active");
     answerSays(status, "Last plugin event:", "the plugin's own clock still reads");
-    assert.ok(!status.includes("Server status"), `an unanswered channel renders nothing. got: ${status}`);
-    assert.ok(!status.includes("missed the ending"), `no reading, no verdict. got: ${status}`);
+    answerOmits(status, "Server status", "an unanswered channel renders nothing");
+    answerOmits(status, "missed the ending", "no reading, no verdict");
   });
 
   // What a child's *written* output is reported as when there is none to
@@ -882,7 +905,7 @@ describe("task_result and task_interrupt paths", () => {
   it("a child's last message time comes off the message's info, not the item", async () => {
     const writtenAt = Date.now() - 45_000;
     const summary = await resultForChild([hostSaid("done", writtenAt)]);
-    assert.match(summary, /Last child message: 4[0-9]s ago/, `the child's own clock. got: ${summary}`);
+    answerMatches(summary, /Last child message: 4[0-9]s ago/, "the child's own clock");
   });
 
   // No record to reconcile and no server word: the only honest status is the
@@ -895,7 +918,7 @@ describe("task_result and task_interrupt paths", () => {
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
-    assert.ok(!summary.includes("Server status"), `nothing was learned. got: ${summary}`);
+    answerOmits(summary, "Server status", "nothing was learned");
   });
 
   it("a retryable transport failure says so", async () => {
@@ -956,7 +979,7 @@ describe("task_result and task_interrupt paths", () => {
     answerSays(out, "ECONNREFUSED", "gap recorded in the report");
     const status = await c.status();
     answerSays(status, "completed");
-    assert.ok(!status.includes("Abort error"), `a success record stays clean. got: ${status}`);
+    answerOmits(status, "Abort error", "a success record stays clean");
     });
 });
 
@@ -972,8 +995,8 @@ describe("a child that needs input is not a success", () => {
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: blocked", "the record says what happened");
     const body = h.noticeBodies()[0];
-    assert.match(body, /needs input|blocked/i, `the parent is told the task is waiting. got: ${body}`);
-    assert.match(body, /task_continue/, `and how to answer it. got: ${body}`);
+    answerMatches(body, /needs input|blocked/i, "the parent is told the task is waiting");
+    answerMatches(body, /task_continue/, "and how to answer it");
     assert.ok(!/completed successfully/.test(body), `never a success claim. got: ${body}`);
   });
 
@@ -1031,15 +1054,15 @@ describe("a child that needs input is not a success", () => {
     const c = h.child("ses_blocked1");
     assert.strictEqual(await stateOf(c), "State: blocked", "the restored record is not dropped");
     const answer = await c.steer("here is the key");
-    assert.match(answer, /Follow-up sent/, `still answerable after a restart. got: ${answer}`);
+    answerMatches(answer, /Follow-up sent/, "still answerable after a restart");
     assert.strictEqual(await stateOf(c), "State: active", `got: ${await c.status()}`);
   });
 
   it("the declaration rides the notice channel, and an unknown claim is refused", async () => {
     const { c } = await withChild();
     const refused = await c.notify("asking", { kind: "urgent" });
-    assert.match(refused, /urgent/, `the rejected value is quoted back. got: ${refused}`);
-    assert.match(refused, /needs_input/, `the choices are named. got: ${refused}`);
+    answerMatches(refused, /urgent/, "the rejected value is quoted back");
+    answerMatches(refused, /needs_input/, "the choices are named");
   });
 });
 
@@ -1064,7 +1087,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   it("scope self stops only the session it was handed", async () => {
     const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "self" });
-    assert.ok(!out.includes(grandchild.id), `a descendant was not acted on, so it is not named. got: ${out}`);
+    answerOmits(out, grandchild.id, "a descendant was not acted on, so it is not named");
     assert.ok((await stateOf(h, child.id)).includes("interrupted"), "the handed session is stopped");
     assert.ok((await stateOf(h, grandchild.id)).includes("active"), "the descendant is still running");
   });
@@ -1080,7 +1103,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   it("a settled descendant is not named: there was nothing to stop there", async () => {
     const { h, child, grandchild } = await withSettledDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
-    assert.ok(!out.includes(grandchild.id), `the finished child is not re-aborted. got: ${out}`);
+    answerOmits(out, grandchild.id, "the finished child is not re-aborted");
     answerSays(out, child.id, "the task the caller named is still answered");
   });
 
@@ -1124,7 +1147,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     answerSays(out, "notification: disabled");
     await h.settle(id);
     const summary = await c.result();
-    assert.match(summary, /FAILED|delivered: false|no parent/, `deafness must be distinguishable from silence. got: ${summary}`);
+    answerMatches(summary, /FAILED|delivered: false|no parent/, "deafness must be distinguishable from silence");
     });
 
   // Same-tick race through the advisory check: both spawns see an empty
@@ -1165,7 +1188,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     await sleep(50); // the fire-and-forget catch schedules the settlement
     const notes = failing.client._state.notifications;
     assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
-    assert.match(notes[0].message, /ended with an error/i, "error-kind notification");
+    answerMatches(notes[0].message, /ended with an error/i, "error-kind notification");
     const summary = await failing.tool.task_result.execute({ session_id: id });
     answerSays(summary, "error", "task must be retained as error");
     // The lifecycle event that follows must not double-settle.
@@ -1201,7 +1224,7 @@ async function refuseDispatch(h, description, depends_on, depends_on_settled) {
     depends_on,
     ...(depends_on_settled ? { depends_on_settled } : {}),
   });
-  assert.match(refusal, /Dependencies pending/, `the dispatch was refused. got: ${refusal}`);
+  answerMatches(refusal, /Dependencies pending/, "the dispatch was refused");
   return refusal;
 }
 
@@ -1261,7 +1284,7 @@ describe("dependency waits are state, not prose the parent must remember", () =>
     const { h, edge } = await refusedDispatchScenario();
     const hint = await announcedAbout(h, "consume the edge", () => h.settle(edge.id));
     assert.strictEqual(hint.to, "p1", `and it goes to the parent that asked. got: ${hint.to}`);
-    assert.match(hint.message, /can go now/i, `in words that ask for the action. got: ${hint.message}`);
+    answerMatches(hint.message, /can go now/i, "in words that ask for the action");
   });
 
   // The edge can never satisfy a strict depends_on again — it will not run
@@ -1271,7 +1294,7 @@ describe("dependency waits are state, not prose the parent must remember", () =>
   it("a wait whose edge settled short of completed is announced as dead, not as ready", async () => {
     const { h, edge } = await refusedDispatchScenario();
     const hint = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
-    assert.match(hint.message, /never run/i, `named as unrunnable. got: ${hint.message}`);
+    answerMatches(hint.message, /never run/i, "named as unrunnable");
     assert.ok(!/can go now/i.test(hint.message), `never announced as ready. got: ${hint.message}`);
   });
 
@@ -1290,7 +1313,7 @@ describe("dependency waits are state, not prose the parent must remember", () =>
   it("a wait cleared by settlement only, and announced exactly once", async () => {
     const { h, edge } = await refusedDispatchScenario("settled");
     const released = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
-    assert.match(released.message, /can go now/i, `a settled edge is enough. got: ${released.message}`);
+    answerMatches(released.message, /can go now/i, "a settled edge is enough");
 
     // The wait is gone from the store when it is announced, so a later turn on
     // an unrelated task has nothing left to say about it.
@@ -1335,8 +1358,8 @@ describe("question gate: child questions settle", () => {
     const call = assertQuestionRejected(h);
     assert.strictEqual(call.requestID, "q2", "refused at the host's own route");
     const claim = await c.status();
-    assert.match(claim, /Last notice/, `the refusal is recorded for the operator. got: ${claim}`);
-    assert.match(claim, /task_continue/, `names the tool the PARENT holds. got: ${claim}`);
+    answerMatches(claim, /Last notice/, "the refusal is recorded for the operator");
+    answerMatches(claim, /task_continue/, "names the tool the PARENT holds");
     assert.doesNotMatch(claim, /task_notify/, `never tells the parent to use a child-only tool. got: ${claim}`);
     assert.ok(!/when it resumes/.test(claim), `never tells anyone to wait. got: ${claim}`);
   });
@@ -1394,8 +1417,8 @@ describe("question gate: child questions settle", () => {
       await h.fireEvent(events.ask(id, "q3", "yes"));
       assertQuestionRejected(h);
       const text = log();
-      assert.match(text, /question-retained-rejected/, `the settlement is logged as one. got: ${text}`);
-      assert.match(text, /settled/i, `and it says the task is settled. got: ${text}`);
+      answerMatches(text, /question-retained-rejected/, "the settlement is logged as one");
+      answerMatches(text, /settled/i, "and it says the task is settled");
     });
   });
 
@@ -1404,7 +1427,7 @@ describe("question gate: child questions settle", () => {
       await h.fireEvent(events.ask(id, "q9", "yes"));
       const text = log();
       answerSays(text, "question-retained-reject-failed", "failure logged");
-      assert.ok(!text.includes('"eventName":"question-retained-rejected"'), `must not claim rejection. got: ${text}`);
+      answerOmits(text, '"eventName":"question-retained-rejected"', "must not claim rejection");
     });
   });
 
@@ -1503,7 +1526,7 @@ describe("task fleet views", () => {
       answerSays(list, "Active: 1/4", "one task is still running");
       const section = list.slice(0, list.indexOf("Retained:"));
       answerSays(section, child.id, "the running task is there");
-      assert.ok(!section.includes(grandchild.id), `the finished one is not in the tree. got: ${section}`);
+      answerOmits(section, grandchild.id, "the finished one is not in the tree");
       answerSays(list, grandchild.id, "history still has it");
     });
 
@@ -1687,7 +1710,7 @@ describe("outcome correctness: failed turns never report success", () => {
       const note = (await h.noticeAfter(terminal(id))).message;
       answerSays(note, "ended with an error", "must report error");
       if (detail) assert.ok(note.includes(detail), `must carry provider detail. got: ${note}`);
-      assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
+      answerOmits(note, "completed successfully", "must never claim success");
       assert.ok((await c.status()).includes("error"), `state settles error. got: ${await c.status()}`);
     });
   }
@@ -1747,7 +1770,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const r2 = await c.interrupt();
     release();
     await p1;
-    assert.ok(!r2.includes("not a tracked task"), `second interrupt sees the tracked task. got: ${r2}`);
+    answerOmits(r2, "not a tracked task", "second interrupt sees the tracked task");
     const status = await c.status();
     answerSays(status, "interrupted", "converges interrupted");
     });
@@ -1784,7 +1807,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const { id, c } = await h.spawn({ description: "deleted child" });
     const note = (await h.noticeAfter(events.deleted(id))).message;
     answerSays(note, "ended with an error", "deletion is a failure");
-    assert.ok(!note.includes("completed successfully"), `must never claim success. got: ${note}`);
+    answerOmits(note, "completed successfully", "must never claim success");
     });
 });
 
@@ -1875,11 +1898,11 @@ describe("boot reconciles what the last boot was still running", () => {
   it("a child the host is still working stays active and settles on its own event", async () => {
     const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "busy" });
     const status = await h.tool.task_status.execute({ session_id: "ses_live" }, { sessionID: "ses_parent" });
-    assert.match(status, /State: active/, "still running is still active");
+    answerMatches(status, /State: active/, "still running is still active");
     assert.deepStrictEqual(h.noticeBodies(), [], "no notice for a task that is not over");
 
     const notice = await h.settledNotice("ses_live");
-    assert.match(notice, /completed successfully/, "its genuine terminal event settles it, once");
+    answerMatches(notice, /completed successfully/, "its genuine terminal event settles it, once");
   });
 
   it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
@@ -1887,9 +1910,9 @@ describe("boot reconciles what the last boot was still running", () => {
     await waitFor(() => notices().length > 0, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
-    assert.match(notice.message, /ended with an error/);
-    assert.match(notice.message, /vanish/i, "the parent is told it vanished, not that its work failed");
-    assert.match(notice.message, /restart/i, "and when the loss of contact happened");
+    answerMatches(notice.message, /ended with an error/, "an error the parent can act on");
+    answerMatches(notice.message, /vanish/i, "the parent is told it vanished, not that its work failed");
+    answerMatches(notice.message, /restart/i, "and when the loss of contact happened");
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [], "nothing is left pretending to run");
   });
 
@@ -1898,7 +1921,7 @@ describe("boot reconciles what the last boot was still running", () => {
   it("a child that finished while the parent was down settles completed, not error", async () => {
     const { notices } = await bootWithRunners({ ses_idle: runningEntry("ses_idle") }, { ses_idle: "idle" });
     await waitFor(() => notices().length > 0, "the finished child to settle");
-    assert.match(notices()[0].message, /completed successfully/);
+    answerMatches(notices()[0].message, /completed successfully/, "the finished child settles as the success it was");
     assert.doesNotMatch(notices()[0].message, /ended with an error/);
   });
 

@@ -16,6 +16,25 @@ import {
   forgetQuestionSession,
 } from "../shared/question-handling.js";
 
+// One reporting tail for every auto-rejection: a rejected question is logged by
+// outcome and the log prefix names who owned the child. Both rejection arms (a
+// live child's failed auto-answer, a settled child's unanswered question) route
+// through it, so the log vocabulary cannot drift between them.
+async function reportAutoReject(
+  client: OpenCodeClient,
+  questionId: string,
+  childSessionId: string,
+  logParentSessionId: string,
+  reason: string,
+  logPrefix: string,
+): Promise<void> {
+  const result = await rejectQuestion(client, questionId, reason);
+  debugLog(logParentSessionId, childSessionId, `${logPrefix}-reject-${result.succeeded ? "ed" : "failed"}`, {
+    questionId,
+    ...(result.succeeded ? {} : { reason: result.reason }),
+  });
+}
+
 // True when this event was a question the gate consumed (caller returns).
 // False for anything else (caller falls through to lifecycle handling).
 export async function handleQuestionEvent(
@@ -66,41 +85,37 @@ export async function handleQuestionEvent(
             questionId,
             reason: result.reason,
           });
-          const rejectResult = await rejectQuestion(client, questionId,
-            "Background task question auto-answer failed");
-          if (!rejectResult.succeeded) {
-            debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
-              questionId,
-              reason: rejectResult.reason,
-            });
-          }
+          await reportAutoReject(
+            client,
+            questionId,
+            childSessionId,
+            active.parentSessionId,
+            "Background task question auto-answer failed",
+            "question-auto",
+          );
         }
       } else {
-        const result = await rejectQuestion(client, questionId, decision.reason);
-        if (!result.succeeded) {
-          debugLog(active.parentSessionId, childSessionId, "question-auto-reject-failed", {
-            questionId,
-            reason: result.reason,
-          });
-        } else {
-          debugLog(active.parentSessionId, childSessionId, "question-auto-rejected", {
-            questionId,
-          });
-        }
+        await reportAutoReject(
+          client,
+          questionId,
+          childSessionId,
+          active.parentSessionId,
+          decision.reason,
+          "question-auto",
+        );
       }
     } else if (retained) {
       rememberQuestionSession(questionId, childSessionId);
       const decision = decideQuestion("retained", []);
       if (decision.action === "reject") {
-        const result = await rejectQuestion(client, questionId, decision.reason);
-        if (!result.succeeded) {
-          debugLog(retained.parentSessionId, childSessionId, "question-retained-reject-failed", {
-            questionId,
-            reason: result.reason,
-          });
-        } else {
-          debugLog(retained.parentSessionId, childSessionId, "question-retained-rejected", { questionId });
-        }
+        await reportAutoReject(
+          client,
+          questionId,
+          childSessionId,
+          retained.parentSessionId,
+          decision.reason,
+          "question-retained",
+        );
       }
     } else {
       debugLog("unknown", "unknown", "question-unmatched", { questionId, type: eventType });

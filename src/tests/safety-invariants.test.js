@@ -22,6 +22,7 @@ import assert from "node:assert";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildToolMap } from "../../dist/tools/index.js";
 
 const TESTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.join(TESTS_DIR, "..");
@@ -138,22 +139,36 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
     );
   });
 
-  it("session create/abort funnel through the entry — no side doors", () => {
-    const pattern = /client\.session\.(create|abort)\s*\(/;
-    // Tenet 9: create lives in the spawn executor; aborts live beside the
-    // claims that order them (steer in continue, settle-first in interrupt).
-    // No other module may create or abort sessions.
-    const sanctioned = ["tools/spawn.ts", "tools/continue.ts", "tools/interrupt.ts"];
-    const hits = listProdFiles()
-      .filter((f) => !sanctioned.some((s) => f.endsWith(s)))
-      .flatMap((f) => scanLines(f, pattern));
+  it("session create/abort funnel through one site each — no side doors", () => {
+    // Tenet 9: create lives in the spawn executor — the ONLY site, because a
+    // created session nobody registered runs unmonitored. Abort is funnelled
+    // in session-lifecycle: the await stays at the call site that orders it
+    // (steer beside its claim, interrupt beside its settle, spawn beside its
+    // cleanup), but what a failure MEANS is decided once.
+    const createPattern = /client\.session\.create\s*\(/;
+    const createHits = listProdFiles()
+      .filter((f) => !f.endsWith("tools/spawn.ts"))
+      .flatMap((f) => scanLines(f, createPattern));
     assert.strictEqual(
-      hits.length,
+      createHits.length,
       0,
       formatViolations(
         "docs/tasks/09-non-blocking-settlement.md",
-        "Child sessions must be created/aborted only via the spawn/interrupt/steer executors.",
-        hits,
+        "Child sessions must be created only by the spawn executor.",
+        createHits,
+      ),
+    );
+    const abortPattern = /client\.session\.abort\s*\(/;
+    const abortHits = listProdFiles()
+      .filter((f) => !f.endsWith("shared/session-lifecycle.ts"))
+      .flatMap((f) => scanLines(f, abortPattern));
+    assert.strictEqual(
+      abortHits.length,
+      0,
+      formatViolations(
+        "docs/tasks/09-non-blocking-settlement.md",
+        "Child sessions must be aborted only via abortSession, so 404-versus-transport failure cannot drift between the steer and interrupt paths.",
+        abortHits,
       ),
     );
   });
@@ -392,14 +407,15 @@ describe("invariant: tests import production, never redefine it (Tenet 12)", () 
 
 // --- Task 00: documented capability inventory --------------------------------
 // Primitive: the documented capability set. README's tool table must match
-// exactly the tools registered in src/index.ts (fidelity gate).
+// exactly the tools registered in the tool map (fidelity gate).
 describe("invariant: README tool inventory matches registered tools (Task 00)", () => {
   it("every documented tool is registered and vice versa", () => {
-    const indexSrc = readFileSync(path.join(SRC_DIR, "tools", "index.ts"), "utf8");
-    // Both tool shells count: tool({...}) and the sessionReadTool funnel.
-    const registered = new Set(
-      [...indexSrc.matchAll(/^\s{6}(\w+):\s*(?:tool\s*\(\{|sessionReadTool\s*\()/gm)].map((m) => m[1]),
-    );
+    // Ground truth, not text shape: ask the tool map for its keys. A regex
+    // over index.ts could not survive a builder being renamed or a tool being
+    // registered by a helper the scan does not know — and the previous version
+    // of this gate had already gone stale that way, matching a funnel name
+    // that no longer existed. The map's construction never touches deps.
+    const registered = new Set(Object.keys(buildToolMap({})));
     const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8").split("\n");
     const headerIdx = readme.findIndex((l) => l.startsWith("| Tool |"));
     const documented = new Set();
@@ -417,7 +433,7 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     assert.strictEqual(
       drift.length,
       0,
-      `README ↔ src/tools/index.ts capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n` +
+      `README ↔ dist/tools/index.js capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n` +
         drift.map((d) => `  - ${d}`).join("\n"),
     );
   });

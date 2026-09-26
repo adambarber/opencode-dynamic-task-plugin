@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState } from "./task-state.js";
 
 // Host event payloads are untyped JSON at this boundary. isEventRecord is the
@@ -45,6 +46,32 @@ export function normalizeStatus(raw: unknown): string {
   if (typeof raw === "string") return raw.toLowerCase();
   if (isEventRecord(raw) && typeof raw.type === "string") return raw.type.toLowerCase();
   return "";
+}
+
+// The ONE child-abort site. Tenet 9 keeps the await at the call site — a steer
+// must abort exactly where its claim requires, an interrupt exactly where its
+// claim sits — so the funnel takes the ordering-preserving shape: it performs
+// the call and hands back what the failure MEANS, never what to do about it.
+//
+// Two meanings, and they are the whole reason this is one funnel: a "not
+// found" child is dead (settle/report it), while any other transport failure
+// may never have reached the server, so the turn may still be running and a
+// caller that treats it as a kill replaces a live turn instead of stopping it.
+export interface AbortOutcome {
+  serverGone: boolean;
+  transportError: string | undefined;
+}
+
+export function abortSession(client: OpenCodeClient, sessionId: string): Promise<AbortOutcome> {
+  return client.session
+    .abort({ path: { id: sessionId } })
+    .then((): AbortOutcome => ({ serverGone: false, transportError: undefined }))
+    .catch((error: unknown): AbortOutcome => {
+      const message = errorMessage(error);
+      return message.includes("not found")
+        ? { serverGone: true, transportError: undefined }
+        : { serverGone: false, transportError: message };
+    });
 }
 
 // Session id lives at properties.info.id (host) or properties.sessionID

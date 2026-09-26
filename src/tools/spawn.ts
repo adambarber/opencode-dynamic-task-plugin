@@ -10,15 +10,14 @@ import {
   buildAgentList,
   fetchAgents,
 } from "../shared/admission.js";
-import { parseModelOverride, describeModelShapeError } from "../shared/prompt.js";
-import { resolveParentSessionId, validateSessionResult, errorMessage } from "../shared/session-lifecycle.js";
+import { admitPromptInput } from "../shared/prompt.js";
+import { resolveParentSessionId, validateSessionResult, errorMessage, abortSession } from "../shared/session-lifecycle.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import { transitionState, pruneRetainedTasks } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
   INVALID_PROMPT,
-  promptTooLong,
   descriptionTooLong,
   dependenciesPending,
   createFailed,
@@ -53,26 +52,17 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   }
   const agent = admission.agent;
 
-  if (!args.prompt || typeof args.prompt !== "string") {
-    return INVALID_PROMPT;
-  }
-
-  if (args.prompt.length > 100000) {
-    return promptTooLong(args.prompt.length);
-  }
+  // Prompt and model shape are admission-checked before the session exists:
+  // a bad id otherwise fails after creation, and the failure surfaces on the
+  // lifecycle path with nothing naming the suspect.
+  const admitted = admitPromptInput(args.prompt, args.model, INVALID_PROMPT);
+  if (!admitted.ok) return admitted.error;
+  const { prompt, modelOverride } = admitted.input;
 
   if (typeof args.description === "string" && args.description.length > MAX_DESCRIPTION_CHARS) {
     return descriptionTooLong(args.description.length);
   }
 
-  // Model shape is admission-checked before the session exists: a bad
-  // id otherwise fails after creation, and the failure surfaces on
-  // the lifecycle path with nothing naming the suspect.
-  const modelOverride = parseModelOverride(args.model);
-  const modelShapeError = describeModelShapeError(args.model);
-  if (modelShapeError) {
-    return `ERROR: ${modelShapeError}`;
-  }
   const requestedModelLabel =
     typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
 
@@ -133,7 +123,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
 
     // Fire-and-forget: the lifecycle event owns settlement, the
     // catch owns delivery failure.
-    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(args.prompt));
+    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(prompt));
 
     debugLog(parentSessionId || "unknown", childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,
@@ -165,7 +155,9 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       if (store.activeTasks.has(failedChildSessionId)) {
         try { transitionState(store, failedChildSessionId, "error"); } catch { /* already terminal */ }
       } else {
-        try { await client.session.abort({ path: { id: failedChildSessionId } }); } catch { /* best-effort */ }
+        // Best-effort: the child is already untracked, so the outcome
+        // changes nothing here — it cannot be notified, only left running.
+        await abortSession(client, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal
       // settlement — a failed spawn the parent never hears about

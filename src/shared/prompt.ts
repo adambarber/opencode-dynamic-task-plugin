@@ -6,6 +6,7 @@
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
 import type { OpenCodeClient } from "./client.js";
+import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { eventField, isEventRecord, errorMessage, normalizeStatus } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
@@ -24,6 +25,29 @@ export interface ModelOverride {
 export interface PromptRouting {
   agent?: string;
   model?: ModelOverride;
+}
+
+// The input gate for every prompt-carrying tool. One place decides the ORDER
+// and the LIMITS of static prompt validation, so a new caller cannot accept an
+// oversized prompt, or send one before checking the model shape. The absent-
+// prompt wording is the caller's (spawn and steer phrase it differently);
+// everything else is decided here. Both checks run before any side effect:
+// a bad id must fail without creating or steering anything.
+export interface AdmittedPromptInput {
+  prompt: string;
+  modelOverride: ModelOverride | undefined;
+}
+
+export function admitPromptInput(
+  prompt: unknown,
+  model: unknown,
+  absentPromptVoice: string,
+): { ok: true; input: AdmittedPromptInput } | { ok: false; error: string } {
+  if (!prompt || typeof prompt !== "string") return { ok: false, error: absentPromptVoice };
+  if (prompt.length > MAX_PROMPT_CHARS) return { ok: false, error: promptTooLong(prompt.length) };
+  const modelShapeError = describeModelShapeError(model);
+  if (modelShapeError) return { ok: false, error: `ERROR: ${modelShapeError}` };
+  return { ok: true, input: { prompt, modelOverride: parseModelOverride(model) } };
 }
 
 export function parseModelOverride(model: unknown): ModelOverride | undefined {

@@ -1,15 +1,15 @@
 // Tool map (entry/tools boundary): every registered tool is defined here —
 // description, args, and a one-line execute that delegates to its executor
-// module. Bodies live beside their hazards; this file owns the inventory the
-// Task-00 fidelity gate scans.
+// module. Session-scoped tools are built by scopedTool, which resolves the
+// session scope once and hands it to the executor. Bodies live beside their
+// hazards; this file owns the inventory the Task-00 fidelity gate reads.
 import { tool } from "@opencode-ai/plugin";
-import type { ToolContext } from "@opencode-ai/plugin";
-import { executeDynamicTask } from "./spawn.js";
+import type { ToolContext } from "@opencode-ai/plugin";import { executeDynamicTask } from "./spawn.js";
 import { executeTaskContinue } from "./continue.js";
 import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
-import type { ToolDeps } from "./context.js";
+import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
   TASK_CONTINUE_DESCRIPTION,
@@ -21,7 +21,32 @@ import {
   MODEL_ARG_DESCRIPTION,
 } from "../shared/voice.js";
 
+// The tool SDK's own arg-map type, so a schema change in the SDK cannot be
+// papered over here.
+type ToolArgs = Parameters<typeof tool>[0]["args"];
+
 export function buildToolMap(deps: ToolDeps) {
+  // The ONLY door into a session-scoped executor. The scope is resolved here,
+  // once per call, and the executor receives it — so the session-id guard is
+  // structurally present for every session tool rather than repeated (and
+  // driftable) inside four executors, and an executor's signature has no room
+  // for an unresolved id.
+  const scopedTool = (
+    description: string,
+    args: ToolArgs,
+    execute: (scope: ResolvedSessionScope, args: never) => Promise<string>,
+  ) =>
+    tool({
+      description,
+      args,
+      async execute(raw) {
+        const opened = openSessionScope(deps, raw);
+        if (!opened.ok) return opened.error;
+        return execute(opened.scope, raw as never);
+      },
+    });
+  const SESSION_ID = tool.schema.string().describe("Background task session ID (ses_...)");
+
   return {
       dynamic_task: tool({
         description: DYNAMIC_TASK_DESCRIPTION,
@@ -47,17 +72,15 @@ export function buildToolMap(deps: ToolDeps) {
         },
       }),
 
-      task_continue: tool({
-        description: TASK_CONTINUE_DESCRIPTION,
-        args: {
+      task_continue: scopedTool(
+        TASK_CONTINUE_DESCRIPTION,
+        {
           session_id: tool.schema.string().describe("Child session ID from dynamic_task"),
           prompt: tool.schema.string().describe("Follow-up instructions"),
           model: tool.schema.string().optional().describe(`${MODEL_ARG_DESCRIPTION} Applies when reviving a settled task; steers keep the task's model.`),
         },
-        async execute(args) {
-          return executeTaskContinue(deps, args);
-        },
-      }),
+        executeTaskContinue,
+      ),
 
       task_notify: tool({
         description: TASK_NOTIFY_DESCRIPTION,
@@ -69,25 +92,13 @@ export function buildToolMap(deps: ToolDeps) {
         },
       }),
 
-      task_result: tool({
-        description: TASK_RESULT_DESCRIPTION,
-        args: {
-          session_id: tool.schema.string().describe("Background task session ID (ses_...)"),
-        },
-        async execute(args) {
-          return executeTaskResult(deps, args);
-        },
-      }),
+      task_result: scopedTool(TASK_RESULT_DESCRIPTION, { session_id: SESSION_ID }, executeTaskResult),
 
-      task_interrupt: tool({
-        description: TASK_INTERRUPT_DESCRIPTION,
-        args: {
-          session_id: tool.schema.string(),
-        },
-        async execute(args) {
-          return executeTaskInterrupt(deps, args);
-        },
-      }),
+      task_interrupt: scopedTool(
+        TASK_INTERRUPT_DESCRIPTION,
+        { session_id: tool.schema.string() },
+        executeTaskInterrupt,
+      ),
 
       task_list: tool({
         description: TASK_LIST_DESCRIPTION,
@@ -97,14 +108,6 @@ export function buildToolMap(deps: ToolDeps) {
         },
       }),
 
-      task_status: tool({
-        description: TASK_STATUS_DESCRIPTION,
-        args: {
-          session_id: tool.schema.string().describe("Background task session ID (ses_...)"),
-        },
-        async execute(args) {
-          return executeTaskStatus(deps, args);
-        },
-      }),
+      task_status: scopedTool(TASK_STATUS_DESCRIPTION, { session_id: SESSION_ID }, executeTaskStatus),
   };
 }

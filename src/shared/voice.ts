@@ -42,8 +42,12 @@ export const INVALID_PROMPT = "ERROR: Invalid prompt. Must be a non-empty string
 
 export const PROMPT_REQUIRED = "ERROR: prompt is required and must be a non-empty string.";
 
+// The size bound lives beside the sentence that reports it: the number in the
+// message and the number the gate compares are the same declaration.
+export const MAX_PROMPT_CHARS = 100000;
+
 export function promptTooLong(length: number): string {
-  return `ERROR: Prompt too long (${length} chars). Max: 100000.`;
+  return `ERROR: Prompt too long (${length} chars). Max: ${MAX_PROMPT_CHARS}.`;
 }
 
 export const PERMISSION_DENIED = "ERROR: Permission denied.";

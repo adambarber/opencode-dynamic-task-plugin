@@ -18,6 +18,7 @@ import {
   registerActiveTask,
   findTask,
   type ActiveTaskState,
+  type NewTaskRegistration,
   type TaskStore,
 } from "./task-state.js";
 
@@ -164,20 +165,9 @@ function isAgentRecord(item: unknown): item is AgentRecord {
 // Post-create registration. Thin today by design: single ownership of the
 // registration path so continuation policy (Task 07) has one place to land.
 
-export interface RegistrationParams {
-  childSessionId: string;
-  parentSessionId: string;
-  agentName: string;
-  description: string;
-  lineage: string[];
-  requestedModel?: { providerID: string; modelID: string } | undefined;
-  dependsOn?: string[] | undefined;
-  dependsOnSettled?: string[] | undefined;
-}
-
 export function registerAdmittedTask(
   store: TaskStore,
-  params: RegistrationParams,
+  params: NewTaskRegistration,
   config: DynamicTaskConfig,
 ): ActiveTaskState {
   return registerActiveTask(store, params, config);

@@ -33,12 +33,14 @@ export type TaskState =
 export type LineageStep = string;
 export type LineagePath = LineageStep[];
 
-export interface ActiveTaskState {
+// The fields every record carries, whatever state it is in. Declared once, so
+// the active and retained shapes cannot drift and what admission hands the
+// registry is derived from the record instead of re-typed alongside it.
+export interface TaskRecordBase {
   childSessionId: string;
   parentSessionId: string;
   agentName: string;
   description: string;
-  state: "active";
   startedAt: number;
   lineage: LineagePath;
   requestedModel?: { providerID: string; modelID: string } | undefined;
@@ -46,6 +48,14 @@ export interface ActiveTaskState {
   // Admission-time only: ids that needed settlement, not success, before this
   // task spawned. Persisted so status renders the full dependency picture.
   dependsOnSettled?: string[] | undefined;
+}
+
+// What admission registers: the record minus the clock the store owns. The
+// advisory fields below are lifecycle-written, so a registration cannot set them.
+export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
+
+export interface ActiveTaskState extends TaskRecordBase {
+  state: "active";
   // Latest mid-flight notice from the child (advisory metadata, not a lifecycle field).
   lastNotice?: { message: string; at: number } | undefined;
   // Latest time the host emitted ANY event for this child's session — the
@@ -62,18 +72,9 @@ export interface ActiveTaskState {
   steerPending?: boolean | undefined;
 }
 
-export interface RetainedTaskState {
-  childSessionId: string;
-  parentSessionId: string;
-  agentName: string;
-  description: string;
+export interface RetainedTaskState extends TaskRecordBase {
   state: Exclude<TaskState, "active">;
-  startedAt: number;
   retainedAt: number;
-  lineage: LineagePath;
-  requestedModel?: { providerID: string; modelID: string } | undefined;
-  dependsOn?: string[] | undefined;
-  dependsOnSettled?: string[] | undefined;
   abortError?: string | undefined;
   // Last successful abort landing on this record. Guards withdrawInterruptClaim
   // against concurrent interrupts (F-R4): a stale claim never resurrects a
@@ -155,7 +156,7 @@ export function createTaskStore(): TaskStore {
 // and every active task holds a slot regardless of who awaits it.
 export function registerActiveTask(
   store: TaskStore,
-  task: Omit<ActiveTaskState, "state" | "startedAt">,
+  task: NewTaskRegistration,
   config: Pick<DynamicTaskConfig, "maxConcurrent">,
 ): ActiveTaskState {
   const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
@@ -259,6 +260,21 @@ export function reviveRetainedTask(
   return revived;
 }
 
+// The single writer for advisory fields on the active record. Notice, activity
+// and steer claims are metadata the read side may consult and no lifecycle
+// transition reads, so they are one funnel: an untracked id writes nothing and
+// reports false, and no writer can quietly mutate a lifecycle field instead.
+function annotateActive(
+  store: TaskStore,
+  childSessionId: string,
+  apply: (active: ActiveTaskState) => void,
+): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) return false;
+  apply(active);
+  return true;
+}
+
 // Activity heartbeat: the event funnel's single writer. Any event bearing a
 // tracked ACTIVE child's session id is proof the turn is moving, so the
 // operator's "last activity" reads observed motion instead of "no task_notify
@@ -267,19 +283,17 @@ export function reviveRetainedTask(
 // the floor when no event has been seen.
 export function noteActivity(store: TaskStore, childSessionId: string | null | undefined): boolean {
   if (!childSessionId) return false;
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) return false;
-  active.lastActivityAt = Date.now();
-  return true;
+  return annotateActive(store, childSessionId, (active) => {
+    active.lastActivityAt = Date.now();
+  });
 }
 
 // Notice announcements are recorded on the active entry by the gate module —
 // advisory metadata, never a lifecycle mutation.
 export function annotateNotice(store: TaskStore, childSessionId: string, message: string): boolean {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) return false;
-  active.lastNotice = { message, at: Date.now() };
-  return true;
+  return annotateActive(store, childSessionId, (active) => {
+    active.lastNotice = { message, at: Date.now() };
+  });
 }
 
 // Steer claim (parent→child mid-flight message): armed synchronously by
@@ -288,10 +302,9 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
 // notice — the task stays active either way — so this pair may read and
 // clear the flag but never moves a lifecycle state.
 export function markSteerPending(store: TaskStore, childSessionId: string): boolean {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active) return false;
-  active.steerPending = true;
-  return true;
+  return annotateActive(store, childSessionId, (active) => {
+    active.steerPending = true;
+  });
 }
 
 export function consumeSteerPending(store: TaskStore, childSessionId: string): boolean {

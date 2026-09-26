@@ -111,24 +111,32 @@ function settleQuestionError(questionId: string, error: unknown): QuestionResult
   return { succeeded: false, reason: message };
 }
 
+// The settlement transport both directions share: success is "the question
+// closed", and every failure is classified once. Reply and reject differ only
+// in which host method they invoke and what body they send — the guard and
+// the failure meaning must not drift apart between them.
+function sendQuestionSettlement(questionId: string, send: () => Promise<unknown>): Promise<QuestionResult> {
+  return send()
+    .then(() => ({ succeeded: true }))
+    .catch((error: unknown) => settleQuestionError(questionId, error));
+}
+
 export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
   if (!questionId || !answer) {
     return Promise.resolve({ succeeded: false, reason: "missing question id or answer" });
   }
-  return client.question
-    .reply({ path: { id: questionId }, body: { answer } })
-    .then(() => ({ succeeded: true }))
-    .catch((error: unknown) => settleQuestionError(questionId, error));
+  return sendQuestionSettlement(questionId, () =>
+    client.question.reply({ path: { id: questionId }, body: { answer } }),
+  );
 }
 
 export function rejectQuestion(client: OpenCodeClient, questionId: string, reason: string): Promise<QuestionResult> {
   if (!questionId) {
     return Promise.resolve({ succeeded: false, reason: "missing question id" });
   }
-  return client.question
-    .reject({ path: { id: questionId }, body: { reason } })
-    .then(() => ({ succeeded: true }))
-    .catch((error: unknown) => settleQuestionError(questionId, error));
+  return sendQuestionSettlement(questionId, () =>
+    client.question.reject({ path: { id: questionId }, body: { reason } }),
+  );
 }
 
 // question.asked carries no session id; correlate asked → replied.

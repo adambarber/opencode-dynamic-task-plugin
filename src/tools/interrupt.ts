@@ -1,7 +1,7 @@
 // task_interrupt executor: synchronous settle-first claim, then the server
-// abort. Holds one of the three sanctioned session.abort sites (Tenet 9:
-// beside the interrupt claim that orders it).
-import { errorMessage } from "../shared/session-lifecycle.js";
+// abort. The claim here is what orders the abort (Tenet 9) — abortSession
+// classifies the outcome; this file decides what each outcome means.
+import { abortSession } from "../shared/session-lifecycle.js";
 import { safeLog } from "../shared/notify.js";
 import {
   transitionState,
@@ -9,7 +9,7 @@ import {
   noteAbortLanded,
   recordAbortError,
 } from "../shared/task-state.js";
-import { missingSessionId, type ToolDeps } from "./context.js";
+import { type ResolvedSessionScope } from "./context.js";
 import {
   interruptUnknown,
   interruptAbortedUntracked,
@@ -21,15 +21,8 @@ import {
   taskInterrupted,
 } from "../shared/voice.js";
 
-export interface InterruptArgs {
-  session_id?: string | undefined;
-}
-
-export async function executeTaskInterrupt(deps: ToolDeps, args: InterruptArgs): Promise<string> {
-  const { client, store, config } = deps;
-  const missing = missingSessionId(args);
-  if (missing) return missing;
-  const sessionId = String(args.session_id ?? "");
+export async function executeTaskInterrupt(scope: ResolvedSessionScope): Promise<string> {
+  const { client, store, config, sessionId } = scope;
 
   // Claim first, then touch the server: settling the task synchronously
   // means the idle/error events our own abort provokes can never be
@@ -41,15 +34,7 @@ export async function executeTaskInterrupt(deps: ToolDeps, args: InterruptArgs):
     try { transitionState(store, sessionId, "interrupted"); claimed = true; } catch { /* settled concurrently */ }
   }
 
-  let abortMessage: string | undefined;
-  let serverGone = false;
-  try {
-    await client.session.abort({ path: { id: sessionId } });
-  } catch (error: unknown) {
-    const message = errorMessage(error);
-    serverGone = message.includes("not found");
-    abortMessage = serverGone ? undefined : message;
-  }
+  const { serverGone, transportError: abortMessage } = await abortSession(client, sessionId);
 
   const retained = store.retainedTasks.get(sessionId);
   if (!claimed && !retained) {

@@ -1,8 +1,8 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
-import { errorMessage } from "../shared/session-lifecycle.js";
-import { parseModelOverride, describeModelShapeError } from "../shared/prompt.js";
+import { abortSession, errorMessage } from "../shared/session-lifecycle.js";
+import { admitPromptInput } from "../shared/prompt.js";
 import { debugLog } from "../debug-logger.js";
 import { gateLedger } from "../shared/notify.js";
 import {
@@ -13,10 +13,9 @@ import {
   reviveRetainedTask,
 } from "../shared/task-state.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
-import { missingSessionId, type ToolDeps } from "./context.js";
+import { type ResolvedSessionScope } from "./context.js";
 import {
   PROMPT_REQUIRED,
-  promptTooLong,
   steerMissing,
   steerWonBySettler,
   steerStateUnknown,
@@ -34,29 +33,23 @@ export interface ContinueArgs {
   model?: string | undefined;
 }
 
-export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): Promise<string> {
-  const { client, store, config } = deps;
-  const missing = missingSessionId(args);
-  if (missing) return missing;
-  if (!args.prompt || typeof args.prompt !== "string") {
-    return PROMPT_REQUIRED;
-  }
+export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
+  const { client, store, config, sessionId } = scope;
 
-  if (args.prompt.length > 100000) {
-    return promptTooLong(args.prompt.length);
-  }
-
-  // Model shape is validated before anything moves: a bad id fails without
-  // touching the task. The override applies to revivals only — steers keep
-  // the task's model (a mid-turn model swap is a new task, not a steer).
-  const modelOverride = parseModelOverride(args.model);
-  const modelShapeError = describeModelShapeError(args.model);
-  if (modelShapeError) {
-    return `ERROR: ${modelShapeError}`;
-  }
+  // Prompt and model shape are validated before anything moves: a bad id
+  // fails without touching the task. The override applies to revivals only —
+  // steers keep the task's model (a mid-turn model swap is a new task, not a
+  // steer).
+  const admitted = admitPromptInput(args.prompt, args.model, PROMPT_REQUIRED);
+  if (!admitted.ok) return admitted.error;
+  const { prompt, modelOverride } = admitted.input;
 
   pruneRetainedTasks(store, config);
-  const sessionId = String(args.session_id ?? "");
+
+  // The state a revival was auto-triggered from, or undefined when the parent
+  // simply followed up on a settled task. Set by the M9 arm below and read by
+  // the shared revival, so the two paths cannot drift in what they do.
+  let autoRevivedFrom: string | undefined;
 
   const active = store.activeTasks.get(sessionId);
   if (active) {
@@ -68,15 +61,7 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     // This path never settles: only the replacement turn's genuine
     // terminal event, or operator interruption, ends the task.
     markSteerPending(store, sessionId);
-    let abortError: string | undefined;
-    let serverGone = false;
-    try {
-      await client.session.abort({ path: { id: sessionId } });
-    } catch (error: unknown) {
-      const message = errorMessage(error);
-      serverGone = message.includes("not found");
-      if (!serverGone) abortError = message;
-    }
+    const { serverGone, transportError: abortError } = await abortSession(client, sessionId);
     if (serverGone) {
       // Nothing left to steer: the session is gone. Settle error so
       // the ledger never strands an active task with no server side —
@@ -117,38 +102,35 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
       if (settled && settled.state !== "interrupted") {
         // M9: close the loop the abort-race opened. The abort landed, so the
         // session proved live — revive in this same call instead of demanding
-        // a second round-trip. Interrupted stays terminal by doctrine.
-        let revived;
-        try {
-          revived = reviveRetainedTask(store, sessionId, config, modelOverride);
-          gateLedger.forgetChild(sessionId);
-        } catch (error: unknown) {
-          return `ERROR: ${errorMessage(error)}`;
-        }
-        fireChildPrompt(client, store, revived, args.prompt);
-        return steerAutoRevived(sessionId, revived.agentName, settled.state);
+        // a second round-trip. Falling through to the shared revival below,
+        // which names the mid-steer settlement in its announcing sentence.
+        autoRevivedFrom = settled.state;
+      } else {
+        return steerSettledMidway(settled?.state ?? "unknown");
       }
-      return steerSettledMidway(settled?.state ?? "unknown");
+    } else {
+      // The turn is dead: fire the parent message as the next user turn.
+      // Fire-and-forget like every prompt — the lifecycle event owns
+      // settlement, and the prompt-failure path owns delivery failure.
+      const steerText = [
+        "[Parent steer — read before continuing.]",
+        "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
+        "",
+        prompt,
+      ].join("\n");
+      fireChildPrompt(client, store, {
+        childSessionId: sessionId,
+        parentSessionId: active.parentSessionId,
+        agentName: active.agentName,
+        description: active.description,
+        ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
+      }, steerText);
+      return steerSent(sessionId, active.agentName);
     }
-    // The turn is dead: fire the parent message as the next user turn.
-    // Fire-and-forget like every prompt — the lifecycle event owns
-    // settlement, and the prompt-failure path owns delivery failure.
-    const steerText = [
-      "[Parent steer — read before continuing.]",
-      "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
-      "",
-      args.prompt,
-    ].join("\n");
-    fireChildPrompt(client, store, {
-      childSessionId: sessionId,
-      parentSessionId: active.parentSessionId,
-      agentName: active.agentName,
-      description: active.description,
-      ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
-    }, steerText);
-    return steerSent(sessionId, active.agentName);
   }
 
+  // The one revival path: a settled task followed up with a message, and the
+  // M9 auto-revive above, differ only in the sentence that announces them.
   let task;
   try {
     task = reviveRetainedTask(store, sessionId, config, modelOverride);
@@ -162,6 +144,8 @@ export async function executeTaskContinue(deps: ToolDeps, args: ContinueArgs): P
     return `ERROR: ${errorMessage(error)}`;
   }
 
-  fireChildPrompt(client, store, task, args.prompt);
-  return followupSent(task.childSessionId, task.agentName);
+  fireChildPrompt(client, store, task, prompt);
+  return autoRevivedFrom
+    ? steerAutoRevived(sessionId, task.agentName, autoRevivedFrom)
+    : followupSent(task.childSessionId, task.agentName);
 }

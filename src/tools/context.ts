@@ -19,9 +19,41 @@ export interface ToolDeps {
 // Shared arg guard: every session-scoped tool rejects empty ids identically.
 // (Module-private in the old entry: the host invokes every entry export as a
 // candidate plugin function, so only the default export is public.)
-export function missingSessionId(args: unknown): string | null {
+function missingSessionId(args: unknown): string | null {
   if (!isEventRecord(args) || !args.session_id) return "ERROR: session_id is required.";
   return null;
+}
+
+// The session scope a session-scoped tool runs in. Resolution is ONE
+// function, and the resolved branch is the only thing an executor can accept:
+// the guard and the id read are the same hazard — an executor that
+// destructures deps first and reads `args.session_id` later can query the
+// store under "" while its sibling refuses. Making the resolved scope the
+// executor's parameter means "ran with an empty id" is unrepresentable past
+// the tool map, not merely discouraged inside four files.
+export interface ResolvedSessionScope {
+  sessionId: string;
+  client: OpenCodeClient;
+  store: TaskStore;
+  config: DynamicTaskConfig;
+}
+
+export type SessionScope =
+  | { ok: true; scope: ResolvedSessionScope }
+  | { ok: false; error: string };
+
+export function openSessionScope(deps: ToolDeps, args: unknown): SessionScope {
+  const missing = missingSessionId(args);
+  if (missing) return { ok: false, error: missing };
+  return {
+    ok: true,
+    scope: {
+      sessionId: String((args as { session_id: string }).session_id),
+      client: deps.client,
+      store: deps.store,
+      config: deps.config,
+    },
+  };
 }
 
 // Single shape for unknown sessions across all tools — the same markdown
@@ -40,6 +72,21 @@ export function unknownSessionResult(sessionId: string): string {
 export async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);
+}
+
+// The session view the read tools render from: the session record plus its
+// messages, fetched in one place. Both readers need the pair and infer liveness
+// from the same two payloads, so a change to either shape lands here once
+// rather than in two readers that must stay in step.
+export interface SessionView {
+  sessionInfo: unknown;
+  messages: unknown[];
+}
+
+export async function fetchSessionView(client: OpenCodeClient, sessionId: string): Promise<SessionView> {
+  const sessionInfo = await client.session.get({ path: { id: sessionId } });
+  const messages = await readSessionMessages(client, sessionId);
+  return { sessionInfo, messages };
 }
 
 // Lineage from current session (for nested dynamic_task calls).

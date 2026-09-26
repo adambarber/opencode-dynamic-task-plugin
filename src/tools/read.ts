@@ -16,7 +16,8 @@ import {
   API_UNAVAILABLE,
   type FleetRow,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks, dispatchForest, type DispatchNode } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, listTasks } from "../shared/task-state.js";
+import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
 // The prologue both readers share: resolve the session, prune, look up. Pruning

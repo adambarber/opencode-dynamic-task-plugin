@@ -9,7 +9,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, noteLateOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, noteLateOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { retainedEntry } from "./support/records.js";
 import { assertIs, assertNothing } from "./support/assertions.js";
@@ -380,6 +380,66 @@ describe("task-state: restoreRetained", () => {
 
   it("returns zero for empty input", () => {
     assertIs(restoreRetained(createTaskStore(), []), 0, "a store with nothing retained restores nothing");
+  });
+
+  // The claim being pinned is the WRITE, not the placement: restoring is a
+  // load, and a load that rewrites the file it just read is quadratic in the
+  // record count. Measured before this shape existed — a boot restoring the
+  // configured cap of 100 records serialized 1.5 MB and issued 200 syscalls to
+  // produce a 30 KB file, every boot, for no change in content.
+  // Two arrangements the restore cases share, named once. The write counters
+  // are the subject of the first two cases, so they are a fixture rather than
+  // three lines of `writes = 0` that a case could forget to reset; and a batch of
+  // N records differs only in N, which is why N is a number.
+  const countingStore = () => {
+    const store = createTaskStore();
+    const writes = { retained: 0, active: 0 };
+    store.onRetainedChange = () => { writes.retained++; };
+    store.onActiveChange = () => { writes.active++; };
+    return { store, writes };
+  };
+
+  const ledgerBatch = (n, state) =>
+    Array.from({ length: n }, (_, i) => {
+      const id = `ses_${state[0]}${i}`;
+      return [id, ledgerEntry(id, state)];
+    });
+
+  // The claim being pinned is the WRITE, not the placement: restoring is a
+  // load, and a load that rewrites the file it just read is quadratic in the
+  // record count. Measured before this shape existed, restoring 200 records
+  // issued 200 writes and serialized 4.8 MB to produce a 30 KB file — on every
+  // plugin boot, for no change in content.
+  it("a whole restore tells the write funnel once, not once per record", () => {
+    const settled = countingStore();
+    restoreRetained(settled.store, ledgerBatch(100, "completed"));
+    assert.strictEqual(settled.writes.retained, 1, "one retained write for a hundred records");
+
+    // A second store, because the two halves outrank each other by design: a
+    // record the running half holds is not also a settled one.
+    const running = countingStore();
+    restoreActive(running.store, new Map(ledgerBatch(100, "active")));
+    assert.strictEqual(running.writes.active, 1, "and one running-set write, for the same reason");
+  });
+
+  // One write is only safe if the file still ends up telling the truth, and a
+  // restore is not always a copy: the cap can drop a record on the way in.
+  it("a restore that dropped a record still writes, so the file matches memory", () => {
+    const { store, writes } = countingStore();
+    restoreRetained(store, ledgerBatch(5, "completed"), 2);
+    // The count is PLACEMENTS, not survivors — the cap prunes on the way in, so
+    // every record is read and every record offered; what the store keeps is the
+    // cap's decision, and the write is what makes the file agree with it.
+    assert.strictEqual(store.retainedTasks.size, 2, "the cap kept two of five");
+    assert.strictEqual(writes.retained, 1, "the file is written once so it stops claiming five");
+  });
+
+  it("a restore of nothing writes nothing", () => {
+    const store = createTaskStore();
+    let writes = 0;
+    store.onRetainedChange = () => { writes++; };
+    restoreRetained(store, []);
+    assert.strictEqual(writes, 0, "a first boot has no file to correct");
   });
 });
 

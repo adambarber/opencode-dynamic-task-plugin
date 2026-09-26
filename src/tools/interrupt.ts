@@ -21,8 +21,8 @@ import {
   withdrawInterruptClaim,
   noteAbortLanded,
   recordAbortError,
-  subtreeTaskIds,
 } from "../shared/task-state.js";
+import { subtreeTaskIds } from "../shared/dispatch-tree.js";
 import { type ResolvedSessionScope } from "./context.js";
 import type { Refusal } from "../shared/verdict.js";
 import {

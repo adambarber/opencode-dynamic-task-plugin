@@ -133,6 +133,24 @@ describe("a child that needs input is not a success", () => {
     assert.strictEqual(await stateOf(h.child(id)), "State: completed");
   });
 
+  // And earned by the RIGHT declaration. A progress notice is the child's
+  // ordinary mid-flight voice — the gesture the spawn prompt tells every child
+  // to use — so if any notice at all read as "blocked", the documented way to
+  // report progress would manufacture a blocked verdict for a child that then
+  // finished its work. Nothing in the suite held that apart before: mutating
+  // the claim check away left all 468 cases green, because the only cases that
+  // reached this line had already declared needs_input or nothing.
+  it("a child that reported progress and then finished is not blocked", async () => {
+    const { h, c, id } = await withChild();
+    await c.notify("found the config file, reading it now");
+    await h.settle(id);
+    assert.strictEqual(
+      await stateOf(c),
+      "State: completed",
+      "a progress notice is the child talking, not the child stuck",
+    );
+  });
+
   it("a failed turn outranks a needs-input declaration", async () => {
     const { h, c, id } = await withChild();
     await declareNeedsInput(c, "blocked on the key");

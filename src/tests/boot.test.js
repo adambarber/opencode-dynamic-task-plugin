@@ -188,6 +188,33 @@ describe("boot reconciles what the last boot was still running", () => {
     { hooks: { hostStatusSeed } },
   );
 
+  // A record file is a document a person can edit and a crash can tear, and
+  // admission cannot produce a parent link that points back up the tree — but
+  // nothing VALIDATES that the link points down. Two records naming each other
+  // are therefore well-formed input, and the walk that renders the fleet and
+  // the walk that computes a subtree stop are the same recursive descent over
+  // those links. Without a path guard it recurses forever, and the failure is
+  // an unhandled RangeError in a READ: one bad record bricks task_list and
+  // task_interrupt, which are the two things a parent reaches for when
+  // something is already wrong. Nothing held this before: the walk carried a
+  // `path` set whose only exercise was a comment saying it could not be
+  // reached, and removing it left every case green.
+  it("a record file whose parent links form a cycle still reads and still stops", async () => {
+    const h = await bootWithRunners(
+      {
+        ses_a: runningEntry("ses_a", { parentSessionId: "ses_b" }),
+        ses_b: runningEntry("ses_b", { parentSessionId: "ses_a" }),
+      },
+      { ses_a: "busy", ses_b: "busy" },
+    );
+    const list = await h.tool.task_list.execute({});
+    for (const id of ["ses_a", "ses_b"]) {
+      assert.ok(list.includes(id), `${id} is still shown — an unreached record becomes a root, it does not vanish`);
+    }
+    const stopped = await h.tool.task_interrupt.execute({ session_id: "ses_a" });
+    answerSays(stopped, "ses_a", "the stop reports what it acted on");
+  });
+
   const ledgerActive = (directory) => JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active;
 
   it("a child the host is still working stays active and settles on its own event", async () => {

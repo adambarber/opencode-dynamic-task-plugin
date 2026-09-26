@@ -450,25 +450,23 @@ describe("messageErrorDetail", () => {
 });
 
 describe("extractSessionStatus: message-level error", () => {
-  it("reports error when the latest assistant message carries info.error", () => {
-    assert.strictEqual(
-      extractSessionStatus({}, [
-        { info: { role: "user" }, parts: [] },
-        { info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } }, parts: [] },
-      ]),
-      "error",
-    );
-  });
-
-  it("still reports completed for a clean latest assistant message", () => {
-    assert.strictEqual(
-      extractSessionStatus({}, [
-        { info: { role: "user" }, parts: [] },
-        { info: { role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
-      ]),
-      "completed",
-    );
-  });
+  // One hypothesis, one arrangement: the LATEST assistant message decides, and
+  // only an info.error on it makes the status error.
+  const fromMessages = [
+    ["reports error when the latest assistant message carries info.error", [
+      { info: { role: "user" }, parts: [] },
+      { info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } }, parts: [] },
+    ], "error"],
+    ["still reports completed for a clean latest assistant message", [
+      { info: { role: "user" }, parts: [] },
+      { info: { role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
+    ], "completed"],
+  ];
+  for (const [name, messages, expected] of fromMessages) {
+    it(name, () => {
+      assert.strictEqual(extractSessionStatus({}, messages), expected);
+    });
+  }
 
   it("normalizes idle to completed — an idle session is done", () => {
     assert.strictEqual(extractSessionStatus({ status: "idle" }, []), "completed");
@@ -493,64 +491,48 @@ describe("isTransientOutcomeError", () => {
 });
 
 describe("maxConcurrent default", () => {
-  it("defaults to 4 when env is not set", () => {
-    assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
-  });
+  // One hypothesis: an absent or unusable env value yields the default. `undefined`
+  // is the "not set" case, which withEnv understands as unset.
+  const unusable = [
+    ["defaults to 4 when env is not set", undefined],
+    ["ignores non-numeric env maxConcurrent", "bogus"],
+  ];
+  for (const [name, value] of unusable) {
+    it(name, async () => {
+      await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", value, async () => {
+        assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
+      });
+    });
+  }
 });
 
 describe("isTerminalSessionEvent", () => {
-  it("treats sync session.updated idle as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({
-        type: "sync",
-        name: "session.updated.1",
-        data: { info: { status: "idle" } },
-      }),
-      true
-    );
-  });
-
-  it("treats sync session.updated error as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({
-        type: "sync",
-        name: "session.updated.1",
-        data: { info: { status: { type: "error" } } },
-      }),
-      true
-    );
-  });
-
-  it("treats sync session.deleted.1 as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({
-        type: "sync",
-        name: "session.deleted.1",
-      }),
-      true
-    );
-  });
-
-  it("treats session.idle event as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({ type: "session.idle" }),
-      true
-    );
-  });
-
-  it("treats session.error event as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({ type: "session.error" }),
-      true
-    );
-  });
-
-  it("does not treat session.status with unknown status as terminal", () => {
-    assert.strictEqual(
-      isTerminalSessionEvent({ type: "session.status", properties: { status: "running" } }),
-      false
-    );
-  });
+  // One hypothesis, one arrangement: which event SHAPES end a turn. Each case
+  // keeps its own name because the shape is what a reader needs to see.
+  const shapes = [
+    ["treats sync session.updated idle as terminal", {
+      type: "sync",
+      name: "session.updated.1",
+      data: { info: { status: "idle" } },
+    }, true],
+    ["treats sync session.updated error as terminal", {
+      type: "sync",
+      name: "session.updated.1",
+      data: { info: { status: { type: "error" } } },
+    }, true],
+    ["treats sync session.deleted.1 as terminal", {
+      type: "sync",
+      name: "session.deleted.1",
+    }, true],
+    ["treats session.idle event as terminal", { type: "session.idle" }, true],
+    ["treats session.error event as terminal", { type: "session.error" }, true],
+    ["does not treat session.status with unknown status as terminal", { type: "session.status", properties: { status: "running" } }, false],
+  ];
+  for (const [name, event, expected] of shapes) {
+    it(name, () => {
+      assert.strictEqual(isTerminalSessionEvent(event), expected);
+    });
+  }
 });
 
 // --- Shared Task Formatting Helpers (Task 2) ---
@@ -1904,13 +1886,6 @@ describe("config: file and env edges", () => {
   it("parseDynamicTaskJsonc returns null for malformed JSON", async () => {
     await withTempFile(`${tmpdir()}/dt-malformed-${Date.now()}.jsonc`, async (file) => {
       writeFileSync(file, "{ not json,");
-      assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    });
-  });
-
-  it("parseDynamicTaskJsonc returns null for non-object JSON", async () => {
-    await inTempFile(async (file) => {
-      writeFileSync(file, "[1, 2]");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
     });
   });

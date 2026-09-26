@@ -30,12 +30,14 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * it was. The save/restore dance was copied per test, and one copy leaked:
  * a test that wrote a var without a finally left it set for every suite after
  * it in the same process. Restoring the ABSENCE of a var matters as much as
- * its value, so this owns that too.
+ * its value, so this owns that too — and `undefined` means "unset", so a case
+ * table can say "not set" without reaching past this seam.
  */
 export async function withEnv(key, value, fn) {
   const had = Object.hasOwn(process.env, key);
   const prev = process.env[key];
-  process.env[key] = value;
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
   try {
     return await fn();
   } finally {

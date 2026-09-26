@@ -7,7 +7,7 @@
 
 import type { OpenCodeClient } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
-import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
+import { eventField, isEventRecord, errorMessage, hostPayload } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
@@ -201,9 +201,9 @@ export function extractTextFromParts(parts: unknown): string {
 
 export function extractMessages(result: unknown): unknown[] {
   if (Array.isArray(result)) return result;
-  const data = eventField(result, "data");
-  if (Array.isArray(data)) return data;
-  const nested = eventField(result, "body", "messages");
+  const payload = hostPayload(result);
+  if (Array.isArray(payload)) return payload;
+  const nested = eventField(payload, "messages");
   if (Array.isArray(nested)) return nested;
   return [];
 }

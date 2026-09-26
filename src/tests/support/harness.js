@@ -26,6 +26,20 @@ import { resetQuestionSessions } from "../../../dist/shared/question-handling.js
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * The envelope the real SDK client resolves every call to: its `responseStyle`
+ * default is "fields", so a call resolves to `{ data, request, response }` and
+ * never to the bare payload.
+ *
+ * This harness used to hand back bare payloads, and that was a defect in the
+ * test double rather than a convenience: a reader that looks for a field one
+ * level too high finds *nothing* instead of throwing, so the mocks let a whole
+ * class of production bug through — the status read answered "no session" for
+ * every child while the suite stayed green. Mocking the shape the code meets in
+ * production is the only version of this mock that proves anything.
+ */
+export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 200 } });
+
+/**
  * Set an env var for the duration of a test and put the host back exactly as
  * it was. The save/restore dance was copied per test, and one copy leaked:
  * a test that wrote a var without a finally left it set for every suite after
@@ -224,10 +238,10 @@ export function createMockClient(hooks = {}) {
   return {
     _state: state,
     app: {
-      agents: async () => hooks.agentsList ?? [
+      agents: async () => SDK_ENVELOPE(hooks.agentsList ?? [
         { name: "explore", mode: "subagent" },
         { name: "general", mode: "subagent" },
-      ],
+      ]),
       log: async ({ body }) => {
         state.logs.push(body);
       },
@@ -254,7 +268,7 @@ export function createMockClient(hooks = {}) {
         state.sessions.add(id);
         state.hostStatus.set(id, { type: "busy", at: Date.now() });
         state.sessionBodies.set(id, body);
-        return { id };
+        return SDK_ENVELOPE({ id });
       },
       // session.prompt routes by marker: parent notifications carry
       // [dynamic-task-notify] / [dynamic-task-notice]; everything else is
@@ -309,24 +323,24 @@ export function createMockClient(hooks = {}) {
       // host knows about. A session absent from it has no turn running.
       status: async () => {
         if (hooks.statusThrows) throw hooks.statusThrows;
-        return Object.fromEntries(
-          [...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }]),
+        return SDK_ENVELOPE(
+          Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
         );
       },
       messages: async ({ path }) => {
-        if (hooks.messages) return hooks.messages({ path });
+        if (hooks.messages) return SDK_ENVELOPE(hooks.messages({ path }));
         if (!state.sessions.has(path.id)) {
           const error = new Error(`Session "${path.id}" not found.`);
           error.status = 404;
           throw error;
         }
-        return [
+        return SDK_ENVELOPE([
           {
             role: "assistant",
             parts: [{ type: "text", text: "COMPLETED_OK" }],
             time: { created: state.hostStatus.get(path.id)?.at ?? Date.now() },
           },
-        ];
+        ]);
       },
       // No session.get: the plugin does not call it. It was here to back the
       // status guess this mock also once invented a status field for — both are

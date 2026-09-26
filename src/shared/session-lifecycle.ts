@@ -36,6 +36,34 @@ export function eventString(event: unknown, ...path: string[]): string | undefin
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+// The names the host puts a payload under once the transport envelope is
+// stripped. `data` is the SDK's own (the client resolves to { data, request,
+// response } by default), the rest are route-specific envelopes older hosts
+// and the plugin's own tests have both been seen to use.
+const PAYLOAD_KEYS = ["data", "body", "agents", "result", "session", "output"] as const;
+
+/**
+ * What the host actually returned, with the transport envelope removed.
+ *
+ * The SDK client resolves every call to `{ data, request, response }` — its
+ * `responseStyle` default is "fields", not "data" — so a reader that looks for
+ * a field at the top level is reading a field that is one level too high, and
+ * it fails by finding nothing rather than by throwing. That is the worst
+ * failure mode available here: a status read that silently answers "no session"
+ * for a child that is working. Every host read unwraps through this one
+ * function, so the envelope is knowledge this module owns.
+ */
+export function hostPayload(result: unknown): unknown {
+  if (!isEventRecord(result)) return result;
+  for (const key of PAYLOAD_KEYS) {
+    const inner = result[key];
+    if (inner !== undefined) return inner;
+  }
+  // No envelope: the payload is the record itself (a map keyed by session id,
+  // or a session record carrying its own id).
+  return result;
+}
+
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (isEventRecord(error) && "message" in error) return String(error["message"]);
@@ -282,13 +310,14 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
   return null;
 }
 
-// Session-create responses arrive wrapped: flat id, body/data envelopes, or
-// nested session objects — unwrap known shells recursively, never blindly.
+// Session-create responses arrive wrapped in the transport envelope and, under
+// some hosts, a second session envelope — unwrap known shells recursively,
+// never blindly.
 export function validateSessionResult(result: unknown): string | null {
   if (!isEventRecord(result)) return null;
   const record = result as Record<string, unknown>;
   if (typeof record.id === "string" && record.id) return record.id;
-  for (const key of ["body", "data", "result", "session", "output"]) {
+  for (const key of PAYLOAD_KEYS) {
     const inner = validateSessionResult(record[key]);
     if (inner) return inner;
   }

@@ -518,6 +518,7 @@ import {
   formatTaskStatusDetail,
 } from "../../dist/shared/task-formatting.js";
 import { hostTurnRunning, statusFromHostState } from "../../dist/shared/liveness.js";
+import { hostPayload } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
 import { TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
 
@@ -646,6 +647,25 @@ describe("liveness vocabulary", () => {
       assert.strictEqual(hostTurnRunning({ hostState: host, lastMessageAt: null }), running);
     });
   }
+});
+
+// The envelope every host read is routed through. The wrapped case is the one
+// production takes (the SDK client resolves to { data, request, response }) and
+// the one a reader cannot detect on its own: looking a field up at the top
+// level finds nothing rather than throwing.
+describe("hostPayload", () => {
+  it("unwraps the transport envelope", () => {
+    const map = { ses_1: { type: "busy" } };
+    assert.deepStrictEqual(hostPayload({ data: map, request: {}, response: {} }), map);
+  });
+  it("passes a bare payload through", () => {
+    const map = { ses_1: { type: "busy" } };
+    assert.strictEqual(hostPayload(map), map);
+  });
+  it("leaves a non-record alone", () => {
+    assert.deepStrictEqual(hostPayload([1, 2]), [1, 2]);
+    assert.strictEqual(hostPayload(undefined), undefined);
+  });
 });
 
 describe("formatTaskResultSummary", () => {

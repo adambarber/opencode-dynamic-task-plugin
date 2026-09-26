@@ -10,7 +10,7 @@
 // same child — which is what turns a status line into a wrong recovery.
 
 import type { OpenCodeClient } from "./client.js";
-import { eventField } from "./session-lifecycle.js";
+import { eventField, hostPayload } from "./session-lifecycle.js";
 import { extractMessages } from "./prompt.js";
 
 // The server's own words for a session's turn. It has three ("retry" is the
@@ -47,8 +47,8 @@ export function statusFromHostState(hostState: HostTurnState | null): "busy" | "
 // The host's words, and only its words: the status channel is a map of session
 // id to the server's own object, so an unknown entry is an unknown word rather
 // than a value to coerce into one.
-function hostTurnState(statusMap: unknown, childSessionId: string): HostTurnState | null {
-  const entry = eventField(statusMap, childSessionId);
+function hostTurnState(statusResult: unknown, childSessionId: string): HostTurnState | null {
+  const entry = eventField(hostPayload(statusResult), childSessionId);
   const type = eventField(entry, "type");
   return type === "busy" || type === "idle" || type === "retry" || type === "error" ? type : null;
 }

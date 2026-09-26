@@ -96,7 +96,13 @@ export function buildToolMap(deps: ToolDeps) {
 
       task_interrupt: scopedTool(
         TASK_INTERRUPT_DESCRIPTION,
-        { session_id: tool.schema.string() },
+        {
+          session_id: tool.schema.string(),
+          scope: tool.schema
+            .enum(["subtree", "self"])
+            .optional()
+            .describe("How far the stop reaches: the whole subtree below this task (default), or this session only"),
+        },
         executeTaskInterrupt,
       ),
 

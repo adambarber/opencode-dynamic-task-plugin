@@ -28,7 +28,7 @@ export const TASK_RESULT_DESCRIPTION =
   "Fetch latest known child session result/status without sending a new prompt.";
 
 export const TASK_INTERRUPT_DESCRIPTION =
-  "Terminate a child session by request. The task settles as interrupted synchronously; its history is preserved. An interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.";
+  "Stop a child session by request, and by default everything it spawned below it: the whole subtree is settled as interrupted synchronously, before any abort is sent, and the report names each task it acted on. Pass scope:\"self\" to stop that one session. Histories are preserved, and an interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.";
 
 export const TASK_LIST_DESCRIPTION =
   "List all tracked tasks with their lifecycle states.";
@@ -201,4 +201,52 @@ export function interruptAlreadySettled(sessionId: string, state: string): strin
 
 export function taskInterrupted(sessionId: string): string {
   return `Session ${sessionId} interrupted.`;
+}
+
+// What an interrupt did to ONE task. The executor reports facts about a stop;
+// this is that fact, before any prose — so a caller acting on a subtree can
+// read one member's truth without parsing a sentence, and the sentences
+// themselves stay in one place (interruptReport) whether there is one member or
+// a tree of them.
+export type InterruptOutcome =
+  | { kind: "interrupted" }
+  | { kind: "untracked" }
+  | { kind: "gone" }
+  | { kind: "server-gone" }
+  | { kind: "already-settled"; state: string }
+  | { kind: "abort-failed-active"; message: string }
+  | { kind: "abort-failed-retained"; message: string }
+  | { kind: "abort-failed-settled"; state: string; message: string };
+
+// The voice for one member of an interrupt, whether it stands alone or heads a
+// subtree report: same words, one function, so the two reports cannot drift
+// into saying different things about the same outcome.
+export function interruptReport(sessionId: string, outcome: InterruptOutcome): string {
+  switch (outcome.kind) {
+    case "interrupted": return taskInterrupted(sessionId);
+    case "untracked": return interruptAbortedUntracked(sessionId);
+    case "gone": return interruptUnknown(sessionId);
+    case "server-gone": return interruptServerGone(sessionId);
+    case "already-settled": return interruptAlreadySettled(sessionId, outcome.state);
+    case "abort-failed-active": return interruptAbortFailedActive(outcome.message);
+    case "abort-failed-retained": return interruptAbortFailedRetained(outcome.message);
+    case "abort-failed-settled": return interruptAbortFailedSettled(outcome.message, outcome.state);
+  }
+}
+
+// A subtree stop is a ledger, not a sentence: every task the plugin acted on,
+// each with its own truth, so a partial stop can never read as a clean one. A
+// refused scope stops nothing at all and says so before the choices.
+export function interruptSubtreeReport(
+  rootSessionId: string,
+  members: ReadonlyArray<{ sessionId: string; outcome: InterruptOutcome }>,
+): string {
+  return [
+    `Stopped ${members.length} task(s) in the subtree rooted at ${rootSessionId}:`,
+    ...members.map(({ sessionId, outcome }) => `- ${interruptReport(sessionId, outcome)}`),
+  ].join("\n");
+}
+
+export function interruptScopeRefused(value: string): string {
+  return `ERROR: scope "${value}" is not a scope. Use scope: "subtree" (default — the task and everything below it) or scope: "self" (that session only).`;
 }

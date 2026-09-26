@@ -822,6 +822,87 @@ describe("task_result and task_interrupt paths", () => {
     });
 });
 
+describe("subtree interrupt: stopping a task stops everything under it", () => {
+  // A dispatch is a tree, so an interrupt that stops only the session it was
+  // handed reports success while a descendant keeps spending tokens. Each case
+  // names the set the plugin acted on, and each member's own truth.
+  //
+  // Two levels is the deepest tree reachable today: lineage accumulates every
+  // ancestor's agent NAME and no agent may appear twice, so a chain is bounded
+  // by the number of agent types. The walk is depth-agnostic — a wider agent
+  // set just makes deeper trees — so nothing here is written to two levels.
+  const tree = async () => {
+    const h = await setupHarness();
+    const child = await h.spawn({ description: "child task" });
+    const grandchild = await h.spawn({ description: "grandchild task", subagent_type: "general" }, { sessionID: child.id });
+    return { h, child, grandchild };
+  };
+  const stateOf = async (h, id) => h.tool.task_status.execute({ session_id: id });
+
+  it("one interrupt stops the whole tree and names every member", async () => {
+    const { h, child, grandchild } = await tree();
+    const out = await h.tool.task_interrupt.execute({ session_id: child.id });
+    for (const member of [child, grandchild]) {
+      assert.ok(out.includes(member.id), `the report names ${member.id}. got: ${out}`);
+      assert.ok((await stateOf(h, member.id)).includes("interrupted"), `${member.id} is stopped`);
+    }
+  });
+
+  it("scope self stops only the session it was handed", async () => {
+    const { h, child, grandchild } = await tree();
+    const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "self" });
+    assert.ok(!out.includes(grandchild.id), `a descendant was not acted on, so it is not named. got: ${out}`);
+    assert.ok((await stateOf(h, child.id)).includes("interrupted"), "the handed session is stopped");
+    assert.ok((await stateOf(h, grandchild.id)).includes("active"), "the descendant is still running");
+  });
+
+  it("an unrecognized scope is refused, never silently widened or narrowed", async () => {
+    const { h, child, grandchild } = await tree();
+    const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "everything" });
+    assert.ok(out.includes("everything"), `the rejected value is quoted back. got: ${out}`);
+    assert.ok(out.includes("subtree"), `the choices are named. got: ${out}`);
+    assert.ok((await stateOf(h, grandchild.id)).includes("active"), "nothing was stopped");
+  });
+
+  it("a settled descendant is not named: there was nothing to stop there", async () => {
+    const { h, child, grandchild } = await tree();
+    await h.settle(grandchild.id);
+    const out = await h.tool.task_interrupt.execute({ session_id: child.id });
+    assert.ok(!out.includes(grandchild.id), `the finished child is not re-aborted. got: ${out}`);
+    assert.ok(out.includes(child.id), `the task the caller named is still answered. got: ${out}`);
+  });
+
+  it("a settled task still has a live child below it, and the child is stopped", async () => {
+    // The walk starts at the named session whatever state it is in, so a
+    // finished parent is not a wall: the grandchild it left running is exactly
+    // the work an interrupt is for, and reporting only "already settled" would
+    // hand back a clean answer over work that is still spending tokens.
+    const { h, child, grandchild } = await tree();
+    await h.settle(child.id);
+    const out = await h.tool.task_interrupt.execute({ session_id: child.id });
+    assert.ok(out.includes("already settled as completed"), `the root's own truth. got: ${out}`);
+    assert.ok(out.includes(grandchild.id), `the live child below it is named. got: ${out}`);
+    assert.ok((await stateOf(h, grandchild.id)).includes("interrupted"), "the grandchild is stopped");
+  });
+
+  it("the whole tree is claimed before the first abort reaches the server", async () => {
+    // The claim is what orders the echoes: a terminal event for a task whose
+    // interrupt claim has already been taken finds settled history instead of
+    // an active record, so it cannot report a completion the parent was just
+    // told about. With claims taken one abort at a time, the descendant is
+    // still active while the first abort is in flight — and this is the window
+    // the ordering makes unrepresentable.
+    const { h, child, grandchild } = await tree();
+    const gate = h.client.gateAbort();
+    const pass = h.tool.task_interrupt.execute({ session_id: child.id });
+    await sleep(30);
+    assert.ok((await stateOf(h, child.id)).includes("interrupted"), "the root is claimed");
+    assert.ok((await stateOf(h, grandchild.id)).includes("interrupted"), "the descendant is claimed too, before any abort returned");
+    gate.release();
+    await pass;
+  });
+});
+
 describe("settlement: the notification layer owns outcomes", () => {
   it("parentless settlements leave a visible non-delivery record", async () => {
     const { h, c, id, out } = await withChild({

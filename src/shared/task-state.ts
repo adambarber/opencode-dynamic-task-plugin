@@ -479,6 +479,43 @@ function hydrate<T extends ActiveTaskState | RetainedTaskState>(
 // close — burning tokens with nothing left to settle. Over-cap actives are
 // re-discovered by the first reconcile pass, and block new admissions until
 // they settle, which is the honest outcome.
+// The task tree under `rootSessionId`, root first, breadth-first.
+//
+// Edges are `parentSessionId`, NOT `lineage`: lineage holds agent NAMES (the
+// delegation policy's input), so it cannot answer "is this task below that
+// one". The walk runs through RETAINED records as well as active ones, because
+// a finished child can still have left a live grandchild running — and that
+// grandchild is precisely what a subtree stop has to reach. The seen-set makes
+// a corrupt store (two records parenting each other) terminate instead of
+// looping, which is the only place this walk is not a plain DAG.
+export function subtreeTaskIds(store: TaskStore, rootSessionId: string): string[] {
+  const childrenByParent = new Map<string, string[]>();
+  const link = (parentSessionId: string, childSessionId: string): void => {
+    const siblings = childrenByParent.get(parentSessionId);
+    if (siblings) siblings.push(childSessionId);
+    else childrenByParent.set(parentSessionId, [childSessionId]);
+  };
+  for (const [id, task] of store.retainedTasks) link(task.parentSessionId, id);
+  for (const [id, task] of store.activeTasks) link(task.parentSessionId, id);
+
+  const ordered = [rootSessionId];
+  const seen = new Set(ordered);
+  let frontier = ordered;
+  while (frontier.length > 0) {
+    const next: string[] = [];
+    for (const parent of frontier) {
+      for (const childSessionId of childrenByParent.get(parent) ?? []) {
+        if (seen.has(childSessionId)) continue;
+        seen.add(childSessionId);
+        next.push(childSessionId);
+      }
+    }
+    ordered.push(...next);
+    frontier = next;
+  }
+  return ordered;
+}
+
 export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
   return hydrate(
     records,

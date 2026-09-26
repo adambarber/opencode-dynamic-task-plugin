@@ -21,7 +21,7 @@ npm install && npm run build
 | `task_continue` | Steer a running child (its turn stops, the message becomes the next turn) or revive a settled one |
 | `task_notify` | Child-to-parent channel: progress, findings, or a block needing input (requires a child agent with plugin tools, e.g. `general` — read-only agents such as `explore` cannot signal) |
 | `task_result` | Report tracked status (the store's own state, authoritative for settleability) beside a sourced live read: the server's own turn status, the child's last message time, and this plugin's last observed event |
-| `task_interrupt` | Stop a running child session (abort attempted; state settled first) |
+| `task_interrupt` | Stop a task and everything it spawned (settled first, subtree by default; `scope: "self"` for one session) |
 | `task_list` | List all tracked tasks with lifecycle states |
 | `task_status` | Detailed tracked state for one task, beside the same sourced live read `task_result` makes |
 

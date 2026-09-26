@@ -29,6 +29,19 @@ export function eventField(event: unknown, ...path: string[]): unknown {
 }
 
 /**
+ * A host string field as a word: an absent one is `""`, never undefined, so a
+ * comparison against the host's vocabulary below is total rather than a
+ * three-armed `??`.
+ *
+ * A reader that answers undefined leaves every consumer to decide what absence
+ * means, and four consumers in the event module each answered it the same way
+ * while looking like four independent decisions. The entry's debug line wants
+ * "(none)" for a human instead, which is a different decision and keeps saying
+ * so in its own words.
+ */
+export const eventWord = (event: unknown, ...path: string[]): string => eventString(event, ...path) ?? "";
+
+/**
  * Read a nested field as a non-empty string, or undefined.
  */
 export function eventString(event: unknown, ...path: string[]): string | undefined {

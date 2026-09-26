@@ -15,7 +15,7 @@ import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
-import { eventField, eventString, isEventRecord, errorMessage } from "./host-shape.js";
+import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
@@ -40,13 +40,24 @@ const PAYLOAD_KEYS = ["data", "body", "agents", "result", "session", "output"] a
  */
 export function hostPayload(result: unknown): unknown {
   if (!isEventRecord(result)) return result;
-  for (const key of PAYLOAD_KEYS) {
-    const inner = result[key];
-    if (inner !== undefined) return inner;
-  }
+  for (const inner of envelopeShells(result)) return inner;
   // No envelope: the payload is the record itself (a map keyed by session id,
   // or a session record carrying its own id).
   return result;
+}
+
+/**
+ * The shells the transport may have wrapped a payload in, in the order they are
+ * tried. One walk, because the knowledge is one fact: the SDK resolves every
+ * call to an envelope and a second shell is possible under some hosts, so a
+ * reader that rolls its own loop is a reader that can disagree with the next one
+ * about what the shells are.
+ */
+function* envelopeShells(record: Record<string, unknown>): Generator<unknown> {
+  for (const key of PAYLOAD_KEYS) {
+    const inner = record[key];
+    if (inner !== undefined) yield inner;
+  }
 }
 
 // The settlement kind reader's own vocabulary normalizer: the host spells a
@@ -120,7 +131,7 @@ export function getEventLifecycleStatus(event: unknown): string {
     eventString(properties, "status")
     ?? eventString(properties, "status", "type");
   if (status) return normalizeStatus(status);
-  const source = (eventString(event, "type") ?? "") + (eventString(event, "name") ?? "");
+  const source = eventWord(event, "type") + eventWord(event, "name");
   if (source.includes("idle")) return "idle";
   if (source.includes("error")) return "error";
   if (source.includes("delet")) return "deleted";
@@ -135,7 +146,7 @@ const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
 // near-miss name matches too much. The sync channel also carries lifecycle state
 // in data.info.status, so that remains a terminal signal.
 export function isTerminalSessionEvent(event: unknown): boolean {
-  const type = eventString(event, "type") ?? "";
+  const type = eventWord(event, "type");
   if (isTurnEnding(type)) return true;
   if (type === SESSION_DELETED) return true;
   return TERMINAL_EVENT_STATUSES.includes(getEventLifecycleStatus(event));
@@ -390,9 +401,9 @@ export function validateSessionResult(result: unknown): string | null {
   if (!isEventRecord(result)) return null;
   const record = result as Record<string, unknown>;
   if (typeof record.id === "string" && record.id) return record.id;
-  for (const key of PAYLOAD_KEYS) {
-    const inner = validateSessionResult(record[key]);
-    if (inner) return inner;
+  for (const inner of envelopeShells(record)) {
+    const found = validateSessionResult(inner);
+    if (found) return found;
   }
   return null;
 }
@@ -400,7 +411,7 @@ export function validateSessionResult(result: unknown): string | null {
 // session.deleted may arrive name-only (no status field): a vanished session
 // is a failure, never a clean completion — deletion needs two probes.
 export function eventLooksDeleted(event: unknown): boolean {
-  const type = eventString(event, "type") ?? "";
-  const name = eventString(event, "name") ?? "";
+  const type = eventWord(event, "type");
+  const name = eventWord(event, "name");
   return type.includes("deleted") || name.includes("deleted");
 }

@@ -28,6 +28,7 @@ import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 // constant: rename the ledger and they would read a path nothing writes, and a
 // read that finds nothing parses as an empty document rather than a failure.
 import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
+import { ENV } from "../../dist/shared/config.js";
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -1813,7 +1814,7 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("boot restore honors the configured retention cap", async () => {
-    await withEnv("DYNAMIC_TASK_RETAINED_MAX_ENTRIES", "2", async () => {
+    await withEnv(ENV.retainedTaskMaxEntries, "2", async () => {
       const h = await bootOn((now) => {
         const tasks = {};
         for (let i = 1; i <= 4; i++) {

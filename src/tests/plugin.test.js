@@ -409,9 +409,9 @@ describe("getEventLifecycleStatus", () => {
   // table: a new host event type is a new row, not a fourth copy of the same
   // three lines.
   for (const [why, event, expected] of [
-    ["a session.error event with no status field", { type: "session.error", properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
+    ["a session.error event with no status field", { type: SESSION_ERROR, properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
     ["a sync-wrapped session.error envelope", { type: "sync", name: "session.error.1", properties: { sessionID: "s1" } }, "error"],
-    ["a non-error event still reads its own status", { type: "session.idle", properties: { sessionID: "s1", status: "idle" } }, "idle"],
+    ["a non-error event still reads its own status", { type: SESSION_IDLE, properties: { sessionID: "s1", status: "idle" } }, "idle"],
   ]) {
     it(`${why} reads as ${expected || "(nothing)"}`, () => {
       assertIs(getEventLifecycleStatus(event), expected, why);
@@ -492,7 +492,7 @@ describe("maxConcurrent default", () => {
   ];
   for (const [name, value] of unusable) {
     it(name, async () => {
-      await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", value, async () => {
+      await withEnv(ENV.maxConcurrent, value, async () => {
         assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
       });
     });
@@ -509,9 +509,9 @@ describe("isTerminalSessionEvent", () => {
       type: "sync",
       name: "session.deleted.1",
     }, true],
-    ["treats session.idle event as terminal", { type: "session.idle" }, true],
-    ["treats session.error event as terminal", { type: "session.error" }, true],
-    ["does not treat session.status with unknown status as terminal", { type: "session.status", properties: { status: "running" } }, false],
+    ["treats session.idle event as terminal", { type: SESSION_IDLE }, true],
+    ["treats session.error event as terminal", { type: SESSION_ERROR }, true],
+    ["does not treat session.status with unknown status as terminal", { type: SESSION_STATUS, properties: { status: "running" } }, false],
   ];
   for (const [name, event, expected] of shapes) {
     it(name, () => {
@@ -756,11 +756,11 @@ import { debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-lo
 describe("safeDebugPayload", () => {
   it("keeps event metadata but removes blocked fields (prompt, fullPrompt)", () => {
     const payload = safeDebugPayload({
-      eventType: "session.status",
+      eventType: SESSION_STATUS,
       prompt: "x".repeat(5000),
       latestText: "done",
     });
-    assert.strictEqual(payload.eventType, "session.status");
+    assert.strictEqual(payload.eventType, SESSION_STATUS);
     assert.ok(!("prompt" in payload));
     assert.strictEqual(payload.latestText, "done");
   });
@@ -1073,26 +1073,26 @@ describe("normalizeDynamicTaskConfig", () => {
   });
 
   it("lets env override tuple options", async () => {
-    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "7", async () => {
+    await withEnv(ENV.maxConcurrent, "7", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 2 }).maxConcurrent, 7);
     });
   });
 
   it("treats empty-string env var as 'not set' and falls through to the next level", async () => {
-    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "", async () => {
+    await withEnv(ENV.maxConcurrent, "", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 5 }).maxConcurrent, 5);
     });
   });
 
   it("empty-string env var falls through to the default blocklist", async () => {
-    await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", "", async () => {
+    await withEnv(ENV.blockedAgents, "", async () => {
       const config = normalizeDynamicTaskConfig({});
       assert.deepStrictEqual(config.blockedAgents, []);
     });
   });
 
   it("explicit env forbidden agents overrides blockedAgents", async () => {
-    await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", "coder,reviewer", async () => {
+    await withEnv(ENV.blockedAgents, "coder,reviewer", async () => {
       const config = normalizeDynamicTaskConfig({});
       assert.deepStrictEqual(config.blockedAgents, ["coder", "reviewer"]);
     });
@@ -1100,7 +1100,7 @@ describe("normalizeDynamicTaskConfig", () => {
 
   it("a comma-only forbidden-agents env does not clear the blocklist", async () => {
     for (const junk of [",", " , ", ",,"]) {
-      await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", junk, async () => {
+      await withEnv(ENV.blockedAgents, junk, async () => {
         assert.deepStrictEqual(normalizeDynamicTaskConfig({}).blockedAgents, [], `env=${JSON.stringify(junk)}`);
       });
     }
@@ -1321,6 +1321,14 @@ import {
   decideQuestion,
 } from "../../dist/shared/question-handling.js";
 import { readAskedQuestion } from "../../dist/shared/host-events.js";
+// The host's event vocabulary, named by the module that owns it. A test firing a
+// hardcoded event name is asserting against a name it invented: rename the host
+// event and the case keeps firing something the plugin correctly ignores.
+import { QUESTION_ASKED, SESSION_ERROR, SESSION_IDLE, SESSION_STATUS } from "../../dist/shared/host-events.js";
+// The environment variables, named by the code that reads them. A test that spells
+// one out sets a variable nothing reads, which configures nothing and still passes —
+// the quietest way to lose a test.
+import { ENV } from "../../dist/shared/config.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile, sessionUpdatedEnvelope } from './support/harness.js';
@@ -2042,7 +2050,7 @@ describe("question gate: reply/reject settlement", () => {
 // answerless and was rejected. These cases read the host's real shape, because
 // a fixture invented to match the code certifies the code, not the host.
 describe("question handling: the asked payload", () => {
-  const asked = (properties) => ({ type: "question.asked", properties });
+  const asked = (properties) => ({ type: QUESTION_ASKED, properties });
   const info = (text, labels) => ({ question: text, header: "Question", options: labels.map((label) => ({ label })) });
 
   it("a single-part ask with options yields the first label", () => {
@@ -2094,7 +2102,7 @@ describe("question handling: the asked payload", () => {
   // the bare read of a wrapped event finds nothing and must say so.
   it("ignores an envelope-wrapped payload, since the host publishes it bare", () => {
     const bare = { id: "q9", sessionID: "ses_child", questions: [info("?", ["y"])] };
-    assertNothing(readAskedQuestion({ type: "question.asked", data: bare }), "an envelope-wrapped payload where the host publishes it bare");
+    assertNothing(readAskedQuestion({ type: QUESTION_ASKED, data: bare }), "an envelope-wrapped payload where the host publishes it bare");
   });
 });
 

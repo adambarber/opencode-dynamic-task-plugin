@@ -77,6 +77,24 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
   if (typeof s.allowSameAgentRecursion === "boolean") target.allowSameAgentRecursion = s.allowSameAgentRecursion;
 }
 
+/**
+ * The environment variable each knob is read from, named once.
+ *
+ * A test has to spell these names to set them, so a name written in a test is a
+ * restatement of production's — and the failure mode is silent rather than loud:
+ * a renamed variable leaves the test setting an environment nothing reads, so it
+ * configures nothing and still passes. Six of them were spelled out on both sides.
+ */
+export const ENV = {
+  maxDepth: "DYNAMIC_TASK_MAX_DEPTH",
+  maxConcurrent: "DYNAMIC_TASK_MAX_CONCURRENT",
+  agentCacheTtlMs: "DYNAMIC_TASK_CACHE_TTL",
+  retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
+  retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
+  blockedAgents: "DYNAMIC_TASK_FORBIDDEN_AGENTS",
+  allowSameAgentRecursion: "DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION",
+} as const;
+
 export function normalizeDynamicTaskConfig(
   options: PluginOptions | null | undefined,
   fileConfig?: unknown,
@@ -87,20 +105,20 @@ export function normalizeDynamicTaskConfig(
   applyKnownFields(base, options);
 
   const env: Partial<Record<keyof DynamicTaskConfig, () => number | string[] | boolean | undefined>> = {
-    maxDepth: () => parsePositiveInt(envValue("DYNAMIC_TASK_MAX_DEPTH")),
-    maxConcurrent: () => parsePositiveInt(envValue("DYNAMIC_TASK_MAX_CONCURRENT")),
-    agentCacheTtlMs: () => parsePositiveInt(envValue("DYNAMIC_TASK_CACHE_TTL")),
-    retainedTaskTtlMs: () => parsePositiveInt(envValue("DYNAMIC_TASK_RETAINED_TTL_MS")),
-    retainedTaskMaxEntries: () => parsePositiveInt(envValue("DYNAMIC_TASK_RETAINED_MAX_ENTRIES")),
+    maxDepth: () => parsePositiveInt(envValue(ENV.maxDepth)),
+    maxConcurrent: () => parsePositiveInt(envValue(ENV.maxConcurrent)),
+    agentCacheTtlMs: () => parsePositiveInt(envValue(ENV.agentCacheTtlMs)),
+    retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
+    retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
     blockedAgents: () => {
-      const raw = envValue("DYNAMIC_TASK_FORBIDDEN_AGENTS");
+      const raw = envValue(ENV.blockedAgents);
       if (!raw) return undefined;
       // A separator-only value (",", " , ") is absence, not an explicit
       // empty blocklist — only tuple/file arrays can deliberately clear it.
       const list = trimStringList(raw);
       return list.length > 0 ? list : undefined;
     },
-    allowSameAgentRecursion: () => parseBoolean(envValue("DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION")),
+    allowSameAgentRecursion: () => parseBoolean(envValue(ENV.allowSameAgentRecursion)),
   };
 
   const merged: DynamicTaskConfig = { ...base };

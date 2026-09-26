@@ -182,11 +182,13 @@ describe("dynamic_task validation", () => {
 
   it("echoes a qualified model in the spawn confirmation", async () => {
     const { h, c, out, id } = await withChild({ spawn: { model: "nvidia/z-ai/glm-5.3" } });
-    assert.ok(out.includes("Model: nvidia/z-ai/glm-5.3"), `got: ${out}`); });
+    assert.ok(out.includes("Model: nvidia/z-ai/glm-5.3"), `got: ${out}`);
+  });
 
   it("admits any agent by default — general dispatches", async () => {
     const { h, c, out, id } = await withChild({ spawn: { subagent_type: "general" } });
-    assert.ok(out.includes("@general"), `got: ${out}`); });
+    assert.ok(out.includes("@general"), `got: ${out}`);
+  });
 
   it("rejects overlong descriptions at admission", async () => {
     const h = await setupHarness();
@@ -198,7 +200,8 @@ describe("dynamic_task validation", () => {
     const { h, c, id } = await withSettledChild({ harness: { options: { retainedTaskTtlMs: 1 } } });
     await sleep(5);
     const list = await h.tool.task_list.execute({});
-    assert.ok(list.includes("Pruned: 1 expired"), `expiry is visible. got: ${list}`); });
+    assert.ok(list.includes("Pruned: 1 expired"), `expiry is visible. got: ${list}`);
+  });
 
   it("rejects blocked agents when the operator configures the blocklist", async () => {
     const h = await setupHarness({ options: { blockedAgents: ["general"] } });
@@ -269,7 +272,8 @@ describe("task_continue branches", () => {
     `framed as a preemption. got: ${followUps[0].body.parts[0].text}`,
     );
     const status = await c.status();
-    assert.ok(status.includes("active"), `a steer never settles. got: ${status}`); });
+    assert.ok(status.includes("active"), `a steer never settles. got: ${status}`);
+  });
 
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo
   // from a steer, a retryable transport blip — leaves the task active and
@@ -430,7 +434,8 @@ describe("task_continue branches", () => {
     const out = await c.steer("pivot");
     assert.ok(out.includes("not found"), `got: ${out}`);
     const status = await c.status();
-    assert.ok(status.includes("error"), `settled error, never stranded active. got: ${status}`); });
+    assert.ok(status.includes("error"), `settled error, never stranded active. got: ${status}`);
+  });
 
   it("a failed steer abort stays active and sends nothing", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { abortThrowsOnce: true } } });
@@ -445,7 +450,8 @@ describe("task_continue branches", () => {
     const status = await c.status();
     assert.ok(status.includes("active"), `stays settable. got: ${status}`);
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 1, "the live turn still settles"); });
+    assert.strictEqual(h.notices().length, 1, "the live turn still settles");
+  });
 
   it("revives a settled task and the new turn settles again", async () => {
     const { h, c, id } = await withSettledChild();
@@ -464,7 +470,8 @@ describe("task_continue branches", () => {
     await h.fireEvent(events.status(id, "busy"));
     await h.settle(id);
     assert.strictEqual(h.notices().length, 2, "revival earns a fresh settlement");
-    assert.ok(h.noticeBodies()[1].includes("completed successfully")); });
+    assert.ok(h.noticeBodies()[1].includes("completed successfully"));
+  });
 
   it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
     const { h, c, id } = await withSettledChild();
@@ -477,7 +484,8 @@ describe("task_continue branches", () => {
     await c.interrupt();
     const out = await c.steer("again");
     assert.ok(out.includes("not revived"), `got: ${out}`);
-    assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`); });
+    assert.ok(out.includes("dynamic_task"), `points at the fresh-spawn path. got: ${out}`);
+  });
 
   it("a revived turn does not wear the previous turn's notification", async () => {
     const { h, c, id } = await withSettledChild();
@@ -486,7 +494,8 @@ describe("task_continue branches", () => {
     const status = await c.status();
     assert.ok(!status.includes("Last notification"), `new turn, nothing reported yet. got: ${status}`);
     const summary = await c.result();
-    assert.ok(!summary.includes("Last notification"), `same for result reads. got: ${summary}`); });
+    assert.ok(!summary.includes("Last notification"), `same for result reads. got: ${summary}`);
+  });
 
   it("reviving with a model override reroutes and persists it", async () => {
     const h = await setupHarness();
@@ -507,7 +516,8 @@ describe("task_continue branches", () => {
     assert.ok(out.includes("Invalid model"), `got: ${out}`);
     assert.strictEqual(h.client._state.promptBodies.length, before, "no prompt fires");
     const status = await c.status();
-    assert.ok(status.includes("completed"), `still settled. got: ${status}`); });
+    assert.ok(status.includes("completed"), `still settled. got: ${status}`);
+  });
 
   it("unknown sessions are refused as untracked", async () => {
     const h = await setupHarness();
@@ -537,7 +547,8 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(status.includes("need DB credentials"), `notice recorded on the task. got: ${status}`);
 
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 2, "settlement still reports"); });
+    assert.strictEqual(h.notices().length, 2, "settlement still reports");
+  });
 
   it("distinct long notices sharing a prefix both deliver", async () => {
     const { h, c, id } = await withChild();
@@ -545,7 +556,8 @@ describe("task_notify: the child-to-parent channel", () => {
     const second = await c.notify("a".repeat(200) + "2");
     assert.ok(first.includes("Message sent to parent"), `got: ${first}`);
     assert.ok(second.includes("Message sent to parent"), `prefix collision must not suppress. got: ${second}`);
-    assert.strictEqual(h.notices().length, 2); });
+    assert.strictEqual(h.notices().length, 2);
+  });
 
   // One hypothesis: a repeat of an identical notice never redelivers, and the
   // child is told both that and what to do instead.
@@ -555,13 +567,15 @@ describe("task_notify: the child-to-parent channel", () => {
     const again = await c.notify("still working");
     assert.ok(again.includes("duplicate suppressed"), `keeps the kind. got: ${again}`);
     assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`);
-    assert.strictEqual(h.notices().length, 1, "the parent hears it once"); });
+    assert.strictEqual(h.notices().length, 1, "the parent hears it once");
+  });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { promptFailIds: new Set(["p1"]) } } });
     const out = await c.notify("hello?");
     assert.ok(out.includes("did not acknowledge"), `names the failure. got: ${out}`);
-    assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`); });
+    assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`);
+  });
 
 
   it("a suppressed duplicate shows as Suppressed in task_result, never FAILED", async () => {
@@ -573,7 +587,8 @@ describe("task_notify: the child-to-parent channel", () => {
     summary.includes("Suppressed (duplicate — already delivered)"),
     `the duplicate must read as suppression. got: ${summary}`,
     );
-    assert.ok(!summary.includes("FAILED"), `suppression is not a delivery failure. got: ${summary}`); });
+    assert.ok(!summary.includes("FAILED"), `suppression is not a delivery failure. got: ${summary}`);
+  });
 
   it("refuses untracked callers and settled tasks", async () => {
     const h = await setupHarness();
@@ -590,7 +605,8 @@ describe("task_notify: the child-to-parent channel", () => {
     const { h, c, id } = await withChild();
     assert.ok((await c.notify("  ")).includes("required"));
     const long = await c.notify("x".repeat(4001));
-    assert.ok(long.includes("too long"), `got: ${long}`); });
+    assert.ok(long.includes("too long"), `got: ${long}`);
+  });
 });
 
 describe("error settlement guidance", () => {
@@ -789,7 +805,8 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(done.includes("already settled as completed"), `truthful report. got: ${done}`);
     assert.ok(!/^Session .* interrupted\.$/.test(done), `must not claim a fresh interrupt. got: ${done}`);
     const status = await c.status();
-    assert.ok(status.includes("completed"), `history untouched. got: ${status}`); });
+    assert.ok(status.includes("completed"), `history untouched. got: ${status}`);
+  });
 
   it("task_interrupt settles as interrupted, preserves history, and reaches the API", async () => {
     const { h, c, id } = await withChild();
@@ -801,7 +818,8 @@ describe("task_result and task_interrupt paths", () => {
     const status = await c.status();
     assert.ok(status.includes("interrupted"), `history preserved. got: ${status}`);
     await h.settle(id);
-    assert.strictEqual(h.notices().length, 0, "the abort's own idle event must not notify"); });
+    assert.strictEqual(h.notices().length, 0, "the abort's own idle event must not notify");
+  });
 
   it("task_interrupt requires a session id and names missing sessions", async () => {
     const h = await setupHarness();
@@ -821,7 +839,8 @@ describe("task_result and task_interrupt paths", () => {
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
     assert.strictEqual(h.notices().length, 1, "natural completion delivers");
-    assert.ok(h.noticeBodies()[0].includes("completed successfully")); });
+    assert.ok(h.noticeBodies()[0].includes("completed successfully"));
+  });
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
     const { h, c, out } = await withBrokenAbortSettledChild();
@@ -1055,7 +1074,8 @@ describe("settlement: the notification layer owns outcomes", () => {
     const { h, c, id } = await withSettledChild();
     await h.settle(id);
     await h.fireEvent(events.status(id));
-    assert.strictEqual(h.notices().length, 1, "one settled turn, one notice"); });
+    assert.strictEqual(h.notices().length, 1, "one settled turn, one notice");
+  });
 
   it("unmatched question events are left untouched (fail-closed scoping)", async () => {
     const h = await setupHarness();
@@ -1195,7 +1215,8 @@ describe("question gate: child questions settle", () => {
     assert.strictEqual(calls.length, 1, "exactly one settlement");
     assert.deepStrictEqual(calls[0], { method: "reply", id: "q1", answer: "yes" });
     assert.strictEqual(h.notices().length, 0);
-    await h.fireEvent(events.questionReplied({ id: "q1" })); });
+    await h.fireEvent(events.questionReplied({ id: "q1" }));
+  });
 
   it("an answerless question tells the child the path that exists, not one that does not", async () => {
     // The rejection is the ONLY thing a blocked child sees at the moment it is
@@ -1234,7 +1255,8 @@ describe("question gate: child questions settle", () => {
   it("settled task questions are rejected with settled guidance", async () => {
     const { h, c, id } = await withSettledChild();
     const reason = await assertQuestionRejected(h, events.question(id, [{ text: "yes" }], { id: "q3" }));
-    assert.ok(reason.includes("settled"), `must say the task is settled. got: ${reason}`); });
+    assert.ok(reason.includes("settled"), `must say the task is settled. got: ${reason}`);
+  });
 
   it("a failed retained rejection is logged as failed, never as rejected", async () => {
     const directory = tmpProjectDir();
@@ -1394,7 +1416,8 @@ describe("admission dependencies", () => {
 
   it("unknown deps are treated as satisfied", async () => {
     const { h, c, out, id } = await withChild({ spawn: { description: "lone task", depends_on: ["ses_gone"] } });
-    assert.ok(out.includes("in background"), `got: ${out}`); });
+    assert.ok(out.includes("in background"), `got: ${out}`);
+  });
   });
 
 describe("admission lineage", () => {

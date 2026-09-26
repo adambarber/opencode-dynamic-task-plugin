@@ -13,13 +13,14 @@ import assert from "node:assert";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  bounded, deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withAskedChild,
+  bounded, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withAskedChild,
   withLoggedChild,
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
-  resultForChild, resultForUnreadableChild, hostSaid, unclockedSaid,
-  abortedSessions, dialCount, notifiedNotes, promptText, promptsCarrying, promptsTo, promptsToCarrying,
+  resultForChild, resultForUnreadableChild,
+  abortedSessions, dialCount, notifiedNotes, promptsCarrying, promptsTo, promptsToCarrying,
   declareNeedsInput, promptTextsTo, promptsSaying, sentPrompts, sessionBody, sessionCount, sessionIds, wasAborted, statusReadCount,
 } from './support/harness.js';
+import { deferred, events, hostSaid, promptText, unclockedSaid } from './support/mock-host.js';
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";

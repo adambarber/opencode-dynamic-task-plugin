@@ -15,7 +15,8 @@ import {
   getPendingDeliveries,
   restorePendingDeliveries,
 } from "../../dist/shared/notify.js";
-import { bounded, deferred, promptText } from './support/harness.js';
+import { bounded } from './support/harness.js';
+import { deferred, promptText } from './support/mock-host.js';
 
 const NO_SLEEP = async () => {};
 

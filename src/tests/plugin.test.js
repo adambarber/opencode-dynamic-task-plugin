@@ -1346,7 +1346,8 @@ import { QUESTION_ASKED, SESSION_ERROR, SESSION_IDLE, SESSION_STATUS } from "../
 import { ENV } from "../../dist/shared/config.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
-import { tmpFilePath, withEnv, withTempFile, sessionUpdatedEnvelope } from './support/harness.js';
+import { tmpFilePath, withEnv, withTempFile } from './support/harness.js';
+import { sessionUpdatedEnvelope } from './support/mock-host.js';
 import { retainedEntry, activeEntry, owedEntry, notifiedAs } from './support/records.js';
 
 describe("task-state: createTaskStore", () => {

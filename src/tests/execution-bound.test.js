@@ -9,7 +9,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { withBound, shrinkBoundsForTesting, READ_BOUNDS, WRITE_BOUNDS } from "../../dist/shared/execution-bound.js";
-import { bounded, deferred, sleep } from "./support/harness.js";
+import { bounded, sleep } from "./support/harness.js";
+import { deferred } from "./support/mock-host.js";
 
 const NO_VALUE = Symbol("degradation");
 

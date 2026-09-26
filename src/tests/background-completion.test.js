@@ -10,7 +10,8 @@
 
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert";
-import { events, renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
+import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
+import { events } from "./support/mock-host.js";
 
 describe("Background Task Settlement", () => {
   let harness;

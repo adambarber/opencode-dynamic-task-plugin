@@ -214,6 +214,7 @@ export const events = {
  *   abortThrowsOnce?: boolean,
  *   abortFailIds?: Set<string>,
  *   statusThrows?: Error,               // the status channel itself is down
+ *   hostStatusSeed?: Record<string, "busy" | "idle">,  // live at boot, before any event
  *   messages?: (args: { path: { id: string } }) => unknown,
  *   questionReplyThrows?: boolean,
  *   questionRejectThrows?: boolean,
@@ -255,6 +256,15 @@ export function createMockClient(hooks = {}) {
     // changed — the clock behind the child's last-message time.
     hostStatus: new Map(),
   };
+
+  // Sessions the host already knows about when the test starts, for boot-time
+  // work that must read the status map BEFORE any event has been delivered
+  // (reconciling what the last process left running). A seeded session exists
+  // by definition — a session in the host's map is a session it lists.
+  for (const [id, type] of Object.entries(hooks.hostStatusSeed ?? {})) {
+    state.sessions.add(id);
+    state.hostStatus.set(id, { type, at: Date.now() });
+  }
 
   return {
     _state: state,

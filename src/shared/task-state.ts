@@ -107,6 +107,28 @@ export interface TaskStore {
   retainedTasks: Map<string, RetainedTaskState>;
   // Durable-state observer (Task 06): invoked after retained entries change.
   onRetainedChange?: (() => void) | undefined;
+  // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
+  // a running task — the set of what a crash would leave behind. Separate from
+  // onRetainedChange because the two halves persist for different reasons, and
+  // joined here so a settlement writes the whole file exactly once.
+  onActiveChange?: (() => void) | undefined;
+}
+
+// The one write path into the running set. Every structural change to a live
+// task goes through here, so the durable ledger has exactly one place to learn
+// that a task exists or stopped existing — and, just as deliberately, one place
+// the advisory writers below do NOT touch: a heartbeat or a mid-flight notice
+// would otherwise put a file write on every host event, turning the event head
+// into a filesystem hot path. The advisory fields are stripped on the way to
+// disk anyway (durableActiveTask), because a fresh process cannot verify them.
+function setActive(store: TaskStore, childSessionId: string, record: ActiveTaskState): void {
+  store.activeTasks.set(childSessionId, record);
+  store.onActiveChange?.();
+}
+
+function removeActive(store: TaskStore, childSessionId: string): void {
+  store.activeTasks.delete(childSessionId);
+  store.onActiveChange?.();
 }
 
 // State machine (the one true lifecycle matrix). Active tasks move to a terminal
@@ -147,7 +169,7 @@ export function withdrawInterruptClaim(
   store.retainedTasks.delete(childSessionId);
   // No turn attribution: a withdrawal UNDOES a claim about this very turn, so
   // the turn is still live and its own ending settles it like any other.
-  store.activeTasks.set(childSessionId, { ...active, state: "active" });
+  setActive(store, childSessionId, { ...active, state: "active" });
   emitRetainedChange(store);
   return true;
 }
@@ -167,6 +189,7 @@ export function createTaskStore(): TaskStore {
     activeTasks: new Map(),
     retainedTasks: new Map(),
     onRetainedChange: undefined,
+    onActiveChange: undefined,
   };
 }
 
@@ -187,7 +210,7 @@ export function registerActiveTask(
     state: "active",
     startedAt: Date.now(),
   };
-  store.activeTasks.set(task.childSessionId, record);
+  setActive(store, task.childSessionId, record);
   return record;
 }
 
@@ -222,7 +245,7 @@ export function transitionState(
       state: to,
       retainedAt: Date.now(),
     };
-    store.activeTasks.delete(childSessionId);
+    removeActive(store, childSessionId);
     store.retainedTasks.set(childSessionId, retained);
     emitRetainedChange(store);
     return { state: to, completed: true, task: retained };
@@ -285,7 +308,7 @@ export function reviveRetainedTask(
     ...(model !== undefined ? { requestedModel: model } : {}),
   };
   store.retainedTasks.delete(childSessionId);
-  store.activeTasks.set(childSessionId, revived);
+  setActive(store, childSessionId, revived);
   emitRetainedChange(store);
   return revived;
 }
@@ -429,21 +452,54 @@ function emitRetainedChange(store: TaskStore): void {
 }
 
 // Durability boundary: hydrate entries already validated by the ledger
-// reader (session-lifecycle) into the live retained map. The reader owns
-// shape truth; this module owns placement and the cap.
+// reader (session-lifecycle) into the live maps. The reader owns shape truth;
+// this module owns placement and the caps.
+//
+// One loop for both halves. "Walk what the last boot left, keep what fits, count
+// what came back" is one shape; the per-record work (where it lands, and what
+// conflicts with it) is a function, not a copy of the loop.
+function hydrate<T extends ActiveTaskState | RetainedTaskState>(
+  records: Map<string, T>,
+  place: (id: string, record: T) => void,
+  alreadyPresent: (id: string) => boolean,
+): number {
+  let restored = 0;
+  for (const [id, record] of records) {
+    if (alreadyPresent(id)) continue;
+    place(id, record);
+    restored++;
+  }
+  return restored;
+}
+
+// Boot hydration for the running half. The concurrency cap is deliberately NOT
+// applied here: it is an admission policy about work this process starts, and
+// these tasks are already running server-side. Dropping a restored task to stay
+// under the cap would put the child back in the hole this hydration exists to
+// close — burning tokens with nothing left to settle. Over-cap actives are
+// re-discovered by the first reconcile pass, and block new admissions until
+// they settle, which is the honest outcome.
+export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
+  return hydrate(
+    records,
+    (id, record) => setActive(store, id, record),
+    (id) => store.retainedTasks.has(id), // settled history wins over a stale running half
+  );
+}
+
 export function restoreRetained(
   store: TaskStore,
   records: Map<string, RetainedTaskState>,
   maxEntries: number = DEFAULT_CONFIG.retainedTaskMaxEntries,
 ): number {
-  let restored = 0;
-  for (const [id, record] of records) {
-    if (store.activeTasks.has(id)) continue; // live wins over restored history
-    store.retainedTasks.set(id, pruneIfBounded(store, record, maxEntries));
-    restored++;
-    emitRetainedChange(store);
-  }
-  return restored;
+  return hydrate(
+    records,
+    (id, record) => {
+      store.retainedTasks.set(id, pruneIfBounded(store, record, maxEntries));
+      emitRetainedChange(store);
+    },
+    (id) => store.activeTasks.has(id), // live wins over restored history
+  );
 }
 
 // Restored entries bypass the runtime mutation choke points, so the cap is

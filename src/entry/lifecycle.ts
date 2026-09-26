@@ -112,6 +112,95 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
   }
 }
 
+// The single settlement implementation for a RUNNING task, whatever told us it
+// is over: the host's terminal event, or the boot pass that found no turn
+// running for a task the last process left running. Both bring the host's own
+// status word; the event brings the event itself (deletion is read from it),
+// and the boot pass brings a `cause`, so the parent learns the difference
+// between work that failed and a child this plugin lost track of. Two callers,
+// one funnel — a second settlement path is how a record ends up `completed`
+// with no notice.
+export interface SettlementSignal {
+  /** The host's own word: idle, error, deleted. */
+  status: string;
+  /** The event that carried it, when there was one. */
+  event?: unknown;
+  /** Why we are settling without an event. */
+  cause?: string;
+}
+
+export async function settleRunningChild(
+  client: OpenCodeClient,
+  store: TaskStore,
+  childSessionId: string,
+  signal: SettlementSignal,
+): Promise<boolean> {
+  const { status, cause } = signal;
+  const active = store.activeTasks.get(childSessionId);
+  if (!active) return false;
+  // Turn attribution: a turn that REPLACED another (a steer, a revival) has a
+  // prior turn's terminal copies possibly still in flight, and the host
+  // publishes a turn end more than once. Until the replacement has been seen
+  // doing something, a terminal event cannot be attributed to it and the task
+  // stays active. A fresh spawn — and a restored one, whose attribution state
+  // was deliberately not persisted — has no prior turn, so it always settles.
+  if (!terminalEventIsAttributable(store, childSessionId)) {
+    void safeLog(client, "info", `Dropped unattributable ending for ${childSessionId}, staying active`);
+    return false;
+  }
+  // Synchronous claim — no awaits before this. transitionState is the one
+  // settlement gate: the winner replaces the active entry, so every
+  // competing writer's transition throws and bows out.
+  const failed = status === "error" || status === "deleted"
+    || (signal.event !== undefined && eventLooksDeleted(signal.event));
+  const provisional: TaskState = failed ? "error" : "completed";
+  const parentSessionId = active.parentSessionId;
+  const childDescription = active.description;
+  try {
+    transitionState(store, childSessionId, provisional);
+  } catch {
+    void safeLog(client, "info", `Lost settlement race for ${childSessionId}, dropping`);
+    return false;
+  }
+  void safeLog(client, "info", `Settled ${childSessionId} as ${provisional}`);
+
+  const outcome = await hydrateLatestOutcome(client, childSessionId);
+  // Kind follows the SETTLED outcome, not the raw status text: a deleted
+  // session whose stale status still reads idle notifies error (F-R3).
+  let kind: NotifyKind = failed ? "error" : (resolveNotifyKind(status) ?? provisional);
+  if (kind === "completed" && outcome.errorDetail) {
+    kind = "error";
+    if (!noteLateOutcome(store, childSessionId, "error")) {
+      void safeLog(client, "info", `Late error already recorded for ${childSessionId}`);
+    }
+  }
+  const latestText = outcome.text
+    || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+  // The outcome is the point of this message, so a read that could not be
+  // made says so instead of letting "(completed)" stand in for a quote the
+  // parent never received. The record is settled either way; task_result
+  // remains the way to read what the child actually said.
+  const unreadableNote = outcome.unreadable ? "\n\n(The child's transcript could not be read; read it with task_result.)" : "";
+  // What told us it was over, when no event did. Names the loss of contact so a
+  // vanished child is never read as a child whose work failed.
+  const causeNote = cause ? `\n\n${cause}` : "";
+  // Transient failures name the resume path: a network/provider blip that
+  // killed the turn usually resumes cleanly via task_continue, while a
+  // fatal cause must not invite a blind retry. Advisory only — kind and
+  // state are already decided above.
+  const resumeHint = kind === "error" && isTransientOutcomeError(outcome.errorDetail)
+    ? "\n\nThis failure looks transient (network/provider blip) — task_continue can usually resume the child from here."
+    : "";
+  // Detached: the synchronous claim above is the settlement guarantee;
+  // delivery transport must never hold the event pump head-of-line.
+  // Observability survives via the ledger record, logged on completion.
+  // deliverParent is the single funnel for parent-directed writes: it
+  // records parentless settlements instead of dialing a phantom session.
+  void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${resumeHint}${unreadableNote}`)
+    .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
+  return true;
+}
+
 export async function handleChildLifecycleEvent(
   client: OpenCodeClient,
   store: TaskStore,
@@ -120,64 +209,11 @@ export async function handleChildLifecycleEvent(
   const childSessionId = getSessionIdFromEvent(event);
   if (!childSessionId) return;
 
-  const active = store.activeTasks.get(childSessionId);
-  if (active) {
-    // Turn attribution: a turn that REPLACED another (a steer, a revival) has a
-    // prior turn's terminal copies possibly still in flight, and the host
-    // publishes a turn end more than once. Until the replacement has been seen
-    // doing something, a terminal event cannot be attributed to it and the task
-    // stays active. A fresh spawn has no prior turn, so it always settles here.
-    if (!terminalEventIsAttributable(store, childSessionId)) {
-      void safeLog(client, "info", `Event handler: dropped unattributable ending for ${childSessionId}, staying active`);
-      return;
-    }
-    // Synchronous claim — no awaits before this. transitionState is the one
-    // settlement gate: the winner replaces the active entry, so every
-    // competing writer's transition throws and bows out.
-    const status = getEventLifecycleStatus(event);
-    const failed = status === "error" || status === "deleted" || eventLooksDeleted(event);
-    const provisional: TaskState = failed ? "error" : "completed";
-    const parentSessionId = active.parentSessionId;
-    const childDescription = active.description;
-    try {
-      transitionState(store, childSessionId, provisional);
-    } catch {
-      void safeLog(client, "info", `Event handler: lost settlement race for ${childSessionId}, dropping`);
-      return;
-    }
-    void safeLog(client, "info", `Event handler: settled ${childSessionId} as ${provisional}`);
-
-    const outcome = await hydrateLatestOutcome(client, childSessionId);
-    // Kind follows the SETTLED outcome, not the raw status text: a deleted
-    // session whose stale status still reads idle notifies error (F-R3).
-    let kind: NotifyKind = failed ? "error" : (resolveNotifyKind(status) ?? provisional);
-    if (kind === "completed" && outcome.errorDetail) {
-      kind = "error";
-      if (!noteLateOutcome(store, childSessionId, "error")) {
-        void safeLog(client, "info", `Event handler: late error already recorded for ${childSessionId}`);
-      }
-    }
-    const latestText = outcome.text
-      || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
-    // The outcome is the point of this message, so a read that could not be
-    // made says so instead of letting "(completed)" stand in for a quote the
-    // parent never received. The record is settled either way; task_result
-    // remains the way to read what the child actually said.
-    const unreadableNote = outcome.unreadable ? "\n\n(The child's transcript could not be read; read it with task_result.)" : "";
-    // Transient failures name the resume path: a network/provider blip that
-    // killed the turn usually resumes cleanly via task_continue, while a
-    // fatal cause must not invite a blind retry. Advisory only — kind and
-    // state are already decided above.
-    const resumeHint = kind === "error" && isTransientOutcomeError(outcome.errorDetail)
-      ? "\n\nThis failure looks transient (network/provider blip) — task_continue can usually resume the child from here."
-      : "";
-    // Detached: the synchronous claim above is the settlement guarantee;
-    // delivery transport must never hold the event pump head-of-line.
-    // Observability survives via the ledger record, logged on completion.
-    // deliverParent is the single funnel for parent-directed writes: it
-    // records parentless settlements instead of dialing a phantom session.
-    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${resumeHint}${unreadableNote}`)
-      .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
+  if (store.activeTasks.get(childSessionId)) {
+    await settleRunningChild(client, store, childSessionId, {
+      status: getEventLifecycleStatus(event),
+      event,
+    });
     return;
   }
 

@@ -88,17 +88,22 @@ Set via environment variables, `.opencode/dynamic-task-plugin.jsonc`, or the plu
 
 Both live in the **project directory the host provides** (never the process CWD — running the test suite writes no state into the repo):
 
-- `.dynamic-task-ledger.json` — retained-task crash recovery plus the queue of
-  notices the plugin still owes a parent, written atomically on every change.
+- `.dynamic-task-ledger.json` — the durable ledger: settled-task crash recovery,
+  the set of tasks still running, and the queue of notices the plugin still owes
+  a parent, written atomically on every change.
 - `.dynamic-task-logs/` — per-session debug logs, only created when `DYNAMIC_TASK_DEBUG=1`.
 
-**Settled records and owed notices survive a restart; live tasks do not yet.**
-Active tasks live in process memory, so restarting the parent mid-child leaves
-that child running with no record: its terminal events find nothing to settle
-and drop, and nothing can be read about it afterwards. A notice the plugin owed
-when it stopped *is* redelivered at the next boot — at-least-once, so a crash
-during a write can cost a duplicate notice, never a missing one. Closing the
-active-task half is specified, not implemented — see `docs/tasks/11-durability.md`.
+**Everything the plugin knows about a task survives a restart.** A task that was
+still running when the parent stopped is on disk, and the next boot spends one
+liveness read per restored task: a turn the host is still running stays active
+and settles from its own event, a turn that finished while the parent was down
+settles from the child's transcript, and a child the host no longer lists settles
+as an error that says it vanished across the restart — never as a work failure
+nobody observed. A notice the plugin owed when it stopped is redelivered at the
+next boot: at-least-once, so a crash during a write can cost a duplicate notice,
+never a missing one. Mid-flight claims (an activity heartbeat, a notice in
+progress) are deliberately not persisted — a fresh process cannot verify them.
+See `docs/tasks/11-durability.md`.
 
 ## Architecture
 

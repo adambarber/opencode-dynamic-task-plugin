@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
-import type { RetainedTaskState } from "./task-state.js";
+import type { RetainedTaskState, ActiveTaskState, TaskRecordBase } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
 
 // Host event payloads are untyped JSON at this boundary. isEventRecord is the
@@ -163,16 +163,19 @@ export function isTerminalSessionEvent(event: unknown): boolean {
 
 // A task's durable record must be complete or absent: any field the render
 // or revive path depends on disqualifies the whole entry. The guard itself
-// carries the shape so the load path needs no casts.
+// carries the shape so the load path needs no casts. One entry type serves both
+// durable halves (running and settled) — they differ in which state is legal
+// and which clock must be there, not in the identity and routing fields, and
+// two nearly-identical guards would be two places for them to drift.
 interface ValidLedgerEntry {
   childSessionId: string;
   parentSessionId: string;
   agentName: string;
   description: string;
   lineage: unknown[];
-  state: "completed" | "error" | "interrupted";
+  state: "active" | "completed" | "error" | "interrupted";
   startedAt: number;
-  retainedAt: number;
+  retainedAt?: unknown;
   dependsOn?: unknown;
   dependsOnSettled?: unknown;
   requestedModel?: unknown;
@@ -189,7 +192,6 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
     lineage,
     state,
     startedAt,
-    retainedAt,
   } = value;
   return (
     typeof childSessionId === "string" && childSessionId.startsWith("ses_")
@@ -198,10 +200,18 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
     && typeof description === "string"
     && Array.isArray(lineage)
     && lineage.every((s): s is string => typeof s === "string")
-    && (state === "completed" || state === "error" || state === "interrupted")
+    && (state === "active" || state === "completed" || state === "error" || state === "interrupted")
     && typeof startedAt === "number" && Number.isFinite(startedAt)
-    && typeof retainedAt === "number" && Number.isFinite(retainedAt)
   );
+}
+
+// A settled record additionally carries the clock that ordered it. A running
+// one must NOT: `retainedAt` on an active entry would mean nothing.
+function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { state: Exclude<RetainedTaskState["state"], "active">; retainedAt: number } {
+  return isValidLedgerEntry(value)
+    && value.state !== "active"
+    && typeof value.retainedAt === "number"
+    && Number.isFinite(value.retainedAt);
 }
 
 // v3: durable delivery. v2 held settled records only, so a crash between
@@ -215,7 +225,8 @@ export const TASK_LEDGER_VERSION = 3;
 
 /** The whole durable file, as the one dance sees it. */
 export interface TaskLedgerFile {
-  retained: Map<string, unknown>;
+  retained: Map<string, RetainedTaskState>;
+  active: Map<string, ActiveTaskState>;
   pending: PendingDelivery[];
 }
 
@@ -245,56 +256,86 @@ function isPendingDelivery(value: unknown): value is PendingDelivery {
   );
 }
 
-export function loadTaskLedger(filePath: string): { retained: Map<string, RetainedTaskState>; pending: PendingDelivery[] } {
+// The identity, routing and admission facts both durable halves carry. Built in
+// one expression: a hydrated record is complete at birth. Post-construction
+// field assignment would belong to the state machine (task-state), and the
+// lifecycle scanner rightly forbids it here.
+function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
+  const dependsOn = entry.dependsOn;
+  const dependsOnSettled = entry.dependsOnSettled;
+  const requestedModel = entry.requestedModel;
+  return {
+    childSessionId: entry.childSessionId,
+    parentSessionId: entry.parentSessionId,
+    agentName: entry.agentName,
+    description: entry.description,
+    lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
+    startedAt: entry.startedAt,
+    ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
+    ...(Array.isArray(dependsOnSettled) ? { dependsOnSettled: dependsOnSettled.filter((d): d is string => typeof d === "string") } : {}),
+    ...(isEventRecord(requestedModel)
+      && typeof requestedModel["providerID"] === "string"
+      && typeof requestedModel["modelID"] === "string"
+      ? { requestedModel: { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] } }
+      : {}),
+  };
+}
+
+// The durable half of a running task. The advisory fields are dropped on the way
+// out and are never expected back: a mid-flight notice and an activity
+// heartbeat belong to the process that observed them, and turn attribution
+// belongs to in-flight events that died with it. A fresh boot that inherited any
+// of them would be trusting a claim it cannot verify — and would re-persist a
+// heartbeat on every host event, putting a file write in the event head.
+export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
+  const {
+    lastNotice: _notice,
+    lastActivityAt: _activity,
+    turnLiveAt: _turnLive,
+    replacedAt: _replaced,
+    ...core
+  } = record;
+  return { ...core, state: "active" };
+}
+
+export function loadTaskLedger(filePath: string): { retained: Map<string, RetainedTaskState>; active: Map<string, ActiveTaskState>; pending: PendingDelivery[] } {
   const retained = new Map<string, RetainedTaskState>();
+  const active = new Map<string, ActiveTaskState>();
   const pending: PendingDelivery[] = [];
-  if (!filePath || !existsSync(filePath)) return { retained, pending };
+  if (!filePath || !existsSync(filePath)) return { retained, active, pending };
   try {
     const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
     if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
-      return { retained, pending };
+      return { retained, active, pending };
     }
     if (Array.isArray(parsed["pending"])) {
       for (const entry of parsed["pending"]) {
         if (isPendingDelivery(entry)) pending.push(entry);
       }
     }
+    if (isEventRecord(parsed["active"])) {
+      for (const [key, entry] of Object.entries(parsed["active"])) {
+        if (!isValidLedgerEntry(entry) || entry.state !== "active" || entry.childSessionId !== key) continue;
+        active.set(key, { ...hydratedBase(entry), state: "active" });
+      }
+    }
     for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
-      if (!isValidLedgerEntry(entry) || !key.startsWith("ses_")) continue;
+      if (!isValidRetainedEntry(entry) || !key.startsWith("ses_")) continue;
       // The map key is canonical identity: an entry disagreeing with its key
       // is corrupt, not merely mislabeled.
       if (entry.childSessionId !== key) continue;
-      const dependsOn = entry["dependsOn"];
-      const dependsOnSettled = entry["dependsOnSettled"];
-      const requestedModel = entry["requestedModel"];
       const abortError = entry["abortError"];
-      // Built in one expression: a hydrated record is complete at birth.
-      // Post-construction field assignment would belong to the state machine
-      // (task-state), and the lifecycle scanner rightly forbids it here.
-      const typed: RetainedTaskState = {
-        childSessionId: entry.childSessionId,
-        parentSessionId: entry.parentSessionId,
-        agentName: entry.agentName,
-        description: entry.description,
-        lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
+      retained.set(key, {
+        ...hydratedBase(entry),
         state: entry.state,
-        startedAt: entry.startedAt,
         retainedAt: entry.retainedAt,
-        ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
-        ...(Array.isArray(dependsOnSettled) ? { dependsOnSettled: dependsOnSettled.filter((d): d is string => typeof d === "string") } : {}),
-        ...(isEventRecord(requestedModel)
-          && typeof requestedModel["providerID"] === "string"
-          && typeof requestedModel["modelID"] === "string"
-          ? { requestedModel: { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] } }
-          : {}),
         ...(typeof abortError === "string" ? { abortError } : {}),
-      };
-      retained.set(key, typed);
+      });
     }
   } catch {
     // ignore
   }
-  return { retained, pending };
+  return { retained, active, pending };
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the
@@ -311,7 +352,18 @@ export function saveTaskLedger(ledger: TaskLedgerFile, filePath: string): string
   const tmpPath = `${filePath}.tmp`;
   writeFileSync(
     tmpPath,
-    JSON.stringify({ version: TASK_LEDGER_VERSION, tasks: Object.fromEntries(ledger.retained), pending: ledger.pending }, null, 2),
+    JSON.stringify(
+      {
+        version: TASK_LEDGER_VERSION,
+        tasks: Object.fromEntries(ledger.retained),
+        // Shaped here, at the ledger boundary: the one place that knows which
+        // half of a live record is durable.
+        active: Object.fromEntries([...ledger.active].map(([id, record]) => [id, durableActiveTask(record)])),
+        pending: ledger.pending,
+      },
+      null,
+      2,
+    ),
   );
   renameSync(tmpPath, filePath);
   return filePath;

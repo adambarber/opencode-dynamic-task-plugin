@@ -808,9 +808,29 @@ const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
 // both start here.
 const withSavedLedger = (fn) =>
   inLedgerFile((file) => {
-    saveTaskLedger({ retained: new Map([["ses_1", retainedEntry()]]), pending: [owedEntry()] }, file);
+    saveTaskLedger({ retained: new Map([["ses_1", retainedEntry()]]), active: new Map([["ses_2", activeEntry()]]), pending: [owedEntry()] }, file);
     return fn(file);
   });
+
+// A task the last boot was still running. The advisory fields below are the
+// point of the case: none of them may reach disk, because none of them survive
+// a restart (a fresh process has no in-flight claims, no heartbeat to trust).
+function activeEntry(overrides = {}) {
+  return {
+    childSessionId: "ses_2",
+    parentSessionId: "parent_1",
+    agentName: "general",
+    description: "still running",
+    lineage: ["general"],
+    state: "active",
+    startedAt: 1700000000000,
+    lastNotice: { message: "mid-flight", at: 1700000000500 },
+    lastActivityAt: 1700000000900,
+    turnLiveAt: 1700000000900,
+    replacedAt: 1700000000100,
+    ...overrides,
+  };
+}
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
 
 function retainedEntry(overrides = {}) {
@@ -865,6 +885,38 @@ describe("task ledger persistence", () => {
       assert.deepStrictEqual(loaded.pending, [owedEntry()], "the owed write survives verbatim");
     }));
 
+  it("round-trips a running task, and strips every advisory field from it", () =>
+    withSavedLedger(async (file) => {
+      const loaded = loadTaskLedger(file);
+      const restored = loaded.active.get("ses_2");
+      assert.ok(restored, "the running task comes back");
+      assert.deepStrictEqual(
+        { ...restored, lastNotice: undefined, lastActivityAt: undefined, turnLiveAt: undefined, replacedAt: undefined },
+        { ...activeEntry(), lastNotice: undefined, lastActivityAt: undefined, turnLiveAt: undefined, replacedAt: undefined },
+        "identity and routing survive; the advisory fields do not",
+      );
+      for (const advisory of ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt"]) {
+        assert.strictEqual(JSON.parse(readFileSync(file, "utf8")).active.ses_2[advisory], undefined,
+          `${advisory} must never be written to the ledger`);
+      }
+    }));
+
+  it("an active entry missing a base field is dropped, not half-restored", () =>
+    inLedgerFile(async (file) => {
+      // A half-restored running task is worse than an absent one: it would be
+      // settled by reconciliation with no clock, no lineage and no parent to
+      // tell, i.e. a record invented from a corrupt file.
+      const { startedAt: _noClock, ...clockless } = activeEntry({ childSessionId: "ses_nostart" });
+      writeFileSync(file, JSON.stringify({
+        version: 3,
+        tasks: {},
+        pending: [],
+        active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless },
+      }));
+      const loaded = loadTaskLedger(file);
+      assert.deepStrictEqual([...loaded.active.keys()], ["ses_ok"], "only the whole entry returns");
+    }));
+
   // One hypothesis: a queued write is all-or-nothing. An entry missing any of
   // its fields cannot be redelivered (no parent, no text, or an unknown kind),
   // and half of one is worse than none — the boot would dial a message nobody
@@ -904,6 +956,7 @@ describe("task ledger persistence", () => {
     withSavedLedger(async (file) => {
       assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
       assert.strictEqual(loadTaskLedger(file).retained.size, 1, "renamed content intact");
+      assert.strictEqual(loadTaskLedger(file).active.size, 1, "the running task is written, not dropped");
     }));
 
   // One hypothesis: an entry survives only if it is well-formed AND agrees with
@@ -921,7 +974,7 @@ describe("task ledger persistence", () => {
   for (const [name, tasks, keepers] of survived) {
     it(name, async () => {
       await inLedgerFile(async (file) => {
-        writeFileSync(file, JSON.stringify({ version: 3, tasks, pending: [] }));
+        writeFileSync(file, JSON.stringify({ version: 3, tasks, active: {}, pending: [] }));
         assert.deepStrictEqual([...loadTaskLedger(file).retained.keys()], keepers);
       });
     });
@@ -931,7 +984,7 @@ describe("task ledger persistence", () => {
     await inLedgerFile(async (file) => {
       const nanEntry = { ...retainedEntry(), startedAt: NaN };
       const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
-      saveTaskLedger({ retained: new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), pending: [] }, file);
+      saveTaskLedger({ retained: new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), active: new Map(), pending: [] }, file);
       const loaded = loadTaskLedger(file).retained;
       assert.strictEqual(loaded.has("ses_nan"), false, "NaN does not survive the durability boundary");
       assert.strictEqual(loaded.has("ses_mix"), false, "mixed lineage is rejected, not silently shortened");
@@ -950,6 +1003,7 @@ describe("task ledger persistence", () => {
       }));
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
+      assert.strictEqual(loaded.active.size, 0, "and no running task from a past this build cannot read");
       assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
     }));
 

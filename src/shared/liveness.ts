@@ -87,7 +87,13 @@ export async function readLiveness(
   childSessionId: string,
   messages?: unknown[],
 ): Promise<LivenessReading> {
-  const list = messages ?? (await readSessionMessages(client, childSessionId));
+  // Tolerant on the transcript, unlike task_result: a liveness read is asked
+  // "is a turn running, and when did it last write?", and a session the host
+  // cannot describe has honestly answered neither question. task_result still
+  // reports a failed read as a failure (its own fetch is strict) — here the
+  // empty list is the answer, and refusing it would let one vanished child
+  // abandon a whole reconciliation pass.
+  const list = messages ?? await readSessionMessages(client, childSessionId).catch(() => []);
   const statusMap = await client.session.status();
   return {
     hostState: hostTurnState(statusMap, childSessionId),
@@ -96,7 +102,10 @@ export async function readLiveness(
   };
 }
 
-// Read-only session message fetch, shared by every reader of a child.
+// Read-only session message fetch, shared by every reader of a child. Strict by
+// design: callers that report what they read (task_result) must be able to say
+// a read failed, and a swallowed error would print "(none yet)" for a child
+// whose work exists. The tolerant reader is readLiveness, above.
 export async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
   const messagesResult = await client.session.messages({ path: { id: sessionId } });
   return extractMessages(messagesResult);

@@ -1343,6 +1343,83 @@ describe("boot redelivers what the last boot owed", () => {
   });
 });
 
+// ─── Durable active set (docs/tasks/11-durability.md, M1) ────────────────
+// The hole this closes: a child still running when the parent stopped had no
+// record anywhere, so its terminal event found nothing to settle and dropped —
+// it burned tokens and reported nothing. The running set is on disk now, and the
+// next boot makes exactly one liveness read per restored task to decide what
+// happened to it. No clocks, no polling: the host's own status words are the
+// answer, and each cell below is a different set of words.
+describe("boot reconciles what the last boot was still running", () => {
+  const runningLedger = (directory, actives) =>
+    writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({
+      version: 3, tasks: {}, active: actives, pending: [],
+    }));
+
+  const running = (childSessionId, overrides = {}) => ({
+    childSessionId, parentSessionId: "ses_parent", agentName: "general",
+    description: "running across restart", lineage: [], state: "active", startedAt: 1, ...overrides,
+  });
+
+  const bootWithRunners = async (actives, hostStatusSeed) => {
+    const directory = tmpProjectDir();
+    runningLedger(directory, actives);
+    const harness = await setupHarness({ hooks: { hostStatusSeed }, directory });
+    return { directory, ...harness };
+  };
+
+  const ledgerActive = (directory) => JSON.parse(readFileSync(join(directory, ".dynamic-task-ledger.json"), "utf8")).active;
+  const untilSettled = async (notices, what) => {
+    for (let tries = 0; tries < 300; tries++) {
+      if (notices().length > 0) return;
+      await sleep(1);
+    }
+    assert.fail(`timed out waiting for ${what}`);
+  };
+
+  it("a child the host is still working stays active and settles on its own event", async () => {
+    const h = await bootWithRunners({ ses_live: running("ses_live") }, { ses_live: "busy" });
+    const status = await h.tool.task_status.execute({ session_id: "ses_live" }, { sessionID: "ses_parent" });
+    assert.match(status, /State: active/, "still running is still active");
+    assert.deepStrictEqual(h.noticeBodies(), [], "no notice for a task that is not over");
+
+    const notice = await h.settledNotice("ses_live");
+    assert.match(notice, /completed successfully/, "its genuine terminal event settles it, once");
+  });
+
+  it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
+    const { directory, notices } = await bootWithRunners({ ses_gone: running("ses_gone") }, {});
+    await untilSettled(notices, "the vanished child to settle");
+    const [notice] = notices();
+    assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
+    assert.match(notice.message, /ended with an error/);
+    assert.match(notice.message, /vanish/i, "the parent is told it vanished, not that its work failed");
+    assert.match(notice.message, /restart/i, "and when the loss of contact happened");
+    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [], "nothing is left pretending to run");
+  });
+
+  it("a child that finished while the parent was down settles completed, not error", async () => {
+    // The host says the turn is over and the transcript still reads: this is
+    // finished work, and settling it error would invent a failure nobody saw.
+    const { notices } = await bootWithRunners({ ses_idle: running("ses_idle") }, { ses_idle: "idle" });
+    await untilSettled(notices, "the finished child to settle");
+    assert.match(notices()[0].message, /completed successfully/);
+    assert.doesNotMatch(notices()[0].message, /ended with an error/);
+  });
+
+  it("a spawned task is on disk while it runs, and gone from the active set once it settles", async () => {
+    const directory = tmpProjectDir();
+    const h = await setupHarness({ hooks: {}, directory });
+    const { id } = await h.spawn({ description: "durable active" });
+    await sleep(30); // the spawn observer writes synchronously; the sleep is for CI, not the contract.
+    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [id], "a running child is durable");
+
+    await h.settle(id);
+    await sleep(30);
+    assert.deepStrictEqual(ledgerActive(directory), {}, "and stops being a running task the moment it settles");
+  });
+});
+
 describe("spawn resilience: no untracked child survives a failure", () => {
   it("a concurrency rejection leaves no orphan session behind", async () => {
     const h = await setupHarness({ options: { maxConcurrent: 1 } });

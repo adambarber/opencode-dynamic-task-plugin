@@ -140,15 +140,10 @@ describe("resolveParentSessionId", () => {
     assert.strictEqual(resolveParentSessionId({ sessionID: "   " }), null);
   });
 
-  it("ignores the legacy ambient test var — callers resolve explicitly", () => {
-    const prev = process.env.DYNAMIC_TASK_TEST_SESSION_ID;
-    process.env.DYNAMIC_TASK_TEST_SESSION_ID = "ses_phantom";
-    try {
+  it("ignores the legacy ambient test var — callers resolve explicitly", async () => {
+    await withEnv("DYNAMIC_TASK_TEST_SESSION_ID", "ses_phantom", async () => {
       assert.strictEqual(resolveParentSessionId({}), null);
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_TEST_SESSION_ID = prev;
-      else delete process.env.DYNAMIC_TASK_TEST_SESSION_ID;
-    }
+    });
   });
 });
 
@@ -157,13 +152,25 @@ describe("fetchAgents", () => {
     resetAgentCache();
   });
 
-  function clientWith(agents, log = async () => {}) {
-    return {
+  /**
+   * A client whose app.agents() answers `respond` — a list, a wrapped host
+   * response ({data}/{agents}), or a function of the call number, which is how
+   * a test scripts a failure-then-success without a hand-kept counter that can
+   * drift from the assertion that reads it. `client.agentCalls` is the count
+   * those assertions actually want.
+   */
+  function clientWith(respond, log = async () => {}) {
+    const client = {
+      agentCalls: 0,
       app: {
-        agents: async () => agents,
+        agents: async () => {
+          client.agentCalls++;
+          return typeof respond === "function" ? respond(client.agentCalls) : respond;
+        },
         log,
       },
     };
+    return client;
   }
 
   it("dispatches subagent and all modes, rejects primary", async () => {
@@ -182,14 +189,9 @@ describe("fetchAgents", () => {
   });
 
   it("handles error gracefully", async () => {
-    const mockClient = {
-      app: {
-        agents: async () => {
-          throw new Error("Network error");
-        },
-        log: async () => {},
-      },
-    };
+    const mockClient = clientWith(() => {
+      throw new Error("Network error");
+    });
 
     const result = await fetchAgents(mockClient);
     assert.strictEqual(result.length, 0);
@@ -204,20 +206,13 @@ describe("fetchAgents", () => {
   });
 
   it("retries once after a transient failure", async () => {
-    let calls = 0;
-    const mockClient = {
-      app: {
-        agents: async () => {
-          calls++;
-          if (calls === 1) throw new Error("blip");
-          return [{ name: "explore", mode: "subagent" }];
-        },
-        log: async () => {},
-      },
-    };
+    const mockClient = clientWith((calls) => {
+      if (calls === 1) throw new Error("blip");
+      return [{ name: "explore", mode: "subagent" }];
+    });
 
     const result = await fetchAgents(mockClient);
-    assert.strictEqual(calls, 2, "one immediate retry");
+    assert.strictEqual(mockClient.agentCalls, 2, "one immediate retry");
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].name, "explore");
   });
@@ -252,59 +247,33 @@ describe("fetchAgents", () => {
   // plugin instance (or the host's entry-export probes) can never serve
   // another client's agent list.
   it("caches per client: two clients keep distinct agent lists", async () => {
-    let aCalls = 0;
-    let bCalls = 0;
-    const clientA = {
-      app: {
-        agents: async () => { aCalls++; return [{ name: "alpha", mode: "subagent" }]; },
-        log: async () => {},
-      },
-    };
-    const clientB = {
-      app: {
-        agents: async () => { bCalls++; return [{ name: "beta", mode: "subagent" }]; },
-        log: async () => {},
-      },
-    };
+    const clientA = clientWith([{ name: "alpha", mode: "subagent" }]);
+    const clientB = clientWith([{ name: "beta", mode: "subagent" }]);
 
     assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
     assert.deepStrictEqual((await fetchAgents(clientB)).map((a) => a.name), ["beta"]);
     assert.deepStrictEqual((await fetchAgents(clientA)).map((a) => a.name), ["alpha"]);
-    assert.strictEqual(aCalls, 1, "client A's second read is served from its own cache");
-    assert.strictEqual(bCalls, 1, "client B's fetch never touched client A's cache");
+    assert.strictEqual(clientA.agentCalls, 1, "client A's second read is served from its own cache");
+    assert.strictEqual(clientB.agentCalls, 1, "client B's fetch never touched client A's cache");
   });
 
   it("stale entries refetch — TTL still bounds each client's cache", async () => {
-    let calls = 0;
-    const mockClient = {
-      app: {
-        agents: async () => {
-          calls++;
-          return calls === 1
-            ? [{ name: "first", mode: "subagent" }]
-            : [{ name: "second", mode: "subagent" }];
-        },
-        log: async () => {},
-      },
-    };
+    const mockClient = clientWith((calls) =>
+      calls === 1
+        ? [{ name: "first", mode: "subagent" }]
+        : [{ name: "second", mode: "subagent" }]);
 
     assert.strictEqual((await fetchAgents(mockClient, 60000))[0].name, "first");
     assert.strictEqual((await fetchAgents(mockClient, 0))[0].name, "second", "expired TTL forces a fresh fetch");
-    assert.strictEqual(calls, 2);
+    assert.strictEqual(mockClient.agentCalls, 2);
   });
 
   it("resetAgentCache invalidates every client's cache", async () => {
-    let calls = 0;
-    const mockClient = {
-      app: {
-        agents: async () => { calls++; return [{ name: "explore", mode: "subagent" }]; },
-        log: async () => {},
-      },
-    };
+    const mockClient = clientWith([{ name: "explore", mode: "subagent" }]);
     await fetchAgents(mockClient, 60000);
     resetAgentCache();
     await fetchAgents(mockClient, 60000);
-    assert.strictEqual(calls, 2, "reset must not leave any client's entry fresh");
+    assert.strictEqual(mockClient.agentCalls, 2, "reset must not leave any client's entry fresh");
   });
 });
 
@@ -762,16 +731,11 @@ describe("safeDebugPayload", () => {
     assert.ok(!("prompt" in result), "prompt must be blocked by default blocklist");
   });
 
-  it("reads the blocklist at call time and honors every entry", () => {
-    const prev = process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST;
-    process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST = "alpha,beta,gamma,delta,epsilon";
-    try {
+  it("reads the blocklist at call time and honors every entry", async () => {
+    await withEnv("DYNAMIC_TASK_DEBUG_BLOCKLIST", "alpha,beta,gamma,delta,epsilon", async () => {
       assert.ok(!("alpha" in safeDebugPayload({ alpha: "x" })));
       assert.ok(!("epsilon" in safeDebugPayload({ epsilon: "x", ok: 1 })), "the fifth entry must also block");
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST = prev;
-      else delete process.env.DYNAMIC_TASK_DEBUG_BLOCKLIST;
-    }
+    });
   });
 
   it("rejects array payloads instead of indexing them", () => {
@@ -799,7 +763,7 @@ import {
   loadTaskLedger,
 } from "../../dist/shared/session-lifecycle.js";
 
-import { readFileSync, unlinkSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 function retainedEntry(overrides = {}) {
   return {
@@ -821,96 +785,77 @@ function tmpLedgerPath() {
 }
 
 describe("task ledger persistence", () => {
-  it("round-trips retained records through an injectable path", () => {
-    const file = tmpLedgerPath();
-    try {
+  // Every case here owns a temp ledger for the duration of one assertion. The
+  // old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`
+  // sidecar in the two sites that mattered, and the missing-file site skipped
+  // cleanup entirely — withTempFile owns the whole lifetime.
+  it("round-trips retained records through an injectable path", async () => {
+    await withTempFile(tmpLedgerPath(), async (file) => {
       saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.size, 1);
       assert.strictEqual(loaded.get("ses_1").agentName, "explore");
       assert.strictEqual(loaded.get("ses_1").state, "completed");
       assert.strictEqual(loaded.get("ses_1").timeoutNotified, undefined, "the reader strips transient fields");
-    } finally {
-      if (existsSync(file)) unlinkSync(file);
-    }
+    });
   });
 
-  it("returns empty for missing, corrupt, and unknown-version files", () => {
+  it("returns empty for missing, corrupt, and unknown-version files", async () => {
     assert.strictEqual(loadTaskLedger(`${tmpdir()}/dt-nope-${Date.now()}.json`).size, 0);
-    const bad = tmpLedgerPath();
-    writeFileSync(bad, "{ nope");
-    try {
+    await withTempFile(tmpLedgerPath(), async (bad) => {
+      writeFileSync(bad, "{ nope");
       assert.strictEqual(loadTaskLedger(bad).size, 0);
-    } finally {
-      unlinkSync(bad);
-    }
-    const future = tmpLedgerPath();
-    writeFileSync(future, JSON.stringify({ version: 999, tasks: {} }));
-    try {
+    });
+    await withTempFile(tmpLedgerPath(), async (future) => {
+      writeFileSync(future, JSON.stringify({ version: 999, tasks: {} }));
       assert.strictEqual(loadTaskLedger(future).size, 0);
-    } finally {
-      unlinkSync(future);
-    }
+    });
   });
 
-  it("save writes atomically via rename — no .tmp residue", () => {
-    const file = tmpLedgerPath();
-    try {
+  it("save writes atomically via rename — no .tmp residue", async () => {
+    await withTempFile(tmpLedgerPath(), async (file) => {
       saveTaskLedger(new Map([["ses_1", retainedEntry()]]), file);
       assert.strictEqual(existsSync(`${file}.tmp`), false, "tmp must be renamed away, not left behind");
       assert.strictEqual(loadTaskLedger(file).size, 1, "renamed content intact");
-    } finally {
-      if (existsSync(file)) unlinkSync(file);
-      if (existsSync(`${file}.tmp`)) unlinkSync(`${file}.tmp`);
-    }
+    });
   });
 
-  it("rejects entries disagreeing with their map key", () => {
-    const file = tmpLedgerPath();
-    writeFileSync(file, JSON.stringify({
-      version: 2,
-      tasks: { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } },
-    }));
-    try {
+  it("rejects entries disagreeing with their map key", async () => {
+    await withTempFile(tmpLedgerPath(), async (file) => {
+      writeFileSync(file, JSON.stringify({
+        version: 2,
+        tasks: { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } },
+      }));
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.has("ses_a"), false, "a divergent entry is corrupt, not relabeled");
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 
-  it("rejects non-finite timestamps and mixed lineage wholesale", () => {
-    const file = tmpLedgerPath();
-    const nanEntry = { ...retainedEntry(), startedAt: NaN };
-    const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
-    saveTaskLedger(new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), file);
-    try {
+  it("rejects non-finite timestamps and mixed lineage wholesale", async () => {
+    await withTempFile(tmpLedgerPath(), async (file) => {
+      const nanEntry = { ...retainedEntry(), startedAt: NaN };
+      const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
+      saveTaskLedger(new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), file);
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.has("ses_nan"), false, "NaN does not survive the durability boundary");
       assert.strictEqual(loaded.has("ses_mix"), false, "mixed lineage is rejected, not silently shortened");
-    } finally {
-      if (existsSync(file)) unlinkSync(file);
-      if (existsSync(`${file}.tmp`)) unlinkSync(`${file}.tmp`);
-    }
+    });
   });
 
-  it("drops entries with unknown states or invalid ids", () => {
-    const file = tmpLedgerPath();
-    writeFileSync(file, JSON.stringify({
-      version: 2,
-      tasks: {
-        ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
-        ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
-        ses_noid: { ...retainedEntry(), childSessionId: 42 },
-      },
-    }));
-    try {
+  it("drops entries with unknown states or invalid ids", async () => {
+    await withTempFile(tmpLedgerPath(), async (file) => {
+      writeFileSync(file, JSON.stringify({
+        version: 2,
+        tasks: {
+          ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
+          ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
+          ses_noid: { ...retainedEntry(), childSessionId: 42 },
+        },
+      }));
       const loaded = loadTaskLedger(file);
       assert.strictEqual(loaded.size, 1);
       assert.ok(loaded.has("ses_ok"));
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 });
 
@@ -958,62 +903,37 @@ describe("normalizeDynamicTaskConfig", () => {
     assert.ok(!("unknownField" in config));
   });
 
-  it("lets env override tuple options", () => {
-    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "7";
-    try {
+  it("lets env override tuple options", async () => {
+    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "7", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 2 }).maxConcurrent, 7);
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
-      else delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-    }
+    });
   });
 
-  it("treats empty-string env var as 'not set' and falls through to the next level", () => {
-    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "";
-    try {
+  it("treats empty-string env var as 'not set' and falls through to the next level", async () => {
+    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 5 }).maxConcurrent, 5);
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
-      else delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-    }
+    });
   });
 
-  it("empty-string env var falls through to the default blocklist", () => {
-    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-    process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = "";
-    try {
+  it("empty-string env var falls through to the default blocklist", async () => {
+    await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", "", async () => {
       const config = normalizeDynamicTaskConfig({});
       assert.deepStrictEqual(config.blockedAgents, []);
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
-      else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-    }
+    });
   });
 
-  it("explicit env forbidden agents overrides blockedAgents", () => {
-    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-    process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = "coder,reviewer";
-    try {
+  it("explicit env forbidden agents overrides blockedAgents", async () => {
+    await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", "coder,reviewer", async () => {
       const config = normalizeDynamicTaskConfig({});
       assert.deepStrictEqual(config.blockedAgents, ["coder", "reviewer"]);
-    } finally {
-      if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
-      else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-    }
+    });
   });
 
-  it("a comma-only forbidden-agents env does not clear the blocklist", () => {
-    const prev = process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
+  it("a comma-only forbidden-agents env does not clear the blocklist", async () => {
     for (const junk of [",", " , ", ",,"]) {
-      process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = junk;
-      try {
+      await withEnv("DYNAMIC_TASK_FORBIDDEN_AGENTS", junk, async () => {
         assert.deepStrictEqual(normalizeDynamicTaskConfig({}).blockedAgents, [], `env=${JSON.stringify(junk)}`);
-      } finally {
-        if (prev !== undefined) process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS = prev;
-        else delete process.env.DYNAMIC_TASK_FORBIDDEN_AGENTS;
-      }
+      });
     }
   });
 });
@@ -1037,25 +957,19 @@ describe("parseDynamicTaskJsonc", () => {
     assert.strictEqual(parseDynamicTaskJsonc("/nonexistent/path/config.jsonc"), null);
   });
 
-  it("returns null for empty or non-object payloads", () => {
+  it("returns null for empty or non-object payloads", async () => {
     assert.strictEqual(parseDynamicTaskJsonc(""), null);
-    const file = `${tmpdir()}/dt-array-${Date.now()}.jsonc`;
-    writeFileSync(file, "[1, 2]");
-    try {
+    await withTempFile(`${tmpdir()}/dt-array-${Date.now()}.jsonc`, async (file) => {
+      writeFileSync(file, "[1, 2]");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 
-  it("strips comments and parses objects", () => {
-    const file = `${tmpdir()}/dt-ok-${Date.now()}.jsonc`;
-    writeFileSync(file, '{ /* block */ "maxDepth": 3 } // trailing\n');
-    try {
+  it("strips comments and parses objects", async () => {
+    await withTempFile(`${tmpdir()}/dt-ok-${Date.now()}.jsonc`, async (file) => {
+      writeFileSync(file, '{ /* block */ "maxDepth": 3 } // trailing\n');
       assert.deepStrictEqual(parseDynamicTaskJsonc(file), { maxDepth: 3 });
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 });
 
@@ -1240,6 +1154,7 @@ import {
 } from "../../dist/shared/question-handling.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
+import { withEnv, withTempFile } from './support/harness.js';
 
 describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {
@@ -1370,13 +1285,13 @@ describe("task-state: revival and annotations", () => {
 
   it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
     const store = createTaskStore();
-    let calls = 0;
-    store.onRetainedChange = () => { calls++; };
+    const changes = { calls: 0 };
+    store.onRetainedChange = () => { changes.calls++; };
     seedSesActive(store, config);
     transitionState(store, "ses_active", "interrupted");
-    const before = calls;
+    const before = changes.calls;
     withdrawInterruptClaim(store, "ses_active", Date.now(), config);
-    assert.strictEqual(calls, before + 1, "withdraw is a retained mutation and must persist");
+    assert.strictEqual(changes.calls, before + 1, "withdraw is a retained mutation and must persist");
     assert.strictEqual(store.activeTasks.get("ses_active")?.state, "active");
   });
 
@@ -1976,35 +1891,24 @@ describe("prompt dance: extractor shape coverage", () => {
 });
 
 describe("config: file and env edges", () => {
-  it("parseDynamicTaskJsonc returns null for malformed JSON", () => {
-    const file = `${tmpdir()}/dt-malformed-${Date.now()}.jsonc`;
-    writeFileSync(file, "{ not json,");
-    try {
+  it("parseDynamicTaskJsonc returns null for malformed JSON", async () => {
+    await withTempFile(`${tmpdir()}/dt-malformed-${Date.now()}.jsonc`, async (file) => {
+      writeFileSync(file, "{ not json,");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 
-  it("parseDynamicTaskJsonc returns null for non-object JSON", () => {
-    const file = `${tmpdir()}/dt-array-${Date.now()}.jsonc`;
-    writeFileSync(file, "[1, 2]");
-    try {
+  it("parseDynamicTaskJsonc returns null for non-object JSON", async () => {
+    await withTempFile(`${tmpdir()}/dt-array-${Date.now()}.jsonc`, async (file) => {
+      writeFileSync(file, "[1, 2]");
       assert.strictEqual(parseDynamicTaskJsonc(file), null);
-    } finally {
-      unlinkSync(file);
-    }
+    });
   });
 
-  it("ignores non-numeric env maxConcurrent", () => {
-    const prev = process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-    process.env.DYNAMIC_TASK_MAX_CONCURRENT = "bogus";
-    try {
+  it("ignores non-numeric env maxConcurrent", async () => {
+    await withEnv("DYNAMIC_TASK_MAX_CONCURRENT", "bogus", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({}).maxConcurrent, 4);
-    } finally {
-      if (prev === undefined) delete process.env.DYNAMIC_TASK_MAX_CONCURRENT;
-      else process.env.DYNAMIC_TASK_MAX_CONCURRENT = prev;
-    }
+    });
   });
 });
 
@@ -2185,27 +2089,27 @@ describe("task store: retained-change callback", () => {
 
   it("notifies on retained writes, silent on active-only writes", () => {
     const store = createTaskStore();
-    let calls = 0;
-    store.onRetainedChange = () => { calls++; };
+    const changes = { calls: 0 };
+    store.onRetainedChange = () => { changes.calls++; };
     seedActive(store, "s1");
-    assert.strictEqual(calls, 0, "active-only writes stay silent");
+    assert.strictEqual(changes.calls, 0, "active-only writes stay silent");
     transitionState(store, "s1", "completed");
-    assert.strictEqual(calls, 1);
+    assert.strictEqual(changes.calls, 1);
     noteLateOutcome(store, "s1", "error");
-    assert.strictEqual(calls, 2);
+    assert.strictEqual(changes.calls, 2);
     reviveRetainedTask(store, "s1", config);
-    assert.strictEqual(calls, 3, "revival leaves the retained ledger");
+    assert.strictEqual(changes.calls, 3, "revival leaves the retained ledger");
   });
 
   it("pruning emits the change signal when entries expire", () => {
     const store = createTaskStore();
-    let calls = 0;
-    store.onRetainedChange = () => { calls++; };
+    const changes = { calls: 0 };
+    store.onRetainedChange = () => { changes.calls++; };
     seedActive(store, "s1");
     transitionState(store, "s1", "completed");
     store.retainedTasks.get("s1").retainedAt = 0;
     assert.strictEqual(pruneRetainedTasks(store, { retainedTaskTtlMs: 1000, retainedTaskMaxEntries: 100 }), 1);
-    assert.strictEqual(calls, 2);
+    assert.strictEqual(changes.calls, 2);
   });
 });
 

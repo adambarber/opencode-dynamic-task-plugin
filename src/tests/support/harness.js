@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
@@ -24,6 +24,49 @@ import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { resetQuestionSessions } from "../../../dist/shared/question-handling.js";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Set an env var for the duration of a test and put the host back exactly as
+ * it was. The save/restore dance was copied per test, and one copy leaked:
+ * a test that wrote a var without a finally left it set for every suite after
+ * it in the same process. Restoring the ABSENCE of a var matters as much as
+ * its value, so this owns that too.
+ */
+export async function withEnv(key, value, fn) {
+  const had = Object.hasOwn(process.env, key);
+  const prev = process.env[key];
+  process.env[key] = value;
+  try {
+    return await fn();
+  } finally {
+    if (had) process.env[key] = prev;
+    else delete process.env[key];
+  }
+}
+
+/**
+ * Hand a test a path in the OS temp dir and clean up whatever the test left
+ * there — INCLUDING the ledger dance's `.tmp` sidecar. Two hand-rolled copies
+ * unlinked only the file, so a failing atomic write could leave the sidecar
+ * behind; the absence check is the cleanup, not a hope.
+ */
+export async function withTempFile(path, fn) {
+  try {
+    return await fn(path);
+  } finally {
+    for (const file of [path, `${path}.tmp`]) {
+      try {
+        unlinkSync(file);
+      } catch {
+        /* never created */
+      }
+    }
+  }
+}
+
+/** A unique path in the OS temp dir. The caller does not create it. */
+export const tmpFilePath = (label = "dt") =>
+  join(tmpdir(), `${label}-${process.pid}-${Math.floor(Math.random() * 1e6)}`);
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {

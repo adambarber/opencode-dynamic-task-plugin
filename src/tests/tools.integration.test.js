@@ -139,6 +139,27 @@ async function reviveAfterFailedDelivery() {
   return { h, c, id };
 }
 
+/**
+ * That revival, raced against the stale retry from one side or the other.
+ *
+ * The two orderings are the whole point: the retry is armed at a fixed backoff, so
+ * "the stale commit lands first" and "the revival lands first" are the two ways a
+ * generation-keyed store gets this wrong, and one of them is a pass by accident.
+ * The order is the argument, so it is the only thing the caller states, and both
+ * runs must end with BOTH turns delivered.
+ */
+async function reviveRacingAStaleRetry(order) {
+  const { h, id } = await reviveAfterFailedDelivery();
+  if (order === "stale retry first") {
+    await sleep(350); // the stale retry lands and commits while the revival is live
+    await h.settle(id);
+  } else {
+    await h.settle(id);
+    await sleep(600);
+  }
+  await assertBothTurnsDelivered(h);
+}
+
 /** Two turns, two settlements, and no suppression of the second. */
 async function assertBothTurnsDelivered(h) {
   await sleep(30);
@@ -253,6 +274,21 @@ function assertNoticeCount(h, count, why) {
   const bodies = notices.map((n) => n.message.split("\n")[1] ?? n.message);
   assert.strictEqual(notices.length, count, `${why}. notices: ${bodies.join(" | ")}`);
 }
+/**
+ * The host's status channel, delivered as an event. The channel and the lifecycle
+ * stream are two of the three ways a session's state reaches the plugin, and a
+ * case that means "the host says this session is busy" says it here rather than
+ * assembling the event inline — the two spellings had begun to drift on which
+ * session the word was for.
+ */
+const hostStatus = (h, id, type = "idle") => h.fireEvent(events.status(id, type));
+
+/**
+ * What the nth notice says. The count is `assertNoticeCount`; this is the prose,
+ * read from the same ledger in the same way, because "notified once" and
+ * "notified the right thing" are the two halves of a settlement's claim.
+ */
+const noticeSays = (h, index, reason, note) => answerSays(h.noticeBodies()[index], reason, note);
 /**
  * A harness for a case with no dispatched child. The subject there is the host's
  * event stream or a tool called directly, so the boot options ARE the whole
@@ -593,7 +629,7 @@ describe("task_continue branches", () => {
     await h.fireEvent(events.status(id, "busy"));
     await h.settle(id);
     assertNoticeCount(h, 2, "revival earns a fresh settlement");
-    assert.ok(h.noticeBodies()[1].includes("completed successfully"));
+    noticeSays(h, 1, "completed successfully", "and the notice says so");
   });
 
   it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
@@ -970,7 +1006,7 @@ describe("task_result and task_interrupt paths", () => {
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
     assertNoticeCount(h, 1, "natural completion delivers");
-    assert.ok(h.noticeBodies()[0].includes("completed successfully"));
+    noticeSays(h, 0, "completed successfully", "and it claims success");
   });
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
@@ -1011,7 +1047,7 @@ describe("a child that needs input is not a success", () => {
   it("a failed turn outranks a needs-input declaration", async () => {
     const { h, c, id } = await withChild();
     await c.notify("blocked on the key", { kind: "needs_input" });
-    await h.fireEvent(events.status(id, "error"));
+    await hostStatus(h, id, "error");
     assert.strictEqual(await stateOf(c), "State: error", "a failure is not a question");
   });
 
@@ -1199,7 +1235,7 @@ describe("settlement: the notification layer owns outcomes", () => {
   it("repeated terminal events notify exactly once", async () => {
     const { h, c, id } = await withSettledChild();
     await h.settle(id);
-    await h.fireEvent(events.status(id));
+    await hostStatus(h, id);
     assertNoticeCount(h, 1, "one settled turn, one notice");
   });
 
@@ -1736,7 +1772,7 @@ describe("outcome correctness: failed turns never report success", () => {
     await sleep(30);
 
     assertNoticeCount(h, 1, "single winner must notify once");
-    assert.ok(h.noticeBodies()[0].includes("ended with an error"));
+    noticeSays(h, 0, "ended with an error", "the winner's notice says what happened");
     });
 
 
@@ -1746,20 +1782,14 @@ describe("outcome correctness: failed turns never report success", () => {
   // an in-flight commit from the old generation must not reserve the key
   // that turn 2's settlement needs.
   it("a revived turn is never suppressed by its predecessor's late retry", async () => {
-    const { h, id } = await reviveAfterFailedDelivery();
-    await sleep(350); // the stale retry lands and commits while the revival is live
-    await h.settle(id);
-    await assertBothTurnsDelivered(h);
-    });
+    await reviveRacingAStaleRetry("stale retry first");
+  });
 
   // Same harness, opposite timing: the revival lands BEFORE the retry
   // resolves, so serialization — not generations — carries the order.
   it("turns settle in claim order — a stale retry never jumps a new turn", async () => {
-    const { h, id } = await reviveAfterFailedDelivery();
-    await h.settle(id);
-    await sleep(600);
-    await assertBothTurnsDelivered(h);
-    });
+    await reviveRacingAStaleRetry("revival first");
+  });
 
   it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
     const h = await setupHarness();

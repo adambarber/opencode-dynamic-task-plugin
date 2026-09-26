@@ -17,6 +17,19 @@ import {
   withChild, withSettledChild,
 } from './support/harness.js';
 
+/**
+ * Boot, spawn, and start a steer whose abort parks at the gate — the
+ * arrangement every steer race needs. What races the steer is the caller's
+ * next line; `steer` is the still-pending promise to await after the release.
+ */
+async function racingSteer(gateOpts) {
+  const { h, c, id } = await withChild();
+  const { release } = h.client.gateAbort(gateOpts);
+  const steer = c.steer("pivot");
+  await sleep(10);
+  return { h, c, id, steer, release };
+}
+
 // --- Tests -----------------------------------------------------------------
 
 describe("dynamic_task validation", () => {
@@ -155,10 +168,7 @@ describe("task_continue branches", () => {
     assert.ok(note.includes("completed successfully")); });
 
   it("a steer racing a completed settle auto-revives instead of demanding a second call", async () => {
-    const { h, c, id } = await withChild();
-    const { release } = h.client.gateAbort();
-    const steer = c.steer("pivot");
-    await sleep(10);
+    const { h, c, id, steer, release } = await racingSteer();
     await h.fireEvent(events.idle(id));
     await h.fireEvent(events.idle(id));
     release();
@@ -172,10 +182,7 @@ describe("task_continue branches", () => {
     });
 
   it("a task settling mid-steer never receives the replacement prompt", async () => {
-    const { h, c, id } = await withChild();
-    const { release } = h.client.gateAbort();
-    const steer = c.steer("pivot");
-    await sleep(10);
+    const { h, c, steer, release } = await racingSteer();
     await c.interrupt();
     release();
     const out = await steer;
@@ -189,10 +196,7 @@ describe("task_continue branches", () => {
     });
 
   it("a steer racing a concurrent settlement reports the winner truthfully", async () => {
-    const { h, c, id } = await withChild();
-    const { release } = h.client.gateAbort({ fails: true });
-    const steer = c.steer("pivot");
-    await sleep(10);
+    const { h, c, steer, release } = await racingSteer({ fails: true });
     await c.interrupt();
     release();
     const out = await steer;
@@ -325,12 +329,7 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(again.includes("Say something new"), `tells the child what to do. got: ${again}`); });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
-    const { h, c, id } = await withChild();
-    const origPrompt = h.client.session.prompt;
-    h.client.session.prompt = (args) => {
-      if (args.path.id === "p1") return Promise.reject(new Error("parent down"));
-      return origPrompt(args);
-      };
+    const { h, c, id } = await withChild({ harness: { hooks: { promptFailIds: new Set(["p1"]) } } });
     const out = await c.notify("hello?");
     assert.ok(out.includes("did not acknowledge"), `names the failure. got: ${out}`);
     assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`); });
@@ -933,19 +932,13 @@ describe("outcome correctness: failed turns never report success", () => {
     });
 
   it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
-    const gate1 = deferred();
-    let calls = 0;
     const h = await setupHarness();
-    h.client.session.abort = async () => {
-      calls++;
-      if (calls === 1) { await gate; throw new Error("ECONNREFUSED"); }
-      return { ok: true };
-      };
+    const { release } = h.client.gateAbort({ fails: true });
     const { id, c } = await h.spawn();
     const p1 = c.interrupt();
     await sleep(10);
     const r2 = await c.interrupt();
-    gate1.resolve();
+    release();
     await p1;
     assert.ok(!r2.includes("not a tracked task"), `second interrupt sees the tracked task. got: ${r2}`);
     const status = await c.status();

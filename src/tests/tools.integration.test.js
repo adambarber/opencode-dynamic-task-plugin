@@ -14,7 +14,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir,
-  withChild, withEnv, withSettledChild, resultForChild, resultForUnreadableChild,
+  withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
+  resultForChild, resultForUnreadableChild,
 } from './support/harness.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 
@@ -827,20 +828,12 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   // handed reports success while a descendant keeps spending tokens. Each case
   // names the set the plugin acted on, and each member's own truth.
   //
-  // Two levels is the deepest tree reachable today: lineage accumulates every
-  // ancestor's agent NAME and no agent may appear twice, so a chain is bounded
-  // by the number of agent types. The walk is depth-agnostic — a wider agent
-  // set just makes deeper trees — so nothing here is written to two levels.
-  const tree = async () => {
-    const h = await setupHarness();
-    const child = await h.spawn({ description: "child task" });
-    const grandchild = await h.spawn({ description: "grandchild task", subagent_type: "general" }, { sessionID: child.id });
-    return { h, child, grandchild };
-  };
+  // Two levels is the deepest tree reachable today (see withDispatchTree); the
+  // walk is depth-agnostic, so nothing here is written to two levels.
   const stateOf = async (h, id) => h.tool.task_status.execute({ session_id: id });
 
   it("one interrupt stops the whole tree and names every member", async () => {
-    const { h, child, grandchild } = await tree();
+    const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     for (const member of [child, grandchild]) {
       assert.ok(out.includes(member.id), `the report names ${member.id}. got: ${out}`);
@@ -849,7 +842,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   });
 
   it("scope self stops only the session it was handed", async () => {
-    const { h, child, grandchild } = await tree();
+    const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "self" });
     assert.ok(!out.includes(grandchild.id), `a descendant was not acted on, so it is not named. got: ${out}`);
     assert.ok((await stateOf(h, child.id)).includes("interrupted"), "the handed session is stopped");
@@ -857,7 +850,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   });
 
   it("an unrecognized scope is refused, never silently widened or narrowed", async () => {
-    const { h, child, grandchild } = await tree();
+    const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "everything" });
     assert.ok(out.includes("everything"), `the rejected value is quoted back. got: ${out}`);
     assert.ok(out.includes("subtree"), `the choices are named. got: ${out}`);
@@ -865,8 +858,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   });
 
   it("a settled descendant is not named: there was nothing to stop there", async () => {
-    const { h, child, grandchild } = await tree();
-    await h.settle(grandchild.id);
+    const { h, child, grandchild } = await withSettledDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     assert.ok(!out.includes(grandchild.id), `the finished child is not re-aborted. got: ${out}`);
     assert.ok(out.includes(child.id), `the task the caller named is still answered. got: ${out}`);
@@ -877,7 +869,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     // finished parent is not a wall: the grandchild it left running is exactly
     // the work an interrupt is for, and reporting only "already settled" would
     // hand back a clean answer over work that is still spending tokens.
-    const { h, child, grandchild } = await tree();
+    const { h, child, grandchild } = await withDispatchTree();
     await h.settle(child.id);
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     assert.ok(out.includes("already settled as completed"), `the root's own truth. got: ${out}`);
@@ -892,7 +884,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     // told about. With claims taken one abort at a time, the descendant is
     // still active while the first abort is in flight — and this is the window
     // the ordering makes unrepresentable.
-    const { h, child, grandchild } = await tree();
+    const { h, child, grandchild } = await withDispatchTree();
     const gate = h.client.gateAbort();
     const pass = h.tool.task_interrupt.execute({ session_id: child.id });
     await sleep(30);
@@ -1076,6 +1068,55 @@ describe("task fleet views", () => {
     assert.ok(list.includes("Active: 1/4"), `got: ${list}`);
     assert.ok(list.includes("Retained: 1"), `got: ${list}`);
     });
+
+  // A dispatch is a tree, and the flat list hid that: the one fact that
+  // decides HOW to stop a runaway task — it is a grandchild, not a sibling —
+  // was in the store and in no view. The tree costs no extra host read, because
+  // the store already holds every edge.
+  describe("the running fleet renders as the tree it is", () => {
+    const lineFor = (list, sessionId) =>
+      list.split("\n").find((line) => line.includes(sessionId)) ?? `(no line for ${sessionId})`;
+
+    it("a grandchild is shown under the task that spawned it", async () => {
+      const { h, child, grandchild } = await withDispatchTree();
+      const list = await h.tool.task_list.execute({});
+      const childLine = lineFor(list, child.id);
+      const grandchildLine = lineFor(list, grandchild.id);
+      assert.ok(/^- /.test(childLine), `a root sits flush. got: ${childLine}`);
+      assert.ok(/^  - /.test(grandchildLine), `a descendant is indented under it. got: ${grandchildLine}`);
+    });
+
+    it("a finished task is history, not part of the running tree", async () => {
+      const { h, child, grandchild } = await withSettledDispatchTree();
+      const list = await h.tool.task_list.execute({});
+      assert.ok(list.includes("Active: 1/4"), `one task is still running. got: ${list}`);
+      const section = list.slice(0, list.indexOf("Retained:"));
+      assert.ok(section.includes(child.id), `the running task is there. got: ${section}`);
+      assert.ok(!section.includes(grandchild.id), `the finished one is not in the tree. got: ${section}`);
+      assert.ok(list.includes(grandchild.id), `history still has it. got: ${list}`);
+    });
+
+    it("a pruned parent is named, never silently dropped from the tree", async () => {
+      // Retention prunes finished records. When the pruned task is the parent of
+      // something still running, the child cannot be indented under a row that
+      // is gone — so it names the parent it lost instead of reading as a root.
+      // A root is a task whose parent nobody has stopped.
+      const { h, child, grandchild } = await withDispatchTree({ options: { retainedTaskTtlMs: 1 } });
+      await h.settle(child.id);
+      await sleep(10);
+      const list = await h.tool.task_list.execute({});
+      assert.ok(list.includes("Pruned: 1"), `the prune is reported. got: ${list}`);
+      const grandchildLine = lineFor(list, grandchild.id);
+      assert.ok(grandchildLine.includes(`spawned by ${child.id}, not tracked`), `the severed link is named. got: ${grandchildLine}`);
+      assert.ok(list.includes("Active: 1/4"), `the child is still the one running task. got: ${list}`);
+    });
+
+    it("the tree spends no host read", async () => {
+      const { h } = await withDispatchTree();
+      await h.tool.task_list.execute({});
+      assert.strictEqual(h.client._state.statusReads, 0, "a view of records the store already holds must not read the host");
+    });
+  });
 
   it("task_status details tracked tasks and unknowns", async () => {
     const h = await setupHarness();

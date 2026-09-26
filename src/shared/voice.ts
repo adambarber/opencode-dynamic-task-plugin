@@ -31,7 +31,7 @@ export const TASK_INTERRUPT_DESCRIPTION =
   "Stop a child session by request, and by default everything it spawned below it: the whole subtree is settled as interrupted synchronously, before any abort is sent, and the report names each task it acted on. Pass scope:\"self\" to stop that one session. Histories are preserved, and an interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.";
 
 export const TASK_LIST_DESCRIPTION =
-  "List all tracked tasks with their lifecycle states.";
+  "List all tracked tasks with their lifecycle states. Running tasks are shown as the tree they are — each indented under the task that spawned it — so a runaway child is recognizable as a grandchild; a task whose parent is no longer tracked says so instead of reading as a root.";
 
 export const TASK_STATUS_DESCRIPTION =
   "Detailed tracked state for one task without calling the API.";

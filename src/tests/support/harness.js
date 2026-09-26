@@ -242,6 +242,9 @@ export function createMockClient(hooks = {}) {
     promptBodies: [],
     sessionBodies: new Map(),
     createThrown: false,
+    // How many times the host's status channel was read. Views that already
+    // know what they need must not spend a read per row.
+    statusReads: 0,
     abortThrown: false,
     notifyAttempts: 0,
     childPromptFailed: false,
@@ -353,7 +356,12 @@ export function createMockClient(hooks = {}) {
       },
       // The server's status channel: a map of every session with a turn the
       // host knows about. A session absent from it has no turn running.
+      //
+      // Counted, because a read that fans out into one call per task turns a
+      // fleet view into a burst of transport against a host that answers the
+      // whole fleet in one. The count is the only proof a view did not do it.
       status: async () => {
+        state.statusReads += 1;
         if (hooks.statusThrows) throw hooks.statusThrows;
         return SDK_ENVELOPE(
           Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
@@ -645,6 +653,36 @@ export async function withSettledChild(opts = {}) {
   const { h, c, id, out } = await withChild(opts);
   await h.settle(id);
   return { h, c, id, out };
+}
+
+/**
+ * Boot the plugin and spawn a two-level dispatch tree: a child, and a
+ * grandchild that child spawned.
+ *
+ * Two levels is the deepest tree reachable — lineage accumulates every
+ * ancestor's agent NAME and no agent may appear twice, so a chain is bounded by
+ * the number of agent types, and the types alternate here for the same reason.
+ * Declared once because the fleet views and the subtree stop ask about the same
+ * tree, and two copies of "the tree" would be two different trees.
+ */
+export async function withDispatchTree(harness = {}) {
+  const h = await setupHarness(harness);
+  const child = await h.spawn({ description: "child task" });
+  const grandchild = await h.spawn(
+    { description: "grandchild task", subagent_type: "general" },
+    { sessionID: child.id },
+  );
+  return { h, child, grandchild };
+}
+
+/**
+ * As withDispatchTree, with the grandchild already finished — the shape both
+ * the stop and the view have to answer for (a finished node in a running tree).
+ */
+export async function withSettledDispatchTree(harness = {}) {
+  const tree = await withDispatchTree(harness);
+  await tree.h.settle(tree.grandchild.id);
+  return tree;
 }
 
 /**

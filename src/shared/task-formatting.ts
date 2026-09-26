@@ -36,8 +36,28 @@ function formatFleetRow(row: FleetRow): string {
   return `- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})`;
 }
 
+// One running task with its place in the dispatch tree. The parent link rides
+// along because a task whose parent is gone must say so: rendered flush it
+// reads as a root, and a root is a task whose parent nobody has stopped.
+export interface TreeRow extends FleetRow {
+  depth: number;
+  parentSessionId: string;
+  parentTracked: boolean;
+}
+
+function formatTreeRow(row: TreeRow): string {
+  const indent = "  ".repeat(row.depth);
+  const link = row.parentTracked ? "" : ` — spawned by ${row.parentSessionId}, not tracked`;
+  return `${indent}- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})${link}`;
+}
+
 export function formatTaskListSummary(input: {
-  active: FleetRow[];
+  // The running fleet as the tree it is: every active task, plus the settled
+  // ancestors that place it. `activeCount` is the number of RUNNING rows in it,
+  // kept beside the rows rather than recounted here so the count and the list
+  // cannot disagree.
+  tree: TreeRow[];
+  activeCount: number;
   retained: FleetRow[];
   maxConcurrent: number;
   pruned: number;
@@ -45,8 +65,8 @@ export function formatTaskListSummary(input: {
   const lines = [
     "## Task List",
     "",
-    `Active: ${input.active.length}/${input.maxConcurrent}`,
-    ...(input.active.length > 0 ? input.active.map(formatFleetRow) : ["(none)"]),
+    `Active: ${input.activeCount}/${input.maxConcurrent}`,
+    ...(input.tree.length > 0 ? input.tree.map(formatTreeRow) : ["(none)"]),
     "",
     `Retained: ${input.retained.length}`,
     ...(input.retained.length > 0 ? input.retained.map(formatFleetRow) : ["(none)"]),

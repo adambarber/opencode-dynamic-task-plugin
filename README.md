@@ -22,7 +22,7 @@ npm install && npm run build
 | `task_notify` | Child-to-parent channel: progress, findings, or a block needing input (requires a child agent with plugin tools, e.g. `general` — read-only agents such as `explore` cannot signal) |
 | `task_result` | Report tracked status (the store's own state, authoritative for settleability) beside a sourced live read: the server's own turn status, the child's last message time, and this plugin's last observed event |
 | `task_interrupt` | Stop a task and everything it spawned (settled first, subtree by default; `scope: "self"` for one session) |
-| `task_list` | List all tracked tasks with lifecycle states |
+| `task_list` | List all tracked tasks with lifecycle states; running tasks render as the dispatch tree |
 | `task_status` | Detailed tracked state for one task, beside the same sourced live read `task_result` makes |
 
 ### Key parameters
@@ -55,7 +55,13 @@ the child's own transcript, `Last plugin event:` is what this plugin's event
 head has seen. No view infers a status the sources did not state — a session the
 server does not list reads as `unknown`, not as idle. There is
 no timeout to configure: a slow child is indistinguishable from a working one
-by design, and the only bound on a child is operator intent (`task_interrupt`).
+by design, and the only bound on a child is operator intent (`task_interrupt`) —
+which stops a whole dispatch tree by default, settling every task under it before
+the first abort is sent, and names each task it acted on (`scope: "self"` stops
+just the one). `task_list` shows running tasks as that same tree, each indented
+under whatever spawned it, so a runaway child is recognizable as a grandchild;
+a task whose parent is no longer tracked says so instead of reading as a root.
+See `docs/tasks/12-subtree-interrupt.md` and `docs/tasks/13-dispatch-tree-read.md`.
 
 1. `dynamic_task` spawns a child session, wraps the prompt with
    background-task instructions, and returns the session id immediately.
@@ -122,8 +128,8 @@ src/
 │   ├── spawn.ts             dynamic_task executor (the only session.create site)
 │   ├── continue.ts          task_continue executor (steer + revive)
 │   ├── notice.ts            task_notify executor (mid-flight voice)
-│   ├── read.ts              task_result/status/list executors (store record + the one shared live liveness read)
-│   └── interrupt.ts         task_interrupt executor (settle-first abort)
+│   ├── read.ts              task_result/status/list executors (store record + the one shared live liveness read; the list is the dispatch tree)
+│   └── interrupt.ts         task_interrupt executor (claim the whole subtree, then abort)
 └── shared/
     ├── client.ts            SDK facade — the only @opencode-ai/sdk import
     ├── config.ts            Normalization, 4-layer precedence, concurrency limit

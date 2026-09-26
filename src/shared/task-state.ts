@@ -479,41 +479,89 @@ function hydrate<T extends ActiveTaskState | RetainedTaskState>(
 // close — burning tokens with nothing left to settle. Over-cap actives are
 // re-discovered by the first reconcile pass, and block new admissions until
 // they settle, which is the honest outcome.
-// The task tree under `rootSessionId`, root first, breadth-first.
-//
-// Edges are `parentSessionId`, NOT `lineage`: lineage holds agent NAMES (the
-// delegation policy's input), so it cannot answer "is this task below that
-// one". The walk runs through RETAINED records as well as active ones, because
-// a finished child can still have left a live grandchild running — and that
-// grandchild is precisely what a subtree stop has to reach. The seen-set makes
-// a corrupt store (two records parenting each other) terminate instead of
-// looping, which is the only place this walk is not a plain DAG.
-export function subtreeTaskIds(store: TaskStore, rootSessionId: string): string[] {
-  const childrenByParent = new Map<string, string[]>();
-  const link = (parentSessionId: string, childSessionId: string): void => {
-    const siblings = childrenByParent.get(parentSessionId);
-    if (siblings) siblings.push(childSessionId);
-    else childrenByParent.set(parentSessionId, [childSessionId]);
-  };
-  for (const [id, task] of store.retainedTasks) link(task.parentSessionId, id);
-  for (const [id, task] of store.activeTasks) link(task.parentSessionId, id);
+// One task in the dispatch tree, with the place it holds in it.
+export interface DispatchNode {
+  task: TaskRecord;
+  depth: number;
+  // Whether the parent that spawned this task is itself tracked here. False
+  // means the link is severed — pruned history, a record lost across a restart
+  // — and a view that presents such a task flush would read it as a ROOT,
+  // which is a task whose parent nobody has stopped above.
+  parentTracked: boolean;
+  children: DispatchNode[];
+}
 
-  const ordered = [rootSessionId];
-  const seen = new Set(ordered);
-  let frontier = ordered;
-  while (frontier.length > 0) {
-    const next: string[] = [];
-    for (const parent of frontier) {
-      for (const childSessionId of childrenByParent.get(parent) ?? []) {
-        if (seen.has(childSessionId)) continue;
-        seen.add(childSessionId);
-        next.push(childSessionId);
-      }
-    }
-    ordered.push(...next);
-    frontier = next;
+// The store's dispatch tree, as a forest of nested DispatchNodes. This is the
+// ONE walk: the subtree stop and the fleet read are two different questions
+// about the same shape, so they cannot each grow their own idea of it.
+//
+// Edges are `parentSessionId`, NOT `lineage` — lineage holds agent NAMES (the
+// delegation policy's input), so it cannot answer "is this task below that
+// one". Both maps are walked, so a finished task still holds its place as the
+// parent of something running. The `path` guard makes the walk terminate on a
+// cycle that admission cannot produce but a hand-edited record file could.
+export function dispatchForest(store: TaskStore): DispatchNode[] {
+  const records = new Map<string, TaskRecord>();
+  for (const [id, task] of store.retainedTasks) records.set(id, task);
+  for (const [id, task] of store.activeTasks) records.set(id, task);
+
+  const childrenOf = new Map<string, string[]>();
+  for (const [id, task] of records) {
+    const siblings = childrenOf.get(task.parentSessionId);
+    if (siblings) siblings.push(id);
+    else childrenOf.set(task.parentSessionId, [id]);
   }
-  return ordered;
+
+  const placed = new Set<string>();
+  const grow = (task: TaskRecord, depth: number, parentTracked: boolean, path: ReadonlySet<string>): DispatchNode => {
+    const node: DispatchNode = { task, depth, parentTracked, children: [] };
+    placed.add(task.childSessionId);
+    const next = new Set(path).add(task.childSessionId);
+    for (const childId of childrenOf.get(task.childSessionId) ?? []) {
+      const child = records.get(childId);
+      if (child === undefined || next.has(childId)) continue;
+      node.children.push(grow(child, depth + 1, true, next));
+    }
+    return node;
+  };
+
+  const forest: DispatchNode[] = [];
+  for (const task of records.values()) {
+    if (records.has(task.parentSessionId)) continue;
+    forest.push(grow(task, 0, false, new Set()));
+  }
+  // A record whose parent links form a cycle has no root to be reached from; it
+  // becomes a root of its own rather than going missing from the view.
+  for (const task of records.values()) {
+    if (placed.has(task.childSessionId)) continue;
+    forest.push(grow(task, 0, false, new Set()));
+  }
+  return forest;
+}
+
+function findDispatchNode(nodes: DispatchNode[], sessionId: string): DispatchNode | undefined {
+  for (const node of nodes) {
+    if (node.task.childSessionId === sessionId) return node;
+    const found = findDispatchNode(node.children, sessionId);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+const descendDispatch = (node: DispatchNode): string[] => [
+  node.task.childSessionId,
+  ...node.children.flatMap(descendDispatch),
+];
+
+// The task tree under `rootSessionId`, root first, through SETTLED records: a
+// finished child is not a wall, and the grandchild it left running is exactly
+// what a subtree stop has to reach. A root the store does not track has no
+// knowable descendants — the store only ever learns a parent link from a
+// record — so the answer is that session alone, which the caller's report
+// already names as untracked.
+export function subtreeTaskIds(store: TaskStore, rootSessionId: string): string[] {
+  const node = findDispatchNode(dispatchForest(store), rootSessionId);
+  return node === undefined ? [rootSessionId] : descendDispatch(node);
 }
 
 export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {

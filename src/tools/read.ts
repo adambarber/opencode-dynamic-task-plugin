@@ -10,7 +10,7 @@ import {
   formatTaskListSummary,
   formatTaskStatusDetail,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, listTasks, dispatchForest, type DispatchNode } from "../shared/task-state.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
 // The prologue both readers share: resolve the session, prune, look up. Pruning
@@ -106,7 +106,7 @@ async function readLivenessSafely(
 export async function executeTaskList(deps: ToolDeps): Promise<string> {
   const { store, config } = deps;
   const pruned = pruneRetainedTasks(store, config);
-  const { active, retained } = listTasks(store);
+  const { retained } = listTasks(store);
   const toRow = (t: { childSessionId: string; agentName: string; description: string; state: string; startedAt: number }) => ({
     childSessionId: t.childSessionId,
     agentName: t.agentName,
@@ -114,8 +114,29 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     state: t.state,
     startedAt: t.startedAt,
   });
+  // The running fleet as the tree it is: every active task, in dispatch order,
+  // indented under whatever spawned it. Settled tasks that still have a running
+  // descendant are kept — they are what places it — and settled leaves are
+  // dropped, because history has no running work to place and the Retained
+  // section already lists them. The store holds every edge, so the shape costs
+  // no host read: a view that spent one status call per row would turn a single
+  // question into a burst of transport.
+  // A running task is kept with everything below it — a running grandchild does
+  // not make its parent disappear — and a settled task is kept only if a
+  // running descendant needs it to hold its place.
+  const liveBranch = (node: DispatchNode): DispatchNode[] => {
+    const below = node.children.flatMap(liveBranch);
+    return node.task.state === "active" || below.length > 0 ? [node, ...below] : [];
+  };
+  const branch = dispatchForest(store).flatMap(liveBranch);
   return formatTaskListSummary({
-    active: active.map(toRow),
+    tree: branch.map((node) => ({
+      ...toRow(node.task),
+      depth: node.depth,
+      parentSessionId: node.task.parentSessionId,
+      parentTracked: node.parentTracked,
+    })),
+    activeCount: branch.filter((node) => node.task.state === "active").length,
     retained: retained.map(toRow),
     maxConcurrent: config.maxConcurrent,
     pruned,

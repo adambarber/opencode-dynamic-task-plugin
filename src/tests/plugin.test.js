@@ -2235,27 +2235,46 @@ describe("task store: retained-change callback", () => {
 });
 
 describe("task formatting: fleet views", () => {
-  it("formatTaskListSummary counts and rows active plus retained", () => {
+  // The fleet list is a tree, so a row carries its depth and — when the parent
+  // that spawned it is no longer tracked — the link it lost. Both are decided
+  // here, at the formatter, so they are pinned here.
+  const treeRow = (over = {}) => ({
+    childSessionId: "ses_a", agentName: "explore", description: "A task", state: "active",
+    startedAt: Date.now() - 45_000, depth: 0, parentSessionId: "p1", parentTracked: true, ...over,
+  });
+  const rowFor = (summary, sessionId) =>
+    summary.split("\n").find((line) => line.includes(sessionId)) ?? `(no line for ${sessionId})`;
+  const listOf = (over = {}) => formatTaskListSummary({ tree: [], activeCount: 0, retained: [], maxConcurrent: 4, pruned: 0, ...over });
+
+  it("formatTaskListSummary counts the running rows and indents the tree", () => {
     const now = Date.now();
-    const summary = formatTaskListSummary({
-      active: [{
-        childSessionId: "ses_a", agentName: "explore", description: "A task",
-        state: "active", startedAt: now - 45000,
-      }],
+    const summary = listOf({
+      tree: [
+        treeRow({ startedAt: now - 45_000 }),
+        treeRow({ childSessionId: "ses_b", depth: 1, parentSessionId: "ses_a", startedAt: now - 5000 }),
+      ],
+      activeCount: 2,
       retained: [{
         childSessionId: "ses_r", agentName: "reviewer", description: "R task",
         state: "completed", startedAt: now - 5000,
       }],
-      maxConcurrent: 4,
     });
-    assert.ok(summary.includes("Active: 1/4"), `got: ${summary}`);
-    assert.ok(summary.includes("ses_a") && summary.includes("ses_r"));
+    assert.ok(summary.includes("Active: 2/4"), `got: ${summary}`);
     assert.ok(summary.includes("45s"), `ages render. got: ${summary}`);
+    assert.ok(summary.includes("ses_r"), `history still listed. got: ${summary}`);
+    assert.match(rowFor(summary, "ses_a"), /^- /, `a root sits flush. got: ${summary}`);
+    assert.match(rowFor(summary, "ses_b"), /^ {2}- /, `a descendant is indented. got: ${summary}`);
+  });
+
+  it("a row whose parent is not tracked names the link it lost", () => {
+    // Rendered flush it would read as a root, and a root is a task whose parent
+    // nobody has stopped.
+    const summary = listOf({ tree: [treeRow({ parentTracked: false, parentSessionId: "ses_gone" })], activeCount: 1 });
+    assert.match(rowFor(summary, "ses_a"), /spawned by ses_gone, not tracked/, `got: ${summary}`);
   });
 
   it("formatTaskListSummary names empty states", () => {
-    const summary = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4 });
-    assert.ok(summary.includes("(none)"));
+    assert.ok(listOf().includes("(none)"));
   });
 
   it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {
@@ -2285,10 +2304,8 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskListSummary names pruned expiries when told", () => {
-    const pruned = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4, pruned: 1 });
-    assert.ok(pruned.includes("Pruned: 1 expired"), `got: ${pruned}`);
-    const clean = formatTaskListSummary({ active: [], retained: [], maxConcurrent: 4, pruned: 0 });
-    assert.ok(!clean.includes("Pruned:"), `silence when nothing expired. got: ${clean}`);
+    assert.ok(listOf({ pruned: 1 }).includes("Pruned: 1 expired"), "the expiry is reported");
+    assert.ok(!listOf({ pruned: 0 }).includes("Pruned:"), "silence when nothing expired");
   });
 
   it("formatTaskStatusDetail renders tracked metadata offline", () => {

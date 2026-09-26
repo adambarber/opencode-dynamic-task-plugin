@@ -543,8 +543,8 @@ describe("task_result and task_interrupt paths", () => {
       withChild, [["Status: active", true], ["Server status: busy", true], ["task_status", true], ["Tracked: yes", true]]],
     ["task_result never guesses a status from the message stream",
       withChild, [["suggests", false], ["Last child message", true], ["Last plugin event", true]]],
-    ["task_result reports settled state with the server's word beside it",
-      withSettledChild, [["Status: completed", true], ["Server status: idle", true]]],
+    ["task_result reports a settled state with no liveness noise when the server is quiet",
+      withSettledChild, [["Status: completed", true], ["Server status", false], ["Last child message", false]]],
   ];
   for (const [name, scenario, expectations] of reports) {
     it(name, async () => {

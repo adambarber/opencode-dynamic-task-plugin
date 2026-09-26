@@ -87,7 +87,11 @@ export function formatLivenessLines(
   liveness: LivenessReading | null,
 ): string[] {
   const lines: string[] = [];
-  if (liveness) {
+  // A settled record has one liveness question left — "is the server still
+  // working on this?" — so the sourced lines ride along only when the answer
+  // can be yes. Rendering "not listed by the server" beside a task that is
+  // already settled reads as a fault in a view that has none.
+  if (liveness && (task.state === "active" || hostTurnRunning(liveness))) {
     lines.push(`Server status: ${liveness.hostState ?? "(not listed by the server)"}`);
     lines.push(
       liveness.lastMessageAt === null

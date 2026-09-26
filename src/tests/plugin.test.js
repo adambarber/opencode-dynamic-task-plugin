@@ -703,8 +703,10 @@ describe("formatTaskResultSummary", () => {
       liveness: { hostState: null, lastMessageAt: null },
     });
     assert.match(result, /Status: completed/);
-    assert.match(result, /Server status: \(not listed by the server\)/);
     assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);
+    // A settled record with a quiet server has no liveness question left, so
+    // the block is absent rather than reporting the absence as a reading.
+    assert.ok(!result.includes("Server status"), `no question, no block. got: ${result}`);
   });
 
   it("renders read failures in the same voice with the error as data", () => {

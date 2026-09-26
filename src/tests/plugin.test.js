@@ -1294,14 +1294,9 @@ import {
 import {
   replyToQuestion,
   rejectQuestion,
-  getRequestIdFromQuestion,
-  normalizeQuestionAnswers,
-  resolveQuestionSession,
   decideQuestion,
-  rememberQuestionSession,
-  forgetQuestionSession,
-  resetQuestionSessions,
 } from "../../dist/shared/question-handling.js";
+import { readAskedQuestion } from "../../dist/shared/host-events.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile } from './support/harness.js';
@@ -1880,7 +1875,8 @@ describe("question gate: reply/reject settlement", () => {
 
   // One hypothesis: what replyToQuestion's outcome IS, given how the transport
   // behaved. Only the "already resolved" throw is absorbed — any other failure
-  // is the caller's problem to see, with its message intact.
+  // is the caller's problem to see, with its message intact. A real failure is
+  // reported against the question it failed on, so a log line names the subject.
   const outcomes = [
     ["reply succeeds", { reply: async () => {} }, { succeeded: true }],
     ["reply absorbs already-resolved as success",
@@ -1888,7 +1884,7 @@ describe("question gate: reply/reject settlement", () => {
       { succeeded: true, reason: "already_resolved" }],
     ["reply reports transport failures",
       { reply: async () => { throw new Error("nope"); } },
-      { succeeded: false, reason: "nope" }],
+      { succeeded: false, reason: "q1: nope" }],
   ];
   for (const [name, transport, expected] of outcomes) {
     it(name, async () => {
@@ -1905,39 +1901,82 @@ describe("question gate: reply/reject settlement", () => {
   });
 
   it("reject succeeds and absorbs 409 conflicts", async () => {
-    assert.deepStrictEqual(await rejectQuestion(okClient(), "q1", "busy"), { succeeded: true });
+    assert.deepStrictEqual(await rejectQuestion(okClient(), "q1"), { succeeded: true });
     const conflicted = questionClient({
       reply: async () => {},
       reject: async () => { const e = new Error("gone"); e.status = 409; throw e; },
     });
     assert.deepStrictEqual(
-      await rejectQuestion(conflicted, "q1", "busy"),
+      await rejectQuestion(conflicted, "q1"),
       { succeeded: true, reason: "already_resolved" }
     );
   });
 
   it("reject rejects missing id", async () => {
-    assert.strictEqual((await rejectQuestion(okClient(), "", "busy")).succeeded, false);
+    assert.strictEqual((await rejectQuestion(okClient(), "")).succeeded, false);
   });
 });
 
-describe("question handling: event helpers", () => {
-  it("getRequestIdFromQuestion follows the priority chain", () => {
-    const props = (p) => ({ type: "question.created", properties: p });
-    assert.strictEqual(getRequestIdFromQuestion(props({ id: "a", request_id: "b" })), "a");
-    assert.strictEqual(getRequestIdFromQuestion(props({ request_id: "b" })), "b");
-    assert.strictEqual(getRequestIdFromQuestion(props({ task_id: "c" })), "c");
-    assert.strictEqual(getRequestIdFromQuestion(props({ requestID: "d" })), "d");
-    assert.strictEqual(getRequestIdFromQuestion(props({})), null);
+describe("question handling: the asked payload", () => {
+  // The host publishes `question.asked` carrying `questions: QuestionInfo[]`,
+  // each with `options: QuestionOption[]`. The suggestions live on the OPTION as
+  // its `label` — this gate used to read a top-level `properties.answers`, a
+  // field that exists only on the reply event, so every live question looked
+  // answerless and was rejected. These cases read the host's real shape, because
+  // a fixture invented to match the code certifies the code, not the host.
+  const asked = (properties) => ({ type: "question.asked", properties });
+  const info = (text, labels) => ({ question: text, header: "Question", options: labels.map((label) => ({ label })) });
+
+  it("a single-part ask with options yields the first label", () => {
+    const read = readAskedQuestion(
+      asked({ id: "q1", sessionID: "ses_child", questions: [info("Ship it?", ["yes", "no"])] }),
+    );
+    assert.deepStrictEqual(read, { questionId: "q1", sessionId: "ses_child", answer: "yes" });
   });
 
-  it("normalizeQuestionAnswers flattens answer shapes", () => {
-    assert.deepStrictEqual(
-      normalizeQuestionAnswers(["a", { text: "b" }, { value: "c" }, "", null]),
-      ["a", "b", "c"]
+  it("a multi-part ask yields no answer — one entry per asked question, or none", () => {
+    // Answering the first part of a two-part ask retires the question with the
+    // child never having seen the second answer: a silent loss as a success.
+    assert.strictEqual(
+      readAskedQuestion(asked({ id: "q2", sessionID: "ses_child", questions: [info("A?", ["a1"]), info("B?", ["b1"])] })).answer,
+      null,
     );
-    assert.deepStrictEqual(normalizeQuestionAnswers("nope"), []);
-    assert.deepStrictEqual(normalizeQuestionAnswers(undefined), []);
+  });
+
+  it("an ask with no options, an empty option list, or a non-string label yields no answer", () => {
+    const noOptions = asked({ id: "q3", sessionID: "ses_child", questions: [info("Ship it?", [])] });
+    assert.strictEqual(readAskedQuestion(noOptions).answer, null);
+    const emptyLabels = asked({ id: "q4", sessionID: "ses_child", questions: [{ question: "?", options: [] }] });
+    assert.strictEqual(readAskedQuestion(emptyLabels).answer, null);
+    const nonString = asked({ id: "q5", sessionID: "ses_child", questions: [{ question: "?", options: [{ label: 7 }] }] });
+    assert.strictEqual(readAskedQuestion(nonString).answer, null);
+  });
+
+  it("refuses to read a payload it cannot identify: no id, no session, or no questions key", () => {
+    assert.strictEqual(readAskedQuestion(asked({ sessionID: "ses_child", questions: [info("?", ["y"])] })), null);
+    assert.strictEqual(readAskedQuestion(asked({ id: "q6", questions: [info("?", ["y"])] })), null);
+    assert.strictEqual(readAskedQuestion(asked({ id: "q7", sessionID: "ses_child" })), null);
+  });
+
+  it("an EMPTY questions list is a refusal, not an unidentifiable event", () => {
+    // The two answers are not the same. Unidentifiable means the gate cannot tell
+    // whose question this is, so it touches nothing and leaves the question open.
+    // An empty list still identifies a live child with an unanswerable question,
+    // and there the fail-closed act is to REJECT it: passing on it would leave a
+    // child stuck on a question that can never be answered.
+    assert.deepStrictEqual(
+      readAskedQuestion(asked({ id: "q8", sessionID: "ses_child", questions: [] })),
+      { questionId: "q8", sessionId: "ses_child", answer: null },
+    );
+  });
+
+  it("ignores an envelope-wrapped payload, since the host publishes it bare", () => {
+    // The plugin reads the event the host published, not an SDK-resolved
+    // response: only the client wraps. A gate that accepted both would be
+    // guessing which one it is holding, and guessing is the defect class here —
+    // the bare read of a wrapped event finds nothing and must say so.
+    const bare = { id: "q9", sessionID: "ses_child", questions: [info("?", ["y"])] };
+    assert.strictEqual(readAskedQuestion({ type: "question.asked", data: bare }), null);
   });
 });
 
@@ -2120,92 +2159,39 @@ describe("task-state: noteLateOutcome", () => {
   });
 });
 
-describe("question gate: resolveQuestionSession", () => {
-  const config = normalizeDynamicTaskConfig({});
-
-  function trackedStore() {
-    const store = createTaskStore();
-    registerActiveTask(store, childParams({ id: "ses_child", description: "t" }), config);
-    return store;
-  }
-
-  it("resolves via remembered linkage first", () => {
-    const store = trackedStore();
-    rememberQuestionSession("q1", "ses_child");
-    try {
-      const resolved = resolveQuestionSession({ type: "question.created", properties: { id: "q1" } }, store);
-      assert.deepStrictEqual(resolved, { questionId: "q1", childSessionId: "ses_child" });
-    } finally {
-      forgetQuestionSession("q1");
-    }
-  });
-
-  it("resetQuestionSessions drops remembered linkage", () => {
-    const store = trackedStore();
-    rememberQuestionSession("q-reset-me", "ses_child");
-    resetQuestionSessions();
-    assert.deepStrictEqual(
-      resolveQuestionSession({ type: "question.created", properties: { request_id: "q-reset-me" } }, store),
-      { questionId: "q-reset-me", childSessionId: null }
-    );
-  });
-
-  it("resolves ownership from session id fields validated against the store", () => {
-    const store = trackedStore();
-    for (const key of ["sessionID", "sessionId", "session_id"]) {
-      const resolved = resolveQuestionSession(
-        { type: "question.created", properties: { id: "q2", [key]: "ses_child" } },
-        store
-      );
-      assert.deepStrictEqual(resolved, { questionId: "q2", childSessionId: "ses_child" }, key);
-    }
-  });
-
-  it("resolves task ids validated against retained tasks", () => {
-    const store = trackedStore();
-    transitionState(store, "ses_child", "completed");
-    const resolved = resolveQuestionSession(
-      { type: "question.created", properties: { id: "q3", task_id: "ses_child" } },
-      store
-    );
-    assert.deepStrictEqual(resolved, { questionId: "q3", childSessionId: "ses_child" });
-  });
-
-  it("refuses to guess: unknown ids resolve unattributed, missing ids null", () => {
-    const store = trackedStore();
-    assert.deepStrictEqual(
-      resolveQuestionSession({ type: "question.created", properties: { id: "q4", sessionID: "ses_stranger" } }, store),
-      { questionId: "q4", childSessionId: null }
-    );
-    assert.deepStrictEqual(
-      resolveQuestionSession({ type: "question.created", properties: { sessionID: "ses_child" } }, store),
-      null
-    );
-  });
-});
-
 describe("question gate: decideQuestion", () => {
-  it("active with answers replies first", () => {
-    assert.deepStrictEqual(decideQuestion("active", ["yes", "no"]), { action: "reply", answer: "yes" });
+  it("an active child with an answer replies with it", () => {
+    assert.deepStrictEqual(decideQuestion("active", "yes"), { action: "reply", answer: "yes" });
   });
 
-  it("active without answers rejects by naming the claim the child can make itself", () => {
-    // The rejection is a child's only description of the way out, so it must
-    // name a tool the CHILD holds and a claim it can make in this very turn.
-    // It used to name task_continue — the parent's tool — and told the child to
-    // wait, which the spawn prompt forbids outright.
-    const decision = decideQuestion("active", []);
+  it("an active child with nothing to answer is rejected with the PARENT's remedy", () => {
+    // The only reader of this text is the parent: the host's reject endpoint
+    // declares `body?: never`, so it cannot reach the asking session. It used to
+    // read as child advice — "call task_notify" — which the parent does not hold,
+    // and it led with the diagnosis so the parent's own remedy fell past the
+    // status view's 120-char truncation. Hence: the parent's tool, up front.
+    const decision = decideQuestion("active", null);
     assert.strictEqual(decision.action, "reject");
-    assert.ok(decision.reason.includes("task_notify"), `names the child's own tool. got: ${decision.reason}`);
-    assert.ok(decision.reason.includes("needs_input"), `names the durable claim. got: ${decision.reason}`);
-    assert.ok(!decision.reason.includes("task_continue"), `never points at a parent tool. got: ${decision.reason}`);
-    assert.ok(!/when it resumes/.test(decision.reason), `never tells a child to wait. got: ${decision.reason}`);
+    assert.ok(decision.reason.startsWith("task_continue"), `leads with what the reader can do. got: ${decision.reason}`);
+    assert.ok(!decision.reason.includes("task_notify"), `never points at a child-only tool. got: ${decision.reason}`);
+    assert.ok(!/when it resumes/.test(decision.reason), `never tells anyone to wait. got: ${decision.reason}`);
   });
 
-  it("retained rejects with settled guidance", () => {
-    const decision = decideQuestion("retained", ["yes"]);
-    assert.strictEqual(decision.action, "reject");
-    assert.ok(decision.reason.includes("settled"));
+  it("a rejected reason survives the status view's truncation, remedy intact", () => {
+    // The claim line is truncated to 120 chars. A reason that puts its instruction
+    // last is a reason the operator never reads in full, which is the defect the
+    // composition exists to prevent — asserted against the real formatter.
+    const reason = decideQuestion("active", null).reason;
+    const shown = truncateText(reason, 120);
+    assert.match(shown, /task_continue the child with the input it needs/);
+  });
+
+  it("a settled child is rejected with settled guidance, answer or not", () => {
+    for (const answer of ["yes", null]) {
+      const decision = decideQuestion("retained", answer);
+      assert.strictEqual(decision.action, "reject");
+      assert.ok(decision.reason.includes("settled"));
+    }
   });
 });
 

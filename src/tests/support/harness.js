@@ -15,15 +15,46 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync, unlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
-import { resetQuestionSessions } from "../../../dist/shared/question-handling.js";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Refuse a question settlement the host would not accept. Derived from the SDK's
+ * QuestionReplyData/QuestionRejectData: the path key is `requestID` (verified
+ * against opencode 1.18.30, which serves /question/{requestID}/reply and no
+ * {id} route), a reply body is `answers` — one entry per asked question, each a
+ * list of chosen labels — and the reject body is `never`. Asserting the contract
+ * HERE is what makes the harness a check on the plugin's host calls, not just a
+ * record of them.
+ */
+function assertQuestionSettlement(method, path, body, { carriesAnswers }) {
+  assert.ok(
+    path !== null && typeof path === "object" && typeof path.requestID === "string",
+    `${method} must address /question/{requestID} — path.requestID, not path.id (got ${JSON.stringify(path)})`,
+  );
+  if (!carriesAnswers) {
+    assert.strictEqual(
+      body,
+      undefined,
+      `the reject endpoint declares body?: never — no reason can reach the asking session (got ${JSON.stringify(body)})`,
+    );
+    return;
+  }
+  assert.ok(
+    body !== null && typeof body === "object" && Array.isArray(body.answers),
+    `${method} must send body.answers (got ${JSON.stringify(body)})`,
+  );
+  assert.ok(
+    body.answers.every((answer) => Array.isArray(answer) && answer.every((label) => typeof label === "string")),
+    `each entry of body.answers is a list of labels, not a bare string (got ${JSON.stringify(body.answers)})`,
+  );
+}
 
 /**
  * The envelope the real SDK client resolves every call to: its `responseStyle`
@@ -195,12 +226,36 @@ export const events = {
    * A question carries `id`, or `request_id`, or both — the identity the host
    * used is part of the shape, so pass whichever the test is about.
    */
-  question: (sessionID, answers, extra = {}) => ({
-    type: "question.created",
-    properties: { ...(sessionID ? { sessionID } : {}), answers, ...extra },
+  /**
+   * The shape opencode 1.18.30 publishes. Verified against the server binary:
+   * it emits `question.asked` (never `question.created`), and an asked question
+   * carries `questions: QuestionInfo[]` — the suggestions live on each question's
+   * `options`, not on an `answers` field, which belongs to the REPLY event.
+   * A mock that invents a different shape certifies a host that does not exist,
+   * so the fixture is the host's own shape verbatim.
+   */
+  questionAsked: (sessionID, properties) => ({
+    type: "question.asked",
+    properties: { ...(sessionID ? { sessionID } : {}), ...properties },
   }),
-  /** The reply that retires a question — it may arrive under request_id only. */
+  /** A question the host published, spelled as the SDK types it. */
+  hostQuestion: (text, options) => ({
+    question: text,
+    header: "Question",
+    options: options.map((label) => ({ label })),
+  }),
+  /**
+   * The host asking one question, the way it asks. Every question-gate test
+   * needs this composition, and each one spelled out its own — which is how five
+   * copies of the same event drifted into five slightly different fixtures. The
+   * options are the host's QuestionOption[]: the suggestion lives on the option's
+   * label, never on a top-level answers field.
+   */
+  ask: (sessionID, questionId, ...options) =>
+    events.questionAsked(sessionID, { id: questionId, questions: [events.hostQuestion("Ship it?", options)] }),
+  /** The reply that retires a question — the host spells the id `requestID`. */
   questionReplied: (props) => ({ type: "question.replied", properties: props }),
+  questionRejected: (props) => ({ type: "question.rejected", properties: props }),
 };
 
 /**
@@ -280,15 +335,23 @@ export function createMockClient(hooks = {}) {
         state.logs.push(body);
       },
     },
+    // The question namespace, modelled on the host's generated contract rather
+    // than on whatever the plugin happened to send. A mock that accepts any
+    // shape is exactly what let four wrong field names (`path.id`, `body.answer`,
+    // a reject body) pass as a green suite, so this one refuses them the way a
+    // real host would: the route is /question/{requestID}, a reply carries
+    // `answers: Array<QuestionAnswer>`, and a reject carries no body at all.
     question: {
       reply: async ({ path, body }) => {
         if (hooks.questionReplyThrows) throw new Error("reply failed");
-        state.questionCalls.push({ method: "reply", id: path.id, ...body });
+        assertQuestionSettlement("reply", path, body, { carriesAnswers: true });
+        state.questionCalls.push({ method: "reply", requestID: path.requestID, answers: body.answers });
         return { ok: true };
       },
       reject: async ({ path, body }) => {
         if (hooks.questionRejectThrows) throw new Error("reject failed");
-        state.questionCalls.push({ method: "reject", id: path.id, ...body });
+        assertQuestionSettlement("reject", path, body, { carriesAnswers: false });
+        state.questionCalls.push({ method: "reject", requestID: path.requestID });
         return { ok: true };
       },
     },
@@ -497,7 +560,6 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   };
   resetAgentCache();
   clearNotifyLedger();
-  resetQuestionSessions();
   const mod = await import("../../../dist/index.js");
   const pluginFn = mod.default || mod;
   const result = await pluginFn({ client, directory }, options);
@@ -674,6 +736,57 @@ export async function withSettledChild(opts = {}) {
   const { h, c, id, out } = await withChild(opts);
   await h.settle(id);
   return { h, c, id, out };
+}
+
+/**
+ * Boot, spawn one child, and have the host ask it a question — the arrangement
+ * every question-gate case starts from.
+ *
+ * Named because the preamble is load-bearing: the ask must reach the gate under
+ * the session id the child was dispatched with, and a case that hand-rolled it
+ * could use a different one without noticing. A gate that never sees the ask
+ * never answers it, so the ask is part of the setup, not the test.
+ */
+export async function withAskedChild(questionId, ...options) {
+  const child = await withChild();
+  await child.h.fireEvent(events.ask(child.id, questionId, ...options));
+  return child;
+}
+
+/**
+ * Boot, spawn, settle, and run `body` with debug logging on, handing it the
+ * child's debug log — the arrangement every "this must reach the log" assertion
+ * needs.
+ *
+ * A callback, not a handle, and that is the whole point: `debugLog` gates on
+ * DYNAMIC_TASK_DEBUG at CALL time, so a fixture that enabled it only for boot
+ * would hand back a log that is frozen at the registration line. Every event
+ * after the setup — which is every event a log assertion is actually about —
+ * would be silently dropped, and an assertion against that log passes against
+ * silence. A fixture that cannot outlive its own setup is a fixture that
+ * manufactures the failure it is meant to detect.
+ *
+ * Named because the alternative is four steps (a temp project dir, debug
+ * enabled, a settled child, then the log) re-derived per test — and the log path
+ * is easy to get subtly wrong. A path that matches nothing reads as an EMPTY
+ * log, which is indistinguishable from a gate that logged nothing at all. The
+ * derivation belongs next to the debug writer that creates the path, not in
+ * each of its readers.
+ */
+export async function withLoggedChild({ hooks = {} } = {}, body) {
+  const directory = tmpProjectDir();
+  return withEnv("DYNAMIC_TASK_DEBUG", "1", async () => {
+    const { h, c, id, out } = await withSettledChild({ harness: { hooks, directory } });
+    return body({
+      h,
+      c,
+      id,
+      out,
+      directory,
+      /** The child's debug log, as the operator would read it. */
+      log: () => readFileSync(join(directory, ".dynamic-task-logs", `parent-p1__child-${id}.log`), "utf8"),
+    });
+  });
 }
 
 /**

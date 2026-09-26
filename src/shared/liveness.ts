@@ -57,9 +57,17 @@ function hostTurnState(statusResult: unknown, childSessionId: string): HostTurnS
 
 // The child's own clock: when the last message it wrote finished, or began —
 // an unfinished turn has no completion, and its start is the honest floor.
+//
+// The message list the host returns is `{ info, parts }` per item, with the
+// role and the clock on `info`; the flat form is the same tolerance
+// `messageRoleOf` already keeps, so the two readers of one message agree on
+// where its fields live. Reading the wrong level is not a crash — it reads as
+// "this child has never written a message", which is how a finished child came
+// to report "(none yet)".
 function lastMessageAt(messages: unknown[]): number | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const time = eventField(messages[i], "time");
+    const message = messages[i];
+    const time = eventField(message, "info", "time") ?? eventField(message, "time");
     const completed = eventField(time, "completed");
     const created = eventField(time, "created");
     if (typeof completed === "number") return completed;

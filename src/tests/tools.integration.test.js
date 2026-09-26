@@ -17,9 +17,10 @@ import {
   withChild, withEnv, withSettledChild, resultForChild, resultForUnreadableChild,
 } from './support/harness.js';
 
-// A message with no clock at all — what a plugin booted mid-turn sees, and the
-// case where an age must not be invented from the spawn.
-const NO_CLOCK_MESSAGE = { role: "user", parts: [{ type: "text", text: "go" }] };
+// A message carrying no clock at all — the case where an age must not be
+// invented from the spawn. Shaped like the host's (`info` + `parts`) so the
+// absence of a time is the only difference from a real message.
+const UNCLOCKED_MESSAGE = { info: { role: "user" }, parts: [{ type: "text", text: "go" }] };
 
 /**
  * Boot, spawn, and start a steer whose abort parks at the gate — the
@@ -649,10 +650,22 @@ describe("task_result and task_interrupt paths", () => {
   ];
   for (const [name, expected] of nothingWritten) {
     it(`a child with ${name} says so rather than guessing an age`, async () => {
-      const summary = await resultForChild([NO_CLOCK_MESSAGE]);
+      const summary = await resultForChild([UNCLOCKED_MESSAGE]);
       assert.ok(summary.includes(expected), `no invention. got: ${summary}`);
     });
   }
+
+  // The message list is `{ info, parts }` per item — the clock lives on `info`.
+  // Reading `time` off the item is not a crash: it renders as "this child has
+  // never written a message", which is what a live smoke test caught on a child
+  // that had written three.
+  it("a child's last message time comes off the message's info, not the item", async () => {
+    const writtenAt = Date.now() - 45_000;
+    const summary = await resultForChild([
+      { info: { role: "assistant", time: { created: writtenAt, completed: writtenAt } }, parts: [{ type: "text", text: "done" }] },
+    ]);
+    assert.match(summary, /Last child message: 4[0-9]s ago/, `the child's own clock. got: ${summary}`);
+  });
 
   it("an untracked session with no status channel is unknown, not idle", async () => {
     // No record to reconcile and no server word: the only honest status is the

@@ -36,6 +36,10 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * class of production bug through — the status read answered "no session" for
  * every child while the suite stayed green. Mocking the shape the code meets in
  * production is the only version of this mock that proves anything.
+ *
+ * The message fixtures inside it carry the second half of the same lesson: a
+ * message is `{ info, parts }`, with the role and the clock on `info`. A mock
+ * that put `time` on the item made a finished child read as "(none yet)".
  */
 export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 200 } });
 
@@ -336,9 +340,11 @@ export function createMockClient(hooks = {}) {
         }
         return SDK_ENVELOPE([
           {
-            role: "assistant",
+            info: {
+              role: "assistant",
+              time: { created: state.hostStatus.get(path.id)?.at ?? Date.now() },
+            },
             parts: [{ type: "text", text: "COMPLETED_OK" }],
-            time: { created: state.hostStatus.get(path.id)?.at ?? Date.now() },
           },
         ]);
       },

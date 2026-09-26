@@ -16,6 +16,21 @@ import {
   deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir,
   withChild, withEnv, withSettledChild, resultForChild, resultForUnreadableChild,
 } from './support/harness.js';
+import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
+
+/**
+ * Run `fn` with every deadline shrunk to a value a test can outwait. The timer
+ * is real and still fires — only the patience changes, so a test that observes a
+ * bound proves the bound rather than proving a mocked clock.
+ */
+async function withShrunkBounds(fn) {
+  const restore = shrinkBoundsForTesting(20);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
+}
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -281,6 +296,50 @@ describe("task_continue branches", () => {
     const { h, c, id } = await withChild();
     const note = await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
     assert.ok(note.includes("completed successfully"), `got: ${note}`);
+  });
+
+  // A child's outcome reaches the parent through exactly one path, and that path
+  // quotes the child's last words before it speaks. A transcript that cannot be
+  // read must not be mistaken for a child that said nothing: "(completed)" is a
+  // plausible reading and a false one, and the parent would act on it.
+  it("a settlement whose transcript cannot be read still notifies, and says the quote is missing", async () => {
+    const h = await setupHarness();
+    const { id } = await h.spawn({ prompt: "turn one" });
+    h.client.makeUnreadable(id);
+    await h.settle(id, "completed");
+    await sleep(20);
+    const notice = h.noticeFor(id);
+    assert.ok(notice, "the outcome is the parent's only route to the child — it cannot ride behind a read");
+    assert.match(notice.message, /completed successfully/, `the settlement still notifies. got: ${notice.message}`);
+    assert.match(
+      notice.message,
+      /transcript could not be read/,
+      `and names the missing quote instead of passing "(completed)" off as one. got: ${notice.message}`,
+    );
+  });
+
+  // The host holds a write to a mid-turn parent rather than refusing it, and the
+  // hold can outlast the parent's attention. A pending record is the honest
+  // interim state; a FAILED one would be a lie the parent recovers from wrongly.
+  it("a write the host holds reads as PENDING, not FAILED, and is delivered once when the host answers", async () => {
+    await withShrunkBounds(async () => {
+      const held = deferred();
+      const h = await setupHarness({ hooks: { notifyTransport: { hang: held.promise } } });
+      const { id, c } = await h.spawn({ prompt: "turn one" });
+      await h.settle(id, "completed");
+      await sleep(40);
+      assert.match(await c.status(), /PENDING/, "the parent can SEE that its child spoke and it has not arrived");
+      assert.doesNotMatch(await c.status(), /FAILED/, "held is not failed — the host may still deliver it");
+      held.resolve();
+      await held.promise;
+      await sleep(20);
+      assert.match(await c.status(), /delivered in 1 attempt/, `the record ends up truthful. got: ${await c.status()}`);
+      assert.strictEqual(
+        h.client._state.notifyCalls.length,
+        1,
+        "exactly one copy ever dialed: a held write is never retried behind the parent's back",
+      );
+    });
   });
 
   // M9: a settlement can still win a steer — the running turn can complete

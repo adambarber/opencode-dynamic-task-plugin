@@ -8,6 +8,7 @@
 import type { OpenCodeClient } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { eventField, isEventRecord, errorMessage, hostPayload } from "./session-lifecycle.js";
+import { withBound, READ_BOUNDS } from "./execution-bound.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
@@ -269,25 +270,37 @@ function latestMessageErrorDetail(messages: unknown): string {
 // One read of the message stream supplies BOTH the latest assistant text and
 // the message-level error detail — a terminal "idle" event can hide a provider
 // failure that only the message info reveals. Never throws: failures yield
-// empty fields and callers degrade to event-status-only reporting.
+// empty fields and callers degrade to event-status-only reporting. Bounded for
+// the same reason from the other side — a read that never SETTLES would park
+// the parent notification behind it, which a never-throws contract does not
+// prevent. `unreadable` is the honest report of that: no fields because the
+// transcript could not be read, not because the child said nothing.
 export interface HydratedOutcome {
   text: string;
   errorDetail: string;
+  unreadable: boolean;
 }
 
 export async function hydrateLatestOutcome(
   client: OpenCodeClient,
   sessionId: string,
 ): Promise<HydratedOutcome> {
+  const blank: HydratedOutcome = { text: "", errorDetail: "", unreadable: true };
   try {
-    const messagesResult = await client.session.messages({ path: { id: sessionId } });
-    const messages = extractMessages(messagesResult);
+    const bounded = await withBound(
+      READ_BOUNDS.transcript,
+      () => client.session.messages({ path: { id: sessionId } }),
+      () => null,
+    );
+    if (bounded.timedOut) return blank;
+    const messages = extractMessages(bounded.value);
     return {
       text: getLatestAssistantText(messages),
       errorDetail: latestMessageErrorDetail(messages),
+      unreadable: false,
     };
   } catch {
-    return { text: "", errorDetail: "" };
+    return blank;
   }
 }
 

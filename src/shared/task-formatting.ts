@@ -57,15 +57,20 @@ export function formatTaskListSummary(input: {
   return lines.join("\n");
 }
 
-// Three honest outcomes: a delivered notice, a suppressed verbatim repeat
-// (never dialed), and a parentless non-delivery (nowhere to dial). Only a
-// real attempt that failed may read as FAILED.
+// Four honest outcomes: a delivered notice, a suppressed verbatim repeat (never
+// dialed), a parentless non-delivery (nowhere to dial), and a write the host is
+// still holding. Only a real attempt that failed may read as FAILED — and a
+// held write may NOT, because the host may yet deliver it and a "FAILED" the
+// parent acts on would be a lie with consequences.
 function formatNotificationLine(notification: NotificationRecord): string {
   if (notification.suppressed) {
     return `Last notification: ${notification.kind} — Suppressed (duplicate — already delivered)`;
   }
   if (!notification.delivered && notification.attempts === 0 && notification.parentSessionId === "unknown") {
     return `Last notification: ${notification.kind} — Not delivered (no parent session)`;
+  }
+  if (notification.pending) {
+    return `Last notification: ${notification.kind} (PENDING — dialed, the parent session has not answered; it may still arrive)`;
   }
   return notification.delivered
     ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`

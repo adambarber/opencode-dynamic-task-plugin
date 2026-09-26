@@ -96,6 +96,17 @@ export function deferred() {
 }
 
 /**
+ * Arm one host call open, the way every gated call is armed. The mock consults
+ * `state[name]`, the test holds the release: one shape, so a new gate cannot
+ * invent its own protocol with the mock.
+ */
+function armGate(state, name, { fails = false } = {}) {
+  const gate = deferred();
+  state[name] = { promise: gate.promise, used: false, fails, release: gate.resolve };
+  return { release: () => gate.resolve() };
+}
+
+/**
  * The one place the mock moves a session's host status word: an abort parks the
  * turn, a prompt starts it — the same two transitions the server makes, from
  * the same two calls, so a read that consults the map sees what the plugin's own
@@ -219,6 +230,11 @@ export function createMockClient(hooks = {}) {
   const state = {
     sessions: new Set(),
     notifications: [],
+    // Every notification the plugin DIALS, held or not — the count that proves
+    // a held write was never retried behind the parent's back.
+    notifyCalls: [],
+    // Sessions whose transcript refuses to be read.
+    unreadable: new Set(),
     logs: [],
     aborted: [],
     questionCalls: [],
@@ -230,6 +246,7 @@ export function createMockClient(hooks = {}) {
     childPromptFailed: false,
     abortGate: null,
     promptGate: null,
+    messageReadGate: null,
     // The host's status map, shaped as the server holds it: every live
     // session, with the host's own three words. Derived from the events a test
     // delivers (a spawned session is busy, a turn's ending makes it idle, a
@@ -305,6 +322,7 @@ export function createMockClient(hooks = {}) {
           // than an override: a test states what the transport does, never how
           // the plugin reaches it.
           const plan = hooks.notifyTransport;
+          state.notifyCalls.push(text);
           if (plan?.hang) return plan.hang;
           if (plan?.failTimes && ++state.notifyAttempts <= plan.failTimes) {
             return Promise.reject(new Error("parent notify failed"));
@@ -332,6 +350,15 @@ export function createMockClient(hooks = {}) {
         );
       },
       messages: async ({ path }) => {
+        if (state.messageReadGate?.used) {
+          state.messageReadGate.used = true;
+          await state.messageReadGate.promise;
+        }
+        if (state.unreadable.has(path.id)) {
+          const error = new Error(`Session "${path.id}" transcript unavailable.`);
+          error.status = 500;
+          throw error;
+        }
         if (hooks.messages) return SDK_ENVELOPE(hooks.messages({ path }));
         if (!state.sessions.has(path.id)) {
           const error = new Error(`Session "${path.id}" not found.`);
@@ -384,17 +411,23 @@ export function createMockClient(hooks = {}) {
       },
     },
     // Hold the next abort open. Returns the release, awaited by the test.
-    gateAbort({ fails = false } = {}) {
-      const gate = deferred();
-      state.abortGate = { promise: gate.promise, used: false, fails, release: gate.resolve };
-      return { release: () => gate.resolve() };
+    gateAbort(opts) {
+      return armGate(state, "abortGate", opts);
     },
     // Hold the next child prompt open; the released prompt fails
     // non-retryably, which settles the task through the prompt-failure path.
-    gateChildPrompt() {
-      const gate = deferred();
-      state.promptGate = { promise: gate.promise, used: false, release: gate.resolve };
-      return { release: () => gate.resolve() };
+    gateChildPrompt(opts) {
+      return armGate(state, "promptGate", opts);
+    },
+    // Hold the next transcript read open. A real host can leave a read hanging,
+    // and a settlement that quotes the child must not hang with it.
+    gateMessageRead(opts) {
+      return armGate(state, "messageReadGate", opts);
+    },
+    // Make this session's transcript refuse to be read, the way a real read
+    // fails. A settlement that could not quote the child must say so.
+    makeUnreadable(sessionId) {
+      state.unreadable.add(sessionId);
     },
   };
 }

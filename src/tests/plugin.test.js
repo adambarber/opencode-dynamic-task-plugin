@@ -1951,7 +1951,11 @@ describe("prompt dance: hydrateLatestOutcome", () => {
         messages: async () => [{ role: "assistant", parts: [{ type: "text", text: "CHILD_SAYS" }] }],
       },
     };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "CHILD_SAYS", errorDetail: "" });
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
+      text: "CHILD_SAYS",
+      errorDetail: "",
+      unreadable: false,
+    });
   });
 
   it("surfaces the message-level error detail from the same read", async () => {
@@ -1963,12 +1967,22 @@ describe("prompt dance: hydrateLatestOutcome", () => {
         }],
       },
     };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "", errorDetail: "Too Many Requests" });
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
+      text: "",
+      errorDetail: "Too Many Requests",
+      unreadable: false,
+    });
   });
 
-  it("falls back to empty fields when messages fail", async () => {
+  // A read that could not be made is not a read that found nothing, and the
+  // notification has to be able to say which one it is quoting.
+  it("falls back to empty fields and admits the read failed when messages fail", async () => {
     const client = { session: { messages: async () => { throw new Error("gone"); } } };
-    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), { text: "", errorDetail: "" });
+    assert.deepStrictEqual(await hydrateLatestOutcome(client, "ses_1"), {
+      text: "",
+      errorDetail: "",
+      unreadable: true,
+    });
   });
 });
 

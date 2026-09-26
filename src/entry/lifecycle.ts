@@ -157,7 +157,13 @@ export async function handleChildLifecycleEvent(
         void safeLog(client, "info", `Event handler: late error already recorded for ${childSessionId}`);
       }
     }
-    const latestText = outcome.text || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+    const latestText = outcome.text
+      || (kind === "error" ? outcome.errorDetail || "(error — no detail)" : "(completed)");
+    // The outcome is the point of this message, so a read that could not be
+    // made says so instead of letting "(completed)" stand in for a quote the
+    // parent never received. The record is settled either way; task_result
+    // remains the way to read what the child actually said.
+    const unreadableNote = outcome.unreadable ? "\n\n(The child's transcript could not be read; read it with task_result.)" : "";
     // Transient failures name the resume path: a network/provider blip that
     // killed the turn usually resumes cleanly via task_continue, while a
     // fatal cause must not invite a blind retry. Advisory only — kind and
@@ -170,7 +176,7 @@ export async function handleChildLifecycleEvent(
     // Observability survives via the ledger record, logged on completion.
     // deliverParent is the single funnel for parent-directed writes: it
     // records parentless settlements instead of dialing a phantom session.
-    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${resumeHint}`)
+    void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${resumeHint}${unreadableNote}`)
       .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
     return;
   }
@@ -189,7 +195,8 @@ export async function handleChildLifecycleEvent(
     const current = store.retainedTasks.get(childSessionId);
     if (!current || current.state !== "completed") return; // lost the escalation race
     noteLateOutcome(store, childSessionId, "error");
-    const errorDetail = outcome.errorDetail || "(session vanished before output was readable)";
+    const errorDetail = outcome.errorDetail
+      || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
     void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, "error", errorDetail)
       .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: "error", delivered }));
   }

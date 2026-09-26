@@ -153,24 +153,25 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
 // is unrepresentable by invariance, and the deleted vocabulary may not return.
 describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", () => {
   rule({
-    name: "no bare wall-clock waits outside the notification retry",
-    // No lookbehind exemptions: any setTimeout-shaped call fails outside
-    // notify.ts — including globalThis.*.
+    name: "no bare wall-clock waits outside the bound funnels",
+    // No lookbehind exemptions: any setTimeout-shaped call fails outside the
+    // two clock owners — including globalThis.*.
     patterns: [TIMER_PRIMITIVE],
-    sanctioned: ["notify.ts"],
+    sanctioned: ["notify.ts", "execution-bound.ts"],
     doc: DOC_SETTLEMENT,
-    why: "A wall-clock wait returned outside the notification gate.",
+    why: "A wall-clock wait returned outside a bound funnel.",
   });
 
   rule({
-    name: "the notify gate keeps exactly one timer-shaped call site",
-    // The exemption is the retry backoff's sleep, nothing more. A second
-    // timer-shaped call means a new clock entered the settlement layer.
+    name: "each clock owner keeps exactly one timer-shaped call site",
+    // Two owners, one timer each: the notification retry's backoff and the
+    // deadline in withBound. A second timer-shaped call in either means a new
+    // clock entered the settlement layer.
     patterns: [TIMER_PRIMITIVE],
-    only: ["notify.ts"],
-    expect: 1,
+    only: ["notify.ts", "execution-bound.ts"],
+    expect: 2,
     doc: DOC_SETTLEMENT,
-    why: "The notification gate holds exactly one wall-clock wait (defaultSleep).",
+    why: "The clock owners hold exactly one wall-clock wait apiece (defaultSleep, withBound).",
   });
 
   // Tenet 9: create lives in the spawn executor — the ONLY site, because a

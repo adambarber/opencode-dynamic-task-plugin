@@ -3,8 +3,12 @@
 // "notice" is the child's general mid-flight voice — progress, findings, or a
 // block needing parent input — deduped by message text so verbatim repeats land
 // once while new information always passes.
-// The plugin arms no timers; only the parent prompt itself is bounded by transport.
+// The plugin arms no timers of its own; every deadline it does have is owned by
+// execution-bound, including the one on the parent prompt itself — the host
+// holds a write to a mid-turn parent rather than refusing it, so "slow" and
+// "never" are the same call from inside the gate.
 import type { OpenCodeClient } from "./client";
+import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -33,6 +37,12 @@ export interface NotificationRecord {
   // Set only on the duplicate-suppression path: a verbatim repeat that never
   // dialed. Distinct from a failed delivery — nothing was attempted.
   suppressed?: boolean;
+  // The host HOLDS a write to a parent that is mid-turn rather than refusing
+  // it, and a held request can outlive any parent's attention span (twenty
+  // minutes, observed). A pending record says exactly that: dialed, not yet
+  // answered, and the parent may still receive it. It is neither a failure nor a
+  // success, and it stays in the ledger until the host answers either way.
+  pending?: boolean;
 }
 
 const notifyLedger: NotificationRecord[] = [];
@@ -63,9 +73,17 @@ export function getTurnNotification(childSessionId: string, turnStartedAt: numbe
   return latest;
 }
 
+// Bumped by every reset. A claim remembers the epoch it was issued under, so an
+// answer that arrives after the gate was reset cannot land in the new world —
+// where the same child id may belong to an entirely different child, and a
+// stale "delivered" would suppress that child's real first notification. The
+// per-child generation cannot catch this: a reset restarts those at zero.
+let gateEpoch = 0;
+
 export function clearNotifyLedger(): void {
   notifyLedger.length = 0;
   gateLedger.clear();
+  gateEpoch++;
 }
 
 // Event-driven kinds only: terminal statuses map to the two settlement kinds;
@@ -208,14 +226,17 @@ export async function notifyParent(
   const sleep = opts.sleep ?? defaultSleep;
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
-  const emit = (delivered: boolean, attempts: number, suppressed = false): void =>
+  const emit = (outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean }): void =>
     record({
-      at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message, attempts, delivered,
-      ...(suppressed ? { suppressed: true } : {}),
+      at: Date.now(), parentSessionId, childSessionId: opts.childSessionId, kind, message,
+      attempts: outcome.attempts, delivered: outcome.delivered,
+      ...(outcome.suppressed ? { suppressed: true } : {}),
+      ...(outcome.pending ? { pending: true } : {}),
     });
   const generation = gateLedger.claim(opts.childSessionId, dedupKey);
+  const epoch = gateEpoch;
   if (generation === null) {
-    emit(false, 0, true);
+    emit({ delivered: false, attempts: 0, suppressed: true });
     return Promise.resolve(false);
   }
   const attempt = () =>
@@ -223,27 +244,50 @@ export async function notifyParent(
       path: { id: parentSessionId },
       body: { parts: [{ type: "text", text: message }] },
     });
-  const commit = (delivered: boolean, attempts: number) => {
+  const commit = (outcome: { delivered: boolean; attempts: number }) => {
+    // Two kinds of staleness, checked before anything is written:
     // Generation-bound: a revival (forgetChild) between this claim and this
     // commit makes the generation stale — history is emitted, the key is not
     // reserved, and the revived turn's claim stays intact.
+    // Epoch-bound: a whole-gate reset between the claim and this commit means
+    // the gate no longer knows this child at all, and the record belongs to a
+    // world that is gone. Nothing is emitted and nothing is reserved.
+    if (epoch !== gateEpoch) return outcome.delivered;
     gateLedger.release(opts.childSessionId, dedupKey, generation);
-    if (delivered) gateLedger.record(opts.childSessionId, dedupKey, generation);
-    emit(delivered, attempts);
-    return delivered;
+    if (outcome.delivered) gateLedger.record(opts.childSessionId, dedupKey, generation);
+    emit(outcome);
+    return outcome.delivered;
   };
   const run = async (): Promise<boolean> => {
+    // The request is made ONCE and kept, because "slow" and "never" are the
+    // same call from here: its answer may arrive long after this returns, and
+    // the ledger must be able to say so rather than guess which it was.
+    const request = attempt();
+    const bounded = await withBound(WRITE_BOUNDS.parentPrompt, () => request, () => null).catch(() => null);
+    if (bounded?.timedOut) {
+      // Same epoch rule as commit(): the held write is recorded only while the
+      // gate still knows the child it belongs to.
+      if (epoch === gateEpoch) emit({ delivered: false, attempts: 1, pending: true });
+      // A held write is NOT retried — the host may still deliver it, and a
+      // second copy of the same kind is the duplicate this gate exists to
+      // prevent. The claim stays held while the request is outstanding, so
+      // nothing slips in behind it, and the record ends up truthful whenever
+      // the host finally answers.
+      void request.then(
+        () => commit({ delivered: true, attempts: 1 }),
+        () => commit({ delivered: false, attempts: 2 }),
+      );
+      return false;
+    }
+    if (bounded) return commit({ delivered: true, attempts: 1 });
+    // The request FAILED rather than merely ran long — a busy parent can also
+    // refuse outright, and one retry has always been the gate's answer to that.
+    await sleep(NOTIFY_RETRY_DELAY_MS);
     try {
       await attempt();
-      return commit(true, 1);
+      return commit({ delivered: true, attempts: 2 });
     } catch {
-      await sleep(NOTIFY_RETRY_DELAY_MS);
-      try {
-        await attempt();
-        return commit(true, 2);
-      } catch {
-        return commit(false, 2);
-      }
+      return commit({ delivered: false, attempts: 2 });
     }
   };
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();

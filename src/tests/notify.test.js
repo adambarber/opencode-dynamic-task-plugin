@@ -15,8 +15,39 @@ import {
   notifyChainCount,
 } from "../../dist/shared/notify.js";
 import { deferred } from './support/harness.js';
+import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 
 const NO_SLEEP = async () => {};
+
+/**
+ * A client whose every parent write parks until the returned gate is released —
+ * the transport that held a completion notice on the wire for twenty minutes in
+ * the field. `calls` counts writes the moment they are dialed, so "never
+ * retried" is observable. `release` answers the held write and waits one
+ * macrotask turn, which is exactly long enough for the continuations already
+ * queued against that answer to have run — an observable, not a sleep.
+ */
+function heldWriteClient() {
+  const held = deferred();
+  const calls = [];
+  return {
+    calls,
+    release: async () => {
+      held.resolve();
+      await held.promise;
+      await new Promise((r) => setTimeout(r, 0));
+    },
+    client: {
+      session: {
+        prompt: async (args) => {
+          calls.push(args);
+          await held.promise;
+          return { ok: true };
+        },
+      },
+    },
+  };
+}
 
 function promptClient(script) {
   // script: Array<"ok"|Error> consumed per prompt call.
@@ -53,6 +84,24 @@ describe("notify gate: resolveNotifyKind", () => {
 // retry count is the thing under test, so waiting for it proves nothing.
 const gate = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
 
+/**
+ * Run `body` against a client that HOLDS every parent write: the deadline is
+ * shrunk to something a test can outwait, the write stays held until the body
+ * releases it, and the hold and the production bounds are restored whatever the
+ * body does. The deadline is shrunk, never mocked — the timer is real, only the
+ * patience changes.
+ */
+async function withHeldWrites(body) {
+  const restore = shrinkBoundsForTesting(20);
+  const held = heldWriteClient();
+  try {
+    return await body(held);
+  } finally {
+    await held.release();
+    restore();
+  }
+}
+
 describe("notify gate: notifyParent", () => {
   beforeEach(() => {
     clearNotifyLedger();
@@ -84,6 +133,64 @@ describe("notify gate: notifyParent", () => {
     const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_c1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
+  });
+
+  // Field loss, observed live: the host accepts a prompt to a parent that is
+  // mid-turn and HOLDS the request until that turn ends — twenty minutes, in
+  // the run that named this. Nothing in the plugin misbehaved; the gate simply
+  // had no answer to wait on, and a caller that waits on no answer tells the
+  // parent nothing, records nothing, and looks healthy while it happens.
+  //
+  // So a held write is a third outcome, not a failure: the caller is released,
+  // the record says PENDING, the write is not retried (the host may still land
+  // it, and a second copy is the duplicate this gate exists to prevent), and
+  // the record turns truthful whenever the host answers.
+  it("a write the host holds is recorded pending, never failed, and lands when the host answers", async () => {
+    await withHeldWrites(async ({ client, calls, release }) => {
+      const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_held1", "completed"));
+      assert.strictEqual(delivered, false, "the caller is not held hostage to a busy parent");
+      assert.strictEqual(calls.length, 1, "dialed once — a held write is never retried");
+      const waiting = getLatestNotification("ses_held1");
+      assert.strictEqual(waiting.pending, true, "recorded as held, not as a failure");
+      assert.strictEqual(waiting.delivered, false);
+      await release();
+      const settled = getLatestNotification("ses_held1");
+      assert.strictEqual(settled.pending, undefined, "the record is corrected when the host answers");
+      assert.strictEqual(settled.delivered, true);
+      assert.strictEqual(calls.length, 1, "still exactly one copy");
+    });
+  });
+
+  it("a held write still blocks a second copy of the same kind until it answers", async () => {
+    await withHeldWrites(async ({ client }) => {
+      await notifyParent(client, "parent_1", "first", gate("ses_held2", "completed"));
+      const again = await notifyParent(client, "parent_1", "second", gate("ses_held2", "completed"));
+      assert.strictEqual(again, false, "the outstanding claim refuses the duplicate");
+      assert.strictEqual(getLatestNotification("ses_held2").suppressed, true, "and says why");
+    });
+  });
+
+  // A held write outlives the world that issued it. When the gate is reset the
+  // same child id may belong to a completely different child, and a stale
+  // "delivered" landing afterwards would reserve that child's first
+  // notification as a duplicate. The per-child generation cannot catch this: a
+  // reset restarts those at zero.
+  it("an answer that arrives after the gate was reset lands in nothing", async () => {
+    await withHeldWrites(async ({ client, release }) => {
+      await notifyParent(client, "parent_1", "from the old world", gate("ses_reset1", "completed"));
+      clearNotifyLedger();
+      await release();
+      assert.strictEqual(
+        getLatestNotification("ses_reset1"),
+        null,
+        "the old world's answer cannot write into the new one",
+      );
+      assert.strictEqual(
+        await notifyParent(client, "parent_1", "from the new world", gate("ses_reset1", "completed")),
+        true,
+        "and the id is free again for whoever holds it now",
+      );
+    });
   });
 
   it("same-child deliveries serialize in claim order", async () => {

@@ -91,6 +91,13 @@ Both live in the **project directory the host provides** (never the process CWD 
 - `.dynamic-task-ledger.json` — retained-task crash recovery, written atomically on every retained mutation.
 - `.dynamic-task-logs/` — per-session debug logs, only created when `DYNAMIC_TASK_DEBUG=1`.
 
+**Only settled records persist.** Active tasks live in process memory, so
+restarting the parent mid-child leaves that child running with no record: its
+terminal events find nothing to settle and drop, and nothing can be read about
+it afterwards. Retained (settled) records survive the restart, which is what
+makes the ledger useful for reading history. Closing the active-task half is
+specified, not implemented — see `docs/tasks/11-durability.md`.
+
 ## Architecture
 
 ```

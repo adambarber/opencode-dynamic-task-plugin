@@ -30,15 +30,14 @@ import {
   noteLateOutcome,
   declaredBlocked,
   terminalEventIsAttributable,
-  releaseWaitsFor,
   isRunning,
   findTask,
   type TaskStore,
   type TaskIdentity,
   type TaskRecordBase,
   type SettlementVerdict,
-  type DependencyWait,
 } from "../shared/task-state.js";
+import { releaseWaitsFor, type DependencyWait } from "../shared/dispatch-wait.js";
 import { resolveDependencies } from "../shared/admission.js";
 import { settlementFallback, waitsReleasedBody } from "../shared/voice.js";
 

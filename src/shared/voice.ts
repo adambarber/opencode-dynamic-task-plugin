@@ -9,7 +9,8 @@
 // strings everywhere.
 
 import type { DependencyBlock } from "./admission.js";
-import type { WaitRelease, SettlementVerdict } from "./task-state.js";
+import type { WaitRelease } from "./dispatch-wait.js";
+import type { SettlementVerdict } from "./task-state.js";
 import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────

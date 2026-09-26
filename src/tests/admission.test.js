@@ -8,10 +8,10 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { buildAgentList, fetchAgents, formatAdmissionError, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
+import { buildAgentList, fetchAgents, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { admits, assertNoAgents, refuses } from "./support/assertions.js";
+import { DEFAULT_LANE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 
 // --- What the host publishes -------------------------------------------------
@@ -203,27 +203,28 @@ describe("admission gate: resolveAdmission", () => {
   it("denies missing names", () => {
     for (const bad of [undefined, null, "", "   "]) {
       const result = resolveAdmission(agents, bad, [], defaultConfig);
-      assert.strictEqual(result.ok, false);
-      assert.strictEqual(result.reason.kind, "missing-name");
+      said(result.reason?.refusal, "No subagent_type", "a nameless request is told what is missing");
     }
   });
 
   it("denies unknown agents", () => {
     const result = resolveAdmission(agents, "nope", [], defaultConfig);
     refuses(result, "an agent the host does not list is refused");
-    assert.strictEqual(result.reason.kind, "unknown-agent");
+    said(result.reason?.refusal, '"nope" not found', "the refusal names what was asked for");
   });
 
   it("denies blocked agents", () => {
     const result = resolveAdmission([{ name: "general" }], "general", [], blockingConfig());
     refuses(result, "a blocked agent is refused");
-    assert.strictEqual(result.reason.kind, "blocked");
+    said(result.reason?.refusal, "general", "the refusal names the agent that was refused");
+    said(result.reason?.refusal, "blockedAgents", "and the config key that is responsible, which is the remedy");
   });
 
   it("denies lineage violations", () => {
     const result = resolveAdmission(agents, "explore", ["explore"], defaultConfig);
-    assert.strictEqual(result.ok, false);
-    assert.strictEqual(result.reason.kind, "lineage");
+    refuses(result, "a same-agent lineage is refused");
+    said(result.reason?.refusal, "Recursive delegation blocked", "the refusal says which rule fired");
+    said(result.reason?.refusal, "explore", "and names the agent the lineage already contains");
   });
 });
 
@@ -301,22 +302,41 @@ describe("admission gate: resolveDependencies", () => {
   });
 });
 
-describe("admission gate: formatAdmissionError", () => {
-  // One decision over one input, so the refusals are a table: a new refusal kind
-  // is a new row, not a fourth copy of the same three lines. Each row is the
-  // kind, what the gate was told, and the words the remedy has to contain.
-  const refusals = [
-    [{ kind: "missing-name" }, undefined, "No subagent_type"],
-    [{ kind: "unknown-agent", requested: "nope" }, "nope", '"nope" not found'],
-    [{ kind: "blocked", message: "blocked msg" }, "general", "blocked msg"],
-    [{ kind: "lineage", message: "depth msg" }, "explore", "depth msg"],
-  ];
-  for (const [decision, requested, remedy] of refusals) {
-    it(`a ${decision.kind} refusal carries its remedy`, () => {
-      const said = formatAdmissionError(decision, "explore", requested);
-      assert.ok(said.includes(remedy), `${decision.kind} must name ${JSON.stringify(remedy)}. got: ${said}`);
-    });
-  }
+describe("admission gate: the lane a dispatch asks for", () => {
+  const agents = [{ name: "explore" }];
+  const withLanes = normalizeDynamicTaskConfig({ lanes: { deep: { maxDepth: 4 } } });
+
+  it("an absent lane is the default lane", () => {
+    const result = resolveAdmission(agents, "explore", [], withLanes);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.lane, DEFAULT_LANE);
+  });
+
+  it("a declared lane is admitted and reported", () => {
+    const result = resolveAdmission(agents, "explore", [], withLanes, "Deep");
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.lane, "deep");
+  });
+
+  it("a lane nobody declared is refused, and the refusal names the lanes that exist", () => {
+    const result = resolveAdmission(agents, "explore", [], withLanes, "typo");
+    refuses(result, "a typo'd lane name is refused rather than silently given the default's budget");
+    said(result.reason?.refusal, '"typo"', "the refusal names the lane that was asked for");
+    said(result.reason?.refusal, "deep", "the refusal names the lanes that do exist");
+  });
+
+  it("with no lanes declared, only the default lane is a name", () => {
+    const result = resolveAdmission(agents, "explore", [], defaultConfig, "whatever");
+    refuses(result, "with nothing declared there is nothing to name but the default lane");
+    said(result.reason?.refusal, '"whatever"', "the refusal echoes the name that was asked for");
+    said(result.reason?.refusal, DEFAULT_LANE, "and points at the one lane that does exist");
+  });
+
+  it("a non-string lane is a refusal, not a quiet fall back to the default", () => {
+    const result = resolveAdmission(agents, "explore", [], withLanes, 7);
+    refuses(result, "a lane that is not a name cannot be resolved to a budget");
+    said(result.reason?.refusal, '"7"', "the refusal echoes what was passed");
+  });
 });
 
 describe("admission gate: parseAgentList", () => {

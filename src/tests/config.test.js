@@ -8,7 +8,7 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
-import { ENV, checkConcurrencyLimit, normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../../dist/shared/config.js";
+import { ENV, DEFAULT_CONFIG, DEFAULT_LANE, admissibleLaneNames, checkLaneCapacity, knownLaneNames, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, resolveLane, resolveLaneName } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
 
@@ -193,21 +193,136 @@ describe("config field parsing edges", () => {
   });
 });
 
-describe("task-state: concurrency helper", () => {
-  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2 });
-
-  it("returns null when under limit", () => {
-    assertNothing(checkConcurrencyLimit(1, config), "a free slot is reported as no error at all");
+describe("lanes: which policy a lane name resolves to", () => {
+  /**
+   * One budget, three spellings of a lane: both knobs overridden, one knob
+   * overridden, and a name with no knobs of its own. A describe-level config
+   * because the cases below are about how a NAME resolves — spelling a config
+   * per case would make each one about the spelling instead.
+   */
+  const sharedLanes = normalizeDynamicTaskConfig({
+    maxDepth: 3,
+    maxConcurrent: 5,
+    lanes: { deep: { maxDepth: 4 }, quick: { maxConcurrent: 2 }, accounting: {} },
   });
 
-  it("returns error message when at limit", () => {
-    const result = checkConcurrencyLimit(2, config);
-    assert.ok(result.includes("Cannot run more than"));
+  /** A lane's LIMITS, without the name — two lanes mean the same policy when these match. */
+  const limits = (config, name) => {
+    const { maxDepth, maxConcurrent } = resolveLane(config, name);
+    return { maxDepth, maxConcurrent };
+  };
+
+  it("with no lanes configured, any name runs on the top-level numbers", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 3, maxDepth: 2 });
+    const lane = resolveLane(config, "anything");
+    assert.deepStrictEqual(lane, { name: "anything", maxConcurrent: 3, maxDepth: 2 });
+  });
+
+  it("a configured lane resolves to its own numbers", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, lanes: { deep: { maxConcurrent: 1, maxDepth: 3 } } });
+    assert.deepStrictEqual(resolveLane(config, "deep"), { name: "deep", maxConcurrent: 1, maxDepth: 3 });
+  });
+
+  it("a lane that omits one number inherits the top-level value for it", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, maxDepth: 5, lanes: { deep: { maxDepth: 3 } } });
+    assert.deepStrictEqual(resolveLane(config, "deep"), { name: "deep", maxConcurrent: 4, maxDepth: 3 });
+  });
+
+  it("knownLaneNames lists the configured lanes, and nothing when none are", () => {
+    assert.deepStrictEqual(knownLaneNames(normalizeDynamicTaskConfig(null)), []);
+    assert.deepStrictEqual(
+      knownLaneNames(normalizeDynamicTaskConfig({ lanes: { deep: { maxDepth: 3 }, quick: { maxConcurrent: 2 } } })).sort(),
+      ["deep", "quick"],
+    );
+  });
+
+  it("a name is normalized the same way everywhere it is spelled", () => {
+    assert.strictEqual(resolveLaneName("  Deep  "), "deep");
+    assert.strictEqual(resolveLaneName(""), DEFAULT_LANE);
+    assert.strictEqual(resolveLaneName(undefined), DEFAULT_LANE);
+    assert.strictEqual(resolveLaneName(7), DEFAULT_LANE);
+  });
+
+  it("every normalized config is its own object — declaring a lane in one cannot leak into another", () => {
+    const before = knownLaneNames(sharedLanes);
+    assert.deepStrictEqual(before, ["deep", "quick", "accounting"]);
+    assert.deepStrictEqual(knownLaneNames(normalizeDynamicTaskConfig({})), [], "a config normalized after the lane config must not see it");
+    assert.deepStrictEqual(knownLaneNames(DEFAULT_CONFIG), [], "and the process-wide default must still be the default");
+    assert.deepStrictEqual(knownLaneNames(sharedLanes), before, "and reading a lane cannot have changed it either");
+  });
+
+  it("the default lane is admissible whether or not any lane was declared", () => {
+    assert.deepStrictEqual(admissibleLaneNames(normalizeDynamicTaskConfig({})), [DEFAULT_LANE], "with nothing declared the default lane is still the one that works");
+    assert.deepStrictEqual(admissibleLaneNames(sharedLanes), [DEFAULT_LANE, "deep", "quick", "accounting"]);
+    assert.deepStrictEqual(
+      admissibleLaneNames(normalizeDynamicTaskConfig({ lanes: { [DEFAULT_LANE]: { maxDepth: 9 } } })),
+      [DEFAULT_LANE],
+      "declaring the default lane must not make it appear twice, or the UI would offer it twice",
+    );
+  });
+
+  it("lanes are normalized at the config boundary, so 'Deep' and 'deep' are one lane", () => {
+    const config = normalizeDynamicTaskConfig({ lanes: { Deep: { maxConcurrent: 2 } } });
+    assert.deepStrictEqual(knownLaneNames(config), ["deep"]);
+    assert.strictEqual(resolveLane(config, "deep").maxConcurrent, 2);
+  });
+
+  it("a lane with unusable numbers is dropped, not coerced to zero and not inherited", () => {
+    const config = normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { zero: { maxConcurrent: 0 }, neg: { maxDepth: -2 } } });
+    assert.deepStrictEqual(knownLaneNames(config), [], "a knob the operator set and we cannot honour is not a lane at all");
+    assert.deepStrictEqual(
+      knownLaneNames(normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { zero: { maxConcurrent: 0 }, ok: { maxDepth: 9 } } })),
+      ["ok"],
+      "and one usable knob is enough to keep a lane that also carries an unusable one",
+    );
+  });
+
+  // The three spellings a lane can be written in, over ONE budget, so the case
+  // below is about how a name RESOLVES rather than about how a config is
+  // spelled. Two of these spellings are the same lane and must be equal: an
+  // operator who wrote no knobs meant the top-level numbers, not a lane that
+  // happens to be missing them.
+  it("a lane resolves to its own overrides, filled in from the top level", () => {
+    assert.deepStrictEqual(resolveLane(sharedLanes, "deep"), { name: "deep", maxDepth: 4, maxConcurrent: 5 });
+    assert.deepStrictEqual(resolveLane(sharedLanes, "quick"), { name: "quick", maxDepth: 3, maxConcurrent: 2 });
+    assert.deepStrictEqual(resolveLane(sharedLanes, "accounting"), { name: "accounting", maxDepth: 3, maxConcurrent: 5 });
+  });
+
+  it("a lane with no knobs of its own is the top-level budget under a name", () => {
+    assert.deepStrictEqual(limits(sharedLanes, "accounting"), limits(sharedLanes, DEFAULT_LANE),
+      "separate accounting on the default budget must be expressible, and must mean the default budget");
+  });
+
+  it("a lane nobody declared resolves to the top level, because the name is not a claim", () => {
+    assert.deepStrictEqual(limits(sharedLanes, "typo"), limits(sharedLanes, DEFAULT_LANE));
+  });
+});
+
+describe("lanes: capacity", () => {
+  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { quick: { maxConcurrent: 1, maxDepth: 2 } } });
+  const quick = resolveLane(config, "quick");
+
+  it("returns null when the lane is under its own cap", () => {
+    assertNothing(
+      checkLaneCapacity({ laneActive: 0, totalActive: 1 }, quick, config.maxConcurrent),
+      "a free slot in the lane is reported as no error at all",
+    );
+  });
+
+  it("the lane's own cap refuses, and names the lane", () => {
+    const result = checkLaneCapacity({ laneActive: 1, totalActive: 1 }, quick, config.maxConcurrent);
+    assert.ok(result.includes("quick"), "a lane refusal must name the lane, or the operator cannot tell which knob to turn");
+    assert.ok(result.includes("1"));
+  });
+
+  it("the global ceiling refuses across lanes, and says so", () => {
+    const roomy = resolveLane(normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { a: {}, b: {} } }), "b");
+    const result = checkLaneCapacity({ laneActive: 0, totalActive: 2 }, roomy, 2);
     assert.ok(result.includes("2"));
+    assert.ok(/total|ceiling/i.test(result), "a cross-lane refusal must distinguish the ceiling from a lane cap");
   });
 
-  it("returns error message when over limit", () => {
-    const result = checkConcurrencyLimit(3, config);
-    assert.ok(result);
+  it("an empty lane name is impossible: resolveLaneName defaults before a cap is ever judged", () => {
+    assert.strictEqual(resolveLaneName(undefined), DEFAULT_LANE);
   });
 });

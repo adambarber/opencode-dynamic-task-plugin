@@ -64,6 +64,17 @@ export function verdict(result, expected, why) {
 export const refuses = (result, why) => verdict(result, false, why);
 export const admits = (result, why) => verdict(result, true, why);
 
+/**
+ * Prose the caller will actually read, with the word that makes it actionable in
+ * the failure. A refusal is only useful if it says what to change, so every gate
+ * test states the remedy and this checks the remedy SURVIVED into the text — a
+ * refusal that is a correct decision in an empty string still fails here.
+ */
+export function said(text, needle, why) {
+  assert.ok(text.includes(needle), claimFailure(`${why} — must name ${JSON.stringify(needle)}`, text));
+  return text;
+}
+
 // --- Claims whose subject is a running harness -------------------------------
 // The integration suites assert against prose a live tool returned, so their
 // claims carry the same rule: the answer rides in the failure. These read a

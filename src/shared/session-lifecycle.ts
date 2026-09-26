@@ -17,6 +17,7 @@ import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
+import { resolveLaneName } from "./config.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
 // narrow them live in host-shape.ts, the bottom of the shape layer.
@@ -162,6 +163,7 @@ interface ValidLedgerEntry extends TaskIdentity {
   lineage: LineagePath;
   state: TaskState;
   startedAt: number;
+  lane?: unknown;
   retainedAt?: unknown;
   dependsOn?: unknown;
   dependsOnSettled?: unknown;
@@ -282,6 +284,10 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
     parentSessionId: entry.parentSessionId,
     agentName: entry.agentName,
     description: entry.description,
+    // A record written before lanes existed has no lane, and dropping it would
+    // lose a live child across a plugin upgrade — so absence reads as the
+    // default lane, which is exactly the lane it was occupying.
+    lane: resolveLaneName(entry.lane),
     lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
     startedAt: entry.startedAt,
     ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),

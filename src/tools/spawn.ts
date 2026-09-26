@@ -1,13 +1,10 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 import type { ToolContext } from "@opencode-ai/plugin";
-import { checkConcurrencyLimit } from "../shared/config.js";
 import {
   resolveAdmission,
   registerAdmittedTask,
   resolveDependencies,
-  formatAdmissionError,
-  buildAgentList,
   fetchAgents,
   admitToolPrompt,
 } from "../shared/admission.js";
@@ -15,7 +12,8 @@ import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, holdDispatchWait } from "../shared/task-state.js";
+import { transitionState, laneCapacityRefusal } from "../shared/task-state.js";
+import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
@@ -42,11 +40,12 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // Admission gate: resolve + policy-check before session.create.
   // Fail-fast ordering: unknown callers are rejected before payload validation.
   const lineage = createDummyLineage(ctx, store);
-  const admission = resolveAdmission(agents, args.subagent_type, lineage, config);
+  const admission = resolveAdmission(agents, args.subagent_type, lineage, config, args.lane);
   if (!admission.ok) {
-    return formatAdmissionError(admission.reason, buildAgentList(agents), args.subagent_type);
+    return admission.reason.refusal;
   }
   const agent = admission.agent;
+  const lane = admission.lane;
 
   // The shared opening for a prompt-bearing tool: prompt and model shape are
   // admission-checked before the session exists (a bad id would otherwise fail
@@ -87,12 +86,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // exists orphans an untracked child on the server. registerActiveTask
   // re-checks as the authoritative gate against a same-tick race; the
   // catch below aborts any session that slips past this advisory check.
-  const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
-  if (limitError) {
-    // Same voice as the authoritative re-check (its throw is the
-    // builder's message) — one rejection, one wording.
-    return `ERROR: ${limitError}`;
-  }
+  // The judgment is the store's, not ours — this is the same function the
+  // authoritative re-check calls, so an advisory pass and the gate that
+  // overrides it cannot come to disagree about what "full" means.
+  const limitError = laneCapacityRefusal(store, lane, config);
+  if (limitError) return `ERROR: ${limitError}`;
 
   let createdSessionId: string | null = null;
   let parentSessionId: string | null = null;
@@ -126,6 +124,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       agentName: agent.name,
       description: args.description || `Task: ${agent.name}`,
       lineage: admission.newLineage,
+      lane,
       ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
       ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
       ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),

@@ -6,6 +6,7 @@
 // can bypass it.
 
 import type { DynamicTaskConfig } from "./config.js";
+import { admissibleLaneNames, resolveLaneName } from "./config.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
@@ -29,15 +30,46 @@ import {
 } from "./task-state.js";
 import type { AgentRecord } from "./host-shape.js";
 
-export type AdmissionDeniedReason =
-  | { kind: "missing-name" }
-  | { kind: "unknown-agent"; requested: string }
-  | { kind: "blocked"; message: string }
-  | { kind: "lineage"; message: string };
+/**
+ * A refusal, as the one value that carries both the decision and the words.
+ *
+ * There is no discriminant to branch on, and that is the whole design. A string
+ * tag makes every renderer re-derive what the producer already knew: it compiles
+ * unchanged under a rename, a newly added refusal falls through to whatever the
+ * final `else` was, and neither mistake is a type error. So the sentence is
+ * assembled where the decision is made and travels as the value.
+ *
+ * This also deletes an argument the old signature needed. `formatAdmissionError`
+ * took the agent list and the requested name purely to render two of its five
+ * variants, which meant the parent was shown a list of available agents computed
+ * by the CALLER from an agent list the gate itself had already been handed — two
+ * derivations of one fact, free to disagree. The gate builds it once now.
+ */
+export interface AdmissionDenial {
+  /** Exactly what the parent reads. */
+  refusal: string;
+}
+
+const noSubagentType = (available: string): AdmissionDenial => ({
+  refusal: `ERROR: No subagent_type provided.\n\nAvailable: ${available}`,
+});
+
+const unknownAgent = (requested: unknown, available: string): AdmissionDenial => ({
+  refusal: `ERROR: Agent "${String(requested)}" not found.\n\nAvailable: ${available}`,
+});
+
+const unknownLane = (requested: string, known: string[]): AdmissionDenial => ({
+  refusal:
+    `ERROR: Unknown lane "${requested}".\n\nDeclared lanes: ${known.length > 0 ? known.join(", ") : "(none declared)"}. ` +
+    "Declare one in the dynamic-task config, or dispatch without a lane to use the default.",
+});
+
+/** The two refusals a policy check hands over as a bare sentence. */
+const policyRefused = (message: string): AdmissionDenial => ({ refusal: `ERROR: ${message}` });
 
 export type Admission =
-  | { ok: true; agent: AgentRecord; newLineage: string[] }
-  | { ok: false; reason: AdmissionDeniedReason };
+  | { ok: true; agent: AgentRecord; newLineage: string[]; lane: string }
+  | { ok: false; reason: AdmissionDenial };
 
 // ─── resolveAdmission ──────────────────────────────────────────────
 // Pre-create check: find the agent by name (case-insensitive, trimmed —
@@ -49,29 +81,62 @@ export function resolveAdmission(
   requestedName: unknown,
   lineage: string[],
   config: DynamicTaskConfig,
+  requestedLane?: unknown,
 ): Admission {
+  const available = buildAgentList(agents);
   const normalized =
     typeof requestedName === "string" ? requestedName.toLowerCase().trim() : "";
   if (!normalized) {
-    return { ok: false, reason: { kind: "missing-name" } };
+    return { ok: false, reason: noSubagentType(available) };
   }
 
   const agent = agents.find((a) => a.name.toLowerCase() === normalized);
   if (!agent) {
-    return { ok: false, reason: { kind: "unknown-agent", requested: String(requestedName) } };
+    return { ok: false, reason: unknownAgent(requestedName, available) };
   }
 
   const agentCheck = validateAgent(agent.name, config);
   if (!agentCheck.ok) {
-    return { ok: false, reason: { kind: "blocked", message: agentCheck.error } };
+    return { ok: false, reason: policyRefused(agentCheck.error) };
+  }
+
+  const laneCheck = resolveLane(config, requestedLane);
+  if (!laneCheck.ok) {
+    return { ok: false, reason: laneCheck.reason };
   }
 
   const lineageCheck = validateLineage(lineage, agent.name, config);
   if (!lineageCheck.ok) {
-    return { ok: false, reason: { kind: "lineage", message: lineageCheck.error } };
+    return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
 
-  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
+  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name), lane: laneCheck.lane };
+}
+
+// Lane admission, separated from the lane's LIMITS (config.ts owns those).
+// The gate is total: anything that is not a usable lane name is a refusal, and a
+// refusal that is NOT a fall back to the default lane, because a typo silently
+// spending a different budget than the operator meant is the failure mode a
+// named-lane feature exists to prevent.
+//
+// With no lanes declared the accept-set is the default lane alone, so naming a
+// lane then REFUSES. That is the one behaviour that cannot be left implicit:
+// before lanes existed, any string here was ignored, so a name that used to be
+// decorative is now a typo the parent has to be told about. Declaring the lane
+// is the remedy, and the refusal says so.
+function resolveLane(
+  config: DynamicTaskConfig,
+  requestedLane: unknown,
+): { ok: true; lane: string } | { ok: false; reason: AdmissionDenial } {
+  const known = admissibleLaneNames(config);
+  if (typeof requestedLane !== "string" && requestedLane !== undefined) {
+    return { ok: false, reason: unknownLane(String(requestedLane), known) };
+  }
+  const lane = resolveLaneName(requestedLane);
+  if (!known.includes(lane)) {
+    return { ok: false, reason: unknownLane(lane, known) };
+  }
+  return { ok: true, lane };
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
@@ -120,24 +185,6 @@ export function resolveDependencies(
   for (const id of strict) check(id, SATISFIED_DEPENDENCY_STATES);
   for (const id of lenient) check(id, SETTLED_DEPENDENCY_STATES);
   return pending.length === 0 ? { ok: true } : { ok: false, pending };
-}
-
-// ─── formatAdmissionError ──────────────────────────────────────────
-// Single rendering for every refusal (Tenet 1 for error text): the gate
-// decides, this formats, callers return verbatim.
-
-export function formatAdmissionError(
-  reason: AdmissionDeniedReason,
-  available: string,
-  requestedName: unknown,
-): string {
-  if (reason.kind === "missing-name") {
-    return `ERROR: No subagent_type provided.\n\nAvailable: ${available}`;
-  }
-  if (reason.kind === "unknown-agent") {
-    return `ERROR: Agent "${String(requestedName)}" not found.\n\nAvailable: ${available}`;
-  }
-  return `ERROR: ${reason.message}`;
 }
 
 // ─── parseAgentList ────────────────────────────────────────────────

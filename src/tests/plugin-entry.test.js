@@ -13,9 +13,12 @@ import * as pluginEntry from "../../dist/index.js";
 
 describe("plugin entry: exposes only the default plugin function", () => {
   it("has no named function exports for the host to probe", () => {
-    const named = Object.entries(pluginEntry).filter(
-      ([name, value]) => name !== "default" && typeof value === "function",
-    );
+    // The default is pulled out as a binding rather than filtered out by its key,
+    // so "everything except the default" is the language's rest-destructuring
+    // instead of a name this test has to spell and keep correct.
+    const { default: theDefaultPlugin, ...namedExports } = pluginEntry;
+    assert.strictEqual(typeof theDefaultPlugin, "function", "the default export is the plugin function itself");
+    const named = Object.entries(namedExports).filter(([, value]) => typeof value === "function");
     assert.deepStrictEqual(named.map(([name]) => name), []);
   });
 });

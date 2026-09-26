@@ -23,11 +23,10 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import type { LedgerChange } from "./session-lifecycle.js";
-import type { ConcurrencyConfig, DynamicTaskConfig } from "./config.js";
-import { evictOldest } from "./bounded-map.js";
-import type { DependencyBlock } from "./admission.js";
+import type { LaneConfigSource, DynamicTaskConfig } from "./config.js";
+import type { WaitRegistry } from "./dispatch-wait.js";
 import type { ModelOverride } from "./prompt.js";
-import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
+import { checkLaneCapacity, resolveLane, resolveLaneName, DEFAULT_CONFIG } from "./config.js";
 
 /**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE
@@ -93,6 +92,12 @@ export interface TaskIdentity {
 export interface TaskRecordBase extends TaskIdentity {
   startedAt: number;
   lineage: LineagePath;
+  /**
+   * The concurrency lane this task occupies a slot in. A routing fact, not
+   * lifecycle: a revival keeps the lane its settled record was running in, so
+   * the record and its re-admission are always counted against the same budget.
+   */
+  lane: string;
   requestedModel?: ModelOverride | undefined;
   dependsOn?: string[] | undefined;
   // Admission-time only: ids that needed settlement, not success, before this
@@ -195,46 +200,14 @@ export interface RetainedTaskState extends TaskRecordBase {
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
 
 /**
- * A dispatch the admission gate refused because its dependencies were not
- * ready, held so the plugin can say when the refusal is over.
- *
- * This is the state that `depends_on` never had. The refusal used to be a
- * sentence: the parent had to carry the wait in prose, be alive at the moment
- * the dependency settled, and re-dispatch from memory — three things that all
- * belong to the parent's context, which is what the plugin exists to hold.
- *
- * It holds NO prompt and NO session, deliberately. The parent wrote the
- * dispatch and the parent resumes it; the plugin's whole obligation is to say
- * when the gate will now admit it. So this is process memory, not ledger
- * truth: across a restart this wait and the parent that asked for it are gone
- * together, and a hint that outlived its asker would have nobody to inform.
+ * The wait registry's map is a store field because the store is the only thing
+ * that outlives a single tool call, but the waits themselves are a separate
+ * subject and live in ./dispatch-wait.js — see WaitRegistry there for why the
+ * store is passed to that module structurally rather than by import.
  */
-export interface DependencyWait {
-  /** The parent's own words for this dispatch — its identity in every message. */
-  description: string;
-  /** The parent that asked. The hint goes here, not to the settling task's parent. */
-  parentSessionId: string;
-  /** Edges that must reach `completed`. */
-  dependsOn: string[];
-  /** Edges that only have to settle. */
-  dependsOnSettled: string[];
-  queuedAt: number;
-}
-
-/** A wait's key: who is waiting, for what. The parent named both. */
-export function waitKey(parentSessionId: string, description: string): string {
-  return parentSessionId + " " + description;
-}
-
-export interface TaskStore {
+export interface TaskStore extends WaitRegistry {
   activeTasks: Map<string, ActiveTaskState>;
   retainedTasks: Map<string, RetainedTaskState>;
-  /**
-   * Refused dispatches, keyed by the (parent, description) that asked for them —
-   * the parent's own words are the identity, so the plugin never invents an id
-   * the parent then has to learn. Not persisted; see DependencyWait.
-   */
-  waits: Map<string, DependencyWait>;
   // Durable-state observer (Task 06): invoked after retained entries change.
   onRetainedChange?: LedgerChangeSink | undefined;
   // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
@@ -295,14 +268,24 @@ export function withdrawInterruptClaim(
   store: TaskStore,
   childSessionId: string,
   claimTimeMs: number,
-  bounds?: Pick<DynamicTaskConfig, "maxConcurrent">,
+  bounds?: LaneConfigSource,
 ): boolean {
   return decideRetained(store, childSessionId, (retained) => {
     if (retained.state !== "interrupted") return false;
     // >= not >: a successful abort landing in the same millisecond as the
     // claim is still knowledge — the newer (or same-instant) success wins.
     if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
-    if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
+    // Reclaiming is a slot claim, judged in the lane the record was in.
+    if (
+      bounds &&
+      checkLaneCapacity(
+        { laneActive: laneActiveCount(store, retained.lane), totalActive: store.activeTasks.size },
+        resolveLane(bounds, retained.lane),
+        bounds.maxConcurrent,
+      )
+    ) {
+      return false;
+    }
     // No turn attribution: a withdrawal UNDOES a claim about this very turn, so
     // the turn is still live and its own ending settles it like any other.
     reclaimAsActive(store, childSessionId, retained);
@@ -394,9 +377,47 @@ export function createTaskStore(): TaskStore {
  * revival path with no config in hand), not a limit of zero, so it returns
  * rather than refusing.
  */
-function claimSlot(store: TaskStore, config: ConcurrencyConfig | undefined): void {
-  if (!config) return;
-  const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
+/** Running tasks occupying a slot in one lane. */
+export function laneActiveCount(store: TaskStore, lane: string): number {
+  let count = 0;
+  for (const record of store.activeTasks.values()) {
+    if (record.lane === lane) count++;
+  }
+  return count;
+}
+
+/**
+ * The store's ONE lane capacity judgment: the refusal text for admitting into
+ * this lane, or null when there is room.
+ *
+ * Two callers need this and neither may own it. The authoritative gate claims a
+ * slot and throws; the spawn tool checks BEFORE creating a session, because
+ * refusing after the session exists orphans an untracked child on the server.
+ * Same inputs, same answer, one function — the second caller asking its own
+ * question here is how an advisory check and the gate that overrides it come to
+ * disagree about what "full" means.
+ */
+export function laneCapacityRefusal(
+  store: TaskStore,
+  lane: string,
+  config: LaneConfigSource | undefined,
+): string | null {
+  if (!config) return null;
+  return checkLaneCapacity(
+    { laneActive: laneActiveCount(store, lane), totalActive: store.activeTasks.size },
+    resolveLane(config, lane),
+    config.maxConcurrent,
+  );
+}
+
+/**
+ * The authoritative claim on a slot, for both callers that must not proceed
+ * without one: a fresh registration, and a revival re-claiming the lane its
+ * settled record was running in. The record decides the lane, so a charge can
+ * never be aimed at a lane other than the one the task belongs to.
+ */
+function claimSlot(store: TaskStore, record: { readonly lane: string }, config: LaneConfigSource | undefined): void {
+  const limitError = laneCapacityRefusal(store, record.lane, config);
   if (limitError) throw new Error(limitError);
 }
 
@@ -429,10 +450,19 @@ export function retainedRecord(
 export function registerActiveTask(
   store: TaskStore,
   task: NewTaskRegistration,
-  config: ConcurrencyConfig,
+  config: LaneConfigSource,
 ): ActiveTaskState {
-  claimSlot(store, config);
-  const record = activeRecord(task, Date.now());
+  // The lane is resolved HERE, once, on the way in. Four things charge it — the
+  // slot claim below, the record, the durable write, and a later revival's
+  // re-claim — and the field is declared required while every JavaScript caller
+  // is free to omit it. Normalizing at this boundary is what makes the four
+  // agree: without it a registration that omits the lane leaves all four holding
+  // `undefined`, and a revived task is re-admitted against a lane that does not
+  // exist. The normalization is idempotent, so resolving an already-resolved
+  // lane costs nothing.
+  const registration = { ...task, lane: resolveLaneName(task.lane) };
+  claimSlot(store, registration, config);
+  const record = activeRecord(registration, Date.now());
   setActive(store, task.childSessionId, record);
   return record;
 }
@@ -491,7 +521,7 @@ export function noteLateOutcome(store: TaskStore, childSessionId: string, outcom
 export function reviveRetainedTask(
   store: TaskStore,
   childSessionId: string,
-  config?: Pick<DynamicTaskConfig, "maxConcurrent">,
+  config?: LaneConfigSource,
   model?: ModelOverride | undefined,
 ): ActiveTaskState {
   const retained = retainedFor(store, childSessionId);
@@ -501,7 +531,10 @@ export function reviveRetainedTask(
   if (retained.state === "interrupted") {
     throw new Error(`Task ${childSessionId} was interrupted by request; interrupted children are not revived — spawn a fresh dynamic_task instead.`);
   }
-  claimSlot(store, config);
+  // The lane the settled record was running in, not a fresh default: a revival
+  // re-claims a slot, and charging it to a different lane than the one it
+  // occupied is how a capped lane gets filled by its own recovered children.
+  claimSlot(store, retained, config);
   const revived = reclaimAsActive(store, childSessionId, retained, {
     // A revival REPLACES the turn, so the clock restarts: this is a new turn of
     // the same child, not the continuation of the one that ended.
@@ -679,86 +712,11 @@ export function findTask(store: TaskStore, childSessionId: string): TaskRecord |
   return store.activeTasks.get(childSessionId) ?? retainedFor(store, childSessionId) ?? null;
 }
 
-// ─── Dependency waits ───────────────────────────────────────────────────
+// ─── the wait registry ────────────────────────────────────────────────────────
 //
-// One writer (the admission gate's refusal) and one reader (the settlement
-// funnel). The reader asks the SAME predicate the gate asked, so "this dispatch
-// can go now" can never disagree with "this dispatch was refused" — two
-// hand-written readiness rules would drift, and the drift would read as the
-// plugin refusing a dispatch it had just promised.
+// The refused dispatches and the readiness rule that releases them moved to
+// ./dispatch-wait.js, which is where that subject now lives.
 
-/** How many refused dispatches one parent may have outstanding. */
-export const MAX_WAITS = 64;
-
-/**
- * Hold a refused dispatch so the plugin can announce its release. Re-recording
- * the same (parent, description) replaces the earlier edges rather than
- * queueing a second hint for one dispatch: the parent asked twice about the
- * same thing, and the newer edges are the ones it means now.
- */
-export function holdDispatchWait(
-  store: TaskStore,
-  wait: Omit<DependencyWait, "queuedAt">,
-): DependencyWait {
-  const held: DependencyWait = { ...wait, queuedAt: Date.now() };
-  store.waits.set(waitKey(wait.parentSessionId, wait.description), held);
-  // Bounded: the map is a courtesy ledger to a live parent, not a history, and
-  // the oldest wait is the one least likely to still be wanted.
-  evictOldest(store.waits, MAX_WAITS);
-  return held;
-}
-
-/** What a settlement did to the waits that were watching it. */
-export interface WaitRelease {
-  /** Refused dispatches the gate will now admit. */
-  ready: DependencyWait[];
-  /** Refused dispatches that can never run: every unmet edge is finished, short of done. */
-  dead: DependencyWait[];
-}
-
-/**
- * The waits this settlement resolves, and the ones it leaves alone. A wait is
- * resolved by the SAME predicate the gate refused it on, so readiness has one
- * definition. It is resolved as `dead` when the predicate still refuses AND no
- * unmet edge is still running: an edge that has settled and is not `completed`
- * will not run again, so waiting on it is waiting on nothing — and a parent that
- * is never told is a parent that waits forever.
- *
- * Resolved waits are removed here, so exactly-once is structural rather than a
- * dedup key: a wait cannot be announced twice because it is announced from the
- * moment it stops existing.
- */
-export function releaseWaitsFor(
-  store: TaskStore,
-  settledChildSessionId: string,
-  isAdmissible: (wait: DependencyWait) => { ok: true } | { ok: false; pending: DependencyBlock[] },
-  stillRunning: (childSessionId: string) => boolean,
-): WaitRelease {
-  const release: WaitRelease = { ready: [], dead: [] };
-  for (const [key, wait] of [...store.waits]) {
-    const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
-      edges.includes(settledChildSessionId),
-    );
-    if (!watching) continue;
-    const admitted = isAdmissible(wait);
-    // Both endings are the same act — this wait is finished waiting, so it
-    // leaves the map and lands in one of the two buckets. Only the question it
-    // answers differs, and only the question belongs in the arms.
-    const doneWaiting = (bucket: DependencyWait[]): void => {
-      bucket.push(wait);
-      store.waits.delete(key);
-    };
-    if (admitted.ok) {
-      doneWaiting(release.ready);
-      continue;
-    }
-    // Still refused: is any edge able to change that, or is this wait finished?
-    const canStillClear = admitted.pending.some((edge) => stillRunning(edge.id));
-    if (canStillClear) continue;
-    doneWaiting(release.dead);
-  }
-  return release;
-}
 
 // Transient abort failures are recorded on the retained entry: an
 // interrupted-but-still-live child must be visible, not silently stranded.

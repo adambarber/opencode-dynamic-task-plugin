@@ -340,13 +340,42 @@ export function buildAgentList(agents: unknown): string {
 }
 
 export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
+  return (await fetchAgentListing(client, cacheTtlMs)).agents;
+}
+
+/**
+ * The agent list, and whether it is one at all.
+ *
+ * `fetchAgents` cannot throw — a throw here fails the entire plugin boot — so a
+ * host that cannot be asked comes back as `[]`. That is the right answer for a
+ * caller that only wants names to try, and a WRONG one for a caller that reports
+ * a depth: an empty list and a failed read both render as 0, and 0 reads as "this
+ * project cannot delegate at all". So the two cases are separated in the type
+ * rather than inferred from an array's emptiness.
+ *
+ * A STALE cached list is `known`: it is a real list, just an old one, and saying
+ * otherwise would make a transient blip look like a project with no agents.
+ */
+export interface AgentListing {
+  agents: AgentRecord[];
+  known: boolean;
+}
+
+export async function fetchAgentsOrUnknown(
+  client: OpenCodeClient,
+  cacheTtlMs: number = CACHE_TTL,
+): Promise<AgentListing> {
+  return fetchAgentListing(client, cacheTtlMs);
+}
+
+async function fetchAgentListing(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentListing> {
   // Non-object clients (the host's probes) can't key a WeakMap; they also
   // can't serve a successful fetch, so they simply never cache.
   const cacheKey: object | null = typeof client === "object" && client !== null ? client : null;
   const now = Date.now();
   const cached = cacheKey ? agentCaches.get(cacheKey) : undefined;
   if (cached && cached.epoch === agentCacheEpoch && cached.agents.length > 0 && now - cached.at < cacheTtlMs) {
-    return cached.agents;
+    return { agents: cached.agents, known: true };
   }
 
   // One immediate retry: setup races and transient blips often clear on
@@ -360,7 +389,7 @@ export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = C
         epoch: agentCacheEpoch,
       };
       if (cacheKey) agentCaches.set(cacheKey, entry);
-      return entry.agents;
+      return { agents: entry.agents, known: true };
     } catch (error: unknown) {
       if (attempt === 1 && error instanceof Error) {
         // safeLog, not a raw app.log: the client itself may be unusable
@@ -373,8 +402,8 @@ export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = C
 
   // Persistent failure: serve this client's last known list from the current
   // epoch — stale beats empty, another client's list never does.
-  if (cached && cached.epoch === agentCacheEpoch) return cached.agents;
-  return [];
+  if (cached && cached.epoch === agentCacheEpoch) return { agents: cached.agents, known: true };
+  return { agents: [], known: false };
 }
 
 /** Test seam: invalidates every client's cached agent list. Production code never calls this. */

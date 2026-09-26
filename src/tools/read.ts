@@ -18,6 +18,10 @@ import {
 } from "../shared/task-formatting.js";
 import { pruneRetainedTasks, findTask, listTasks, TaskState } from "../shared/task-state.js";
 import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
+import { dispatchableAgentNames, fetchAgentsOrUnknown } from "../shared/admission.js";
+import { laneOccupancy } from "../shared/lane-occupancy.js";
+import type { DynamicTaskConfig } from "../shared/config.js";
+import type { OpenCodeClient } from "../shared/client.js";
 import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
 // The prologue both readers share: resolve the session, prune, look up. Pruning
@@ -113,8 +117,20 @@ async function readLivenessSafely(
   }
 }
 
+// The dispatchable agent set, or null when the host could not be asked. Shared
+// with the admission gate's own derivation of the same set rather than spelled
+// twice: a second filter is a second answer to "what could this project
+// delegate to", and this one decides how deep a lane can go.
+async function dispatchableAgentsOrNull(
+  client: OpenCodeClient,
+  config: DynamicTaskConfig,
+): Promise<string[] | null> {
+  const listing = await fetchAgentsOrUnknown(client, config.agentCacheTtlMs);
+  return listing.known ? dispatchableAgentNames(listing.agents, config) : null;
+}
+
 export async function executeTaskList(deps: ToolDeps): Promise<string> {
-  const { store, config } = deps;
+  const { client, store, config } = deps;
   const pruned = pruneRetainedTasks(store, config);
   const { retained } = listTasks(store);
   // The row shape is FleetRow's, named rather than re-spelled: an inline
@@ -142,6 +158,13 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     return node.task.state === TaskState.Active || below.length > 0 ? [node, ...below] : [];
   };
   const branch = dispatchForest(store).flatMap(liveBranch);
+  // The lanes line, from the store and the config only. The ONE thing it cannot
+  // know without asking the host is which agents are dispatchable — the agent
+  // set is not in the store — so that is a TTL-cached fetch, and a fetch that
+  // fails leaves the effective depth UNKNOWN rather than zero. Reporting 0 would
+  // read as "this lane cannot delegate at all", which is a claim the plugin
+  // cannot support when it simply could not ask.
+  const agents = await dispatchableAgentsOrNull(client, config);
   return formatTaskListSummary({
     tree: branch.map((node) => ({
       ...toRow(node.task),
@@ -153,5 +176,6 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     retained: retained.map(toRow),
     maxConcurrent: config.maxConcurrent,
     pruned,
+    lanes: laneOccupancy(store, config, agents, config.allowSameAgentRecursion),
   });
 }

@@ -72,6 +72,37 @@ function formatTreeRow(row: TreeRow): string {
   return `${indent}- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})${link}`;
 }
 
+/** One lane as task_list shows it: occupancy, cap, and the depth actually reachable. */
+export interface LaneRow {
+  name: string;
+  active: number;
+  maxConcurrent: number;
+  depthConfigured: number;
+  /** `null` when the dispatchable set could not be read. */
+  depthEffective: number | null;
+  depthBoundBy: string | null;
+}
+
+/**
+ * The depth cell, in the words that make it actionable.
+ *
+ * The whole reason the effective depth is reported at all: a cap of 4 that the
+ * agent set holds to 2 is a contradiction the operator cannot see, and printing
+ * "4" would be printing the number that is not in force. So the cell says which
+ * constraint is binding, and the lane-cap case says the cap plainly.
+ */
+function formatDepth(row: LaneRow): string {
+  if (row.depthEffective === null) return `depth ${row.depthConfigured} (dispatchable agents unknown)`;
+  if (row.depthBoundBy === "agent-set") {
+    return `depth ${row.depthEffective} (agent set binds; cap is ${row.depthConfigured})`;
+  }
+  return `depth ${row.depthConfigured}`;
+}
+
+function formatLaneRow(row: LaneRow): string {
+  return `- ${row.name} ${row.active}/${row.maxConcurrent} · ${formatDepth(row)}`;
+}
+
 export function formatTaskListSummary(input: {
   // The running fleet as the tree it is: every active task, plus the settled
   // ancestors that place it. `activeCount` is the number of RUNNING rows in it,
@@ -82,6 +113,9 @@ export function formatTaskListSummary(input: {
   retained: FleetRow[];
   maxConcurrent: number;
   pruned: number;
+  // Absent until lanes shipped, and omitted entirely when there are none, so a
+  // project that declares no lanes reads exactly as it did before the feature.
+  lanes?: LaneRow[] | undefined;
 }): string {
   return textBlock(
     "## Task List",
@@ -89,6 +123,9 @@ export function formatTaskListSummary(input: {
     `Active: ${input.activeCount}/${input.maxConcurrent}`,
     input.tree.length > 0 ? input.tree.map(formatTreeRow) : "(none)",
     "",
+    ...(input.lanes && input.lanes.length > 0
+      ? ["Lanes (active/cap):", ...input.lanes.map(formatLaneRow), ""]
+      : []),
     `Retained: ${input.retained.length}`,
     input.retained.length > 0 ? input.retained.map(formatFleetRow) : "(none)",
     input.pruned > 0 ? `Pruned: ${input.pruned} expired retained task(s)` : undefined,

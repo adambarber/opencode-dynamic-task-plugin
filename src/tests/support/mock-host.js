@@ -380,10 +380,15 @@ export function createMockClient(hooks = {}) {
   return {
     _state: state,
     app: {
-      agents: async () => SDK_ENVELOPE(hooks.agentsList ?? [
-        { name: "explore", mode: "subagent" },
-        { name: "general", mode: "subagent" },
-      ]),
+      // A host that cannot answer is a case the plugin has to survive, and a
+      // mock that can only ever succeed cannot express one.
+      agents: async () => {
+        if (hooks.agentsListThrows) throw new Error("agent list unavailable");
+        return SDK_ENVELOPE(hooks.agentsList ?? [
+          { name: "explore", mode: "subagent" },
+          { name: "general", mode: "subagent" },
+        ]);
+      },
       log: async ({ body }) => {
         state.logs.push(body);
       },

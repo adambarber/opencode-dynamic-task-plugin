@@ -325,6 +325,54 @@ describe("task fleet views", () => {
     answerSays(list, "Retained: 1");
     });
 
+  describe("the lanes line", () => {
+    // Each case declares the agent set it is reasoning about, so the expected
+    // depth follows from the case instead of from whatever the mock happens to
+    // publish today.
+    const AGENTS = [
+      { name: "architect", mode: "subagent" },
+      { name: "coder", mode: "subagent" },
+      { name: "explore", mode: "subagent" },
+    ];
+
+    it("shows the default lane even with none declared, so a cap is always visible", async () => {
+      const h = await setupHarness({ options: { maxDepth: 2 }, hooks: { agentsList: AGENTS } });
+      const list = await h.tool.task_list.execute({});
+      answerSays(list, "Lanes (active/cap):", "the section is present with no lanes configured");
+      assert.match(list, /- default 0\/4 · depth 2/, "occupancy, cap, and the depth in force");
+    });
+
+    it("counts a running task against the lane it was dispatched into", async () => {
+      const h = await setupHarness({ options: { lanes: { build: { maxConcurrent: 3 } } }, hooks: { agentsList: AGENTS } });
+      await h.spawn({ description: "in the build lane", lane: "build" });
+      const list = await h.tool.task_list.execute({});
+      assert.match(list, /- build 1\/3/, "the task is charged to the lane it named");
+    });
+
+    it("names the constraint that caps depth, because the cap alone is not in force", async () => {
+      // The config says 4 and the number in force is 3. Printing "4" would print
+      // the number that does not apply.
+      const h = await setupHarness({ options: { maxDepth: 4 }, hooks: { agentsList: AGENTS } });
+      const list = await h.tool.task_list.execute({});
+      assert.match(list, /depth 3 \(agent set binds; cap is 4\)/,
+        "the effective depth and the reason it is lower than the cap");
+    });
+
+    it("a BLOCKED agent cannot lengthen a chain, so it does not raise the depth", async () => {
+      const h = await setupHarness({ options: { maxDepth: 9, blockedAgents: ["coder"] }, hooks: { agentsList: AGENTS } });
+      const list = await h.tool.task_list.execute({});
+      assert.match(list, /depth 2 \(agent set binds; cap is 9\)/,
+        "three published agents, one of them unusable, is depth 2 — not 3");
+    });
+
+    it("a host that cannot list agents leaves the depth UNKNOWN, not zero", async () => {
+      const h = await setupHarness({ options: { maxDepth: 4 }, hooks: { agentsListThrows: true } });
+      const list = await h.tool.task_list.execute({});
+      assert.match(list, /depth 4 \(dispatchable agents unknown\)/,
+        "an unreadable agent set is an unknown; saying 0 would claim no delegation is possible");
+    });
+  });
+
   // A fleet view that hides its own expiries reads as "nothing expired", so the
   // prune is part of the view's claim rather than bookkeeping behind it.
   it("task_list names pruned expiries", async () => {

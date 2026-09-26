@@ -194,6 +194,19 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
     why: "Abort only via abortSession, so 404-versus-transport failure cannot drift between the steer and interrupt paths.",
   });
 
+  // The SDK client resolves to { data, request, response }, so unwrapping it is
+  // a transport fact, and a reader that reads a level too high fails by
+  // finding nothing rather than by throwing — three readers had three private
+  // ladders for it before hostPayload existed. The ladder must live in exactly
+  // one place, so this rule scans the WHOLE tree and then checks where the one
+  // hit is: a whitelist alone would filter a reader's own ladder out of the
+  // corpus and report green.
+  it("the host response envelope is unwrapped in exactly one place", () => {
+    const hits = listProdFiles().flatMap((f) => scanLines(f, [/\[\s*"(data|body|agents)"\s*,\s*"(data|body|agents)"/], [PROSE]));
+    assert.strictEqual(hits.length, 1, `Expected 1 envelope ladder, found ${hits.length}.\n${hits.join("\n")}`);
+    assert.ok(hits[0].startsWith("src/shared/session-lifecycle.ts:"), `hostPayload owns the envelope: ${hits[0]}`);
+  });
+
   rule({
     name: "deleted timer vocabulary never returns",
     patterns: [/\btimeout_ms\b|\btimeoutBehavior\b|\bawait_response\b|\btimed_out_retained\b|\bcompleted_after_timeout\b|\bDYNAMIC_TASK_TIMEOUT\b|\bcreateTimerProvider\b|\bstealTimeoutHandle\b/],

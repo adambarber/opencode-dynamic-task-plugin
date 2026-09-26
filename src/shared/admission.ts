@@ -8,6 +8,7 @@
 import type { DynamicTaskConfig } from "./config.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
+import { hostPayload, isEventRecord } from './session-lifecycle.js';
 import {
   validateAgent,
   validateLineage,
@@ -129,22 +130,21 @@ export function formatAdmissionError(
 }
 
 // ─── parseAgentList ────────────────────────────────────────────────
-// Turns an untyped registry response into agent records. The 1.18 client
-// returns a { data } envelope; older servers and tests use bare arrays or
-// { agents } wrappers — the first non-empty list wins, anything else yields
-// []. Records are validated minimally ({name: string}); mode policy stays
-// in isDispatchableAgent.
+// Turns an untyped registry response into agent records. The envelope is
+// hostPayload's business (the client resolves to { data, request, response },
+// and a keyed map keyed by agent name is the other shape this endpoint
+// returns) — what is left here is the payload: a list, or a map whose values
+// are lists, and the first one holding valid records wins. Anything else
+// yields []. Records are validated minimally ({name: string}); mode policy
+// stays in isDispatchableAgent.
 
 export function parseAgentList(result: unknown): AgentRecord[] {
-  const groups: unknown[] = [];
-  if (Array.isArray(result)) {
-    groups.push(result);
-  } else if (result && typeof result === "object") {
-    const envelope = result as { agents?: unknown; data?: unknown };
-    if (envelope.agents !== undefined) groups.push(envelope.agents);
-    if (envelope.data !== undefined) groups.push(envelope.data);
-    if (groups.length === 0) groups.push(Object.values(envelope));
-  }
+  const payload = hostPayload(result);
+  const groups: unknown[] = Array.isArray(payload)
+    ? [payload]
+    : isEventRecord(payload)
+      ? [Object.values(payload)]
+      : [];
   for (const group of groups) {
     if (!Array.isArray(group)) continue;
     const records = group.filter(isAgentRecord);

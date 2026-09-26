@@ -534,7 +534,7 @@ import {
 } from "../../dist/shared/task-formatting.js";
 import { hostTurnRunning, statusFromHostState } from "../../dist/shared/liveness.js";
 import { hostPayload } from "../../dist/shared/session-lifecycle.js";
-import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
+import { formatParentNotification, truncateText, noticeDedupKey, isParentNotification, notificationTag } from "../../dist/shared/notify.js";
 import { TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
 
 describe("operator voice: continue description", () => {
@@ -594,10 +594,18 @@ describe("formatParentNotification", () => {
     assert.match(noticeMessage, /task_continue/);
   });
 
-  it("keeps settlements under the settlement tag", () => {
-    assert.match(formatParentNotification(state, "completed", "ok"), /dynamic-task-notify/);
-    assert.match(formatParentNotification(state, "error", "bad"), /dynamic-task-notify/);
-    assert.ok(!formatParentNotification(state, "notice", "x").includes("[dynamic-task-notify]"));
+  it("keeps settlements under the settlement tag, and the mid-flight notice off it", () => {
+    // The tag is the routing contract a host orchestrator reads, so this pins the
+    // grouping rather than a spelling: every settlement kind shares one tag, the
+    // mid-flight notice has its own, and the rendered text carries the tag the kind
+    // declares. Typing the marker here instead is how this case used to read.
+    const settlement = notificationTag("completed");
+    for (const kind of ["completed", "error", "blocked"]) {
+      assert.strictEqual(notificationTag(kind), settlement, `${kind} is a settlement`);
+      assert.ok(formatParentNotification(state, kind, "out").includes(settlement), `${kind} renders its tag`);
+    }
+    assert.notStrictEqual(notificationTag("notice"), settlement, "a mid-flight notice is not a settlement");
+    assert.ok(isParentNotification(formatParentNotification(state, "notice", "x")), "and is still parent-directed");
   });
 
   it("renders the empty-output placeholder", () => {
@@ -756,6 +764,7 @@ describe("formatTaskResultSummary", () => {
 
 // --- Debug Logger (Task 3) ---
 import { debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
+import { dirname } from "node:path";
 
 describe("safeDebugPayload", () => {
   it("keeps event metadata but removes blocked fields (prompt, fullPrompt)", () => {
@@ -2551,7 +2560,10 @@ describe("findTask — edge cases", () => {
 });
 
 describe("debugLog — closed to 100% coverage", () => {
-  const LOG_DIR = ".dynamic-task-logs";
+  // The log directory, derived from the writer's own path helper rather than spelled
+  // out: this suite never boots the plugin, so the debug root is the default relative
+  // one, and hardcoding it here is a second declaration of a path production creates.
+  const LOG_DIR = dirname(getDebugLogPath("p", "c"));
 
   beforeEach(() => {
     // Clean up any logs from previous runs

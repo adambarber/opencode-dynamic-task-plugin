@@ -30,6 +30,7 @@ import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 import { resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { ENV } from "../../dist/shared/config.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { formatParentNotification } from "../../dist/shared/notify.js";
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -1857,8 +1858,12 @@ describe("outcome correctness: failed turns never report success", () => {
 // duplicate notice — visible, and the direction the spec takes deliberately.
 describe("boot redelivers what the last boot owed", () => {
   const owedDebt = () => owedEntry({
-    parentSessionId: "ses_parent", childSessionId: "ses_owed",
-    text: "[dynamic-task-notify]\nsession ses_owed owed this",
+    parentSessionId: "ses_parent",
+    childSessionId: "ses_owed",
+    // A real notification, from the real renderer: a debt built from a hand-written
+    // approximation of the wire text is a debt the host never produced, and a boot
+    // that redelivers it proves nothing about redelivering a real one.
+    text: formatParentNotification({ childSessionId: "ses_owed", description: "owed" }, "completed", "owed this"),
   });
 
   // Every case here is the same world with one debt in it, so the world is built

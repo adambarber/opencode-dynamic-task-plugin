@@ -483,6 +483,28 @@ const NOTIFICATION_KINDS: Record<NotifyKind, { tag: string; header: string; body
   notice: { tag: "[dynamic-task-notice]", header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
 };
 
+/**
+ * The tag a kind of parent notification carries. Exported because the tag IS the
+ * routing contract — a host orchestrator tells a settlement from a mid-flight notice
+ * by it, without parsing prose — so the cases that pin that routing need the tag and
+ * not a retyped copy of its two spellings.
+ */
+export function notificationTag(kind: NotifyKind): string {
+  return NOTIFICATION_KINDS[kind].tag;
+}
+
+/**
+ * Whether a parent-directed text is one of our notifications, by its tag. The tag IS
+ * the routing contract — a host orchestrator that routes on it would not parse the
+ * prose — so anything that has to tell a notification from child work asks here
+ * rather than retyping the two spellings. The mock transport routes on it, which is
+ * why a marker that changed without this would have left every test classifying its
+ * own notifications as child work and passing.
+ */
+export function isParentNotification(text: string): boolean {
+  return Object.values(NOTIFICATION_KINDS).some((shape) => text.includes(shape.tag));
+}
+
 export function formatParentNotification(
   state: {
     childSessionId: string;

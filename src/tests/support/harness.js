@@ -20,12 +20,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
-import { clearNotifyLedger } from "../../../dist/shared/notify.js";
+import { clearNotifyLedger, isParentNotification } from "../../../dist/shared/notify.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
+import { getDebugLogPath } from "../../../dist/debug-logger.js";
 // The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
 // is `satisfies Event["type"]` in host-events.ts, so the harness cannot fire an
 // event the host does not publish — which is the one thing a fixture must never
@@ -482,10 +483,12 @@ function createMockClient(hooks = {}) {
         state.sessionBodies.set(id, body);
         return SDK_ENVELOPE({ id });
       },
-      // session.prompt routes by marker: parent notifications carry
-      // [dynamic-task-notify] / [dynamic-task-notice]; everything else is
+      // session.prompt routes by marker: parent notifications carry the tag
+      // production's own isParentNotification recognises; everything else is
       // child work.
-      prompt: ({ path, body }) => {
+      prompt: (args) => {
+        const { path, body } = args;
+        const text = promptText(args);
         // The prompt gate: the next child prompt parks here until the test
         // releases it, then fails non-retryably. A turn's own prompt delivery
         // failing is the one settlement that can still land while a steer
@@ -505,10 +508,7 @@ function createMockClient(hooks = {}) {
         if (hooks.promptFailIds?.has(path.id)) {
           return Promise.reject(new Error(`prompt failed for ${path.id}`));
         }
-        const text = body?.parts?.[0]?.text || "";
-        const isNotify =
-          text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]");
-        if (isNotify) {
+        if (isParentNotification(text)) {
           // The delivery transport for THIS notification, as a plan rather
           // than an override: a test states what the transport does, never how
           // the plugin reaches it.
@@ -694,8 +694,13 @@ export const promptsTo = (client, sessionId) => client._state.promptBodies.filte
 /** The text of every prompt addressed to one session. */
 export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId).map(promptText);
 
-/** The text one prompt body carries, with the parts envelope stripped. */
-export const promptText = (body) => body.body.parts[0].text;
+/**
+ * The text one prompt body carries, with the parts envelope stripped. Tolerant of a
+ * body carrying no text part, because the two readers that classify a prompt by its
+ * marker run before anything knows the body has parts at all — a strict reader there
+ * throws inside a mock instead of reporting the prompt as not-a-notification.
+ */
+export const promptText = (args) => args?.body?.parts?.[0]?.text || "";
 
 /** "This prompt said these words" — the one predicate both prompt readers use. */
 const carries = (words) => (p) => promptText(p).includes(words);
@@ -1002,7 +1007,7 @@ export async function withLoggedChild({ hooks = {} } = {}, body) {
       out,
       directory,
       /** The child's debug log, as the operator would read it. */
-      log: () => readFileSync(join(directory, ".dynamic-task-logs", `parent-p1__child-${id}.log`), "utf8"),
+      log: () => readFileSync(getDebugLogPath("p1", id), "utf8"),
     });
   });
 }
@@ -1098,8 +1103,7 @@ export async function setupTwoTurnHarness() {
   const origPrompt = harness.client.session.prompt;
   let parentNotifies = 0;
   harness.client.session.prompt = (args) => {
-    const text = args.body?.parts?.[0]?.text || "";
-    if (text.includes("[dynamic-task-notify]") || text.includes("[dynamic-task-notice]")) {
+    if (isParentNotification(promptText(args))) {
       parentNotifies++;
       if (parentNotifies === 1) return Promise.reject(new Error("parent busy"));
     }

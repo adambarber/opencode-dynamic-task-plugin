@@ -15,7 +15,7 @@ import {
   getPendingDeliveries,
   restorePendingDeliveries,
 } from "../../dist/shared/notify.js";
-import { bounded, deferred } from './support/harness.js';
+import { bounded, deferred, promptText } from './support/harness.js';
 
 const NO_SLEEP = async () => {};
 
@@ -228,8 +228,8 @@ describe("notify gate: notifyParent", () => {
 
   it("same-child deliveries serialize in claim order", async () => {
     const order = [];
-    const { client } = recordingClient(async ({ body }) => {
-      const text = body.parts[0].text;
+    const { client } = recordingClient(async (args) => {
+      const text = promptText(args);
       order.push(`start:${text}`);
       await new Promise((r) => setTimeout(r, 20));
       order.push(`end:${text}`);

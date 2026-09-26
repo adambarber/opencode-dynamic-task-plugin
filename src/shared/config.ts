@@ -122,10 +122,13 @@ export function normalizeDynamicTaskConfig(
   };
 }
 
-export function checkConcurrencyLimit(
-  activeCount: number,
-  config: Pick<DynamicTaskConfig, "maxConcurrent">,
-): string | null {
+// The only part of the config a concurrency decision reads. Named so that both
+// the limit's own signature and the registration that enforces it agree on what
+// "the limit" is made of, instead of two `Pick<DynamicTaskConfig, "maxConcurrent">`
+// spellings that a second limit field would have to reach separately.
+export type ConcurrencyConfig = Pick<DynamicTaskConfig, "maxConcurrent">;
+
+export function checkConcurrencyLimit(activeCount: number, config: ConcurrencyConfig): string | null {
   if (activeCount >= config.maxConcurrent) {
     return `ConcurrencyLimitExceeded: Cannot run more than ${config.maxConcurrent} active tasks (current: ${activeCount}). Wait for a completion notification to arrive, or raise maxConcurrent in the dynamic-task config. Use task_list to see the slot holders; task_interrupt frees a slot, and reviving a settled task needs a free slot too.`;
   }

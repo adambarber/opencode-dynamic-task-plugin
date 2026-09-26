@@ -3,7 +3,7 @@
 // truncateText and formatAge live in notify.ts / task-state.ts respectively —
 // one home each, imported here.
 import { truncateText, type NotificationRecord } from "./notify.js";
-import { formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState } from "./task-state.js";
+import { formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { hostTurnRunning, type LivenessReading } from "./liveness.js";
 import { textBlock } from "./text-block.js";
 
@@ -25,10 +25,13 @@ export function buildBackgroundPrompt(prompt: string): string {
   );
 }
 
-export interface FleetRow {
-  childSessionId: string;
-  agentName: string;
-  description: string;
+/**
+ * The row a fleet table renders, named as a projection of the identity it
+ * prints: the three identity fields it shows, plus the two that are the fleet's
+ * to know. Spelling them out instead of picking them meant a rename of an
+ * identity field reached the table by a reader's memory.
+ */
+export interface FleetRow extends Pick<TaskIdentity, "childSessionId" | "agentName" | "description"> {
   state: string;
   startedAt: number;
 }

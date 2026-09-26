@@ -22,7 +22,7 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
-import type { DynamicTaskConfig } from "./config.js";
+import type { ConcurrencyConfig, DynamicTaskConfig } from "./config.js";
 import type { DependencyBlock } from "./admission.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
@@ -362,7 +362,7 @@ export function createTaskStore(): TaskStore {
 export function registerActiveTask(
   store: TaskStore,
   task: NewTaskRegistration,
-  config: Pick<DynamicTaskConfig, "maxConcurrent">,
+  config: ConcurrencyConfig,
 ): ActiveTaskState {
   const limitError = checkConcurrencyLimit(store.activeTasks.size, config);
   if (limitError) {

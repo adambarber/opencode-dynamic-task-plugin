@@ -27,11 +27,7 @@ import {
   type NewTaskRegistration,
   type TaskStore,
 } from "./task-state.js";
-
-export interface AgentRecord {
-  name: string;
-  [key: string]: unknown;
-}
+import type { AgentRecord } from "./host-shape.js";
 
 export type AdmissionDeniedReason =
   | { kind: "missing-name" }

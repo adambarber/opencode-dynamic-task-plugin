@@ -33,3 +33,18 @@ export function eventString(event: unknown, ...path: string[]): string | undefin
   const value = eventField(event, ...path);
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
+
+/**
+ * An agent as the host's API describes it: a name, and whatever else it said.
+ *
+ * It lives in the shape layer rather than beside the admission gate that first
+ * needed it, because the dispatch policy reads the same record from the other
+ * side and cannot import a module that imports it. Two spellings of "an agent,
+ * unvalidated" meant two places for a field to be forgotten — and the second
+ * spelling was anonymous, so the policy function's parameter said nothing about
+ * what it was being handed.
+ */
+export interface AgentRecord {
+  name: string;
+  [key: string]: unknown;
+}

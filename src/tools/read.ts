@@ -93,13 +93,13 @@ export async function executeTaskStatus(scope: ResolvedSessionScope): Promise<st
 // Liveness is a read, not a precondition: a status view must render the record
 // it has even when the server cannot be asked. A failed read says so, which is
 // the difference between "the server says idle" and "the server did not answer".
+// The parameters are readLiveness's own, so this wrapper cannot answer a
+// different question than the reader it wraps if that reader grows an argument.
 async function readLivenessSafely(
-  client: ResolvedSessionScope["client"],
-  sessionId: string,
-  messages?: unknown[],
+  ...args: Parameters<typeof readLiveness>
 ): Promise<LivenessReading | null> {
   try {
-    return await readLiveness(client, sessionId, messages);
+    return await readLiveness(...args);
   } catch {
     return null;
   }

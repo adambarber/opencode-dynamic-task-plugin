@@ -21,6 +21,7 @@ import {
   declareNeedsInput, promptTextsTo, promptsSaying, sentPrompts, sessionBody, sessionCount, sessionIds, wasAborted, statusReadCount,
 } from './support/harness.js';
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
+import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
 
 // A message carrying no clock at all — the case where an age must not be
@@ -899,12 +900,13 @@ describe("task_result and task_interrupt paths", () => {
     const summary = await failing.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: error");
     answerSays(summary, "boom", "the cause rides along");
+    answerSays(summary, SEE_ERROR_ABOVE, "an empty Latest block points at the error rather than pretending");
     });
 
   it("a tracked task whose read fails still reports the store's own state", async () => {
     const summary = await resultForUnreadableChild();
     answerSays(summary, "Status: active", "the store is the authority");
-    answerSays(summary, "(API unavailable)", "the failed read says so");
+    answerSays(summary, API_UNAVAILABLE, "the failed read says so");
     answerOmits(summary, "Server status", "no reading, no liveness block");
   });
 
@@ -926,7 +928,7 @@ describe("task_result and task_interrupt paths", () => {
   // and the two lines that must state the absence rather than invent it.
   const nothingWritten = [
     ["no message times", "Last child message: (none yet)"],
-    ["no assistant text", "(No assistant text found)"],
+    ["no assistant text", NO_ASSISTANT_TEXT],
   ];
   for (const [name, expected] of nothingWritten) {
     it(`a child with ${name} says so rather than guessing an age`, async () => {

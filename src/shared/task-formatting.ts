@@ -224,7 +224,16 @@ function settledStatusLines(task: RetainedTaskState): string[] {
   ];
 }
 
-export function formatTaskResultSummary(input: {
+/**
+ * The record every read path renders from.
+ *
+ * This shape was being spelled out by hand at four call sites (three in read.ts,
+ * one in context.ts) while a fifth restatement sat in the tests, in a language
+ * with no compiler to catch a rename. A record declared N times is N chances for
+ * one side to lag, and the lag is invisible until a field silently renders
+ * undefined. One declaration, and a builder that owns the boring truth.
+ */
+export interface TaskResultRecord {
   sessionId: string;
   status: string;
   messageCount: number;
@@ -239,7 +248,32 @@ export function formatTaskResultSummary(input: {
   // different stories about the same child.
   task?: TaskRecord | null | undefined;
   liveness?: LivenessReading | null | undefined;
-}): string {
+}
+
+/** What a read path must say, with the rest of the record inferable. */
+export type TaskResultFacts = Pick<TaskResultRecord, "sessionId" | "status" | "latestText"> &
+  Partial<Omit<TaskResultRecord, "sessionId" | "status" | "latestText">>;
+
+/**
+ * The record a read path builds. The defaults encode an invariant rather than a
+ * convenience: a record built without messages is a record whose read produced
+ * none, and one not marked tracked is a session this plugin has no record of.
+ * A caller overrides them only when it actually read messages or holds a record.
+ */
+export function taskResultRecord(facts: TaskResultFacts): TaskResultRecord {
+  return { messageCount: 0, tracked: false, ...facts };
+}
+
+// Why the Latest block is empty. One reason per way a read yields no text, and
+// each has exactly one owner: the test suite imports these rather than retyping
+// them, because a placeholder restated in a test is a second declaration of the
+// production vocabulary that no compiler can check.
+export const NO_ASSISTANT_TEXT = "(No assistant text found)";
+export const SEE_ERROR_ABOVE = "(See error above)";
+export const API_UNAVAILABLE = "(API unavailable)";
+export const NO_SESSION_RECORD = "(No session record found)";
+
+export function formatTaskResultSummary(input: TaskResultRecord): string {
   const running = input.status === "busy" || input.status === "active";
   // task_status is the settleability authority (it renders the same liveness
   // block beside the store's own state), so a running child is pointed there
@@ -281,7 +315,7 @@ export function formatTaskResultSummary(input: {
     "### Latest Assistant Output",
     // Pull path: the operator asked for this output, so it is delivered
     // whole. Only the push path (parent notification) is bounded.
-    input.latestText || "(No assistant text found)",
+    input.latestText || NO_ASSISTANT_TEXT,
     "",
     action,
   );

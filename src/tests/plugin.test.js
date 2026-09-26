@@ -526,6 +526,7 @@ import {
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
+  taskResultRecord,
 } from "../../dist/shared/task-formatting.js";
 import { hostTurnRunning, statusFromHostState } from "../../dist/shared/liveness.js";
 import { hostPayload } from "../../dist/shared/session-lifecycle.js";
@@ -613,12 +614,14 @@ describe("formatParentNotification", () => {
   });
 });
 
-// The record the view formatters read. Defaults are the boring truth (one
-// completed, tracked turn with a short latest output); a test states only the
-// field it is actually about.
-function resultRecord(overrides = {}) {
-  return { sessionId: "s", status: "completed", messageCount: 1, latestText: "hi", tracked: true, ...overrides };
-}
+// The record the view formatters read. Production owns the shape
+// (taskResultRecord) and the boring truth that goes with it; what is left here is
+// this suite's fixture story — a completed, tracked turn with a short latest
+// output — so a case states the field it is actually about. `messageCount` used
+// to be spelled out as 1 with no assertion behind it: a declared field is a claim
+// that the field matters, and this one never did.
+const resultRecord = (overrides = {}) =>
+  taskResultRecord({ sessionId: "s", status: "completed", latestText: "hi", tracked: true, ...overrides });
 
 // The persistence signal a retained mutation must emit. Wiring the counter to
 // the store here means no test hand-rolls the callback and then has to read the
@@ -717,13 +720,19 @@ describe("formatTaskResultSummary", () => {
   });
 
   it("renders read failures in the same voice with the error as data", () => {
-    const result = formatTaskResultSummary(resultRecord({
-      sessionId: "ses_gone", status: "error", messageCount: 0,
-      latestText: "(See error above)", tracked: false, error: "boom (not retryable)",
-    }));
+    // The failure case says only what the case is about: it models read.ts's
+    // untracked-failure branch, so it says the read was untracked rather than
+    // inheriting a fixture that claims otherwise. The shape, the zero-message
+    // count and the untracked default itself all come from the production
+    // builder, which is the only declaration of them.
+    const result = formatTaskResultSummary(
+      resultRecord({ sessionId: "ses_gone", status: "error", tracked: false, error: "boom (not retryable)" }),
+    );
     assert.match(result, /^## Task Result/);
     assert.match(result, /Status: error/);
     assert.match(result, /Error: boom \(not retryable\)/);
+    assert.match(result, /Messages: 0/, "a read that produced nothing reports no messages");
+    assert.match(result, /Tracked: no/, "and the plugin holds no record of it");
   });
 
   it("includes recovery guidance for error status", () => {

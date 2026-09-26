@@ -10,6 +10,10 @@ import {
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
+  taskResultRecord,
+  NO_ASSISTANT_TEXT,
+  SEE_ERROR_ABOVE,
+  API_UNAVAILABLE,
   type FleetRow,
 } from "../shared/task-formatting.js";
 import { pruneRetainedTasks, findTask, listTasks, dispatchForest, type DispatchNode } from "../shared/task-state.js";
@@ -33,16 +37,18 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     // server's own word when it does not — and never a guess about message
     // shapes, which is what used to make a working child read as completed.
     const liveness = await readLivenessSafely(client, sessionId, messages);
-    return formatTaskResultSummary({
-      sessionId,
-      status: task ? task.state : statusFromHostState(liveness?.hostState ?? null),
-      messageCount: messages.length,
-      latestText: getLatestAssistantText(messages) || "(No assistant text found)",
-      tracked: task !== undefined,
-      notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
-      task: task ?? null,
-      liveness,
-    });
+    return formatTaskResultSummary(
+      taskResultRecord({
+        sessionId,
+        status: task ? task.state : statusFromHostState(liveness?.hostState ?? null),
+        messageCount: messages.length,
+        latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
+        tracked: task !== undefined,
+        notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
+        task: task ?? null,
+        liveness,
+      }),
+    );
   } catch (err: unknown) {
     // 404 or network error → unknown/error states in the same markdown voice.
     const message = errorMessage(err);
@@ -53,25 +59,26 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     }
     const retryable = code === "ECONNREFUSED" || code === "ETIMEDOUT";
     if (!task) {
-      return formatTaskResultSummary({
-        sessionId,
-        status: "error",
-        messageCount: 0,
-        latestText: "(See error above)",
-        tracked: false,
-        error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
-      });
+      return formatTaskResultSummary(
+        taskResultRecord({
+          sessionId,
+          status: "error",
+          latestText: SEE_ERROR_ABOVE,
+          error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
+        }),
+      );
     }
     // A tracked task whose read failed still has a store state to report, and
     // saying so is the honest answer — the liveness block is simply absent.
-    return formatTaskResultSummary({
-      sessionId,
-      status: task.state,
-      messageCount: 0,
-      latestText: "(API unavailable)",
-      tracked: true,
-      notification: getTurnNotification(sessionId, task.startedAt),
-    });
+    return formatTaskResultSummary(
+      taskResultRecord({
+        sessionId,
+        status: task.state,
+        latestText: API_UNAVAILABLE,
+        tracked: true,
+        notification: getTurnNotification(sessionId, task.startedAt),
+      }),
+    );
   }
 }
 

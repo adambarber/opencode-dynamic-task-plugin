@@ -25,7 +25,10 @@ import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 // is `satisfies Event["type"]` in host-events.ts, so the harness cannot fire an
 // event the host does not publish — which is the one thing a fixture must never
 // be able to do, because a fixture that invents an event certifies a gate that
-// listens for it. That is exactly how `question.created` shipped.
+// listens for it. That is exactly how `question.created` shipped. The names are
+// used to BUILD events (the `events` factory below) rather than re-exported as a
+// second list: a suite that named a raw event type would be naming it from a
+// hand-kept copy of this import, which is the drift the import exists to prevent.
 import {
   QUESTION_ASKED,
   QUESTION_REJECTED,
@@ -35,17 +38,6 @@ import {
   SESSION_IDLE,
   SESSION_STATUS,
 } from "../../../dist/shared/host-events.js";
-
-/** The host's event names, for a test that must name one directly. */
-export const HOST_EVENT = {
-  QUESTION_ASKED,
-  QUESTION_REJECTED,
-  QUESTION_REPLIED,
-  SESSION_DELETED,
-  SESSION_ERROR,
-  SESSION_IDLE,
-  SESSION_STATUS,
-};
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -542,10 +534,13 @@ function createMockClient(hooks = {}) {
           // it rather than the test reaching in to normalize it.
           throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
         }
-        if (!state.sessions.has(path.id)) {
-          throw sessionNotFound(path.id);
-        }
-        if (hooks.abortFailIds?.has(path.id)) {
+        // "The server has no such session" has two causes here, and the host
+        // cannot tell them apart: an id the harness never created, and an id whose
+        // abort is scripted to come back that way. One predicate, so a case that
+        // scripts a failing abort gets the same 404 shape as a case that names a
+        // session that was never there.
+        const serverLostIt = (id) => !state.sessions.has(id) || Boolean(hooks.abortFailIds?.has(id));
+        if (serverLostIt(path.id)) {
           throw sessionNotFound(path.id);
         }
         // The abort gate: the first abort parks here until the test releases
@@ -800,15 +795,20 @@ export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: "
   return { h, c, id, out };
 }
 
+/** `withChild` plus one step, for the arrangements that are this one and then something. */
+async function withChildThen(step, opts) {
+  const child = await withChild(opts);
+  await step(child.h, child.id);
+  return child;
+}
+
 /**
  * Boot, spawn one child, and settle it — the precondition for reading a
  * child's settled state. Naming it keeps a test from spelling out the same
  * three steps to ask the same question.
  */
 export async function withSettledChild(opts = {}) {
-  const { h, c, id, out } = await withChild(opts);
-  await h.settle(id);
-  return { h, c, id, out };
+  return withChildThen((h, id) => h.settle(id), opts);
 }
 
 /**
@@ -821,9 +821,7 @@ export async function withSettledChild(opts = {}) {
  * never answers it, so the ask is part of the setup, not the test.
  */
 export async function withAskedChild(questionId, ...options) {
-  const child = await withChild();
-  await child.h.fireEvent(events.ask(child.id, questionId, ...options));
-  return child;
+  return withChildThen((h, id) => h.fireEvent(events.ask(id, questionId, ...options)));
 }
 
 /**

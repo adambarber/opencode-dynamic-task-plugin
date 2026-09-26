@@ -217,31 +217,24 @@ describe("fetchAgents", () => {
     assert.strictEqual(result[0].name, "explore");
   });
 
-  it("handles wrapped response (result.data)", async () => {
-    const mockClient = clientWith({
-      data: [
-        { name: "general", mode: "subagent" },
-        { name: "plan", mode: "primary" },
-      ],
+  // One hypothesis: whichever envelope the host wraps the list in, exactly the
+  // dispatchable agents come back — the server answers all three shapes.
+  const envelopes = [
+    ["handles wrapped response (result.data)", "data", "general"],
+    ["handles wrapped response (result.agents)", "agents", "review"],
+  ];
+  for (const [name, key, kept] of envelopes) {
+    it(name, async () => {
+      const mockClient = clientWith({ [key]: [
+        { name: kept, mode: "subagent" },
+        { name: "excluded", mode: "primary" },
+      ] });
+
+      const result = await fetchAgents(mockClient);
+      assert.strictEqual(result.length, 1, "primary agents are not dispatchable");
+      assert.strictEqual(result[0].name, kept);
     });
-
-    const result = await fetchAgents(mockClient);
-    assert.strictEqual(result.length, 1);
-    assert.strictEqual(result[0].name, "general");
-  });
-
-  it("handles wrapped response (result.agents)", async () => {
-    const mockClient = clientWith({
-      agents: [
-        { name: "review", mode: "subagent" },
-        { name: "build", mode: "primary" },
-      ],
-    });
-
-    const result = await fetchAgents(mockClient);
-    assert.strictEqual(result.length, 1);
-    assert.strictEqual(result[0].name, "review");
-  });
+  }
 
   // The cache is process-global state; scoping it per client means one
   // plugin instance (or the host's entry-export probes) can never serve
@@ -829,16 +822,26 @@ describe("task ledger persistence", () => {
     });
   });
 
-  it("rejects entries disagreeing with their map key", async () => {
-    await inLedgerFile(async (file) => {
-      writeFileSync(file, JSON.stringify({
-        version: 2,
-        tasks: { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } },
-      }));
-      const loaded = loadTaskLedger(file);
-      assert.strictEqual(loaded.has("ses_a"), false, "a divergent entry is corrupt, not relabeled");
+  // One hypothesis: an entry survives only if it is well-formed AND agrees with
+  // its map key. A divergent or malformed entry is corrupt, not relabeled, so
+  // each case declares the tasks it writes and exactly which keys must return.
+  const survived = [
+    ["rejects entries disagreeing with their map key",
+      { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } }, []],
+    ["drops entries with unknown states or invalid ids", {
+      ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
+      ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
+      ses_noid: { ...retainedEntry(), childSessionId: 42 },
+    }, ["ses_ok"]],
+  ];
+  for (const [name, tasks, keepers] of survived) {
+    it(name, async () => {
+      await inLedgerFile(async (file) => {
+        writeFileSync(file, JSON.stringify({ version: 2, tasks }));
+        assert.deepStrictEqual([...loadTaskLedger(file).keys()], keepers);
+      });
     });
-  });
+  }
 
   it("rejects non-finite timestamps and mixed lineage wholesale", async () => {
     await inLedgerFile(async (file) => {
@@ -851,21 +854,6 @@ describe("task ledger persistence", () => {
     });
   });
 
-  it("drops entries with unknown states or invalid ids", async () => {
-    await inLedgerFile(async (file) => {
-      writeFileSync(file, JSON.stringify({
-        version: 2,
-        tasks: {
-          ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
-          ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
-          ses_noid: { ...retainedEntry(), childSessionId: 42 },
-        },
-      }));
-      const loaded = loadTaskLedger(file);
-      assert.strictEqual(loaded.size, 1);
-      assert.ok(loaded.has("ses_ok"));
-    });
-  });
 });
 
 // ═════════════════════════════════════════════════════════════════════
@@ -1223,11 +1211,15 @@ function storeAtLimit(cfg) {
   return store;
 }
 
-/** A store whose one task has already been retained as completed. */
-function storeWithCompleted(cfg) {
+/**
+ * A store whose one task has already been retained in the given state. The
+ * settled-record invariant is guarded from two entry points — transitionState
+ * and noteLateOutcome — so the arrangement needs a name, not a state.
+ */
+function storeSettledAs(state, cfg) {
   const store = createTaskStore();
   seedSesActive(store, cfg);
-  transitionState(store, "ses_active", "completed");
+  transitionState(store, "ses_active", state);
   return store;
 }
 
@@ -1733,25 +1725,26 @@ describe("question gate: reply/reject settlement", () => {
   }
   const okClient = () => questionClient({ reply: async () => {}, reject: async () => {} });
 
-  it("reply succeeds", async () => {
-    assert.deepStrictEqual(await replyToQuestion(okClient(), "q1", "yes"), { succeeded: true });
-  });
-
-  it("reply absorbs already-resolved as success", async () => {
-    const client = questionClient({ reply: async () => { throw new Error("already resolved"); }, reject: async () => {} });
-    assert.deepStrictEqual(
-      await replyToQuestion(client, "q1", "yes"),
-      { succeeded: true, reason: "already_resolved" }
-    );
-  });
-
-  it("reply reports transport failures", async () => {
-    const client = questionClient({ reply: async () => { throw new Error("nope"); }, reject: async () => {} });
-    assert.deepStrictEqual(
-      await replyToQuestion(client, "q1", "yes"),
-      { succeeded: false, reason: "nope" }
-    );
-  });
+  // One hypothesis: what replyToQuestion's outcome IS, given how the transport
+  // behaved. Only the "already resolved" throw is absorbed — any other failure
+  // is the caller's problem to see, with its message intact.
+  const outcomes = [
+    ["reply succeeds", { reply: async () => {} }, { succeeded: true }],
+    ["reply absorbs already-resolved as success",
+      { reply: async () => { throw new Error("already resolved"); } },
+      { succeeded: true, reason: "already_resolved" }],
+    ["reply reports transport failures",
+      { reply: async () => { throw new Error("nope"); } },
+      { succeeded: false, reason: "nope" }],
+  ];
+  for (const [name, transport, expected] of outcomes) {
+    it(name, async () => {
+      assert.deepStrictEqual(
+        await replyToQuestion(questionClient({ ...transport, reject: async () => {} }), "q1", "yes"),
+        expected,
+      );
+    });
+  }
 
   it("reply rejects missing id/answer", async () => {
     assert.strictEqual((await replyToQuestion(okClient(), "", "yes")).succeeded, false);
@@ -1865,9 +1858,7 @@ describe("task policy: invalid inputs", () => {
     // The timeout-era races are structurally gone: settlement is exactly once
     // (active -> terminal), so a late error after a reported completion can
     // only arrive through noteLateOutcome, never through transitionState.
-    const store = createTaskStore();
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "completed");
+    const store = storeSettledAs("completed", config);
     assert.throws(() => transitionState(store, "ses_active", "error"), /terminal|invalid/i);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
   });
@@ -1944,21 +1935,19 @@ describe("task-state: noteLateOutcome", () => {
   const config = normalizeDynamicTaskConfig({});
 
   it("escalates a completed record to error — the one retained rewrite edge", () => {
-    const store = storeWithCompleted(config);
+    const store = storeSettledAs("completed", config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), true);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "error");
     assert.ok(store.retainedTasks.has("ses_active"), "stays retained");
   });
 
   it("refuses to rewrite interrupted or errored records", () => {
-    const store = createTaskStore();
-    seedSesActive(store, config);
-    transitionState(store, "ses_active", "interrupted");
+    const store = storeSettledAs("interrupted", config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), false);
   });
 
   it("refuses non-edges and unknown sessions", () => {
-    const store = storeWithCompleted(config);
+    const store = storeSettledAs("completed", config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "completed"), false);
     assert.strictEqual(noteLateOutcome(store, "ses_nope", "error"), false);
   });

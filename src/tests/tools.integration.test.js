@@ -592,6 +592,26 @@ describe("task_notify: the child-to-parent channel", () => {
     assert.ok(!out.includes("duplicate"), `never confuses the two. got: ${out}`);
   });
 
+  // A held write is the case the PARENT-facing record already learned to name
+  // honestly (05-notification-gate: the host puts the notification in the
+  // parent's context while the call it was dialed on is still open, so "not
+  // sent" is false the moment the parent has read it). Live-observed
+  // 2026-09-26: a child was told "Message not sent ... retry task_notify
+  // later" for a notice already in the parent's transcript — and the harness
+  // could not catch it, because it modelled a held write as one that neither
+  // lands NOR settles, while the real host does both. The child-facing voice
+  // must therefore read the record's own verdict, which separates held
+  // (dialed, may still land) from failed (never delivered).
+  it("a held parent write does not report a delivered notice as unsent", async () => {
+    const { h, c } = await withChild({
+      harness: { hooks: { notifyTransport: { hold: new Promise(() => {}) } } },
+    });
+    const out = await withShrunkBounds(() => c.notify("are you there?"));
+    assert.strictEqual(h.notices().length, 1, "the host really did put it in the parent's context");
+    assert.ok(!out.includes("not sent"), `a held write was dialed, not lost. got: ${out}`);
+    assert.ok(!/retry/i.test(out), `retrying a delivered notice duplicates it. got: ${out}`);
+  });
+
 
   it("a suppressed duplicate shows as Suppressed in task_result, never FAILED", async () => {
     const { h, c, id } = await withChild();

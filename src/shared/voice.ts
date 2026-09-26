@@ -197,6 +197,19 @@ export const NOTICE_DUPLICATE_SUPPRESSED =
 export const NOTICE_PARENT_UNREACHABLE =
   "Message not sent: the parent did not acknowledge after 2 attempts. The notice is recorded locally; retry task_notify later.";
 
+// A held write is the case the parent-facing record already learned to name
+// honestly (05-notification-gate): the host puts the notification in the
+// parent's context while the call it was dialed on is still open, so "not
+// sent" is false the moment the parent has read it. Live-observed 2026-09-26 —
+// a child read the failure text above for a notice already in the parent's
+// transcript, and "retry task_notify later" is a standing duplicate-order: the
+// retry is the duplicate. So the child gets the honest verdict and the
+// instruction that actually protects it.
+export const NOTICE_PENDING_ACK =
+  "Message handed to the parent, which has not acknowledged it yet: the host is holding it " +
+  "until the parent's current turn ends, and it will arrive without another call from you. " +
+  "Do NOT send this notice again — a second call would duplicate a message already delivered.";
+
 // ─── Question gate ───────────────────────────────────────────────────────
 
 // What a child is told when nothing can answer its question. The child reads

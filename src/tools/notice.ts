@@ -16,6 +16,7 @@ import {
   NOTICE_SENT,
   NOTICE_DUPLICATE_SUPPRESSED,
   NOTICE_PARENT_UNREACHABLE,
+  NOTICE_PENDING_ACK,
   noticeClaimRefused,
 } from "../shared/voice.js";
 
@@ -71,11 +72,14 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   });
   if (delivered) return NOTICE_SENT;
   // The gate resolves synchronously after this await, so the latest record
-  // is ours: suppressed-duplicate and unreachable-parent read differently
-  // and tell the child different next moves.
+  // is ours. It carries the verdict, and the three ways of not delivering are
+  // three different things to tell the child: nothing dialed, dialed and lost,
+  // or dialed and in the host's hand. Collapsing the last two is what once
+  // told a child to retry a message the parent had already read.
   const record = getLatestNotification(task.childSessionId);
   if (record && record.message === parentMessage && record.suppressed) {
     return NOTICE_DUPLICATE_SUPPRESSED;
   }
+  if (record?.pending) return NOTICE_PENDING_ACK;
   return NOTICE_PARENT_UNREACHABLE;
 }

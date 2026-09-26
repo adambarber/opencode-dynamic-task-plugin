@@ -6,8 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --test src/tests/*.test.js",
-    "test:coverage": "c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
+    "test": "npm run build && npm run test:duplication && node --test src/tests/*.test.js",
+    "test:coverage": "npm run build && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
     "test:duplication": "jscpd src --config .jscpd.json",
     "lint": "tsc --noEmit",
     "watch": "tsc --watch"

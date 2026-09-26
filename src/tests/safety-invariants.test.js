@@ -414,6 +414,10 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
       `a *.js ignore removes every test file from duplicate detection.\nGot: ${JSON.stringify(blind)}`,
     );
   });
+
+  // The scan itself runs in the gate `npm test` performs, ahead of the suite —
+  // see the test script. A threshold pinned here and never executed is a
+  // comment; the script is what makes duplication a failing run.
 });
 
 // --- Task 08: strong types ----------------------------------------------------

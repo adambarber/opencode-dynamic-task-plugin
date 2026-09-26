@@ -77,8 +77,12 @@ export default async function dynamicTaskPlugin(
       // host event, so it is where "the child's turn is moving" is observed.
       // Synchronous and before any gate, because the whole point is that a
       // child doing real work (message/part updates, token deltas, tool
-      // transitions) never reads as silent since spawn.
-      noteActivity(store, evtSessionId);
+      // transitions) never reads as silent since spawn. Terminality is decided
+      // once, here, and handed to both consumers: a turn ENDING is real motion
+      // but it is not the turn working, and conflating the two is what let a
+      // stale ending vouch for itself as the current turn's.
+      const terminal = isTerminalSessionEvent(event);
+      noteActivity(store, evtSessionId, terminal);
 
       // --- Question gate (Task 04): attribute through the gate, then settle.
       try {
@@ -88,7 +92,7 @@ export default async function dynamicTaskPlugin(
       }
 
       // --- Session lifecycle event handler ---
-      if (!isTerminalSessionEvent(event)) return;
+      if (!terminal) return;
       try {
         await handleChildLifecycleEvent(client, store, event);
       } catch (error: unknown) {

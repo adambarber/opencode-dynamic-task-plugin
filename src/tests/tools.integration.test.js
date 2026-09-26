@@ -47,6 +47,25 @@ async function withRefusedDep() {
 }
 
 /**
+ * Arm a turn replacement, then deliver bare terminal copies — endings with no
+ * turn behind them, which is exactly what a just-replaced turn's in-flight
+ * copies look like. A replacement that has been seen working for nothing yet
+ * owns no ending, so none of them may settle it. Returns the ONE notice the
+ * parent should end up with, from the replacement's own ending once it has run.
+ */
+async function echoesCannotSettle(h, c, id, arm) {
+  const before = h.notices().length;
+  await arm();
+  await h.fireEvent(events.idle(id));
+  await h.fireEvent(events.idle(id));
+  const status = await c.status();
+  assert.ok(status.includes("active"), `an echo is not the replacement turn's ending. got: ${status}`);
+  assert.strictEqual(h.notices().length, before, "no premature completion is notified");
+  await h.fireEvent(events.working(id));
+  return h.settledNotice(id);
+}
+
+/**
  * One child, two turns, with turn one's settlement doomed — the harness fails
  * that first notification, arming a retry. What the caller's next line does is
  * decide WHEN the revival lands relative to the stale retry, which is the whole
@@ -226,9 +245,10 @@ describe("task_continue branches", () => {
   // silent, so nothing is deafened and the child's own terminal event settles it.
   const disturbances = [
     // The steer makes the child echo the abort, and that first idle IS the echo:
-    // the next genuine event is the one that settles.
+    // the next genuine event is the one that settles. Fired bare, because an
+    // echo by definition arrives with no turn behind it.
     ["a steered turn's abort echo never settles the task, but the next genuine event does",
-      {}, async ({ c, h, id }) => { await c.steer("pivot"); await h.settle(id); }],
+      {}, async ({ c, h, id }) => { await c.steer("pivot"); await h.fireEvent(events.idle(id)); }],
     // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
     // well be running, so the task stays active and waits for its own event.
     ["a retryable prompt failure leaves the task active — its event settles it",
@@ -247,11 +267,32 @@ describe("task_continue branches", () => {
     });
   }
 
-  it("a steer racing a completed settle auto-revives instead of demanding a second call", async () => {
-    const { h, c, id, steer, release } = await racingSteer();
-    await h.fireEvent(events.idle(id));
-    await h.fireEvent(events.idle(id));
-    release();
+  // A turn end is published more than once: the host's status channel and the
+  // idle event each say the turn ended. The one-shot steer claim consumed the
+  // FIRST of them, so the second settled the replacement turn as completed
+  // while the child was still working — a "completed successfully" notice with
+  // mid-work text as the latest output, and a ledger deaf to the real ending.
+  it("a turn end that publishes several terminal events cannot settle a just-steered turn", async () => {
+    const { h, c, id } = await withChild();
+    const note = await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
+    assert.ok(note.includes("completed successfully"), `got: ${note}`);
+  });
+
+  // M9: a settlement can still win a steer, but only one way — the replaced
+  // turn's own prompt delivery failing while the steer waits on its abort. A
+  // terminal event can no longer do it (turn attribution drops every ending the
+  // replacement has not been seen working through), so this is the settler the
+  // auto-revive actually exists for.
+  it("a steer racing a prompt-delivery failure auto-revives instead of demanding a second call", async () => {
+    const h = await setupHarness();
+    const { release } = h.client.gateChildPrompt();
+    const { id, c } = await h.spawn({ prompt: "turn one" });
+    const { release: releaseAbort } = h.client.gateAbort();
+    const steer = c.steer("pivot");
+    await sleep(10);
+    release(); // turn one's prompt fails non-retryably → the task settles error
+    await sleep(30);
+    releaseAbort(); // the abort lands; the steer re-validates and finds it settled
     const out = await steer;
     assert.ok(out.includes("revived"), `closes the loop in one call. got: ${out}`);
     assert.strictEqual(
@@ -259,7 +300,7 @@ describe("task_continue branches", () => {
     1,
     "the message fires as the fresh turn",
     );
-    });
+  });
 
   it("a task settling mid-steer never receives the replacement prompt", async () => {
     const { h, c, steer, release } = await racingSteer();
@@ -322,9 +363,19 @@ describe("task_continue branches", () => {
     );
     assert.strictEqual(followUps.length, 1, "the same session is revived, not replaced");
 
+    // The settled turn published its ending more than once, and the extra copy
+    // can still be in flight when the revival fires — so the revived turn runs
+    // its own events before it can end.
+    await h.fireEvent(events.status(id, "busy"));
     await h.settle(id);
     assert.strictEqual(h.notices().length, 2, "revival earns a fresh settlement");
     assert.ok(h.noticeBodies()[1].includes("completed successfully")); });
+
+  it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
+    const { h, c, id } = await withSettledChild();
+    const note = await echoesCannotSettle(h, c, id, () => c.steer("continue"));
+    assert.ok(note.includes("completed successfully"), `got: ${note}`);
+  });
 
   it("interrupted children are not revived — the guidance says spawn fresh", async () => {
     const { h, c, id } = await withChild();

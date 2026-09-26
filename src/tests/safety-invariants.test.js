@@ -134,11 +134,11 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
   rule({
     name: "no raw store/flag mutation outside task-state.ts",
     // (?!=) excludes == / === reads: only real assignments are bypasses.
-    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice/steerPending/
-    // lastActivityAt) belong to the state machine alone: outside task-state.ts
-    // they may be read, never written.
+    // Lifecycle fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/
+    // replacedAt/turnLiveAt) belong to the state machine alone: outside
+    // task-state.ts they may be read, never written.
     patterns: [
-      /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|steerPending|lastActivityAt)\s*=(?!=)/,
+      /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
     ],
     sanctioned: ["task-state.ts"],
     doc: DOC_LIFECYCLE,

@@ -65,11 +65,28 @@ export interface ActiveTaskState extends TaskRecordBase {
   // notice: never a lifecycle field, stripped at settlement so the durable
   // ledger carries no heartbeat.
   lastActivityAt?: number | undefined;
+  /**
+   * Turn attribution, part 1. Stamped ONLY when this turn REPLACED a previous
+   * turn on the same session (a steer, a revival) — a fresh spawn has no prior
+   * turn whose ending could still be in flight.
+   *
+   * A turn end is published more than once by the host (the status channel and
+   * the idle event each say the turn ended), and those copies can still be in
+   * flight when a replacement is dispatched. Until the replacement shows a life
+   * sign, no terminal event can be attributed to it — see
+   * `terminalEventIsAttributable`, the one gate that decides this.
+   */
+  replacedAt?: number | undefined;
+  /**
+   * Turn attribution, part 2: the last moment the CURRENT turn was observed
+   * doing something. Terminal events do not count — a turn ENDING is not the
+   * turn working, and counting it is what let an echo vouch for itself.
+   */
+  turnLiveAt?: number | undefined;
   // Parent steer in flight: set synchronously by task_continue before aborting
   // the running turn, consumed by the lifecycle handler to suppress that
   // turn's terminal echo. Advisory, never a lifecycle mutation — the task
   // stays active either way, and settlement strips it.
-  steerPending?: boolean | undefined;
 }
 
 export interface RetainedTaskState extends TaskRecordBase {
@@ -128,6 +145,8 @@ export function withdrawInterruptClaim(
   if (bounds && checkConcurrencyLimit(store.activeTasks.size, bounds)) return false;
   const { retainedAt: _retainedAt, abortError: _abortError, lastAbortAt: _lastAbortAt, ...active } = retained;
   store.retainedTasks.delete(childSessionId);
+  // No turn attribution: a withdrawal UNDOES a claim about this very turn, so
+  // the turn is still live and its own ending settles it like any other.
   store.activeTasks.set(childSessionId, { ...active, state: "active" });
   emitRetainedChange(store);
   return true;
@@ -191,7 +210,13 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-    const { lastNotice: _notice, steerPending: _steer, lastActivityAt: _activity, ...settled } = active;
+          const {
+            lastNotice: _notice,
+            lastActivityAt: _activity,
+            replacedAt: _replaced,
+            turnLiveAt: _turnLive,
+            ...settled
+          } = active;
     const retained: RetainedTaskState = {
       ...settled,
       state: to,
@@ -252,6 +277,11 @@ export function reviveRetainedTask(
     ...core,
     state: "active",
     startedAt: Date.now(),
+    // A revival replaces the turn that just ended, and a turn end is published
+    // more than once — a copy can still be in flight when the new prompt fires.
+    // Stamped here, in the one place a revival happens, so that copy cannot
+    // settle the revival and report it completed before it has begun.
+    replacedAt: Date.now(),
     ...(model !== undefined ? { requestedModel: model } : {}),
   };
   store.retainedTasks.delete(childSessionId);
@@ -281,10 +311,16 @@ function annotateActive(
 // since spawn". Returns false for untracked ids (the parent, settled children)
 // and writes nothing — the read side (task_status) still treats startedAt as
 // the floor when no event has been seen.
-export function noteActivity(store: TaskStore, childSessionId: string | null | undefined): boolean {
+export function noteActivity(
+  store: TaskStore,
+  childSessionId: string | null | undefined,
+  terminal: boolean,
+): boolean {
   if (!childSessionId) return false;
   return annotateActive(store, childSessionId, (active) => {
-    active.lastActivityAt = Date.now();
+    const now = Date.now();
+    active.lastActivityAt = now;
+    if (!terminal) active.turnLiveAt = now;
   });
 }
 
@@ -296,22 +332,40 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
   });
 }
 
-// Steer claim (parent→child mid-flight message): armed synchronously by
-// task_continue before aborting the running turn, consumed once by the
-// lifecycle handler to suppress that turn's terminal echo. Advisory like a
-// notice — the task stays active either way — so this pair may read and
-// clear the flag but never moves a lifecycle state.
-export function markSteerPending(store: TaskStore, childSessionId: string): boolean {
+// Turn attribution (parent→child turn replacement): armed synchronously by
+// task_continue before aborting the running turn, and by every revival, because
+// a replaced turn's terminal copies can still be in flight. Advisory like a
+// notice — the task stays active either way — so this pair may read and clear
+// the stamps but never moves a lifecycle state.
+export function markTurnReplacement(store: TaskStore, childSessionId: string): boolean {
   return annotateActive(store, childSessionId, (active) => {
-    active.steerPending = true;
+    active.replacedAt = Date.now();
   });
 }
 
-export function consumeSteerPending(store: TaskStore, childSessionId: string): boolean {
+/**
+ * Drop turn attribution when the replacement never happened — the abort may not
+ * have reached the server, so the ORIGINAL turn is still live and will show its
+ * own life signs.
+ */
+export function clearTurnReplacement(store: TaskStore, childSessionId: string): boolean {
   const active = store.activeTasks.get(childSessionId);
-  if (!active || !active.steerPending) return false;
-  active.steerPending = false;
+  if (!active || active.replacedAt === undefined) return false;
+  delete active.replacedAt;
   return true;
+}
+
+/**
+ * Can a terminal event on this child be attributed to the current turn?
+ *
+ * The settle gate's one question, and the whole of it: a turn that replaced
+ * another cannot be said to have ended until it has been seen doing something.
+ * A fresh spawn answers yes unconditionally, because nothing precedes it.
+ */
+export function terminalEventIsAttributable(store: TaskStore, childSessionId: string): boolean {
+  const active = store.activeTasks.get(childSessionId);
+  if (!active || active.replacedAt === undefined) return true;
+  return (active.turnLiveAt ?? 0) >= active.replacedAt;
 }
 
 // Read-path TTL pruning (Task 06): expired retained entries are dropped

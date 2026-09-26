@@ -26,7 +26,7 @@ import {
 import {
   transitionState,
   noteLateOutcome,
-  consumeSteerPending,
+  terminalEventIsAttributable,
   type TaskStore,
   type TaskState,
 } from "../shared/task-state.js";
@@ -122,12 +122,13 @@ export async function handleChildLifecycleEvent(
 
   const active = store.activeTasks.get(childSessionId);
   if (active) {
-    // A steered turn's abort echo is not a settlement: task_continue armed the
-    // claim synchronously before aborting, so the pre-steer turn's terminal
-    // event is consumed here and the task stays active for its replacement
-    // turn. The next genuine terminal event settles normally.
-    if (consumeSteerPending(store, childSessionId)) {
-      void safeLog(client, "info", `Event handler: consumed steer echo for ${childSessionId}, staying active`);
+    // Turn attribution: a turn that REPLACED another (a steer, a revival) has a
+    // prior turn's terminal copies possibly still in flight, and the host
+    // publishes a turn end more than once. Until the replacement has been seen
+    // doing something, a terminal event cannot be attributed to it and the task
+    // stays active. A fresh spawn has no prior turn, so it always settles here.
+    if (!terminalEventIsAttributable(store, childSessionId)) {
+      void safeLog(client, "info", `Event handler: dropped unattributable ending for ${childSessionId}, staying active`);
       return;
     }
     // Synchronous claim — no awaits before this. transitionState is the one

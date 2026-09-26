@@ -97,7 +97,15 @@ export const events = {
    * (`events.idle(id, {})`) when the absence of a field is the point.
    */
   idle: (id, properties = { status: "idle" }) => ({ type: "session.idle", properties: { sessionID: id, ...properties } }),
-  status: (id, status = "idle") => ({ type: "session.status", properties: { sessionID: id, status } }),
+  // The host's status channel, in the host's own nested spelling
+  // (`status: {type}`), not the string shorthand it used to be declared with.
+  status: (id, status = "idle") => ({ type: "session.status", properties: { sessionID: id, status: { type: status } } }),
+  /**
+   * A turn at work: the host saying this session is running. It is the first
+   * event a replacement turn produces, and therefore the life sign that lets
+   * that turn's ending be attributed to it rather than to the turn it replaced.
+   */
+  working: (id) => events.status(id, "busy"),
   // A sync update. `status` is the string, or the host's error object.
   updated: (id, status = "idle") => ({
     type: "sync",
@@ -163,6 +171,7 @@ export function createMockClient(hooks = {}) {
     notifyAttempts: 0,
     childPromptFailed: false,
     abortGate: null,
+    promptGate: null,
   };
 
   return {
@@ -203,6 +212,16 @@ export function createMockClient(hooks = {}) {
       // [dynamic-task-notify] / [dynamic-task-notice]; everything else is
       // child work.
       prompt: ({ path, body }) => {
+        // The prompt gate: the next child prompt parks here until the test
+        // releases it, then fails non-retryably. A turn's own prompt delivery
+        // failing is the one settlement that can still land while a steer
+        // waits on its abort, so this is how a steer is raced against it.
+        if (state.promptGate && !state.promptGate.used) {
+          state.promptGate.used = true;
+          return state.promptGate.promise.then(() => {
+            throw new Error("prompt rejected by the provider");
+          });
+        }
         if (hooks.promptSyncThrowIds?.has(path.id)) {
           throw new Error(`prompt sync-dead for ${path.id}`);
         }
@@ -290,6 +309,13 @@ export function createMockClient(hooks = {}) {
       state.abortGate = { promise: gate.promise, used: false, fails, release: gate.resolve };
       return { release: () => gate.resolve() };
     },
+    // Hold the next child prompt open; the released prompt fails
+    // non-retryably, which settles the task through the prompt-failure path.
+    gateChildPrompt() {
+      const gate = deferred();
+      state.promptGate = { promise: gate.promise, used: false, release: gate.resolve };
+      return { release: () => gate.resolve() };
+    },
   };
 }
 
@@ -326,6 +352,18 @@ const liveHarnesses = [];
 export async function setupHarness({ hooks = {}, options = {}, directory = tmpProjectDir() } = {}) {
   const client = createMockClient(hooks);
   const state = client._state;
+
+  // A step that must produce exactly one notice, counted against a baseline so
+  // a suite that already has notices is judged only on this step. The sleep is
+  // for CI scheduling, not the contract: delivery is a microtask away.
+  const oneNotice = async (action) => {
+    const before = state.notifications.length;
+    await action();
+    await sleep(30);
+    const fresh = state.notifications.slice(before);
+    assert.strictEqual(fresh.length, 1, "a terminal event notifies exactly once");
+    return fresh;
+  };
   resetAgentCache();
   clearNotifyLedger();
   resetQuestionSessions();
@@ -343,7 +381,17 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     fireEvent: (event) => result.event({ event }),
     // The settlement funnel: a task settles only by the event the server
     // would emit, delivered straight to the handler.
-    settle: (id) => result.event({ event: events.idle(id) }),
+    /**
+     * A turn ENDING, as the host actually delivers it: the turn is seen working
+     * first, then its ending. A turn cannot be over before it has started, so a
+     * bare terminal event with nothing before it is not a shape the host
+     * produces — tests that need one (echo races, claim-order questions) fire
+     * the event themselves through fireEvent and say so.
+     */
+    settle: async (id) => {
+      await result.event({ event: events.working(id) });
+      await result.event({ event: events.idle(id) });
+    },
     // What the parent has been sent, in order: { to, message } records — the
     // routing target is part of the contract, so it stays visible.
     notices: () => state.notifications,
@@ -364,19 +412,14 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * delivery is a microtask away.
      */
     async noticeAfter(event) {
-      const before = state.notifications.length;
-      await harness.fireEvent(event);
-      await sleep(30);
-      const fresh = state.notifications.slice(before);
-      assert.strictEqual(fresh.length, 1, "a terminal event notifies exactly once");
-      return fresh[0];
+      return (await oneNotice(() => harness.fireEvent(event)))[0];
     },
     /**
-     * Settle a child and hand back the single notice the parent received — the
-     * common case of noticeAfter, where the terminal event is the idle event.
+     * Settle a child and hand back the single notice the parent received.
+     * Ends the turn the way the host does — see settle.
      */
     async settledNotice(id) {
-      return (await harness.noticeAfter(events.idle(id))).message;
+      return (await oneNotice(() => harness.settle(id)))[0].message;
     },
     /**
      * The admission path's own call: the tool's answer, with no id and nothing

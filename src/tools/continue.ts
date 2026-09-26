@@ -8,8 +8,8 @@ import { gateLedger } from "../shared/notify.js";
 import {
   transitionState,
   pruneRetainedTasks,
-  markSteerPending,
-  consumeSteerPending,
+  markTurnReplacement,
+  clearTurnReplacement,
   reviveRetainedTask,
 } from "../shared/task-state.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
@@ -54,13 +54,14 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   const active = store.activeTasks.get(sessionId);
   if (active) {
     // Steer: the parent speaks to a running child as a turn
-    // replacement — stop, append, re-submit. The claim is armed
-    // synchronously (before any await) so the pre-steer turn's
-    // terminal event cannot settle the task before the abort lands;
-    // the lifecycle handler consumes it and the task stays active.
+    // replacement — stop, append, re-submit. Turn attribution is armed
+    // synchronously (before any await) so the pre-steer turn's terminal
+    // copies cannot settle the task before the abort lands, nor after it:
+    // the lifecycle handler drops any ending the replacement turn has not
+    // yet been seen working through, however many copies the host sends.
     // This path never settles: only the replacement turn's genuine
     // terminal event, or operator interruption, ends the task.
-    markSteerPending(store, sessionId);
+    markTurnReplacement(store, sessionId);
     const { serverGone, transportError: abortError } = await abortSession(client, sessionId);
     if (serverGone) {
       // Nothing left to steer: the session is gone. Settle error so
@@ -85,10 +86,10 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     if (abortError) {
       // The abort may never have reached the server, so the turn may
       // still be running — a replacement prompt now would compete
-      // with it instead of replacing it. Disarm the claim (the live
-      // turn's genuine terminal event must still settle it) and stay
+      // with it instead of replacing it. Drop the attribution stamp (the
+      // live turn's genuine terminal event must still settle it) and stay
       // active without sending.
-      consumeSteerPending(store, sessionId);
+      clearTurnReplacement(store, sessionId);
       return steerAbortFailed(abortError);
     }
     // Re-validate after the await: an event or an interrupt may have
@@ -96,8 +97,8 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // replacement prompt now would launch an untracked turn on a settled
     // task's session and report a steer that never happened.
     if (!store.activeTasks.has(sessionId)) {
-      // No disarm needed: the flag lives on the active record and
-      // transitionState strips it, so nothing is armed anymore by construction.
+      // No disarm needed: the stamps live on the active record and
+      // transitionState strips them, so nothing is armed anymore by construction.
       const settled = store.retainedTasks.get(sessionId);
       if (settled && settled.state !== "interrupted") {
         // M9: close the loop the abort-race opened. The abort landed, so the

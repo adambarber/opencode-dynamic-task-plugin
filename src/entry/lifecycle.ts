@@ -27,10 +27,13 @@ import {
   noteLateOutcome,
   declaredBlocked,
   terminalEventIsAttributable,
+  releaseWaitsFor,
   type TaskStore,
   type SettlementVerdict,
+  type DependencyWait,
 } from "../shared/task-state.js";
-import { settlementFallback } from "../shared/voice.js";
+import { resolveDependencies } from "../shared/admission.js";
+import { settlementFallback, waitsReleasedBody } from "../shared/voice.js";
 
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
@@ -231,7 +234,50 @@ export async function settleRunningChild(
   // records parentless settlements instead of dialing a phantom session.
   void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${resumeHint}${unreadableNote}`)
     .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
+  // This settlement may also be the answer to a dispatch another parent was
+  // refused. Released HERE — the one place a task settles — so a wait is
+  // answered exactly when its edge is, and by the same predicate the gate
+  // refused it on. A separate funnel would be a second readiness rule.
+  releaseWaitingDispatches(client, store, childSessionId);
   return true;
+}
+
+/**
+ * Tell every parent whose refused dispatch this settlement decided, grouped by
+ * parent so one parent hears one message no matter how many of its waits this
+ * edge released. The settlement claim is already taken, so this cannot fail
+ * loudly: an unanswered hint leaves the parent waiting, which is exactly the
+ * state this replaced — no worse, and the wait is already gone from the store.
+ */
+function releaseWaitingDispatches(
+  client: OpenCodeClient,
+  store: TaskStore,
+  settledChildSessionId: string,
+): void {
+  const release = releaseWaitsFor(
+    store,
+    settledChildSessionId,
+    (wait) => resolveDependencies(store, wait.dependsOn, wait.dependsOnSettled),
+    (id) => store.activeTasks.has(id),
+  );
+  if (release.ready.length === 0 && release.dead.length === 0) return;
+  const byParent = new Map<string, DependencyWait[]>();
+  for (const wait of [...release.ready, ...release.dead]) {
+    const group = byParent.get(wait.parentSessionId) ?? [];
+    group.push(wait);
+    byParent.set(wait.parentSessionId, group);
+  }
+  for (const [waitingParent, waits] of byParent) {
+    const body = waitsReleasedBody({
+      ready: waits.filter((w) => release.ready.includes(w)),
+      dead: waits.filter((w) => release.dead.includes(w)),
+    });
+    // A wait is a property of the PARENT's dispatch, so the child session id
+    // this rides on is the edge that answered it — which is what lets the
+    // parent see it next to the settlement that released it.
+    void deliverParent(client, waitingParent, settledChildSessionId, "a dispatch you asked for", "notice", body)
+      .then((delivered) => debugLog(waitingParent, settledChildSessionId, "wait-released", { delivered }));
+  }
 }
 
 export async function handleChildLifecycleEvent(

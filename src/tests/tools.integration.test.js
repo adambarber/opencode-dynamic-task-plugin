@@ -1074,6 +1074,119 @@ describe("settlement: the notification layer owns outcomes", () => {
     });
 });
 
+/**
+ * A dispatch the gate refuses, in the parent's own words — the pair every wait
+ * test needs, and the words the release message has to name back. Asserting the
+ * refusal here means each case below states only what it is actually about.
+ */
+async function refuseDispatch(h, description, depends_on, depends_on_settled) {
+  const refusal = await h.trySpawn({
+    description,
+    prompt: "do the downstream thing",
+    subagent_type: "general",
+    depends_on,
+    ...(depends_on_settled ? { depends_on_settled } : {}),
+  });
+  assert.match(refusal, /Dependencies pending/, `the dispatch was refused. got: ${refusal}`);
+  return refusal;
+}
+
+/**
+ * Settle an edge the way a FAILURE does: the host says error, then the turn
+ * ends. Separate from `settle` because the error word is the whole difference
+ * between a dependency that releases a wait and one that kills it, and it is
+ * not a thing a test should spell out twice.
+ */
+async function failEdge(h, id) {
+  await h.fireEvent(events.status(id, "error"));
+  await h.settle(id);
+}
+
+/**
+ * Settle something, and hand back what the parent was told about a refused
+ * dispatch of `description`. The COUNT is asserted here because both "announced
+ * once" and "announced not at all" are the contract, and the caller states
+ * which — so no case has to restate it, and none can quietly accept a second.
+ */
+async function announcedAbout(h, description, action, expected = 1) {
+  const hints = await h.noticesMatching(new RegExp(description), action, expected);
+  const report = `announced ${expected} time(s). got: ${JSON.stringify(h.noticeBodies())}`;
+  assert.strictEqual(hints.length, expected, report);
+  return hints[0] ?? { message: "", to: "" };
+}
+
+/**
+ * One running edge, and one dispatch refused on it — THE scenario this suite is
+ * about, so it is built once and each case states only what it varies. Returns
+ * the edge, because what a case does next is always something TO the edge.
+ */
+async function refusedOnOneEdge(h, description, kind = "strict") {
+  const edge = await h.spawn({ description: "edge work" });
+  const settledOnly = kind === "settled";
+  await refuseDispatch(
+    h,
+    description,
+    settledOnly ? undefined : [edge.id],
+    settledOnly ? [edge.id] : undefined,
+  );
+  return edge;
+}
+
+/** The scenario, ready to observe: a fresh parent, one running edge, one refused dispatch. */
+async function refusedDispatchScenario(kind) {
+  const h = await setupHarness();
+  return { h, edge: await refusedOnOneEdge(h, "consume the edge", kind) };
+}
+
+describe("dependency waits are state, not prose the parent must remember", () => {
+  // A refused depends_on was advice in a string and nothing else. The plugin
+  // forgot the dispatch, so the parent had to carry the wait in prose, be alive
+  // when the dependency settled, and re-dispatch from memory. Every one of those
+  // is the parent's context, which is exactly what the plugin exists to hold.
+  it("a refused dispatch is remembered and announced the moment its edge clears", async () => {
+    const { h, edge } = await refusedDispatchScenario();
+    const hint = await announcedAbout(h, "consume the edge", () => h.settle(edge.id));
+    assert.strictEqual(hint.to, "p1", `and it goes to the parent that asked. got: ${hint.to}`);
+    assert.match(hint.message, /can go now/i, `in words that ask for the action. got: ${hint.message}`);
+  });
+
+  it("a wait whose edge settled short of completed is announced as dead, not as ready", async () => {
+    // The edge can never satisfy a strict depends_on again — it will not run
+    // again. Announcing nothing would leave the parent waiting on a task that
+    // is gone; announcing it as ready would hand it a dispatch whose gate
+    // refuses, which reads as the plugin contradicting itself.
+    const { h, edge } = await refusedDispatchScenario();
+    const hint = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
+    assert.match(hint.message, /never run/i, `named as unrunnable. got: ${hint.message}`);
+    assert.ok(!/can go now/i.test(hint.message), `never announced as ready. got: ${hint.message}`);
+  });
+
+  it("a wait with an edge still running is not announced, and it resolves on the LAST edge", async () => {
+    const h = await setupHarness();
+    const one = await h.spawn({ description: "edge one" });
+    const two = await h.spawn({ description: "edge two" });
+    await refuseDispatch(h, "consume both", [one.id, two.id]);
+
+    await announcedAbout(h, "consume both", () => h.settle(one.id), 0);
+    await announcedAbout(h, "consume both", () => h.settle(two.id));
+  });
+
+  it("a wait cleared by settlement only, and announced exactly once", async () => {
+    // depends_on_settled waits for any terminal state, so a failed edge still
+    // releases it — the wait is about the gate's readiness, not about success.
+    const { h, edge } = await refusedDispatchScenario("settled");
+    const released = await announcedAbout(h, "consume the edge", () => failEdge(h, edge.id));
+    assert.match(released.message, /can go now/i, `a settled edge is enough. got: ${released.message}`);
+
+    // The wait is gone from the store when it is announced, so a later turn on
+    // an unrelated task has nothing left to say about it.
+    await announcedAbout(h, "consume the edge", async () => {
+      const other = await h.spawn({ description: "unrelated work" });
+      await h.settle(other.id);
+    }, 0);
+  });
+});
+
 describe("question gate: child questions settle", () => {
   it("answers from an active child are auto-answered with the first option", async () => {
     const { h, c, id } = await withChild();

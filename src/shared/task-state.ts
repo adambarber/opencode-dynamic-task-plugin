@@ -23,6 +23,7 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import type { DynamicTaskConfig } from "./config.js";
+import type { DependencyBlock } from "./admission.js";
 import type { ModelOverride } from "./prompt.js";
 import { checkConcurrencyLimit, DEFAULT_CONFIG } from "./config.js";
 
@@ -143,9 +144,47 @@ export interface RetainedTaskState extends TaskRecordBase {
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
 
+/**
+ * A dispatch the admission gate refused because its dependencies were not
+ * ready, held so the plugin can say when the refusal is over.
+ *
+ * This is the state that `depends_on` never had. The refusal used to be a
+ * sentence: the parent had to carry the wait in prose, be alive at the moment
+ * the dependency settled, and re-dispatch from memory — three things that all
+ * belong to the parent's context, which is what the plugin exists to hold.
+ *
+ * It holds NO prompt and NO session, deliberately. The parent wrote the
+ * dispatch and the parent resumes it; the plugin's whole obligation is to say
+ * when the gate will now admit it. So this is process memory, not ledger
+ * truth: across a restart this wait and the parent that asked for it are gone
+ * together, and a hint that outlived its asker would have nobody to inform.
+ */
+export interface DependencyWait {
+  /** The parent's own words for this dispatch — its identity in every message. */
+  description: string;
+  /** The parent that asked. The hint goes here, not to the settling task's parent. */
+  parentSessionId: string;
+  /** Edges that must reach `completed`. */
+  dependsOn: string[];
+  /** Edges that only have to settle. */
+  dependsOnSettled: string[];
+  queuedAt: number;
+}
+
+/** A wait's key: who is waiting, for what. The parent named both. */
+export function waitKey(parentSessionId: string, description: string): string {
+  return parentSessionId + " " + description;
+}
+
 export interface TaskStore {
   activeTasks: Map<string, ActiveTaskState>;
   retainedTasks: Map<string, RetainedTaskState>;
+  /**
+   * Refused dispatches, keyed by the (parent, description) that asked for them —
+   * the parent's own words are the identity, so the plugin never invents an id
+   * the parent then has to learn. Not persisted; see DependencyWait.
+   */
+  waits: Map<string, DependencyWait>;
   // Durable-state observer (Task 06): invoked after retained entries change.
   onRetainedChange?: (() => void) | undefined;
   // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
@@ -230,6 +269,7 @@ export function createTaskStore(): TaskStore {
   return {
     activeTasks: new Map(),
     retainedTasks: new Map(),
+    waits: new Map(),
     onRetainedChange: undefined,
     onActiveChange: undefined,
   };
@@ -494,6 +534,86 @@ export function listTasks(store: TaskStore): {
 
 export function findTask(store: TaskStore, childSessionId: string): TaskRecord | null {
   return store.activeTasks.get(childSessionId) ?? store.retainedTasks.get(childSessionId) ?? null;
+}
+
+// ─── Dependency waits ───────────────────────────────────────────────────
+//
+// One writer (the admission gate's refusal) and one reader (the settlement
+// funnel). The reader asks the SAME predicate the gate asked, so "this dispatch
+// can go now" can never disagree with "this dispatch was refused" — two
+// hand-written readiness rules would drift, and the drift would read as the
+// plugin refusing a dispatch it had just promised.
+
+/** How many refused dispatches one parent may have outstanding. */
+export const MAX_WAITS = 64;
+
+/**
+ * Hold a refused dispatch so the plugin can announce its release. Re-recording
+ * the same (parent, description) replaces the earlier edges rather than
+ * queueing a second hint for one dispatch: the parent asked twice about the
+ * same thing, and the newer edges are the ones it means now.
+ */
+export function holdDispatchWait(
+  store: TaskStore,
+  wait: Omit<DependencyWait, "queuedAt">,
+): DependencyWait {
+  const held: DependencyWait = { ...wait, queuedAt: Date.now() };
+  store.waits.set(waitKey(wait.parentSessionId, wait.description), held);
+  // Bounded: the map is a courtesy ledger to a live parent, not a history. The
+  // oldest wait goes first, and it is the one least likely to still be wanted.
+  while (store.waits.size > MAX_WAITS) {
+    const oldest = store.waits.keys().next();
+    if (oldest.done) break;
+    store.waits.delete(oldest.value);
+  }
+  return held;
+}
+
+/** What a settlement did to the waits that were watching it. */
+export interface WaitRelease {
+  /** Refused dispatches the gate will now admit. */
+  ready: DependencyWait[];
+  /** Refused dispatches that can never run: every unmet edge is finished, short of done. */
+  dead: DependencyWait[];
+}
+
+/**
+ * The waits this settlement resolves, and the ones it leaves alone. A wait is
+ * resolved by the SAME predicate the gate refused it on, so readiness has one
+ * definition. It is resolved as `dead` when the predicate still refuses AND no
+ * unmet edge is still running: an edge that has settled and is not `completed`
+ * will not run again, so waiting on it is waiting on nothing — and a parent that
+ * is never told is a parent that waits forever.
+ *
+ * Resolved waits are removed here, so exactly-once is structural rather than a
+ * dedup key: a wait cannot be announced twice because it is announced from the
+ * moment it stops existing.
+ */
+export function releaseWaitsFor(
+  store: TaskStore,
+  settledChildSessionId: string,
+  isAdmissible: (wait: DependencyWait) => { ok: true } | { ok: false; pending: DependencyBlock[] },
+  stillRunning: (childSessionId: string) => boolean,
+): WaitRelease {
+  const release: WaitRelease = { ready: [], dead: [] };
+  for (const [key, wait] of [...store.waits]) {
+    const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
+      edges.includes(settledChildSessionId),
+    );
+    if (!watching) continue;
+    const admitted = isAdmissible(wait);
+    if (admitted.ok) {
+      release.ready.push(wait);
+      store.waits.delete(key);
+      continue;
+    }
+    // Still refused: is any edge able to change that, or is this wait finished?
+    const canStillClear = admitted.pending.some((edge) => stillRunning(edge.id));
+    if (canStillClear) continue;
+    release.dead.push(wait);
+    store.waits.delete(key);
+  }
+  return release;
 }
 
 // Transient abort failures are recorded on the retained entry: an

@@ -9,7 +9,7 @@
 // strings everywhere.
 
 import type { DependencyBlock } from "./admission.js";
-import type { SettlementVerdict } from "./task-state.js";
+import type { DependencyWait, SettlementVerdict } from "./task-state.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
@@ -59,7 +59,27 @@ export function dependenciesPending(pending: DependencyBlock[]): string {
   return [
     `ERROR: Dependencies pending: ${pending.map((p) => `${p.id} (${p.state})`).join(", ")}.`,
     "Complete them first (unknown ids are treated as satisfied; depends_on_settled only waits for settlement).",
+    "This dispatch is being held for you: when the last dependency clears, the plugin will say so here and you can send it again.",
   ].join("\n");
+}
+
+// What a settlement did to the dispatches that were waiting on it. The parent
+// named each one, so it is named back — the plugin never invents an id the
+// parent would have to learn, and the parent does not have to remember which of
+// its refusals this settlement answers.
+export function waitsReleasedBody(release: { ready: DependencyWait[]; dead: DependencyWait[] }): string {
+  const lines: string[] = [];
+  if (release.ready.length > 0) {
+    lines.push(
+      `Your dispatch${release.ready.length === 1 ? "" : "es"} of ${release.ready.map((w) => `"${w.description}"`).join(", ")} can go now — the dependenc${release.ready.length === 1 ? "y has" : "ies have"} completed. Send the same dynamic_task call again.`,
+    );
+  }
+  if (release.dead.length > 0) {
+    lines.push(
+      `Your dispatch${release.dead.length === 1 ? "" : "es"} of ${release.dead.map((w) => `"${w.description}"`).join(", ")} will never run: the dependenc${release.dead.length === 1 ? "y" : "ies"} it waited on finished without completing, and will not run again. Re-plan it against what did land, or drop the dependency.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 export function createFailed(response: unknown): string {

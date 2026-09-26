@@ -564,9 +564,27 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     /**
      * Settle a child and hand back the single notice the parent received.
      * Ends the turn the way the host does — see settle.
-     */
-    async settledNotice(id) {
+     */    async settledNotice(id) {
       return (await oneNotice(() => harness.settle(id)))[0].message;
+    },
+    /**
+     * Run an action and hand back every NEW notice whose message matches.
+     *
+     * `oneNotice` counts a terminal event's notices, so it cannot serve a
+     * settlement that legitimately produces more than one — a release hint
+     * rides alongside the settlement it released. This polls the observable
+     * (the notice itself) rather than a clock, and stops as soon as `expected`
+     * have arrived, so a case that is waiting for one notice does not pay for
+     * the bound. `expected: 0` is the negative case: it still waits out the
+     * bound, because "nothing was said" is only a claim if delivery had its
+     * chance. The bound exists so a missing notice FAILS instead of hanging.
+     */
+    async noticesMatching(match, action, expected = 1) {
+      const before = state.notifications.length;
+      await action();
+      const fresh = () => state.notifications.slice(before).filter((n) => match.test(n.message));
+      for (let waited = 0; waited < 40 && fresh().length < expected; waited += 2) await sleep(2);
+      return fresh();
     },
     /**
      * The admission path's own call: the tool's answer, with no id and nothing

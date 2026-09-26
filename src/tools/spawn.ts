@@ -13,7 +13,7 @@ import {
 import { admitPromptInput } from "../shared/prompt.js";
 import { resolveParentSessionId, validateSessionResult, errorMessage, abortSession } from "../shared/session-lifecycle.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, pruneRetainedTasks } from "../shared/task-state.js";
+import { transitionState, pruneRetainedTasks, holdDispatchWait } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
@@ -70,6 +70,20 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   pruneRetainedTasks(store, config);
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
   if (!readiness.ok) {
+    // The refusal is ALSO held as state. A sentence tells the parent it was
+    // refused and nothing more; the parent then has to carry the wait in prose
+    // and be alive at the moment the edge settles to re-dispatch. Holding it
+    // here is what lets the settlement funnel say "your dispatch can go" to a
+    // parent that has long since forgotten asking.
+    const waitingParent = resolveParentSessionId(ctx);
+    if (waitingParent) {
+      holdDispatchWait(store, {
+        description: args.description || `Task: ${agent.name}`,
+        parentSessionId: waitingParent,
+        dependsOn: args.depends_on ?? [],
+        dependsOnSettled: args.depends_on_settled ?? [],
+      });
+    }
     return dependenciesPending(readiness.pending);
   }
 

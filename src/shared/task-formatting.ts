@@ -70,7 +70,14 @@ function formatNotificationLine(notification: NotificationRecord): string {
     return `Last notification: ${notification.kind} — Not delivered (no parent session)`;
   }
   if (notification.pending) {
-    return `Last notification: ${notification.kind} (PENDING — dialed, the parent session has not answered; it may still arrive)`;
+    // The wording names what is actually known, and no more. Live evidence:
+    // the host puts the notification in the parent's context AS A USER MESSAGE
+    // while the call it was dialed on stays open — so "the parent has not
+    // answered" was false as soon as the parent had read it, and the parent is
+    // the one reading this line. Unacknowledged is the truth: the host has not
+    // confirmed, and the message may be in the parent's context now or arrive
+    // when its turn ends.
+    return `Last notification: ${notification.kind} (PENDING — dialed, unacknowledged; the parent may already have it, or get it when its turn ends)`;
   }
   return notification.delivered
     ? `Last notification: ${notification.kind} (delivered in ${notification.attempts} attempt(s))`

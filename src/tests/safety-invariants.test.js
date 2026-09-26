@@ -572,20 +572,15 @@ describe("invariant: record shapes are built, not re-declared (Tenet 12)", () =>
  *
  * The sanction list is the judgement, and it is deliberately short: the sites that
  * legitimately hold the literal are the ones whose SUBJECT is the literal — an
- * assertion that a role reads back as `"assistant"` pins the value, and a status
- * table's `"unknown"` is a host turn state, not the unnamed-parent sentinel those
- * two constants happen to share a spelling with. A site is added here by someone
- * who has read why it is not a restatement.
+ * assertion that a role reads back as `"assistant"` pins the value, and a
+ * rendered status is named (`UntrackedStatus`) rather than retyped, so a test
+ * that pins one imports the name instead of the spelling. A site is added here
+ * by someone who has read why it is not a restatement.
  */
 describe("invariant: a test never retypes a bound production value (Tenet 12)", () => {
   const SANCTIONED = [
     // The value IS the claim: this asserts the role reads back as the literal.
     'messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant"',
-    // A host turn state, not the unnamed-parent sentinel. Different vocabulary,
-    // same spelling — which is exactly why a spelling-based rule needs a sanction.
-    '["error", "unknown", false]',
-    '["idle", "unknown", false]',
-    '[null, "unknown", false]',
     // Asserting the rendered word a parentless settlement prints.
     'answerSays(missing, "unknown")',
   ];

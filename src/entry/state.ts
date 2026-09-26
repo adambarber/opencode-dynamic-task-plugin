@@ -9,7 +9,7 @@ import type { LedgerChange } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { applyLaneOverlay, installLiveLanes, laneOverlayPath, readLaneOverlay } from "../shared/lane-overlay.js";
-import { hostTurnRunning, readLiveness } from "../shared/liveness.js";
+import { hostTurnOver, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
@@ -152,6 +152,11 @@ export function initPluginState(directory: string, options: PluginOptions | unde
 //                         lost contact across the restart rather than that the
 //                         work failed
 //
+// A word this plugin does not read is not on that list, and it is deliberately
+// not folded into either end: it is not the host saying a turn ended, and it is
+// not the host saying there is no child. It lands with the first row, because
+// both of the other two are claims about a turn and this is not one.
+//
 // No polling, no clocks, no second opinion: the host's status words are the
 // answer, read once. Detached from boot so a slow transcript cannot delay tool
 // registration — the settlement itself is durable before it is delivered, so a
@@ -166,11 +171,21 @@ async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Prom
     // still settles it and nothing is notified that was not observed.
     try {
       const reading = await readLiveness(client, childSessionId);
-      if (hostTurnRunning(reading)) {
-        await safeLog(client, "info", `Restored task ${childSessionId} is still working; left active`);
+      // This pass may end a restored child two ways and no more: the host said
+      // the turn is over, or the host stopped listing it. Every other reading —
+      // working, retrying, or a word this plugin does not read — leaves it
+      // active, because its own terminal event still settles it and nothing is
+      // notified that was not observed. Deciding a child's fate from a word we
+      // did not understand is how a restart invents an error.
+      const vanished = reading.hostState === null;
+      if (!vanished && !hostTurnOver(reading)) {
+        await safeLog(
+          client,
+          "info",
+          `Restored task ${childSessionId} is not over (host says "${String(reading.hostState)}"); left active`,
+        );
         continue;
       }
-      const vanished = reading.hostState === null;
       await settleRunningChild(client, store, childSessionId, {
         status: vanished ? "error" : "idle",
         ...(vanished

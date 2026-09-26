@@ -5,7 +5,12 @@ import { errorMessage } from "../shared/host-shape.js";
 import { eventField } from "../shared/host-shape.js";
 import { getLatestAssistantText } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
-import { readLiveness, readSessionMessages, statusFromHostState, type LivenessReading } from "../shared/liveness.js";
+import {
+  readLiveness,
+  readSessionMessages,
+  statusFromHostState,
+  type LivenessReading,
+} from "../shared/liveness.js";
 import {
   formatTaskResultSummary,
   formatTaskListSummary,
@@ -67,7 +72,7 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
       return formatTaskResultSummary(
         taskResultRecord({
           sessionId,
-          status: "error",
+          status: TaskState.Error,
           latestText: SEE_ERROR_ABOVE,
           error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
         }),

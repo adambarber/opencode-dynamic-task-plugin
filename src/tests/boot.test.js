@@ -297,6 +297,25 @@ describe("boot reconciles what the last boot was still running", () => {
     assert.doesNotMatch(notices()[0].message, /ended with an error/);
   });
 
+  // A fourth word on the status channel is not this plugin's to interpret, and
+  // the two things it is NOT are the two the reconciliation branch above acts
+  // on. Collapsing "the host does not list this session" into "the host listed
+  // a word I do not recognise" makes an unknown word indistinguishable from a
+  // vanished child — so a child the host is still working under a word added
+  // upstream is settled at boot as an error that never happened, with a cause
+  // invented for it. Not knowing leaves it active, which is the same safe
+  // reading the failed-read branch already takes: its own terminal event still
+  // settles it, and nothing is notified that was not observed.
+  it("a status word this plugin does not recognise leaves the child active rather than settling it", async () => {
+    const { directory, notices } = await bootWithRunners(
+      { ses_odd: runningEntry("ses_odd") },
+      { ses_odd: "compacting" },
+    );
+    await sleep(150);
+    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), ["ses_odd"], "an unknown word settles nothing");
+    assert.deepStrictEqual(notices(), [], "and the parent is told nothing that was not observed");
+  });
+
   it("a spawned task is on disk while it runs, and gone from the active set once it settles", async () => {
     const directory = tmpProjectDir();
     const h = await setupHarness({ hooks: {}, directory });

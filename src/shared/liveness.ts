@@ -14,16 +14,40 @@ import { hostPayload } from "./session-lifecycle.js";
 import { eventField } from "./host-shape.js";
 import { extractMessages } from "./prompt.js";
 
-// The server's own words for a session's turn, and the only ones it can say:
-// the status channel's value is a `SessionStatus` (busy | retry | idle), and a
-// session it does not list has no turn running at all — which is a fact, not a
-// gap. A fourth word here would be a shape this plugin invented, and a test
-// pinning it would be a test of fiction.
-export type HostTurnState = "busy" | "idle" | "retry";
+// The server's own words for a session's turn. They are the SERVER's vocabulary,
+// not this plugin's: it cannot add a member, and a test pinning one would be a
+// test of fiction. So the words stay the strings the host wrote, read verbatim,
+// and the two questions anyone asks of them are answered by predicates here —
+// one owner for the set, so a word the host adds later is unrecognised at every
+// call site at once and none of them can quietly decide what it means.
+const RUNNING_HOST_STATES: ReadonlySet<string> = new Set(["busy", "retry"]);
+const OVER_HOST_STATES: ReadonlySet<string> = new Set(["idle"]);
+
+/**
+ * How a reader renders a session this plugin tracks no record of. These three
+ * words are OURS, not the host's: the host says a turn is working, retrying or
+ * over, and this is what a person is shown for it. Named, because the word has
+ * to be agreed on by the function that decides it, the formatter that compares
+ * it, and every test that pins it — and a bare string in a union type is not an
+ * agreement any compiler can check. It is also what makes
+ * `TaskResultRecord["status"]` a real union rather than a `string`, so the two
+ * vocabularies meet at a type instead of at a reader's guess.
+ */
+export enum UntrackedStatus {
+  Busy = "busy",
+  Completed = "completed",
+  Unknown = "unknown",
+}
 
 export interface LivenessReading {
-  /** The server's word for this session, or null when it lists none. */
-  hostState: HostTurnState | null;
+  /**
+   * The server's word for this session, verbatim, or null when the status
+   * channel lists no entry for it. Those are different facts and stay distinct:
+   * a word this plugin does not read is NOT the same as a session the host has
+   * stopped listing, and a reader that collapses them decides a child's fate
+   * from a word it never understood.
+   */
+  hostState: string | null;
   /** When the child last wrote a message; null when it has written none. */
   lastMessageAt: number | null;
   messageCount: number;
@@ -31,7 +55,20 @@ export interface LivenessReading {
 
 /** A turn the server is running: working, or retrying on the provider's behalf. */
 export function hostTurnRunning(reading: LivenessReading): boolean {
-  return reading.hostState === "busy" || reading.hostState === "retry";
+  return reading.hostState !== null && RUNNING_HOST_STATES.has(reading.hostState);
+}
+
+/**
+ * A turn the server has said is OVER — the only fact that ends a restored child
+ * from the status channel. False for every word this plugin does not read, and
+ * that is the entire point: "the host said the turn ended" and "this plugin
+ * does not know what the host said" are not the same sentence. The first is
+ * settled from the transcript; the second must be left for the child's own
+ * terminal event, or a word added upstream settles a working child as an error
+ * nobody observed.
+ */
+export function hostTurnOver(reading: LivenessReading): boolean {
+  return reading.hostState !== null && OVER_HOST_STATES.has(reading.hostState);
 }
 
 /**
@@ -41,19 +78,21 @@ export function hostTurnRunning(reading: LivenessReading): boolean {
  * unknown rather than quiet-but-alive. "idle" reads as completed: the server
  * is saying the turn is over, which is the reading this vocabulary has for it.
  */
-export function statusFromHostState(hostState: HostTurnState | null): "busy" | "completed" | "unknown" {
-  if (hostState === "busy" || hostState === "retry") return "busy";
-  if (hostState === "idle") return "completed";
-  return "unknown";
+export function statusFromHostState(hostState: string | null): UntrackedStatus {
+  if (hostState !== null && RUNNING_HOST_STATES.has(hostState)) return UntrackedStatus.Busy;
+  if (hostState !== null && OVER_HOST_STATES.has(hostState)) return UntrackedStatus.Completed;
+  return UntrackedStatus.Unknown;
 }
 
-// The host's words, and only its words: the status channel is a map of session
-// id to the server's own object, so an unknown entry is an unknown word rather
-// than a value to coerce into one.
-function hostTurnState(statusResult: unknown, childSessionId: string): HostTurnState | null {
+// The host's words, and only its words, kept verbatim. The status channel is a
+// map of session id to the server's own object, so a word we do not read comes
+// back as the word the host actually wrote — not as a null, which is the host
+// saying it has no entry for this session and a fact about a child rather than
+// about this plugin's vocabulary.
+function hostTurnState(statusResult: unknown, childSessionId: string): string | null {
   const entry = eventField(hostPayload(statusResult), childSessionId);
   const type = eventField(entry, "type");
-  return type === "busy" || type === "idle" || type === "retry" ? type : null;
+  return typeof type === "string" ? type : null;
 }
 
 // The child's own clock: when the last message it wrote finished, or began —

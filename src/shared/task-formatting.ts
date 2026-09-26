@@ -5,7 +5,7 @@
 import { truncateText, type NotificationRecord } from "./notify.js";
 import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
-import { hostTurnRunning, type LivenessReading } from "./liveness.js";
+import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
 import { textBlock, present } from "./text-block.js";
 import type { LaneOccupancy } from "./lane-occupancy.js";
 import { DepthBound } from "./task-policy.js";
@@ -274,13 +274,13 @@ function settledStatusLines(task: RetainedTaskState): string[] {
 export interface TaskResultRecord {
   sessionId: string;
   /**
-   * Which vocabulary this field is speaking. A `string` because it is a union
-   * of a store state and a host word and neither is a subtype of the other, and
-   * a lie about that (`TaskState`, or a private union) would put the burden back
-   * on every reader. Typed as the union the two producers actually emit, so
-   * formatTaskResultSummary is the single place that has to know what each means.
+   * Which vocabulary this field is speaking: a store state when the session is
+   * tracked, `UntrackedStatus` when it is not. The union the two producers
+   * actually emit, so formatTaskResultSummary is the single place that has to
+   * know what each member MEANS — and so a third vocabulary cannot be added to
+   * it by widening the type to `string`.
    */
-  status: string;
+  status: TaskState | UntrackedStatus;
   messageCount: number;
   latestText: string;
   tracked: boolean;
@@ -321,11 +321,11 @@ export const NO_SESSION_RECORD = "(No session record found)";
 export function formatTaskResultSummary(input: TaskResultRecord): string {
   // Three questions, three named answers. `TaskResultRecord.status` used to be
   // one `string` field carrying TWO vocabularies — a store state when the
-  // session is tracked, a host word when it is not — so "is it running" had to
-  // guess at both sets of words, and `statusFromHostState`'s own vocabulary was
-  // a third. The field is now the union the two halves actually produce, and
-  // this is the one place that decides what each member MEANS.
-  const running = input.status === "busy" || input.status === TaskState.Active;
+  // session is tracked, a rendered host word when it is not — so "is it
+  // running" had to guess at both sets of words, and `statusFromHostState`'s
+  // own vocabulary was a third. The field is the union the two halves actually
+  // produce, and this is the one place that decides what each member MEANS.
+  const running = input.status === UntrackedStatus.Busy || input.status === TaskState.Active;
   // task_status is the settleability authority (it renders the same liveness
   // block beside the store's own state), so a running child is pointed there
   // rather than back at this tool, which cannot answer the question.

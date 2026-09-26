@@ -8,6 +8,7 @@ import { findTask } from "../shared/task-state.js";
 import { resolveParentSessionId, isParentless } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { formatTaskResultSummary, taskResultRecord, NO_SESSION_RECORD } from "../shared/task-formatting.js";
+import { UntrackedStatus } from "../shared/liveness.js";
 import type { Refusal } from "../shared/verdict.js";
 
 export interface ToolDeps {
@@ -58,7 +59,9 @@ export function openSessionScope(deps: ToolDeps, args: unknown): SessionScope {
 // Single shape for unknown sessions across all tools — the same markdown
 // voice as every other read (never raw JSON).
 export function unknownSessionResult(sessionId: string): string {
-  return formatTaskResultSummary(taskResultRecord({ sessionId, status: "unknown", latestText: NO_SESSION_RECORD }));
+  return formatTaskResultSummary(
+    taskResultRecord({ sessionId, status: UntrackedStatus.Unknown, latestText: NO_SESSION_RECORD }),
+  );
 }
 
 /**

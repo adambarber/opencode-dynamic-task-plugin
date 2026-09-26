@@ -378,6 +378,30 @@ function claimSlot(store: TaskStore, config: ConcurrencyConfig | undefined): voi
   if (limitError) throw new Error(limitError);
 }
 
+/**
+ * The record a registration makes. Extracted from registerActiveTask so the one
+ * construction is named: a fixture built here is the record production builds,
+ * not a hand-rolled copy of it that can agree about the field list for a while
+ * and then stop.
+ */
+export function activeRecord(registration: NewTaskRegistration, startedAt: number): ActiveTaskState {
+  return { ...registration, state: "active", startedAt };
+}
+
+/**
+ * The record a settlement leaves behind, which is the active record with the
+ * advisories stripped — the same strip the durable write performs, so a fixture
+ * for "what a settlement leaves on disk" cannot disagree with it about which
+ * fields those are.
+ */
+export function retainedRecord(
+  active: ActiveTaskState,
+  state: Exclude<TaskState, "active">,
+  retainedAt: number,
+): RetainedTaskState {
+  return { ...withoutAdvisory(active), state, retainedAt };
+}
+
 // Register a task and claim the session id atomically. Every active task holds a
 // slot regardless of who awaits it, and the slot comes from claimSlot.
 export function registerActiveTask(
@@ -386,11 +410,7 @@ export function registerActiveTask(
   config: ConcurrencyConfig,
 ): ActiveTaskState {
   claimSlot(store, config);
-  const record: ActiveTaskState = {
-    ...task,
-    state: "active",
-    startedAt: Date.now(),
-  };
+  const record = activeRecord(task, Date.now());
   setActive(store, task.childSessionId, record);
   return record;
 }
@@ -414,12 +434,7 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-          const settled = withoutAdvisory(active);
-    const retained: RetainedTaskState = {
-      ...settled,
-      state: to,
-      retainedAt: Date.now(),
-    };
+          const retained = retainedRecord(active, to, Date.now());
     removeActive(store, childSessionId);
     store.retainedTasks.set(childSessionId, retained);
     emitRetainedChange(store);

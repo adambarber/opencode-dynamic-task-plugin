@@ -820,8 +820,13 @@ const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
 // both start here.
 const withSavedLedger = (fn) =>
   inLedgerFile((file) => {
-    saveTaskLedger({ retained: new Map([["ses_1", retainedEntry()]]), active: new Map([["ses_2", activeEntry()]]), pending: [owedEntry()] }, file);
-    return fn(file);
+    const saved = {
+      retained: new Map([["ses_1", retainedEntry()]]),
+      active: new Map([["ses_2", activeEntry()]]),
+      pending: [owedEntry()],
+    };
+    saveTaskLedger(saved, file);
+    return fn(file, saved);
   });
 
 /** withRawLedger's middle, for the case that already holds the file. */
@@ -892,34 +897,47 @@ function tmpLedgerPath() {
 // sidecar in the two sites that mattered, and the missing-file site skipped
 // cleanup entirely — withTempFile owns the whole lifetime.
 describe("task ledger persistence", () => {
-  const itRoundTrips = (name, check) => it(name, () => withSavedLedger((file) => check(loadTaskLedger(file))));
+  const itRoundTrips = (name, check) => it(name, () => withSavedLedger((file, saved) => check(loadTaskLedger(file), saved)));
 
   itRoundTrips("round-trips retained records through an injectable path", (loaded) => {
     const record = loaded.retained.get("ses_1");
     assert.strictEqual(loaded.retained.size, 1);
     assert.strictEqual(record.agentName, "explore");
     assert.strictEqual(record.state, "completed");
-    assert.strictEqual(record.timeoutNotified, undefined, "the reader strips transient fields");
   });
+
+  // A ledger on disk outlives the build that wrote it: a field this build no
+  // longer knows about must be dropped by the reader rather than carried into the
+  // store, or a record re-persisted from it would grow the field back. Pinned
+  // with a real legacy field, not with one of our own — the previous version of
+  // this assertion checked for a field the fixtures no longer set, so it could not
+  // fail.
+  it("a ledger field this build does not know about is dropped, not carried", () =>
+    withRawLedger({ tasks: { ses_1: { ...retainedEntry(), retiredByTheNextBuild: { at: 1, why: "gone" } } } }, (loaded) => {
+      assert.strictEqual(loaded.retained.get("ses_1").retiredByTheNextBuild, undefined,
+        "an unknown field must not reach the store");
+      assert.ok(loaded.retained.has("ses_1"), "and its absence must not cost the record");
+    }));
 
   itRoundTrips("round-trips the owed-notice queue, exact write and attempt count intact", (loaded) => {
     assert.deepStrictEqual(loaded.pending, [owedEntry()], "the owed write survives verbatim");
   });
 
   it("round-trips a running task, and strips every advisory field from it", () =>
-    withSavedLedger(async (file) => {
-      const loaded = loadTaskLedger(file);
-      const restored = loaded.active.get("ses_2");
+    withSavedLedger(async (file, saved) => {
+      const restored = loadTaskLedger(file).active.get("ses_2");
       assert.ok(restored, "the running task comes back");
+      assert.deepStrictEqual(restored, withoutAdvisory(saved.active.get("ses_2")),
+        "identity and routing survive; the advisory fields do not");
+      // Compared against production's own strip rather than a list written out
+      // here: a test that enumerates the advisories cannot notice a fifth one, and
+      // the list is exactly what a fifth advisory field would have had to be
+      // remembered in twice.
       assert.deepStrictEqual(
-        { ...restored, lastNotice: undefined, lastActivityAt: undefined, turnLiveAt: undefined, replacedAt: undefined },
-        { ...activeEntry(), lastNotice: undefined, lastActivityAt: undefined, turnLiveAt: undefined, replacedAt: undefined },
-        "identity and routing survive; the advisory fields do not",
+        JSON.parse(readFileSync(file, "utf8")).active.ses_2,
+        withoutAdvisory(saved.active.get("ses_2")),
+        "no advisory field reaches disk",
       );
-      for (const advisory of ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt"]) {
-        assert.strictEqual(JSON.parse(readFileSync(file, "utf8")).active.ses_2[advisory], undefined,
-          `${advisory} must never be written to the ledger`);
-      }
     }));
 
   // One hypothesis: a record is restored whole or not at all. An active entry
@@ -1287,6 +1305,7 @@ import {
   noteActivity,
   recordAbortError,
   oldestRetainedId,
+  withoutAdvisory,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,

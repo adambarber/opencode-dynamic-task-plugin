@@ -100,10 +100,8 @@ export function notifyRecord(
   outcome: { delivered: boolean; attempts: number; suppressed?: boolean; pending?: boolean },
 ): NotificationRecord {
   return {
+    ...target,
     at: Date.now(),
-    parentSessionId: target.parentSessionId,
-    childSessionId: target.childSessionId,
-    kind: target.kind,
     message,
     attempts: outcome.attempts,
     delivered: outcome.delivered,
@@ -115,6 +113,15 @@ export function notifyRecord(
 export function recordNotification(entry: NotificationRecord): void {
   notifyLedger.push(entry);
   if (notifyLedger.length > NOTIFY_LEDGER_MAX) notifyLedger.shift();
+}
+
+/**
+ * The debt the gate writes down before dialing. The queue and the receipt are the
+ * same owed write at two attempt counts, so it is assembled once here rather than
+ * spelled out at the gate and again by whatever seeds a ledger.
+ */
+export function owedDelivery(target: DeliveryTarget, text: string, attempts: number): PendingDelivery {
+  return { ...target, text, attempts };
 }
 
 export function getLatestNotification(childSessionId: string): NotificationRecord | null {
@@ -368,13 +375,7 @@ export async function notifyParent(
   // Attempts count from the last boot's, so the record and the queue agree on
   // how many times this parent has already been dialed for this write.
   const carried = opts.carriedAttempts ?? 0;
-  const owed: PendingDelivery = {
-    parentSessionId,
-    childSessionId: opts.childSessionId,
-    kind,
-    text: message,
-    attempts: carried,
-  };
+  const owed = owedDelivery({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, carried);
   // Owed BEFORE the dial, every attempt: the debt must be on disk while the
   // request is in flight, because that window is the crash this exists for.
   const dial = async (attempts: number) => {

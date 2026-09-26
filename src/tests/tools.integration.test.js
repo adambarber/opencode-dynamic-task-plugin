@@ -13,27 +13,13 @@ import assert from "node:assert";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withAskedChild,
+  bounded, deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir, withAskedChild,
   withLoggedChild,
   withChild, withDispatchTree, withEnv, withSettledChild, withSettledDispatchTree,
   resultForChild, resultForUnreadableChild, hostSaid, unclockedSaid,
 } from './support/harness.js';
 import { retainedEntry, runningEntry, owedEntry } from './support/records.js';
 import { shrinkBoundsForTesting } from "../../dist/shared/execution-bound.js";
-
-/**
- * Run `fn` with every deadline shrunk to a value a test can outwait. The timer
- * is real and still fires — only the patience changes, so a test that observes a
- * bound proves the bound rather than proving a mocked clock.
- */
-async function withShrunkBounds(fn) {
-  const restore = shrinkBoundsForTesting(20);
-  try {
-    return await fn();
-  } finally {
-    restore();
-  }
-}
 
 // A message carrying no clock at all — the case where an age must not be
 // invented from the spawn. Shaped like the host's (`info` + `parts`) so the
@@ -467,7 +453,7 @@ describe("task_continue branches", () => {
   // hold can outlast the parent's attention. A pending record is the honest
   // interim state; a FAILED one would be a lie the parent recovers from wrongly.
   it("a write the host holds reads as PENDING, not FAILED, and is delivered once when the host answers", async () => {
-    await withShrunkBounds(async () => {
+    await bounded(20, async () => {
       const held = deferred();
       const h = await setupHarness({ hooks: { notifyTransport: { hang: held.promise } } });
       const { id, c } = await h.spawn({ prompt: "turn one" });
@@ -704,7 +690,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const { h, c } = await withChild({
       harness: { hooks: { notifyTransport: { hold: new Promise(() => {}) } } },
     });
-    const out = await withShrunkBounds(() => c.notify("are you there?"));
+    const out = await bounded(20, () => c.notify("are you there?"));
     assertNoticeCount(h, 1, "the host really did put it in the parent's context");
     assert.ok(!out.includes("not sent"), `a held write was dialed, not lost. got: ${out}`);
     assert.ok(!/retry/i.test(out), `retrying a delivered notice duplicates it. got: ${out}`);
@@ -1771,10 +1757,12 @@ describe("outcome correctness: failed turns never report success", () => {
       const h = await bootOn((now) => {
         const tasks = {};
         for (let i = 1; i <= 4; i++) {
-          tasks[`ses_boot${i}`] = {
-            childSessionId: `ses_boot${i}`, parentSessionId: "p", agentName: "explore",
-            description: "d", lineage: [], state: "completed", startedAt: now - 1000, retainedAt: now - i,
-          };
+          tasks[`ses_boot${i}`] = retainedEntry({
+            childSessionId: `ses_boot${i}`,
+            parentSessionId: "p",
+            startedAt: now - 1000,
+            retainedAt: now - i,
+          });
         }
         return { tasks };
       });

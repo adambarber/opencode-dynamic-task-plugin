@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
+import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 // The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
 // is `satisfies Event["type"]` in host-events.ts, so the harness cannot fire an
 // event the host does not publish — which is the one thing a fixture must never
@@ -130,6 +131,22 @@ export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 
  * its value, so this owns that too — and `undefined` means "unset", so a case
  * table can say "not set" without reaching past this seam.
  */
+/**
+ * Run `fn` with every deadline shrunk to a value a test can outwait. The timer
+ * is real and still fires — only the patience changes, so a test that observes a
+ * bound proves the bound rather than proving a mocked clock. The production
+ * value is restored even when the case throws, which is the only sanctioned way
+ * to shorten a deadline (see shrinkBoundsForTesting).
+ */
+export async function bounded(ms, fn) {
+  const restore = shrinkBoundsForTesting(ms);
+  try {
+    return await fn();
+  } finally {
+    restore();
+  }
+}
+
 export async function withEnv(key, value, fn) {
   const had = Object.hasOwn(process.env, key);
   const prev = process.env[key];

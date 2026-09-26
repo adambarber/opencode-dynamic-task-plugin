@@ -9,19 +9,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
 import { withBound, shrinkBoundsForTesting, READ_BOUNDS, WRITE_BOUNDS } from "../../dist/shared/execution-bound.js";
-import { deferred, sleep } from "./support/harness.js";
+import { bounded, deferred, sleep } from "./support/harness.js";
 
 const NO_VALUE = Symbol("degradation");
-
-/** withBound at a deadline a test can outwait, with the production value back. */
-function bounded(ms, run) {
-  const restore = shrinkBoundsForTesting(ms);
-  try {
-    return run();
-  } finally {
-    restore();
-  }
-}
 
 describe("execution bound: withBound", () => {
   it("passes a fast answer through as a whole answer", async () => {

@@ -59,7 +59,7 @@ describe("Background Task Settlement", () => {
       sleep(2000).then(() => false),
     ]);
     assert.ok(settled, "the event head must not serialize on the log round-trip");
-    assert.strictEqual(harness.notices().length, 1, "settlement still notifies");
+    assertNotices(1, "settlement still notifies");
   });
 
   it("spawns return immediately with a session id", async () => {
@@ -135,25 +135,28 @@ describe("Background Task Settlement", () => {
   it("the plugin arms no timers: silence follows a spawn until an event arrives", async () => {
     const childId = await spawn("patient_parent", "No-timer test");
     await sleep(250);
-    assert.strictEqual(harness.notices().length, 0, "nothing settles without an event");
+    assertNotices(0, "nothing settles without an event");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("active"), `task remains tracked and active. Got: ${detail}`);
   });
 
   it("a late error after success escalates the record and notifies once", async () => {
     const childId = await spawn("escalate_parent", "Escalation test");
+    // The contradicting failure, as an event, stated once because this case
+    // delivers it twice: the second time it must change nothing.
+    const contradicts = () => harness.fireEvent(events.error(childId));
     await harness.fireEvent(events.idle(childId));
-    assert.strictEqual(harness.notices().length, 1, "success first");
+    assertNotices(1, "success first");
 
-    await harness.fireEvent(events.error(childId));
+    await contradicts();
     assertNotices(2, "the contradicting failure is reported");
     assert.match(harness.noticeBodies()[1], /ended with an error/i);
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `record escalates completed→error. Got: ${detail}`);
 
     // A second error event cannot re-notify or regress the record further.
-    await harness.fireEvent(events.error(childId));
-    assert.strictEqual(harness.notices().length, 2, "escalation happens once");
+    await contradicts();
+    assertNotices(2, "escalation happens once");
   });
 
   it("a working child's own events count as recent activity", async () => {
@@ -187,6 +190,6 @@ describe("Background Task Settlement", () => {
 
     await harness.fireEvent(events.idle("nonexistent_session"));
 
-    assert.strictEqual(harness.notices().length, before, "no notification for untracked session");
+    assertNotices(before, "no notification for untracked session");
   });
 });

@@ -15,7 +15,9 @@
 /**
  * A task the last boot left behind, settled. `timeoutNotified` is part of the
  * shape because a real retained record carries it — the settlement strips the
- * advisory fields (see activeEntry) but keeps this one.
+ * advisory fields (see activeEntry) but keeps this one. Every field is a default
+ * a case can override, so a fixture read reads as the fact the case is about and
+ * not as a record shape re-spelled per site.
  */
 export const retainedEntry = (overrides = {}) => ({
   childSessionId: "ses_1",

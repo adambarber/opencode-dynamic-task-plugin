@@ -30,6 +30,13 @@ export type HostEvent<T extends HostEventType> = Extract<Event, { type: T }>;
 // The question events this plugin consumes. opencode 1.18.30 publishes both the
 // v1 and v2 spellings; they are structurally identical, so both are handled by
 // one reader rather than by two drifting copies.
+//
+// The RETIRED names have no reader, deliberately: the gate dispatches on asked
+// only, so a retired question is a question the gate correctly does not answer,
+// and the suite proves that by firing real retired events. The names are here
+// because this block is the ONE place a host event name is spelled, and a
+// vocabulary that lists only the events something happens to read is a
+// vocabulary a reader cannot trust to be complete.
 export const QUESTION_ASKED = "question.asked" satisfies HostEventType;
 export const QUESTION_V2_ASKED = "question.v2.asked" satisfies HostEventType;
 export const QUESTION_REPLIED = "question.replied" satisfies HostEventType;
@@ -52,12 +59,6 @@ export function isQuestionAsked(type: string): boolean {
   return type === QUESTION_ASKED || type === QUESTION_V2_ASKED;
 }
 
-/** True when the host retired a question, under either spelling. */
-export function isQuestionRetired(type: string): boolean {
-  return type === QUESTION_REPLIED || type === QUESTION_REJECTED
-    || type === QUESTION_V2_REPLIED || type === QUESTION_V2_REJECTED;
-}
-
 /** True when the turn ended, one way or the other. */
 export function isTurnEnding(type: string): boolean {
   return type === SESSION_IDLE || type === SESSION_ERROR;
@@ -72,17 +73,6 @@ type AskedProperties =
 function isAskedProperties(value: unknown): value is AskedProperties {
   if (!isEventRecord(value)) return false;
   return typeof value.sessionID === "string" && typeof value.id === "string" && Array.isArray(value.questions);
-}
-
-// A retired question carries its identity under a DIFFERENT key than an asked
-// one (`requestID`, not `id`) — the reason the old reader needed a four-name
-// ladder, two of whose entries (`request_id`, `task_id`) were invented.
-type RetiredProperties =
-  | HostEvent<typeof QUESTION_REPLIED>["properties"]
-  | HostEvent<typeof QUESTION_REJECTED>["properties"];
-
-function isRetiredProperties(value: unknown): value is RetiredProperties {
-  return isEventRecord(value) && typeof value.requestID === "string";
 }
 
 /** What the gate learns from an asked question. */
@@ -113,10 +103,4 @@ export function readAskedQuestion(event: unknown): AskedQuestion | null {
     sessionId: properties.sessionID,
     answer: label !== undefined && label.length > 0 ? label : null,
   };
-}
-
-/** Read the identity of a retired question, or null if the event is not one. */
-export function readRetiredQuestionId(event: unknown): string | null {
-  const properties = eventField(event, "properties");
-  return isRetiredProperties(properties) ? properties.requestID : null;
 }

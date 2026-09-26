@@ -1,19 +1,20 @@
 // src/shared/question-handling.ts
-// Question auto-answer policy (Task 04). Background children must never sit
-// on a human prompt: an active child's question is answered with the first
-// suggestion, a settled child's question is rejected, and an unattributable
-// question is never touched. The SDK `question` namespace lives beyond the
-// generated client surface — it is typed via OpenCodeClient, not cast here.
+// Question auto-answer policy (Task 04). A background child must never sit on a
+// human prompt: a live child's question is answered with an option the host
+// offered, a settled child's question is rejected, and a question that cannot be
+// attributed to one of this plugin's tasks is never touched.
+//
+// Nothing here reads a host shape or spells a host field on its own. Event names
+// and payloads come from src/shared/host-events.ts, and the question namespace is
+// typed from the SDK in src/shared/client.ts — because the version of this file
+// that read `question.created` and answered with `properties.answers` described
+// a host that does not exist: opencode publishes `question.asked`, carrying
+// `questions: QuestionInfo[]`, and routes replies to `/question/{requestID}`.
 
-import { eventField, eventString, errorMessage, isEventRecord } from "./session-lifecycle.js";
+import { errorMessage } from "./session-lifecycle.js";
+import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import type { OpenCodeClient } from "./client.js";
-import type { TaskStore } from "./task-state.js";
-
-export interface QuestionTarget {
-  questionId: string;
-  childSessionId: string | null;
-}
 
 export type QuestionDecision =
   | { action: "reply"; answer: string }
@@ -24,145 +25,71 @@ export interface QuestionResult {
   reason?: string;
 }
 
-// Pure decision: active children keep moving (first suggestion, recorded);
-// settled children cannot answer and are closed explicitly. Both rejection
-// reasons are operator voice (voice.ts), because each one is a child's only
-// description of what it can do next.
+// Pure decision, on what the host actually offered. `answer` is null when the
+// gate has nothing to give: no options, or a multi-part ask the single-answer
+// reply endpoint cannot satisfy (see host-events.AskedQuestion.answer).
+//
+// Both rejection reasons are operator voice (voice.ts), because each one is the
+// only description of what can happen next — but note WHERE that text lands. The
+// reject endpoint declares `body?: never`, so this gate cannot inject a reason
+// into the asking session. The reason reaches the operator through the block
+// claim the caller writes, and the child's own view is the host's rejection.
 export function decideQuestion(
   taskState: "active" | "retained",
-  answers: string[],
+  answer: string | null,
 ): QuestionDecision {
   if (taskState === "retained") {
     return { action: "reject", reason: QUESTION_SETTLED };
   }
-  const answer = answers[0];
-  if (!answer) return { action: "reject", reason: QUESTION_NO_ANSWER };
+  if (answer === null || answer.length === 0) {
+    return { action: "reject", reason: QUESTION_NO_ANSWER };
+  }
   return { action: "reply", answer };
 }
 
-// SDK payloads vary: answers arrive as strings or single-field objects;
-// accept non-empty values, drop the rest.
-export function normalizeQuestionAnswers(raw: unknown): string[] {
-  const answers: string[] = [];
-  if (!Array.isArray(raw)) return answers;
-  for (const item of raw) {
-    if (typeof item === "string") {
-      if (item.length > 0) answers.push(item);
-    } else if (isEventRecord(item)) {
-      const value = eventString(item, "text")
-        ?? eventString(item, "value")
-        ?? eventString(item, "answer")
-        ?? eventString(item, "label");
-      if (value) answers.push(value);
-    }
-  }
-  return answers;
-}
-
-// Question ids arrive under varying field names across SDK payload shapes.
-// Accepts either the full event (drills into properties) or bare properties.
-export function getRequestIdFromQuestion(eventOrProperties: unknown): string | null {
-  const properties = eventField(eventOrProperties, "properties") ?? eventOrProperties;
-  return eventString(properties, "id")
-    ?? eventString(properties, "request_id")
-    ?? eventString(properties, "task_id")
-    ?? eventString(properties, "requestID")
-    ?? null;
-}
-
-export function resolveQuestionSession(event: unknown, store: TaskStore): QuestionTarget | null {
-  const properties = eventField(event, "properties");
-  if (!isEventRecord(properties)) return null;
-
-  const questionId = getRequestIdFromQuestion(event);
-  if (!questionId) return null;
-  // Remembered linkage first: the question id was tied to a child when the
-  // created event arrived, so later events resolve even without session ids.
-  const remembered = questionSessions.get(questionId);
-  if (remembered) return { questionId, childSessionId: remembered };
-  const candidate = eventString(properties, "sessionID")
-    ?? eventString(properties, "sessionId")
-    ?? eventString(properties, "session_id")
-    // task_id doubles as an owner hint when a different field carried the
-    // question id (see getRequestIdFromQuestion's priority chain).
-    ?? (questionId !== eventString(properties, "task_id") ? eventString(properties, "task_id") : null)
-    ?? null;
-  // Attribution is bounded to this plugin's own tasks: a question from any
-  // other session (including the operator's) passes through untouched.
-  const tracked = candidate !== null
-    && (store.activeTasks.has(candidate) || store.retainedTasks.has(candidate));
-  return { questionId, childSessionId: tracked ? candidate : null };
-}
-
 // Settlement transport: guards on inputs, and an "already resolved" answer
-// (or a 409/404 race with a human) counts as success — the question closed,
-// which is all the background task wanted. Linkage is forgotten once the
-// question no longer exists.
-function settleQuestionError(questionId: string, error: unknown): QuestionResult {
-  const status = isEventRecord(error) ? (error as Record<string, unknown>).status : undefined;
-  const message = errorMessage(error);
-  if (status === 409 || /already (resolved|answered)|question not found|not found/i.test(message)) {
-    forgetQuestionSession(questionId);
-    return { succeeded: true, reason: "already_resolved" };
-  }
-  if (status === 404 || /no such question|missing/i.test(message)) {
-    forgetQuestionSession(questionId);
-    return { succeeded: true, reason: "already_resolved" };
-  }
-  return { succeeded: false, reason: message };
-}
-
-// The settlement transport both directions share: success is "the question
-// closed", and every failure is classified once. Reply and reject differ only
-// in which host method they invoke and what body they send — the guard and
-// the failure meaning must not drift apart between them.
+// (or a 404/409 race with a human) counts as success — the question closed,
+// which is all the background task wanted. Reply and reject differ only in which
+// host method they invoke and what body they send, so the guard and the failure
+// meaning cannot drift apart between them.
 function sendQuestionSettlement(questionId: string, send: () => Promise<unknown>): Promise<QuestionResult> {
   return send()
     .then(() => ({ succeeded: true }))
-    .catch((error: unknown) => settleQuestionError(questionId, error));
+    .catch((error: unknown) => classifySettlementFailure(questionId, error));
+}
+
+function classifySettlementFailure(questionId: string, error: unknown): QuestionResult {
+  const status = isEventRecord(error) ? (error as Record<string, unknown>).status : undefined;
+  const message = errorMessage(error);
+  if (status === 409 || /already (resolved|answered)|question not found|not found/i.test(message)) {
+    return { succeeded: true, reason: "already_resolved" };
+  }
+  if (status === 404 || /no such question|missing/i.test(message)) {
+    return { succeeded: true, reason: "already_resolved" };
+  }
+  return { succeeded: false, reason: `${questionId}: ${message}` };
 }
 
 export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
   if (!questionId || !answer) {
     return Promise.resolve({ succeeded: false, reason: "missing question id or answer" });
   }
+  // The host routes /question/{requestID}/reply — `requestID`, not `id` — and
+  // wants `answers`: one entry per asked question, each the list of chosen
+  // labels. A bare `answer` string is silently the wrong shape.
   return sendQuestionSettlement(questionId, () =>
-    client.question.reply({ path: { id: questionId }, body: { answer } }),
+    client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer]] } }),
   );
 }
 
-export function rejectQuestion(client: OpenCodeClient, questionId: string, reason: string): Promise<QuestionResult> {
+// No `reason` parameter: the reject endpoint accepts no body, so there is
+// nothing to send one in. Callers that need the reason recorded log it there —
+// which is also the only place it can honestly go.
+export function rejectQuestion(client: OpenCodeClient, questionId: string): Promise<QuestionResult> {
   if (!questionId) {
     return Promise.resolve({ succeeded: false, reason: "missing question id" });
   }
   return sendQuestionSettlement(questionId, () =>
-    client.question.reject({ path: { id: questionId }, body: { reason } }),
+    client.question.reject({ path: { requestID: questionId } }),
   );
-}
-
-// question.asked carries no session id; correlate asked → replied.
-// Tenet 9: process-global by design — keys are server-unique question ids
-// (see the exemption note in docs/tasks/06-persistence-and-observability.md).
-// FIFO-capped: questions that never resolve (operator abandons the child)
-// must not grow the map unboundedly; the oldest correlations are least
-// likely to receive a late settlement event.
-const QUESTION_CORRELATION_MAX = 256;
-const questionSessions = new Map<string, string>();
-
-export function rememberQuestionSession(questionId: string, childSessionId: string): void {
-  questionSessions.set(questionId, childSessionId);
-  if (questionSessions.size > QUESTION_CORRELATION_MAX) {
-    const oldest = questionSessions.keys().next();
-    if (!oldest.done) questionSessions.delete(oldest.value);
-  }
-}
-
-export function forgetQuestionSession(questionId: string): void {
-  questionSessions.delete(questionId);
-}
-
-// Test-only isolation: the map is process-global by design (keys are
-// server-unique), so harnesses reset it between cases like the notify ledger.
-export function resetQuestionSessions(): void {
-  questionSessions.clear();
 }

@@ -5,7 +5,8 @@ import type { OpenCodeClient } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
-import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecycle.js";
+import { resolveParentSessionId } from "../shared/session-lifecycle.js";
+import { isEventRecord } from "../shared/host-shape.js";
 import { formatTaskResultSummary } from "../shared/task-formatting.js";
 
 export interface ToolDeps {

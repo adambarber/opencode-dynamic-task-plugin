@@ -15,28 +15,11 @@ import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState, ActiveTaskState, TaskRecordBase, TaskState } from "./task-state.js";
 import { TASK_STATES } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import { eventField, eventString, isEventRecord } from "./host-shape.js";
+import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
 
-// Host event payloads are untyped JSON at this boundary. isEventRecord is the
-// only sanctioned narrowing; field access goes through eventField/eventString
-// and never through casts.
-export function isEventRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-// Total, non-throwing readers into event/session shapes.
-export function eventField(event: unknown, ...path: string[]): unknown {
-  let current: unknown = event;
-  for (const key of path) {
-    if (!isEventRecord(current)) return undefined;
-    current = current[key];
-  }
-  return current;
-}
-
-export function eventString(event: unknown, ...path: string[]): string | undefined {
-  const value = eventField(event, ...path);
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
+// Host event payloads are untyped JSON at this boundary; the total readers that
+// narrow them live in host-shape.ts, the bottom of the shape layer.
 
 // The names the host puts a payload under once the transport envelope is
 // stripped. `data` is the SDK's own (the client resolves to { data, request,
@@ -152,13 +135,15 @@ export function getEventLifecycleStatus(event: unknown): string {
 
 const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
 
-// Host event type/name spellings differ across releases; the sync channel
-// carries the lifecycle state in data.info.status. Terminal iff the derived
-// status is one the settlement handler acts on.
+// The turn-ending events are named in host-events.ts against the SDK's own union
+// — no `includes("delet")` substring guess, which is what a belief that
+// "spellings differ across releases" buys: a typo'd name matches nothing and a
+// near-miss name matches too much. The sync channel also carries lifecycle state
+// in data.info.status, so that remains a terminal signal.
 export function isTerminalSessionEvent(event: unknown): boolean {
   const type = eventString(event, "type") ?? "";
-  if (type === "session.idle" || type === "session.error") return true;
-  if (type.includes("delet") || (eventString(event, "name") ?? "").includes("delet")) return true;
+  if (isTurnEnding(type)) return true;
+  if (type === SESSION_DELETED) return true;
   return TERMINAL_EVENT_STATUSES.includes(getEventLifecycleStatus(event));
 }
 

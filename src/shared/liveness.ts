@@ -10,7 +10,8 @@
 // same child — which is what turns a status line into a wrong recovery.
 
 import type { OpenCodeClient } from "./client.js";
-import { eventField, hostPayload } from "./session-lifecycle.js";
+import { hostPayload } from "./session-lifecycle.js";
+import { eventField } from "./host-shape.js";
 import { extractMessages } from "./prompt.js";
 
 // The server's own words for a session's turn, and the only ones it can say:

@@ -8,7 +8,8 @@
 import type { DynamicTaskConfig } from "./config.js";
 import type { OpenCodeClient } from "./client.js";
 import { safeLog } from "./notify.js";
-import { hostPayload, isEventRecord } from './session-lifecycle.js';
+import { hostPayload } from './session-lifecycle.js';
+import { isEventRecord } from './host-shape.js';
 import {
   validateAgent,
   validateLineage,

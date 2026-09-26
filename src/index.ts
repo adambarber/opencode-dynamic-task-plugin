@@ -15,13 +15,8 @@
 
 import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "./shared/client.js";
-import {
-  getSessionIdFromEvent,
-  isEventRecord,
-  eventString,
-  errorMessage,
-  isTerminalSessionEvent,
-} from "./shared/session-lifecycle.js";
+import { getSessionIdFromEvent, errorMessage, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
+import { isEventRecord, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
 import { safeLog } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";

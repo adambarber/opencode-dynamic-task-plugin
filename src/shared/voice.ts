@@ -204,8 +204,23 @@ export const NOTICE_PARENT_UNREACHABLE =
 // HOLDS and a claim it can make in this very turn — and it never says "when it
 // resumes", which in a system whose spawn prompt says never wait is an
 // instruction to stall. (The parent tool, task_continue, is the parent's.)
+// Why a child's question was refused, and what the reader can do about it.
+//
+// The reader is the PARENT. This text used to be addressed to the child ("call
+// task_notify, end your turn") — advice the child can never receive, since the
+// host's reject endpoint declares `body?: never` and there is no channel from
+// this gate into the asking session. So the parent, holding a tool the child
+// does not, was told to use one it does not have. And it led with the
+// diagnosis, which put the actionable half past the status view's 120-char
+// truncation: the operator saw why, and not what to do.
+//
+// Hence: the parent's own remedy first, the diagnosis after. A status line that
+// truncates is fine; a message that hides its own instruction behind the
+// diagnosis is not.
 export const QUESTION_NO_ANSWER =
-  "No suggestion available, and no one can answer this: a background task has no human on the other end. Do not wait. If you cannot decide without input, call task_notify with what you need and kind:\"needs_input\", end your turn, and the parent will answer — the task then settles as blocked instead of a success. If you can decide, decide and finish.";
+  "task_continue the child with the input it needs, then it answers. " +
+  "The plugin refused the child's question — the host offered no options and a background task has no human on the other end. " +
+  "The child's turn ends without an answer, so unless the parent supplies input the task settles as blocked, not as a success.";
 
 export const QUESTION_SETTLED =
   "This task has already settled. No response will be provided.";

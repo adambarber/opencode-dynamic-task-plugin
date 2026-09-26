@@ -644,6 +644,18 @@ describe("formatParentNotification", () => {
   });
 });
 
+// The record the view formatters read. Defaults are the boring truth (one
+// completed, tracked turn with a short latest output); a test states only the
+// field it is actually about.
+function resultRecord(overrides = {}) {
+  return { sessionId: "s", status: "completed", messageCount: 1, latestText: "hi", tracked: true, ...overrides };
+}
+
+// The active-task record the fleet views read.
+function taskRecord(overrides = {}) {
+  return { childSessionId: "ses_1", parentSessionId: "p", agentName: "a", description: "d", lineage: [], state: "active", ...overrides };
+}
+
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
     const result = formatTaskResultSummary({
@@ -1165,20 +1177,22 @@ describe("task-state: createTaskStore", () => {
 });
 
 // Shared test-harness funnels: one way to build common fixtures.
+// The registration literal — the input every task-state test builds — has five
+// fields and only the child id usually matters. This names the shape once, so
+// a test states its intent ("a second agent") instead of a field list whose
+// defaults could drift from the production param type.
+function childParams({ id, parent = "parent_1", agent = "explore", description = "test", lineage = [] } = {}) {
+  return { childSessionId: id, parentSessionId: parent, agentName: agent, description, lineage };
+}
+
 function fillBackgroundTasks(store, config, ids) {
   for (const id of ids) {
-    registerActiveTask(store, {
-      childSessionId: id, parentSessionId: "parent_1",
-      agentName: id, description: id, lineage: [],
-    }, config);
+    registerActiveTask(store, childParams({ id, agent: id, description: id }), config);
   }
 }
 
 function seedSesActive(store, config) {
-  registerActiveTask(store, {
-    childSessionId: "ses_active", parentSessionId: "parent_1",
-    agentName: "reviewer", description: "test", lineage: [],
-  }, config);
+  registerActiveTask(store, childParams({ id: "ses_active", agent: "reviewer" }), config);
 }
 
 describe("task-state: registerActiveTask", () => {
@@ -1186,13 +1200,7 @@ describe("task-state: registerActiveTask", () => {
 
   it("registers an active record for the session", () => {
     const store = createTaskStore();
-    const task = registerActiveTask(store, {
-      childSessionId: "ses_1",
-      parentSessionId: "parent_1",
-      agentName: "reviewer",
-      description: "test task",
-      lineage: ["explore"],
-    }, config);
+    const task = registerActiveTask(store, childParams({ id: "ses_1", agent: "reviewer", description: "test task", lineage: ["explore"] }), config);
     assert.strictEqual(task.state, "active");
     assert.strictEqual(store.activeTasks.size, 1);
   });
@@ -1201,10 +1209,7 @@ describe("task-state: registerActiveTask", () => {
     const store = createTaskStore();
     fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
     assert.throws(() => {
-      registerActiveTask(store, {
-        childSessionId: "ses_4", parentSessionId: "parent_1",
-        agentName: "a4", description: "t4", lineage: [],
-      }, config);
+      registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
     }, /Concurrency/);
   });
 
@@ -1212,10 +1217,7 @@ describe("task-state: registerActiveTask", () => {
     const store = createTaskStore();
     fillBackgroundTasks(store, config, ["ses_1", "ses_2", "ses_3"]);
     transitionState(store, "ses_1", "completed");
-    const task = registerActiveTask(store, {
-      childSessionId: "ses_4", parentSessionId: "parent_1",
-      agentName: "a4", description: "t4", lineage: [],
-    }, config);
+    const task = registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
     assert.strictEqual(task.state, "active");
   });
 });
@@ -1367,10 +1369,7 @@ describe("task-state: revival and annotations", () => {
     const store = createTaskStore();
     seedSesActive(store, limited);
     transitionState(store, "ses_active", "completed", limited);
-    registerActiveTask(store, {
-      childSessionId: "ses_other", parentSessionId: "parent_1",
-      agentName: "a2", description: "t2", lineage: [],
-    }, limited);
+    registerActiveTask(store, childParams({ id: "ses_other", agent: "a2" }), limited);
     assert.throws(() => reviveRetainedTask(store, "ses_active", limited), /Concurrency/);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed", "rejected revival leaves the record untouched");
   });
@@ -1403,10 +1402,7 @@ describe("task-state: revival and annotations", () => {
   it("listTasks splits the fleet by state", () => {
     const store = createTaskStore();
     retained(store);
-    registerActiveTask(store, {
-      childSessionId: "ses_run", parentSessionId: "parent_1",
-      agentName: "a", description: "d", lineage: [],
-    }, config);
+    registerActiveTask(store, childParams({ id: "ses_run" }), config);
     const { active, retained: settled } = listTasks(store);
     assert.deepStrictEqual(active.map((t) => t.childSessionId), ["ses_run"]);
     assert.deepStrictEqual(settled.map((t) => t.childSessionId), ["ses_active"]);
@@ -1800,18 +1796,12 @@ describe("task formatting: truncate + delivery records", () => {
 
   it("formatTaskResultSummary never truncates latest output — pull path is full text", () => {
     const body = "y".repeat(5000);
-    const result = formatTaskResultSummary({
-      sessionId: "s", status: "completed", messageCount: 1,
-      latestText: body, tracked: true,
-    });
+    const result = formatTaskResultSummary(resultRecord({ latestText: body }));
     assert.ok(result.includes(body), "operator-pulled output must be complete");
   });
 
   it("formatTaskResultSummary surfaces delivery records", () => {
-    const base = {
-      sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true,
-    };
+    const base = resultRecord();
     assert.ok(
       formatTaskResultSummary({ ...base, notification: { kind: "completed", delivered: true, attempts: 1 } })
         .includes("delivered in 1 attempt")
@@ -1824,10 +1814,7 @@ describe("task formatting: truncate + delivery records", () => {
   });
 
   it("formatTaskResultSummary renders a suppressed duplicate as Suppressed, never FAILED", () => {
-    const base = {
-      sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true,
-    };
+    const base = resultRecord();
     const out = formatTaskResultSummary({
       ...base,
       notification: { kind: "notice", parentSessionId: "p1", delivered: false, attempts: 0, suppressed: true },
@@ -1837,10 +1824,7 @@ describe("task formatting: truncate + delivery records", () => {
   });
 
   it("formatTaskResultSummary renders a parentless non-delivery honestly", () => {
-    const base = {
-      sessionId: "s", status: "completed", messageCount: 1,
-      latestText: "hi", tracked: true,
-    };
+    const base = resultRecord();
     const out = formatTaskResultSummary({
       ...base,
       notification: { kind: "completed", parentSessionId: "unknown", delivered: false, attempts: 0 },
@@ -1997,10 +1981,7 @@ describe("question gate: resolveQuestionSession", () => {
 
   function trackedStore() {
     const store = createTaskStore();
-    registerActiveTask(store, {
-      childSessionId: "ses_child", parentSessionId: "parent_1",
-      agentName: "explore", description: "t", lineage: [],
-    }, config);
+    registerActiveTask(store, childParams({ id: "ses_child", description: "t" }), config);
     return store;
   }
 
@@ -2081,10 +2062,7 @@ describe("task store: retained-change callback", () => {
   const config = normalizeDynamicTaskConfig({});
 
   function seedActive(store, id) {
-    registerActiveTask(store, {
-      childSessionId: id, parentSessionId: "p",
-      agentName: "a", description: "d", lineage: [],
-    }, config);
+    registerActiveTask(store, childParams({ id: id }), config);
   }
 
   it("notifies on retained writes, silent on active-only writes", () => {
@@ -2138,10 +2116,7 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {
-    const base = {
-      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state: "active",
-    };
+    const base = taskRecord();
     const stale = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
     assert.match(stale, /Last activity: 20m ago/);
     assert.match(stale, /stalled/);
@@ -2152,10 +2127,7 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskStatusDetail reads activity from observed events, not from the spawn", () => {
-    const base = {
-      childSessionId: "ses_1", parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state: "active",
-    };
+    const base = taskRecord();
     // 20m since spawn, an event 2s ago: the child is demonstrably working, so
     // the stall line is a false alarm and must not render.
     const working = formatTaskStatusDetail(
@@ -2328,10 +2300,7 @@ describe("findTask — edge cases", () => {
 
   it("finds active task before retained task", () => {
     const store = createTaskStore();
-    registerActiveTask(store, {
-      childSessionId: "ses_dup", parentSessionId: "p",
-      agentName: "a", description: "t", lineage: [],
-    }, normalizeDynamicTaskConfig({}));
+    registerActiveTask(store, childParams({ id: "ses_dup", description: "t" }), normalizeDynamicTaskConfig({}));
     // Add same key to retained (should not happen in practice but test priority)
     store.retainedTasks.set("ses_dup", {
       childSessionId: "ses_dup", parentSessionId: "p", agentName: "a",

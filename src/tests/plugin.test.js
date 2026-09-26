@@ -103,8 +103,8 @@ describe("validateSessionResult", () => {
   });
 
   it("returns null for invalid result", () => {
-    assert.strictEqual(validateSessionResult(null), null);
-    assert.strictEqual(validateSessionResult({ noId: true }), null);
+    assertNothing(validateSessionResult(null), "no result at all");
+    assertNothing(validateSessionResult({ noId: true }), "a result carrying no id");
   });
 });
 
@@ -126,6 +126,18 @@ describe("extractTextFromParts", () => {
   });
 });
 
+/**
+ * The refusals a session-id reader owes, as one claim: no field at all, no event,
+ * or an id that is only whitespace. Two cases state it — one on its own, one with
+ * the legacy ambient var set, where a reader that consulted it would answer with
+ * the phantom instead of nothing.
+ */
+const noUsableSessionId = () => {
+  assertNothing(resolveParentSessionId({}), "an event with no session field");
+  assertNothing(resolveParentSessionId(null), "no event at all");
+  assertNothing(resolveParentSessionId({ sessionID: "   " }), "a blank session id");
+};
+
 describe("resolveParentSessionId", () => {
   it("prefers explicit sessionID", () => {
     const ctx = { sessionID: "ses_parent_1", sessionId: "ses_parent_2" };
@@ -145,14 +157,14 @@ describe("resolveParentSessionId", () => {
   });
 
   it("returns null when no usable id exists", () => {
-    assert.strictEqual(resolveParentSessionId({}), null);
-    assert.strictEqual(resolveParentSessionId(null), null);
-    assert.strictEqual(resolveParentSessionId({ sessionID: "   " }), null);
+    noUsableSessionId();
   });
 
   it("ignores the legacy ambient test var — callers resolve explicitly", async () => {
     await withEnv("DYNAMIC_TASK_TEST_SESSION_ID", "ses_phantom", async () => {
-      assert.strictEqual(resolveParentSessionId({}), null);
+      // The same refusals, with the phantom set: a reader that consulted the
+      // ambient var would answer "ses_phantom" to the first of them.
+      noUsableSessionId();
     });
   });
 });
@@ -336,7 +348,7 @@ describe("normalizeStatus", () => {
   });
 
   it("returns empty string for number input", () => {
-    assert.strictEqual(normalizeStatus(123), "");
+    assertEmpty(normalizeStatus(123), "a number is not a status word");
   });
 });
 
@@ -362,12 +374,12 @@ describe("getSessionIdFromEvent", () => {
   });
 
   it("returns null for no match", () => {
-    assert.strictEqual(getSessionIdFromEvent({}), null);
-    assert.strictEqual(getSessionIdFromEvent(null), null);
+    assertNothing(getSessionIdFromEvent({}), "an event with no id");
+    assertNothing(getSessionIdFromEvent(null), "no event at all");
   });
 
   it("returns null for whitespace-only id", () => {
-    assert.strictEqual(getSessionIdFromEvent({ id: "  " }), null);
+    assertNothing(getSessionIdFromEvent({ id: "  " }), "a whitespace-only id");
   });
 });
 
@@ -394,30 +406,18 @@ describe("getEventLifecycleStatus", () => {
   // event whose payload rides properties.error — there is NO status field, so
   // the status-path candidates return "" and the task was misreported as a
   // clean completion (field log 2026-09-11T19:30:00.485Z). An error-typed
-  // event is an error regardless of payload shape.
-  it("returns error for session.error events (no status field)", () => {
-    assert.strictEqual(
-      getEventLifecycleStatus({
-        type: "session.error",
-        properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } },
-      }),
-      "error",
-    );
-  });
-
-  it("returns error for sync-wrapped session.error envelopes", () => {
-    assert.strictEqual(
-      getEventLifecycleStatus({ type: "sync", name: "session.error.1", properties: { sessionID: "s1" } }),
-      "error",
-    );
-  });
-
-  it("still reads status for non-error events", () => {
-    assert.strictEqual(
-      getEventLifecycleStatus({ type: "session.idle", properties: { sessionID: "s1", status: "idle" } }),
-      "idle",
-    );
-  });
+  // event is an error regardless of payload shape, which is why the map is a
+  // table: a new host event type is a new row, not a fourth copy of the same
+  // three lines.
+  for (const [why, event, expected] of [
+    ["a session.error event with no status field", { type: "session.error", properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
+    ["a sync-wrapped session.error envelope", { type: "sync", name: "session.error.1", properties: { sessionID: "s1" } }, "error"],
+    ["a non-error event still reads its own status", { type: "session.idle", properties: { sessionID: "s1", status: "idle" } }, "idle"],
+  ]) {
+    it(`${why} reads as ${expected || "(nothing)"}`, () => {
+      assertIs(getEventLifecycleStatus(event), expected, why);
+    });
+  }
 });
 
 // The real 429 signal lives on the message INFO (AssistantMessage.error ->
@@ -464,7 +464,7 @@ describe("messageErrorDetail", () => {
   it("returns empty for non-message values", () => {
     assert.strictEqual(messageErrorDetail(null), "");
     assert.strictEqual(messageErrorDetail("junk"), "");
-    assert.strictEqual(messageErrorDetail({ role: "assistant" }), "");
+    assertEmpty(messageErrorDetail({ role: "assistant" }), "an assistant message carrying no error part");
   });
 });
 
@@ -480,7 +480,7 @@ describe("isTransientOutcomeError", () => {
     assert.strictEqual(isTransientOutcomeError("permission denied for model"), false);
     assert.strictEqual(isTransientOutcomeError("authentication required"), false);
     assert.strictEqual(isTransientOutcomeError(""), false);
-    assert.strictEqual(isTransientOutcomeError(undefined), false);
+    assertIs(isTransientOutcomeError(undefined), false, "a non-error is not a transient host error");
   });
 });
 
@@ -547,9 +547,9 @@ describe("describeModelShapeError", () => {
   });
 
   it("accepts qualified, absent, and blank inputs", () => {
-    assert.strictEqual(describeModelShapeError("nvidia/z-ai/glm-5.3"), null);
-    assert.strictEqual(describeModelShapeError(undefined), null);
-    assert.strictEqual(describeModelShapeError("   "), null);
+    assertNothing(describeModelShapeError("nvidia/z-ai/glm-5.3"), "a well-formed override");
+    assertNothing(describeModelShapeError(undefined), "no model named");
+    assertNothing(describeModelShapeError("   "), "a blank model");
   });
 });
 
@@ -678,7 +678,7 @@ describe("hostPayload", () => {
   });
   it("leaves a non-record alone", () => {
     assert.deepStrictEqual(hostPayload([1, 2]), [1, 2]);
-    assert.strictEqual(hostPayload(undefined), undefined);
+    assertAbsent(hostPayload(undefined), "no envelope, no payload");
   });
 });
 
@@ -838,6 +838,21 @@ const withRawLedgerSync = (document, file) => {
 const withRawLedger = (document, fn) =>
   inLedgerFile((file) => fn(withRawLedgerSync(document, file), file));
 
+/**
+ * The load of a raw ledger the case wrote: the document in, what the loader made
+ * of it. The all-or-nothing and version cases are the same arrangement with a
+ * different document, so it is named once and each case states only the document
+ * and the claim — the alternative was a reader of a red run having to guess which
+ * of three near-identical bodies failed.
+ */
+const loadRaw = async (document) => {
+  let loaded;
+  await inLedgerFile(async (file) => {
+    loaded = withRawLedgerSync(document, file);
+  });
+  return loaded;
+};
+
 const inTempFile = (fn) => withTempFile(tmpFilePath("dt-cfg"), fn);
 
 /**
@@ -893,35 +908,32 @@ describe("task ledger persistence", () => {
       }
     }));
 
-  it("an active entry missing a base field is dropped, not half-restored", () =>
-    inLedgerFile(async (file) => {
-      // A half-restored running task is worse than an absent one: it would be
-      // settled by reconciliation with no clock, no lineage and no parent to
-      // tell, i.e. a record invented from a corrupt file.
-      const { startedAt: _noClock, ...clockless } = activeEntry({ childSessionId: "ses_nostart" });
-      const loaded = withRawLedgerSync(
-        { tasks: {}, pending: [], active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless } },
-        file,
-      );
-      assert.deepStrictEqual([...loaded.active.keys()], ["ses_ok"], "only the whole entry returns");
-    }));
+  // One hypothesis: a record is restored whole or not at all. An active entry
+  // missing a base field would be settled by reconciliation with no clock, no
+  // lineage and no parent to tell, i.e. a record invented from a corrupt file.
+  it("an active entry missing a base field is dropped, not half-restored", async () => {
+    const { startedAt: _noClock, ...clockless } = activeEntry({ childSessionId: "ses_nostart" });
+    const loaded = await loadRaw({
+      tasks: {},
+      pending: [],
+      active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless },
+    });
+    assert.deepStrictEqual([...loaded.active.keys()], ["ses_ok"], "only the whole entry returns");
+  });
 
-  // One hypothesis: a queued write is all-or-nothing. An entry missing any of
-  // its fields cannot be redelivered (no parent, no text, or an unknown kind),
-  // and half of one is worse than none — the boot would dial a message nobody
-  // can account for.
-  it("drops a queue entry missing any field, never half of it", () =>
-    inLedgerFile(async (file) => {
-      const broken = { ...owedEntry(), pending: [
-        owedEntry({ childSessionId: "ses_noparent", parentSessionId: undefined }),
-        owedEntry({ childSessionId: "ses_notext", text: "" }),
-        owedEntry({ childSessionId: "ses_badkind", kind: "shout" }),
-        owedEntry({ childSessionId: "ses_noid", childSessionId: 42 }),
-        owedEntry(),
-      ] };
-      const loaded = withRawLedgerSync({ tasks: {}, ...broken }, file);
-      assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
-    }));
+  // The same hypothesis for the queue: a queued write missing any of its fields
+  // cannot be redelivered (no parent, no text, or an unknown kind), and half of
+  // one is worse than none — the boot would dial a message nobody can account for.
+  it("drops a queue entry missing any field, never half of it", async () => {
+    const loaded = await loadRaw({ tasks: {}, ...{ pending: [
+      owedEntry({ childSessionId: "ses_noparent", parentSessionId: undefined }),
+      owedEntry({ childSessionId: "ses_notext", text: "" }),
+      owedEntry({ childSessionId: "ses_badkind", kind: "shout" }),
+      owedEntry({ childSessionId: "ses_noid", childSessionId: 42 }),
+      owedEntry(),
+    ] } });
+    assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
+  });
 
   it("returns empty for missing, corrupt, and unknown-version files", async () => {
     const empty = (file) => {
@@ -982,16 +994,12 @@ describe("task ledger persistence", () => {
   // The version policy, stated once: a past this reader cannot fully understand
   // is discarded wholesale, because a partially-restored past is worse than a
   // clean boot — a retained history that silently lost entries reads as history.
-  it("a v2 ledger is discarded whole, retained records and owed notices alike", () =>
-    inLedgerFile(async (file) => {
-      const loaded = withRawLedgerSync(
-        { version: 2, tasks: { ses_1: retainedEntry() }, pending: [owedEntry()] },
-        file,
-      );
-      assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
-      assert.strictEqual(loaded.active.size, 0, "and no running task from a past this build cannot read");
-      assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
-    }));
+  it("a v2 ledger is discarded whole, retained records and owed notices alike", async () => {
+    const loaded = await loadRaw({ version: 2, tasks: { ses_1: retainedEntry() }, pending: [owedEntry()] });
+    assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
+    assert.strictEqual(loaded.active.size, 0, "and no running task from a past this build cannot read");
+    assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
+  });
 
 });
 
@@ -1083,11 +1091,11 @@ describe("config file layer", () => {
 
 describe("parseDynamicTaskJsonc", () => {
   it("returns null for a missing file", () => {
-    assert.strictEqual(parseDynamicTaskJsonc("/nonexistent/path/config.jsonc"), null);
+    assertNothing(parseDynamicTaskJsonc("/nonexistent/path/config.jsonc"), "a config that is not there");
   });
 
   it("returns null for empty or non-object payloads", async () => {
-    assert.strictEqual(parseDynamicTaskJsonc(""), null);
+    assertNothing(parseDynamicTaskJsonc(""), "an empty config");
     await assertJsoncRejected("[1, 2]");
   });
 
@@ -1144,15 +1152,23 @@ describe("normalizeAgentName", () => {
   });
 
   it("returns null for unsupported types", () => {
-    assert.strictEqual(normalizeAgentName(null), null);
-    assert.strictEqual(normalizeAgentName(undefined), null);
-    assert.strictEqual(normalizeAgentName(123), null);
-    assert.strictEqual(normalizeAgentName(""), null);
+    assertNothing(normalizeAgentName(null), "no name at all");
+    assertNothing(normalizeAgentName(undefined), "an absent name");
+    assertNothing(normalizeAgentName(123), "a name that is not a string");
+    assertNothing(normalizeAgentName(""), "an empty name");
   });
 });
 
+/**
+ * Admission refuses @general in this file, so every case that is about a different
+ * rule needs the same config spelled out. One declaration, named for the refusal
+ * it carries, because two describes were each building it and a case that copied
+ * the wrong one would be refused for the wrong reason.
+ */
+const blockingConfig = () => normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
+
 describe("validateAgent", () => {
-  const config = normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
+  const config = blockingConfig();
 
   // Admission is one decision over one input, so the cases are a table: a new
   // spelling of "blocked" is a new row, not a fourth copy of the same three
@@ -1175,7 +1191,7 @@ describe("validateAgent", () => {
     const customConfig = normalizeDynamicTaskConfig({ blockedAgents: ["coder"] });
     assert.strictEqual(validateAgent("reviewer", customConfig).ok, true);
     assert.strictEqual(validateAgent("coder", customConfig).ok, false);
-    assert.strictEqual(validateAgent("general", customConfig).ok, true); // general is NOT blocked here
+    admits(validateAgent("general", customConfig), "general is NOT blocked here");
   });
 });
 
@@ -1189,7 +1205,7 @@ describe("isSameAgent", () => {
 
   it("rejects different agents", () => {
     assert.strictEqual(isSameAgent("reviewer", "coder"), false);
-    assert.strictEqual(isSameAgent("explore", "general"), false);
+    assertIs(isSameAgent("explore", "general"), false, "two different agents are two agents");
   });
 });
 
@@ -1314,15 +1330,46 @@ function countingStore(cfg = config) {
  * read the same as one that explained itself.
  */
 function verdict(result, expected, why) {
-  assert.strictEqual(result.ok, expected, `${why}. got: ${JSON.stringify(result)}`);
+  assert.strictEqual(result.ok, expected, claimFailure(why, result));
   return result;
 }
 const refuses = (result, why) => verdict(result, false, why);
 const admits = (result, why) => verdict(result, true, why);
 
+/**
+ * The failure line every claim helper in this file shares: the case's own claim,
+ * then what the reader actually answered. Composed once, because a claim whose
+ * failure message leaves out the answer is a claim nobody can diagnose.
+ */
+const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found)}`;
+
 /** "The answer is nothing" — the claim behind a free slot and an unknown session. */
 function assertNothing(found, why) {
-  assert.strictEqual(found, null, `${why}. got: ${JSON.stringify(found)}`);
+  assert.strictEqual(found, null, claimFailure(why, found));
+}
+
+/**
+ * The rest of that family, because these are the whole of it: a reader in this
+ * file answers with a word, an empty string, nothing at all, or a boolean — and
+ * an assertion that does not say which claim it is making is the same assertion
+ * to the reader of a red run, however different the function under it.
+ */
+function assertEmpty(found, why) {
+  assert.strictEqual(found, "", claimFailure(why, found));
+}
+function assertAbsent(found, why) {
+  assert.strictEqual(found, undefined, claimFailure(why, found));
+}
+function assertIs(found, expected, why) {
+  assert.strictEqual(found, expected, claimFailure(why, found));
+}
+/** "Nothing usable in it" — the claim behind a parser handed garbage, a list or nothing. */
+function assertNoAgents(found, why) {
+  assert.deepStrictEqual(found, [], claimFailure(why, found));
+}
+/** A reader's whole answer — the identity it read off a question, or the decision it made. */
+function assertAnswer(answer, expected, why) {
+  assert.deepStrictEqual(answer, expected, claimFailure(why, answer));
 }
 
 /** A store holding nothing — the claim behind a fresh store, a filter, and a prune. */
@@ -1588,7 +1635,7 @@ describe("task-state: revival and annotations", () => {
 
   it("oldestRetainedId reads retention order", () => {
     const store = storeWithActive();
-    assert.strictEqual(oldestRetainedId(store), null);
+    assertNothing(oldestRetainedId(store), "a store that has retained nothing");
     transitionState(store, "ses_active", "completed");
     assert.strictEqual(oldestRetainedId(store), "ses_active");
   });
@@ -1631,14 +1678,13 @@ describe("admission gate: resolveAdmission", () => {
 
   it("denies unknown agents", () => {
     const result = resolveAdmission(agents, "nope", [], config);
-    assert.strictEqual(result.ok, false);
+    refuses(result, "an agent the host does not list is refused");
     assert.strictEqual(result.reason.kind, "unknown-agent");
   });
 
   it("denies blocked agents", () => {
-    const blockedConfig = normalizeDynamicTaskConfig({ blockedAgents: ["general"] });
-    const result = resolveAdmission([{ name: "general" }], "general", [], blockedConfig);
-    assert.strictEqual(result.ok, false);
+    const result = resolveAdmission([{ name: "general" }], "general", [], blockingConfig());
+    refuses(result, "a blocked agent is refused");
     assert.strictEqual(result.reason.kind, "blocked");
   });
 
@@ -1691,7 +1737,7 @@ describe("admission gate: resolveDependencies", () => {
     const store = storeWith("s1", "completed");
     const s2 = createTaskStore();
     for (const [id, task] of store.retainedTasks) s2.retainedTasks.set(id, task);
-    assert.deepStrictEqual(resolveDependencies(s2, ["s1"]), { ok: true });
+    admits(resolveDependencies(s2, ["s1"]), "a completed dependency admits");
   });
 
   it("refuses with the blocking set and names each dep state", () => {
@@ -1719,25 +1765,26 @@ describe("admission gate: resolveDependencies", () => {
   });
 
   it("treats unknown ids as satisfied (aged-out tolerance)", () => {
-    assert.deepStrictEqual(resolveDependencies(createTaskStore(), ["ses_gone"]), { ok: true });
+    admits(resolveDependencies(createTaskStore(), ["ses_gone"]), "an unknown id is treated as satisfied");
   });
 });
 
 describe("admission gate: formatAdmissionError", () => {
-  it("renders all refusal kinds with remedy", () => {
-    assert.ok(
-      formatAdmissionError({ kind: "missing-name" }, "explore", undefined).includes("No subagent_type")
-    );
-    assert.ok(
-      formatAdmissionError({ kind: "unknown-agent", requested: "nope" }, "explore", "nope").includes('"nope" not found')
-    );
-    assert.ok(
-      formatAdmissionError({ kind: "blocked", message: "blocked msg" }, "explore", "general").includes("blocked msg")
-    );
-    assert.ok(
-      formatAdmissionError({ kind: "lineage", message: "depth msg" }, "explore", "explore").includes("depth msg")
-    );
-  });
+  // One decision over one input, so the refusals are a table: a new refusal kind
+  // is a new row, not a fourth copy of the same three lines. Each row is the
+  // kind, what the gate was told, and the words the remedy has to contain.
+  const refusals = [
+    [{ kind: "missing-name" }, undefined, "No subagent_type"],
+    [{ kind: "unknown-agent", requested: "nope" }, "nope", '"nope" not found'],
+    [{ kind: "blocked", message: "blocked msg" }, "general", "blocked msg"],
+    [{ kind: "lineage", message: "depth msg" }, "explore", "depth msg"],
+  ];
+  for (const [decision, requested, remedy] of refusals) {
+    it(`a ${decision.kind} refusal carries its remedy`, () => {
+      const said = formatAdmissionError(decision, "explore", requested);
+      assert.ok(said.includes(remedy), `${decision.kind} must name ${JSON.stringify(remedy)}. got: ${said}`);
+    });
+  }
 });
 
 describe("admission gate: parseAgentList", () => {
@@ -1770,7 +1817,7 @@ describe("admission gate: parseAgentList", () => {
 
   it("rejects garbage", () => {
     for (const bad of [null, undefined, "str", 42, {}, { agents: "x" }, [{ noName: 1 }]]) {
-      assert.deepStrictEqual(parseAgentList(bad), [], JSON.stringify(bad));
+      assertNoAgents(parseAgentList(bad), `nothing usable in ${JSON.stringify(bad)}`);
     }
   });
 });
@@ -1787,16 +1834,21 @@ describe("admission gate: registerAdmittedTask", () => {
 });
 
 describe("prompt dance: invokePrompt", () => {
+  /**
+   * A client whose only method is the prompt, answering as the case says. The
+   * dance is a payload shape and a passthrough of whatever the client answered,
+   * so the two cases are the same client with a different response — named once
+   * here rather than re-typed per case, which is how one of them grew a second
+   * prompt stub nobody was asserting against.
+   */
+  const clientAnswering = (respond) => ({ session: { prompt: async (args) => respond(args) } });
+
   it("sends the single payload shape and resolves with the client result", async () => {
     let captured;
-    const client = {
-      session: {
-        prompt: async (args) => {
-          captured = args;
-          return { parts: [{ type: "text", text: "hi" }] };
-        },
-      },
-    };
+    const client = clientAnswering((args) => {
+      captured = args;
+      return { parts: [{ type: "text", text: "hi" }] };
+    });
     const result = await invokePrompt(client, "ses_1", "hello");
     assert.deepStrictEqual(captured, {
       path: { id: "ses_1" },
@@ -1807,7 +1859,7 @@ describe("prompt dance: invokePrompt", () => {
 
   it("rejects with the raw client error (callers classify)", async () => {
     const failure = new Error("boom");
-    const client = { session: { prompt: async () => { throw failure; } } };
+    const client = clientAnswering(() => { throw failure; });
     await assert.rejects(() => invokePrompt(client, "ses_1", "hello"), /boom/);
   });
 });
@@ -1827,7 +1879,7 @@ describe("prompt dance: parseModelOverride", () => {
     assert.strictEqual(parseModelOverride("   "), undefined);
     assert.strictEqual(parseModelOverride(null), undefined);
     assert.strictEqual(parseModelOverride(undefined), undefined);
-    assert.strictEqual(parseModelOverride(42), undefined);
+    assertAbsent(parseModelOverride(42), "a model that is not a string names no override");
   });
 });
 
@@ -1937,7 +1989,7 @@ describe("question gate: reply/reject settlement", () => {
   });
 
   it("reject rejects missing id", async () => {
-    assert.strictEqual((await rejectQuestion(okClient(), "")).succeeded, false);
+    assertIs((await rejectQuestion(okClient(), "")).succeeded, false, "a question with no id is never sent");
   });
 });
 
@@ -1955,7 +2007,7 @@ describe("question handling: the asked payload", () => {
     const read = readAskedQuestion(
       asked({ id: "q1", sessionID: "ses_child", questions: [info("Ship it?", ["yes", "no"])] }),
     );
-    assert.deepStrictEqual(read, { questionId: "q1", sessionId: "ses_child", answer: "yes" });
+    assertAnswer(read, { questionId: "q1", sessionId: "ses_child", answer: "yes" }, "the one-part ask, read whole");
   });
 
   // Answering the first part of a two-part ask retires the question with the
@@ -1969,17 +2021,17 @@ describe("question handling: the asked payload", () => {
 
   it("an ask with no options, an empty option list, or a non-string label yields no answer", () => {
     const noOptions = asked({ id: "q3", sessionID: "ses_child", questions: [info("Ship it?", [])] });
-    assert.strictEqual(readAskedQuestion(noOptions).answer, null);
+    assertNothing(readAskedQuestion(noOptions).answer, "options with nothing to choose");
     const emptyLabels = asked({ id: "q4", sessionID: "ses_child", questions: [{ question: "?", options: [] }] });
-    assert.strictEqual(readAskedQuestion(emptyLabels).answer, null);
+    assertNothing(readAskedQuestion(emptyLabels).answer, "options with no labels");
     const nonString = asked({ id: "q5", sessionID: "ses_child", questions: [{ question: "?", options: [{ label: 7 }] }] });
-    assert.strictEqual(readAskedQuestion(nonString).answer, null);
+    assertNothing(readAskedQuestion(nonString).answer, "a label that is not a string");
   });
 
   it("refuses to read a payload it cannot identify: no id, no session, or no questions key", () => {
-    assert.strictEqual(readAskedQuestion(asked({ sessionID: "ses_child", questions: [info("?", ["y"])] })), null);
-    assert.strictEqual(readAskedQuestion(asked({ id: "q6", questions: [info("?", ["y"])] })), null);
-    assert.strictEqual(readAskedQuestion(asked({ id: "q7", sessionID: "ses_child" })), null);
+    assertNothing(readAskedQuestion(asked({ sessionID: "ses_child", questions: [info("?", ["y"])] })), "an ask with no question id");
+    assertNothing(readAskedQuestion(asked({ id: "q6", questions: [info("?", ["y"])] })), "an ask with no session");
+    assertNothing(readAskedQuestion(asked({ id: "q7", sessionID: "ses_child" })), "an ask with no questions key");
   });
 
   // The two answers are not the same. Unidentifiable means the gate cannot tell
@@ -2000,7 +2052,7 @@ describe("question handling: the asked payload", () => {
   // the bare read of a wrapped event finds nothing and must say so.
   it("ignores an envelope-wrapped payload, since the host publishes it bare", () => {
     const bare = { id: "q9", sessionID: "ses_child", questions: [info("?", ["y"])] };
-    assert.strictEqual(readAskedQuestion({ type: "question.asked", data: bare }), null);
+    assertNothing(readAskedQuestion({ type: "question.asked", data: bare }), "an envelope-wrapped payload where the host publishes it bare");
   });
 });
 
@@ -2062,11 +2114,11 @@ describe("task policy: invalid inputs", () => {
 
   it("validateAgent rejects empty names", () => {
     assert.strictEqual(validateAgent("", config).ok, false);
-    assert.strictEqual(validateAgent(null, config).ok, false);
+    refuses(validateAgent(null, config), "a dispatch that named no agent");
   });
 
   it("validateLineage rejects empty child names", () => {
-    assert.strictEqual(validateLineage([], "", config).ok, false);
+    refuses(validateLineage([], "", config), "a lineage with an empty child name");
   });
 
   // The timeout-era races are structurally gone: settlement is exactly once
@@ -2106,7 +2158,7 @@ describe("prompt dance: getLatestAssistantText", () => {
     assert.strictEqual(getLatestAssistantText([said("assistant", "old"), said("assistant", "new")]), "new");
     assert.strictEqual(getLatestAssistantText([said("assistant", ""), said("user", "q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
-    assert.strictEqual(getLatestAssistantText(null), "");
+    assertEmpty(getLatestAssistantText(null), "no message at all");
   });
 });
 
@@ -2164,13 +2216,13 @@ describe("task-state: noteLateOutcome", () => {
   it("refuses non-edges and unknown sessions", () => {
     const store = storeSettledAs("completed", config);
     assert.strictEqual(noteLateOutcome(store, "ses_active", "completed"), false);
-    assert.strictEqual(noteLateOutcome(store, "ses_nope", "error"), false);
+    assertIs(noteLateOutcome(store, "ses_nope", "error"), false, "an untracked session has no outcome to note");
   });
 });
 
 describe("question gate: decideQuestion", () => {
   it("an active child with an answer replies with it", () => {
-    assert.deepStrictEqual(decideQuestion("active", "yes"), { action: "reply", answer: "yes" });
+    assertAnswer(decideQuestion("active", "yes"), { action: "reply", answer: "yes" }, "an active child answers");
   });
 
   // The only reader of this text is the parent: the host's reject endpoint
@@ -2245,6 +2297,15 @@ describe("task formatting: fleet views", () => {
   const rowFor = (summary, sessionId) =>
     summary.split("\n").find((line) => line.includes(sessionId)) ?? `(no line for ${sessionId})`;
   const listOf = (over = {}) => formatTaskListSummary({ tree: [], activeCount: 0, retained: [], maxConcurrent: 4, pruned: 0, ...over });
+  // The detail view's own seam, so a case states the record it is about and the
+  // words it expects rather than the renderer's two arguments. `listOf` is the
+  // same seam for the fleet view; a case that spelled either one out was writing
+  // the fixture again.
+  const detailOf = (over = {}, notification = null) => formatTaskStatusDetail(taskRecord(over), notification);
+  /** The words a rendered block has to carry — the claim every case below is a list of. */
+  const renders = (text, words) => {
+    for (const word of words) assert.ok(text.includes(word), `${word} must be rendered. got: ${text}`);
+  };
 
   it("formatTaskListSummary counts the running rows and indents the tree", () => {
     const now = Date.now();
@@ -2279,11 +2340,11 @@ describe("task formatting: fleet views", () => {
 
   it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {
     const base = taskRecord();
-    const stale = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
+    const stale = detailOf({ ...base, startedAt: Date.now() - 20 * 60 * 1000 });
     assert.match(stale, /Last plugin event: 20m ago/);
     assert.match(stale, /stalled/);
     assert.match(stale, /task_interrupt/);
-    const fresh = formatTaskStatusDetail({ ...base, startedAt: Date.now() }, null);
+    const fresh = detailOf({ ...base, startedAt: Date.now() });
     assert.match(fresh, /Last plugin event:/);
     assert.ok(!fresh.includes("stalled"), `fresh turns carry no warning. got: ${fresh}`);
   });
@@ -2292,13 +2353,12 @@ describe("task formatting: fleet views", () => {
     const base = taskRecord();
     // 20m since spawn, an event 2s ago: the child is demonstrably working, so
     // the stall line is a false alarm and must not render.
-    const working = formatTaskStatusDetail(
-      { ...base, startedAt: Date.now() - 20 * 60 * 1000, lastActivityAt: Date.now() - 2000 }, null);
+    const working = detailOf({ ...base, startedAt: Date.now() - 20 * 60 * 1000, lastActivityAt: Date.now() - 2000 });
     assert.match(working, /Last plugin event: 2s ago/);
     assert.ok(!working.includes("stalled"), `observed activity suppresses the stall line. got: ${working}`);
     // No heartbeat yet (plugin booted after the spawn): the spawn stays the
     // honest floor and the silence stays visible.
-    const unheard = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
+    const unheard = detailOf({ ...base, startedAt: Date.now() - 20 * 60 * 1000 });
     assert.match(unheard, /Last plugin event: 20m ago/);
     assert.match(unheard, /stalled/);
   });
@@ -2309,30 +2369,23 @@ describe("task formatting: fleet views", () => {
   });
 
   it("formatTaskStatusDetail renders tracked metadata offline", () => {
-    const detail = formatTaskStatusDetail(
-      taskRecord({
-        description: "Deep dive",
-        lineage: ["planner"],
-        startedAt: 1,
-        requestedModel: { providerID: "prov", modelID: "model" },
-        dependsOn: ["ses_dep"],
-        lastNotice: { message: "blocked on credentials", at: Date.now() },
-      }),
-      null,
-    );
-    assert.ok(detail.includes("ses_1"));
-    assert.ok(detail.includes("planner"));
-    assert.ok(detail.includes("prov/model"));
-    assert.ok(detail.includes("ses_dep"));
-    assert.ok(detail.includes("blocked on credentials"));
+    const detail = detailOf({
+      description: "Deep dive",
+      lineage: ["planner"],
+      startedAt: 1,
+      requestedModel: { providerID: "prov", modelID: "model" },
+      dependsOn: ["ses_dep"],
+      lastNotice: { message: "blocked on credentials", at: Date.now() },
+    });
+    renders(detail, ["ses_1", "planner", "prov/model", "ses_dep", "blocked on credentials"]);
   });
 
   it("formatTaskStatusDetail surfaces delivery records", () => {
-    const detail = formatTaskStatusDetail(
-      taskRecord({ state: "completed", startedAt: 1, retainedAt: 2 }),
+    const detail = detailOf(
+      { state: "completed", startedAt: 1, retainedAt: 2 },
       { kind: "error", delivered: false, attempts: 2 },
     );
-    assert.ok(detail.includes("FAILED"), `got: ${detail}`);
+    renders(detail, ["FAILED"]);
   });
 });
 
@@ -2358,7 +2411,7 @@ describe("task-state: restoreRetained", () => {
   });
 
   it("returns zero for empty input", () => {
-    assert.strictEqual(restoreRetained(createTaskStore(), []), 0);
+    assertIs(restoreRetained(createTaskStore(), []), 0, "a store with nothing retained restores nothing");
   });
 });
 

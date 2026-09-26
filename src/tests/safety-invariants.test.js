@@ -407,6 +407,122 @@ describe("invariant: tests import production, never redefine it (Tenet 12)", () 
   rule({ name: "no stale subagent-only dispatch filter in tests", ...STALE_DISPATCH_FILTER });
 });
 
+/**
+ * A record shape is declared once, in production, and the tests BUILD it there.
+ *
+ * This is the guard for a defect class the suite could not see. A test fixture
+ * that spells a record out by hand is a second declaration of a shape with no
+ * compiler over it, and it drifts in both directions at once: a fixture carrying a
+ * field production deleted, and a fixture missing a field production requires.
+ * Both were live here — a retained fixture kept `timeoutNotified` long after the
+ * removal of `timeout_ms`, and an active fixture shipped a `lastNotice` with no
+ * `claim`, which is the field the settlement reads to tell a blocked child from a
+ * finished one, so a fixture used in a settlement would have settled a blocked
+ * child as a success. 456 tests passed over both. jscpd cannot see either: it
+ * pools TypeScript and JavaScript separately, so a test's copy of a production
+ * shape is invisible to it by construction — the detector had to be written, which
+ * is why it is here.
+ *
+ * The rule reads each interface's OWN field names out of the .ts source — required
+ * ones included, `extends` followed — and then looks for an object literal in a
+ * test file that spells all of them. A literal that carries every required field
+ * is a restatement of the record, wherever it sits: the answer is to build it
+ * through the production builder, not to have a second copy of the shape.
+ */
+const RECORD_SHAPES = [
+  { name: "ActiveTaskState", file: "shared/task-state.ts" },
+  { name: "RetainedTaskState", file: "shared/task-state.ts" },
+  { name: "TaskResultRecord", file: "shared/task-formatting.ts" },
+  { name: "NotificationRecord", file: "shared/notify.ts" },
+  { name: "PendingDelivery", file: "shared/notify.ts" },
+];
+
+/** Every field an interface requires, following `extends` inside its own file. */
+function requiredFieldsOf(file, name, seen = new Set()) {
+  if (seen.has(name)) return [];
+  seen.add(name);
+  const source = readFileSync(path.join(SRC_DIR, file), "utf8");
+  const declaration = new RegExp(`(?:export )?interface ${name}\\b([^\\{]*)\\{`).exec(source);
+  assert.ok(declaration, `${name} is not declared in ${file} — this rule reads a shape that no longer exists`);
+  const open = declaration.index + declaration[0].length;
+  let depth = 1;
+  let close = open;
+  for (let i = open; i < source.length && depth > 0; i++) {
+    if (source[i] === "{") depth++;
+    if (source[i] === "}") depth--;
+    close = i;
+  }
+  const body = source.slice(open, close);
+  const required = [...body.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)\s*[?:]/gm)]
+    .filter(([, field]) => !body.match(new RegExp(`^\\s*${field}\\s*\\?`, "m")))
+    .map(([, field]) => field);
+  const inherited = declaration[1].match(/extends\s+([A-Za-z][A-Za-z0-9]*)/);
+  return inherited ? [...requiredFieldsOf(file, inherited[1], seen), ...required] : required;
+}
+
+/**
+ * Every object literal in a source, with its top-level keys — the keys a
+ * restatement of a record would spell. A key has to sit at the start of its own
+ * line or just inside the brace, which is what keeps `foo.bar` from reading as a
+ * key named `bar`; string keys count, because a restatement may quote them.
+ */
+function objectLiterals(source) {
+  const KEY = /^\s*([A-Za-z][A-Za-z0-9]*|"[A-Za-z][A-Za-z0-9]*"|'[A-Za-z][A-Za-z0-9]*')\s*[:,]/;
+  const literals = [];
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] !== "{") continue;
+    let depth = 0;
+    let keys = [];
+    for (let j = i; j < source.length; j++) {
+      const ch = source[j];
+      if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          if (keys.length > 0) literals.push({ offset: i, keys });
+          i = j;
+          break;
+        }
+      } else if (depth === 1 && "\"'`".includes(ch)) {
+        for (j++; j < source.length && source[j] !== ch; j++) {
+          if (source[j] === "\\") j++;
+        }
+      } else if (depth === 1) {
+        const key = KEY.exec(source.slice(j, j + 80));
+        // The character before the key has to end a token, or the "key" is the
+        // tail of a longer one: in `foo.bar:` the scan reaches `bar` and must not
+        // read it as a key.
+        if (key && !/[\w.]/.test(j > 0 ? source[j - 1] : "")) {
+          keys.push(key[1].replace(/["']/g, ""));
+          j += key[0].length - 1;
+        }
+      }
+    }
+  }
+  return literals;
+}
+
+describe("invariant: record shapes are built, not re-declared (Tenet 12)", () => {
+  it("a test that spells out a whole record is rebuilding production's shape by hand", () => {
+    const findings = [];
+    for (const shape of RECORD_SHAPES) {
+      const required = requiredFieldsOf(shape.file, shape.name);
+      assert.ok(required.length >= 3, `${shape.name} yields only ${required.length} required field(s) — the extractor is not reading the shape`);
+      for (const file of listTestFiles().concat([path.join(TESTS_DIR, "support", "records.js")])) {
+        const source = readFileSync(file, "utf8");
+        for (const literal of objectLiterals(source)) {
+          if (!required.every((field) => literal.keys.includes(field))) continue;
+          findings.push(
+            `${path.relative(REPO_ROOT, file)}: ${shape.name} restated at line `
+            + `${source.slice(0, literal.offset).split("\n").length} — build it with the production builder instead`,
+          );
+        }
+      }
+    }
+    assert.deepStrictEqual(findings, [], `a record shape restated by hand:\n${findings.join("\n")}`);
+  });
+});
+
 // --- Task 00: documented capability inventory --------------------------------
 // Primitive: the documented capability set. README's tool table must match
 // exactly the tools registered in the tool map (fidelity gate).

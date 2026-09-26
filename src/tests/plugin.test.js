@@ -744,7 +744,7 @@ describe("formatTaskResultSummary", () => {
   it("surfaces delivery attempts when provided", () => {
     const result = formatTaskResultSummary(resultRecord({
       status: "idle",
-      notification: { kind: "completed", delivered: true, attempts: 2 },
+      notification: notifiedAs("completed", { delivered: true, attempts: 2 }),
     }));
     assert.match(result, /Last notification: completed \(delivered in 2 attempt/);
   });
@@ -1306,6 +1306,7 @@ import {
   recordAbortError,
   oldestRetainedId,
   withoutAdvisory,
+  noticeRecord,
 } from "../../dist/shared/task-state.js";
 import {
   resolveAdmission,
@@ -1323,7 +1324,7 @@ import { readAskedQuestion } from "../../dist/shared/host-events.js";
 import { tmpdir } from "node:os";
 import { checkConcurrencyLimit } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile, sessionUpdatedEnvelope } from './support/harness.js';
-import { retainedEntry, activeEntry, owedEntry } from './support/records.js';
+import { retainedEntry, activeEntry, owedEntry, notifiedAs } from './support/records.js';
 
 describe("task-state: createTaskStore", () => {
   it("creates empty active and retained maps", () => {
@@ -1505,9 +1506,16 @@ function assertSettlementIsFinal(store) {
   assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed");
 }
 
-/** formatTaskResultSummary over a settled record carrying this notification. */
-function summaryWith(notification) {
-  return formatTaskResultSummary({ ...resultRecord(), notification });
+/**
+ * formatTaskResultSummary over a settled record carrying this notification, and
+ * the notification itself is the gate's own builder — a case names the delivery
+ * outcome it is about, not the fields of a NotificationRecord. Five of these were
+ * spelled out by hand in this file, which is how `claim` went missing from a
+ * `lastNotice` in the same file: a record declared by hand drifts silently, and
+ * nothing in an untyped test file notices.
+ */
+function summaryWith(kind, outcome, target = {}) {
+  return formatTaskResultSummary({ ...resultRecord(), notification: notifiedAs(kind, outcome, target) });
 }
 
 describe("task-state: transitionState", () => {
@@ -2113,25 +2121,21 @@ describe("task formatting: truncate + delivery records", () => {
 
   it("formatTaskResultSummary surfaces delivery records", () => {
     const base = resultRecord();
-    assert.ok(
-      formatTaskResultSummary({ ...base, notification: { kind: "completed", delivered: true, attempts: 1 } })
-        .includes("delivered in 1 attempt")
-    );
-    assert.ok(
-      formatTaskResultSummary({ ...base, notification: { kind: "timeout", delivered: false, attempts: 2 } })
-        .includes("FAILED after 2 attempt")
-    );
+    const withNotification = (kind, outcome) =>
+      formatTaskResultSummary({ ...base, notification: notifiedAs(kind, outcome) });
+    assert.ok(withNotification("completed", { delivered: true, attempts: 1 }).includes("delivered in 1 attempt"));
+    assert.ok(withNotification("timeout", { delivered: false, attempts: 2 }).includes("FAILED after 2 attempt"));
     assert.ok(!formatTaskResultSummary(base).includes("notification:"));
   });
 
   it("formatTaskResultSummary renders a suppressed duplicate as Suppressed, never FAILED", () => {
-    const out = summaryWith({ kind: "notice", parentSessionId: "p1", delivered: false, attempts: 0, suppressed: true });
+    const out = summaryWith("notice", { delivered: false, attempts: 0, suppressed: true }, { parentSessionId: "p1" });
     assert.ok(out.includes("Suppressed (duplicate — already delivered)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `suppression is not failure. got: ${out}`);
   });
 
   it("formatTaskResultSummary renders a parentless non-delivery honestly", () => {
-    const out = summaryWith({ kind: "completed", parentSessionId: "unknown", delivered: false, attempts: 0 });
+    const out = summaryWith("completed", { delivered: false, attempts: 0 });
     assert.ok(out.includes("Not delivered (no parent session)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `nowhere to dial is not a failed dial. got: ${out}`);
   });
@@ -2409,7 +2413,7 @@ describe("task formatting: fleet views", () => {
       startedAt: 1,
       requestedModel: { providerID: "prov", modelID: "model" },
       dependsOn: ["ses_dep"],
-      lastNotice: { message: "blocked on credentials", at: Date.now() },
+      lastNotice: noticeRecord("blocked on credentials", "needs_input", Date.now()),
     });
     renders(detail, ["ses_1", "planner", "prov/model", "ses_dep", "blocked on credentials"]);
   });
@@ -2417,7 +2421,7 @@ describe("task formatting: fleet views", () => {
   it("formatTaskStatusDetail surfaces delivery records", () => {
     const detail = detailOf(
       { state: "completed", startedAt: 1, retainedAt: 2 },
-      { kind: "error", delivered: false, attempts: 2 },
+      notifiedAs("error", { delivered: false, attempts: 2 }),
     );
     renders(detail, ["FAILED"]);
   });

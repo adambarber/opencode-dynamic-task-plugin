@@ -21,11 +21,12 @@ import {
   createTaskStore,
   markTurnReplacement,
   noteActivity,
+  noticeRecord,
   registerActiveTask,
   retainedRecord,
   withoutAdvisory,
 } from "../../../dist/shared/task-state.js";
-import { owedDelivery } from "../../../dist/shared/notify.js";
+import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
 
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({
@@ -86,6 +87,16 @@ export const runningEntry = (childSessionId, overrides = {}) => ({
   ...overrides,
 });
 
+/**
+ * A delivery record from the gate's own builder, so a case names the outcome it is
+ * about — delivered how many times, suppressed, held — rather than the fields of a
+ * NotificationRecord. `at` and `message` are filled by the code that fills them,
+ * because a case asserting a rendering is not asserting on a clock.
+ */
+export const notifiedAs = (kind, outcome, target = {}) =>
+  notifyRecord({ parentSessionId: "unknown", childSessionId: "ses_1", kind, ...target }, "delivered", outcome);
+
+export { noticeRecord };
 /**
  * A delivery the plugin owes and has not landed: the exact write, not a recipe to
  * rebuild one, plus how many attempts the previous boot already spent.

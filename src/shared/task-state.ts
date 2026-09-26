@@ -531,9 +531,16 @@ export function noteActivity(
 
 // Notice announcements are recorded on the active entry by the gate module —
 // advisory metadata, never a lifecycle mutation.
+// The notice a turn declares, assembled once. The `claim` is what the settlement
+// reads to tell a blocked turn from a finished one, so it is not optional in the
+// record and this is the one place that says so.
+export function noticeRecord(message: string, claim: NoticeClaim, at: number): ActiveTaskState["lastNotice"] {
+  return { message, at, claim };
+}
+
 export function annotateNotice(store: TaskStore, childSessionId: string, message: string, claim: NoticeClaim): boolean {
   return annotateActive(store, childSessionId, (active) => {
-    active.lastNotice = { message, at: Date.now(), claim };
+    active.lastNotice = noticeRecord(message, claim, Date.now());
   });
 }
 

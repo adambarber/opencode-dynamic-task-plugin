@@ -14,6 +14,7 @@ import {
   gateLedger,
   notifyChainCount,
 } from "../../dist/shared/notify.js";
+import { deferred } from './support/harness.js';
 
 const NO_SLEEP = async () => {};
 
@@ -116,8 +117,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("concurrent same-key writes deliver once — in-flight claims close the race", async () => {
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
+    const gate = deferred();
     const calls = [];
     const client = {
       session: {
@@ -133,7 +133,7 @@ describe("notify gate: notifyParent", () => {
     const second = notifyParent(client, "parent_1", "hello", opts);
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
-    release();
+    gate.resolve();
     assert.deepStrictEqual((await Promise.all([first, second])).sort(), [false, true]);
   });
 
@@ -193,8 +193,7 @@ describe("notify gate: notifyParent", () => {
     // The poisoning window: an in-flight delivery claimed before forgetChild
     // succeeds after it. Its commit belongs to the previous generation — it
     // may emit history but must not reserve the key the revived turn needs.
-    let releaseRetry;
-    const retryGate = new Promise((resolve) => { releaseRetry = resolve; });
+    const retryGate = deferred();
     let calls = 0;
     const client = {
       session: {
@@ -210,7 +209,7 @@ describe("notify gate: notifyParent", () => {
     const first = notifyParent(client, "parent_1", "turn 1", opts);
     await new Promise((r) => setTimeout(r, 10)); // the retry has dialed and is held
     gateLedger.forgetChild("ses_gen1");          // revival: new generation, cleared pending
-    releaseRetry();
+    retryGate.resolve();
     const firstDelivered = await first;          // stale-generation commit lands (transport succeeded)
     assert.strictEqual(firstDelivered, true, "the retry genuinely delivered — history says so");
 
@@ -219,8 +218,7 @@ describe("notify gate: notifyParent", () => {
   });
 
   it("delivery chains are FIFO-bounded like the dedup gate", async () => {
-    let release;
-    const transportGate = new Promise((resolve) => { release = resolve; });
+    const transportGate = deferred();
     const client = {
       session: { prompt: async () => { await transportGate; return { ok: true }; } },
     };
@@ -231,7 +229,7 @@ describe("notify gate: notifyParent", () => {
       }));
     }
     assert.strictEqual(notifyChainCount(), 1000, `chain map FIFO-capped. got ${notifyChainCount()}`);
-    release();
+    transportGate.resolve();
     await Promise.all(pending);
     await new Promise((r) => setTimeout(r, 0)); // chain-drop handlers are detached
     await new Promise((r) => setTimeout(r, 0));

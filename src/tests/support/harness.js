@@ -273,6 +273,10 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     // routing target is part of the contract, so it stays visible.
     notices: () => state.notifications,
     noticeBodies: () => state.notifications.map((n) => n.message),
+    // The notice that mentions a child session, or undefined. A child id is
+    // in every settlement notice, so this is the handle for "the notice FOR
+    // this child" — routing target included.
+    noticeFor: (childId) => state.notifications.find((n) => n.message.includes(childId)),
     questionCalls: () => state.questionCalls,
     logs: () => state.logs,
     aborted: () => state.aborted,

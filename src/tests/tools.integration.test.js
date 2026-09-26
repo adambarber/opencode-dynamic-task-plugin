@@ -12,13 +12,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  events,
-  setupHarness,
-  setupTwoTurnHarness,
-  sleep,
-  tmpProjectDir,
-} from "./support/harness.js";
+import { deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir } from './support/harness.js';
 
 // --- Tests -----------------------------------------------------------------
 
@@ -635,8 +629,7 @@ describe("settlement: the notification layer owns outcomes", () => {
   });
 
   it("settlement does not hold the event pump on slow transport", async () => {
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
+    const gate = deferred();
     const h = await setupHarness();
     const origPrompt = h.client.session.prompt;
     h.client.session.prompt = (args) => {
@@ -648,7 +641,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     const settled = h.settle(id);
     const winner = await Promise.race([settled.then(() => "event"), sleep(500).then(() => "timeout")]);
     assert.strictEqual(winner, "event", "event handler must not wait for delivery transport");
-    release();
+    gate.resolve();
     await settled;
   });
 
@@ -1097,8 +1090,7 @@ describe("outcome correctness: failed turns never report success", () => {
   });
 
   it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
-    let releaseAbort1;
-    const gate = new Promise((resolve) => { releaseAbort1 = resolve; });
+    const gate1 = deferred();
     let calls = 0;
     const h = await setupHarness();
     h.client.session.abort = async () => {
@@ -1110,7 +1102,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const p1 = h.tool.task_interrupt.execute({ session_id: id });
     await sleep(10);
     const r2 = await h.tool.task_interrupt.execute({ session_id: id });
-    releaseAbort1();
+    gate1.resolve();
     await p1;
     assert.ok(!r2.includes("not a tracked task"), `second interrupt sees the tracked task. got: ${r2}`);
     const status = await h.tool.task_status.execute({ session_id: id });

@@ -57,6 +57,28 @@ Three properties had to be settled before writing it:
   `SETTLED_DEPENDENCY_STATES` *is* derived (`TASK_STATES` minus `active`) — a
   dependency that will not run again cannot be waited on, whatever it settled as.
 
+## The claim has two sources, and the second one was missing
+
+The child's own `task_notify` is the obvious source of `needs_input`. The other
+is the plugin's question gate, and it shipped as a hole: the gate *is* the plugin
+blocking the child. It told the child "steer with `task_continue` when it
+resumes" — a parent tool, and an instruction to wait, in a system whose own spawn
+prompt says never wait — and then recorded nothing. The block was visible only as
+prose in a rejection string, so a child that ended its turn without re-declaring
+settled `completed`. The same false success, through a different door.
+
+The gate now routes its refusal through the same `annotateNotice(..., "needs_input")`
+funnel the child's own notification uses. Two properties make it safe rather than
+a second guess at the child's state:
+
+- **It only fires where the gate actually blocked.** A question the gate
+  *answered* records nothing, because there the child kept moving. The claim
+  tracks the gate's decision, not the question's existence.
+- **The reason a question is rejected is a child's only description of the way
+  out**, so it is operator voice and lives in `voice.ts` beside every other word
+  a caller reads. It names a tool the child holds and the claim it can make in
+  this very turn.
+
 ## The declaration is scoped to its turn
 
 A steer stamped *after* a declaration is the parent's answer. Without scoping, a

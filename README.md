@@ -73,9 +73,14 @@ the parent's `task_continue` answer revives it. See
    `kind:"needs_input"` when this turn cannot finish without the parent. A
    declared block is a claim about the child’s own state, and it settles the
    task as `blocked` instead of `completed`: the plugin used to report a child
-   that ended its turn asking a question as a success. The declaration belongs
-   to the turn that made it, so a steer landing after it (the parent’s answer)
-   settles that turn on its own claim.
+   that ended its turn asking a question as a success. The claim has two
+   sources — the child’s own `task_notify`, and the plugin’s question gate,
+   which blocks the child itself when a question has no answer anyone can give
+   (it used to record nothing, so a child that never re-declared settled as a
+   success by the back door). An answered question claims nothing: there the
+   child kept moving. The declaration belongs to the turn that made it, so a
+   steer landing after it (the parent’s answer) settles that turn on its own
+   claim.
 3. On the child's terminal lifecycle event, the parent is notified once with
    the latest outcome (exactly-once, deduped per settled turn).
 4. `task_continue` steers a running child — its current turn aborts and the

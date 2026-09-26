@@ -152,7 +152,7 @@ describe("Background Task Settlement", () => {
     const childId = await spawn("parent_activity", "Activity test");
     await sleep(1200);
     const silent = await harness.tool.task_status.execute({ session_id: childId });
-    assert.match(silent, /Last activity: \d+s ago/, `starts at the spawn. Got: ${silent}`);
+    assert.match(silent, /Last plugin event: \d+s ago/, `starts at the spawn. Got: ${silent}`);
 
     // Host-shaped progress event: message/part updates carry the child's
     // session id and are the only evidence the turn is moving. Before the
@@ -165,7 +165,7 @@ describe("Background Task Settlement", () => {
 
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     const started = renderedAgeSeconds(detail, "Started");
-    const activity = renderedAgeSeconds(detail, "Last activity");
+    const activity = renderedAgeSeconds(detail, "Last plugin event");
     assert.ok(
       activity < started,
       `the event must move the activity clock past the spawn. started=${started}s activity=${activity}s. Got: ${detail}`,

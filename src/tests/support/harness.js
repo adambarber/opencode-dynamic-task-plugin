@@ -78,6 +78,46 @@ export function deferred() {
 }
 
 /**
+ * The one place the mock moves a session's host status word: an abort parks the
+ * turn, a prompt starts it — the same two transitions the server makes, from
+ * the same two calls, so a read that consults the map sees what the plugin's own
+ * calls would have caused. Word only, never an event: the event a real server
+ * sends is the plugin's to react to, and a test that delivers it says so.
+ */
+function setHostTurn(state, id, type) {
+  if (state.hostStatus.has(id)) state.hostStatus.set(id, { type, at: Date.now() });
+}
+
+/**
+ * Fold a delivered event into the host's status map, the way the server keeps
+ * it. Terminal events are the ones that move a session to another word: the
+ * idle event and the status channel's own word both park it, an error marks it
+ * failed, a deletion drops it from the map entirely. Every other event is
+ * motion — it moves the clock the map's `at` reads, and nothing else.
+ */
+function applyHostStatus(state, event) {
+  if (typeof event !== "object" || event === null) return;
+  const id = event.properties?.sessionID;
+  if (typeof id !== "string") return;
+  const current = state.hostStatus.get(id);
+  if (event.type === "session.deleted") {
+    state.hostStatus.delete(id);
+    return;
+  }
+  if (!current) return;
+  const status = event.properties?.status;
+  const word = typeof status === "string" ? status : status?.type;
+  if (event.type === "session.error") {
+    setHostTurn(state, id, "error");
+  } else if (event.type === "session.idle" || (event.type === "session.status" && word)) {
+    // The idle event carries no word of its own — the event's name IS the word.
+    setHostTurn(state, id, event.type === "session.idle" ? "idle" : word);
+  } else if (current.type === "busy") {
+    setHostTurn(state, id, "busy");
+  }
+}
+
+/**
  * Harness state must live in a fresh temp project dir, never CWD or a shared
  * path — see the ledger-scoping regression suite.
  */
@@ -144,11 +184,11 @@ export const events = {
  *   promptSyncThrowIds?: Set<string>,    // synchronous throws
  *   abortThrowsOnce?: boolean,
  *   abortFailIds?: Set<string>,
- *   getThrows?: Error,
+ *   statusThrows?: Error,               // the status channel itself is down
+ *   messages?: (args: { path: { id: string } }) => unknown,
  *   questionReplyThrows?: boolean,
  *   questionRejectThrows?: boolean,
  *   agentsList?: unknown[],
- *   messages?: (args) => unknown[],
  * }
  * Hook sets are read live: mutate them after setup to arm later phases.
  *
@@ -172,6 +212,13 @@ export function createMockClient(hooks = {}) {
     childPromptFailed: false,
     abortGate: null,
     promptGate: null,
+    // The host's status map, shaped as the server holds it: every live
+    // session, with the host's own three words. Derived from the events a test
+    // delivers (a spawned session is busy, a turn's ending makes it idle, a
+    // deletion removes it), so a read that consults it exercises the same
+    // sequence the server would have produced. `at` is when the status last
+    // changed — the clock behind the child's last-message time.
+    hostStatus: new Map(),
   };
 
   return {
@@ -205,6 +252,7 @@ export function createMockClient(hooks = {}) {
         }
         const id = `ses_mock_${state.sessions.size + 1}`;
         state.sessions.add(id);
+        state.hostStatus.set(id, { type: "busy", at: Date.now() });
         state.sessionBodies.set(id, body);
         return { id };
       },
@@ -257,21 +305,32 @@ export function createMockClient(hooks = {}) {
         }
         return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
       },
-      messages: async ({ path }) =>
-        hooks.messages?.({ path }) ?? [
-          { role: "assistant", parts: [{ type: "text", text: "COMPLETED_OK" }] },
-        ],
-      get: async ({ path }) => {
-        if (hooks.getThrows) throw hooks.getThrows;
+      // The server's status channel: a map of every session with a turn the
+      // host knows about. A session absent from it has no turn running.
+      status: async () => {
+        if (hooks.statusThrows) throw hooks.statusThrows;
+        return Object.fromEntries(
+          [...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }]),
+        );
+      },
+      messages: async ({ path }) => {
+        if (hooks.messages) return hooks.messages({ path });
         if (!state.sessions.has(path.id)) {
           const error = new Error(`Session "${path.id}" not found.`);
           error.status = 404;
           throw error;
         }
-        // Production session.get() carries no status field — the mock must
-        // not invent one (liveness reads fall through to the messages).
-        return {};
+        return [
+          {
+            role: "assistant",
+            parts: [{ type: "text", text: "COMPLETED_OK" }],
+            time: { created: state.hostStatus.get(path.id)?.at ?? Date.now() },
+          },
+        ];
       },
+      // No session.get: the plugin does not call it. It was here to back the
+      // status guess this mock also once invented a status field for — both are
+      // gone, and a mock surface nobody calls is a lie waiting to mislead.
       abort: async ({ path }) => {
         if (hooks.abortThrowsOnce && !state.abortThrown) {
           state.abortThrown = true;
@@ -300,6 +359,7 @@ export function createMockClient(hooks = {}) {
           }
         }
         state.aborted.push(path.id);
+        setHostTurn(state, path.id, "idle");
         return { ok: true };
       },
     },
@@ -378,7 +438,20 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     tool: result.tool,
     directory,
     spawned,
-    fireEvent: (event) => result.event({ event }),
+    fireEvent: (event) => {
+      applyHostStatus(state, event);
+      return result.event({ event });
+    },
+    /**
+     * Put a session's host status where the server's map would hold it, for
+     * states a test cannot reach by delivering events (a session the plugin
+     * never saw, or one the host has already forgotten).
+     */
+    setHostStatus: (id, type) => {
+      state.hostStatus.set(id, { type, at: Date.now() });
+    },
+    /** Drop a session from the host's map entirely — no turn, no entry. */
+    forgetHostStatus: (id) => state.hostStatus.delete(id),
     // The settlement funnel: a task settles only by the event the server
     // would emit, delivered straight to the handler.
     /**
@@ -388,9 +461,12 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * produces — tests that need one (echo races, claim-order questions) fire
      * the event themselves through fireEvent and say so.
      */
+    // A turn ending the way the server ends one: seen working, then parked.
+    // Both events go through fireEvent so the host's status map follows them —
+    // a read that consults the map must see what these events said.
     settle: async (id) => {
-      await result.event({ event: events.working(id) });
-      await result.event({ event: events.idle(id) });
+      await harness.fireEvent(events.working(id));
+      await harness.fireEvent(events.idle(id));
     },
     // What the parent has been sent, in order: { to, message } records — the
     // routing target is part of the contract, so it stays visible.
@@ -506,6 +582,30 @@ export async function withSettledChild(opts = {}) {
   const { h, c, id, out } = await withChild(opts);
   await h.settle(id);
   return { h, c, id, out };
+}
+
+/**
+ * task_result for a spawned child whose message read returns exactly
+ * `messages`. Liveness is a question about what a child has written, so a test
+ * that asks it is one line of arrangement and one expectation.
+ */
+export async function resultForChild(messages, opts = {}) {
+  return readForChild(() => messages, opts);
+}
+
+/** As resultForChild, for the child whose message read itself fails. */
+export async function resultForUnreadableChild(error = new Error("boom"), opts = {}) {
+  return readForChild(() => {
+    throw error;
+  }, opts);
+}
+
+async function readForChild(messages, opts) {
+  const { c } = await withChild({
+    ...opts,
+    harness: { ...opts.harness, hooks: { ...opts.harness?.hooks, messages } },
+  });
+  return c.result();
 }
 
 /** Release one harness's children. Best-effort: settled children are fine. */

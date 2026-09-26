@@ -26,7 +26,6 @@ import {
   isMessage,
   messageRoleOf,
   messageErrorDetail,
-  extractSessionStatus,
 } from "../../dist/shared/prompt.js";
 
 // --- Tests ---
@@ -450,31 +449,6 @@ describe("messageErrorDetail", () => {
   });
 });
 
-describe("extractSessionStatus: message-level error", () => {
-  // One hypothesis, one arrangement: the LATEST assistant message decides, and
-  // only an info.error on it makes the status error.
-  const fromMessages = [
-    ["reports error when the latest assistant message carries info.error", [
-      { info: { role: "user" }, parts: [] },
-      { info: { role: "assistant", error: { name: "APIError", data: { message: "Too Many Requests" } } }, parts: [] },
-    ], "error"],
-    ["still reports completed for a clean latest assistant message", [
-      { info: { role: "user" }, parts: [] },
-      { info: { role: "assistant" }, parts: [{ type: "text", text: "ok" }] },
-    ], "completed"],
-  ];
-  for (const [name, messages, expected] of fromMessages) {
-    it(name, () => {
-      assert.strictEqual(extractSessionStatus({}, messages), expected);
-    });
-  }
-
-  it("normalizes idle to completed — an idle session is done", () => {
-    assert.strictEqual(extractSessionStatus({ status: "idle" }, []), "completed");
-    assert.strictEqual(extractSessionStatus({ data: { info: { status: "idle" } } }, []), "completed");
-  });
-});
-
 describe("isTransientOutcomeError", () => {
   it("marks provider and network blips transient", () => {
     assert.strictEqual(isTransientOutcomeError("429 rate limit exceeded, retry shortly"), true);
@@ -543,6 +517,7 @@ import {
   formatTaskListSummary,
   formatTaskStatusDetail,
 } from "../../dist/shared/task-formatting.js";
+import { hostTurnRunning, statusFromHostState } from "../../dist/shared/liveness.js";
 import { formatParentNotification, truncateText, noticeDedupKey } from "../../dist/shared/notify.js";
 import { TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
 
@@ -643,10 +618,35 @@ function countRetainedChanges(store) {
   return counter;
 }
 
-// The active-task record the fleet views read.
+// The active-task record the fleet views read. Every field the renders read is
+// present, because a fixture that omits a required one renders as NaN and the
+// test then asserts on nonsense.
 function taskRecord(overrides = {}) {
-  return { childSessionId: "ses_1", parentSessionId: "p", agentName: "a", description: "d", lineage: [], state: "active", ...overrides };
+  return {
+    childSessionId: "ses_1", parentSessionId: "p", agentName: "a", description: "d",
+    lineage: [], state: "active", startedAt: Date.now(), retainedAt: Date.now(),
+    ...overrides,
+  };
 }
+
+// The server's own status vocabulary, as the read tools speak it. The words are
+// the host's, never ours: a status the server did not state cannot be rendered
+// as one, so this mapping is the whole of what an untracked session can say.
+describe("liveness vocabulary", () => {
+  const cases = [
+    ["busy", "busy", true],
+    ["retry", "busy", true],
+    ["idle", "completed", false],
+    ["error", "completed", false],
+    [null, "unknown", false],
+  ];
+  for (const [host, expected, running] of cases) {
+    it(`reads the server's "${host}" as ${expected}`, () => {
+      assert.strictEqual(statusFromHostState(host), expected);
+      assert.strictEqual(hostTurnRunning({ hostState: host, lastMessageAt: null }), running);
+    });
+  }
+});
 
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
@@ -654,29 +654,34 @@ describe("formatTaskResultSummary", () => {
       sessionId: "ses_123", status: "busy", messageCount: 4,
       latestText: "Still working", tracked: true,
     });
-    assert.match(result, /Recommended next action: use task_result again later\./);
+    assert.match(result, /Recommended next action: use task_status for settleability/);
     assert.match(result, /Tracked: yes/);
   });
 
-  it("renders the store state for active tasks with the live read as advisory", () => {
+  it("renders the store state for active tasks with the sourced liveness beside it", () => {
     const result = formatTaskResultSummary({
       sessionId: "ses_123", status: "active", messageCount: 4,
-      latestText: "Still working", tracked: true, liveStatus: "completed",
+      latestText: "Still working", tracked: true, task: taskRecord(),
+      liveness: { hostState: "busy", lastMessageAt: Date.now() - 1000 },
     });
     assert.match(result, /Status: active/);
-    assert.match(result, /Live inference/);
-    assert.match(result, /Session API suggests: completed/);
-    assert.match(result, /task_status/);
-    assert.match(result, /Recommended next action: use task_result again later\./);
+    assert.match(result, /Server status: busy/);
+    assert.match(result, /Last child message: 1s ago/);
+    assert.match(result, /Last plugin event: 0s ago/);
+    // A working child carries no warning: silence is a claim the sources do not
+    // support, and a store that says active is the authority on settleability.
+    assert.ok(!result.includes("Warning"), `no warning while the server says busy. got: ${result}`);
   });
 
-  it("omits the advisory block when no live read disagrees", () => {
+  it("never infers a status the sources did not state", () => {
     const result = formatTaskResultSummary({
       sessionId: "ses_123", status: "completed", messageCount: 4,
-      latestText: "Done", tracked: true,
+      latestText: "Done", tracked: true, task: taskRecord({ state: "completed" }),
+      liveness: { hostState: null, lastMessageAt: null },
     });
     assert.match(result, /Status: completed/);
-    assert.ok(!result.includes("Live inference"));
+    assert.match(result, /Server status: \(not listed by the server\)/);
+    assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);
   });
 
   it("renders read failures in the same voice with the error as data", () => {
@@ -2105,11 +2110,11 @@ describe("task formatting: fleet views", () => {
   it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {
     const base = taskRecord();
     const stale = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
-    assert.match(stale, /Last activity: 20m ago/);
+    assert.match(stale, /Last plugin event: 20m ago/);
     assert.match(stale, /stalled/);
     assert.match(stale, /task_interrupt/);
     const fresh = formatTaskStatusDetail({ ...base, startedAt: Date.now() }, null);
-    assert.match(fresh, /Last activity:/);
+    assert.match(fresh, /Last plugin event:/);
     assert.ok(!fresh.includes("stalled"), `fresh turns carry no warning. got: ${fresh}`);
   });
 
@@ -2119,12 +2124,12 @@ describe("task formatting: fleet views", () => {
     // the stall line is a false alarm and must not render.
     const working = formatTaskStatusDetail(
       { ...base, startedAt: Date.now() - 20 * 60 * 1000, lastActivityAt: Date.now() - 2000 }, null);
-    assert.match(working, /Last activity: 2s ago/);
+    assert.match(working, /Last plugin event: 2s ago/);
     assert.ok(!working.includes("stalled"), `observed activity suppresses the stall line. got: ${working}`);
     // No heartbeat yet (plugin booted after the spawn): the spawn stays the
     // honest floor and the silence stays visible.
     const unheard = formatTaskStatusDetail({ ...base, startedAt: Date.now() - 20 * 60 * 1000 }, null);
-    assert.match(unheard, /Last activity: 20m ago/);
+    assert.match(unheard, /Last plugin event: 20m ago/);
     assert.match(unheard, /stalled/);
   });
 

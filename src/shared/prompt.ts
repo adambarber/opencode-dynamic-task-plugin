@@ -7,7 +7,7 @@
 
 import type { OpenCodeClient } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
-import { eventField, isEventRecord, errorMessage, normalizeStatus } from "./session-lifecycle.js";
+import { eventField, isEventRecord, errorMessage } from "./session-lifecycle.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
@@ -291,43 +291,12 @@ export async function hydrateLatestOutcome(
   }
 }
 
-// ─── extractSessionStatus ──────────────────────────────────────────
-// client.session.get() has no status field — infer liveness from the
-// session info, else from the message stream. A failed turn keeps role
-// "assistant" with the cause on info.error, so the error check precedes
-// the role read (same signal the notifier uses). Total on unknown input:
-// the host invokes entry-adjacent readers outside the plugin lifecycle.
-export function extractSessionStatus(sessionInfo: unknown, messages: unknown = []): string {
-  const candidates = [
-    eventField(sessionInfo, "status"),
-    eventField(sessionInfo, "body", "status"),
-    eventField(sessionInfo, "data", "status"),
-    eventField(sessionInfo, "data", "info", "status"),
-    eventField(sessionInfo, "info", "status"),
-    eventField(sessionInfo, "body", "info", "status"),
-    eventField(sessionInfo, "data", "state"),
-    eventField(sessionInfo, "state"),
-  ];
-  for (const c of candidates) {
-    const normalized = normalizeStatus(c);
-    // Idle means done: the same normalization the settlement kind reader
-    // applies, so untracked reads never report a distinct "idle" state.
-    if (normalized) return normalized === "idle" ? "completed" : normalized;
-  }
+// ─── liveness ───────────────────────────────────────────────────────
+// Liveness used to be inferred here, from the session record's absent status
+// field and from the shape of the message tail. Both inferences were wrong in
+// ways the field reproduced: a child that had just written a message read
+// "completed" while still working, and a turn that had only ever written one
+// message could not be distinguished from a finished one. It now lives in
+// liveness.ts, reading the server's status channel and the child's own
+// message clock — two sources, named as such, no guessing.
 
-  // client.session.get() does not return a status field — infer from messages
-  const list = Array.isArray(messages) ? messages : [];
-  if (list.length >= 2) {
-    const latest = list[list.length - 1];
-    // A failed turn keeps role "assistant" with the cause on info.error —
-    // check it before trusting the role (same signal the notifier uses).
-    if (messageErrorDetail(latest)) return "error";
-    const info = isEventRecord(latest) ? latest.info : undefined;
-    const role = (isEventRecord(info) ? info.role : undefined) ?? (isEventRecord(latest) ? latest.role : undefined);
-    if (role === "assistant") return "completed";
-    if (role === "error") return "error";
-  }
-  if (list.length > 0) return "busy";
-
-  return "unknown";
-}

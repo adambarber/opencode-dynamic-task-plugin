@@ -6,7 +6,6 @@ import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
 import { isEventRecord, resolveParentSessionId } from "../shared/session-lifecycle.js";
-import { extractMessages } from "../shared/prompt.js";
 import { formatTaskResultSummary } from "../shared/task-formatting.js";
 
 export interface ToolDeps {
@@ -66,27 +65,6 @@ export function unknownSessionResult(sessionId: string): string {
     latestText: "(No session record found)",
     tracked: false,
   });
-}
-
-// Read-only session message fetch shared by the session readers.
-export async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
-  const messagesResult = await client.session.messages({ path: { id: sessionId } });
-  return extractMessages(messagesResult);
-}
-
-// The session view the read tools render from: the session record plus its
-// messages, fetched in one place. Both readers need the pair and infer liveness
-// from the same two payloads, so a change to either shape lands here once
-// rather than in two readers that must stay in step.
-export interface SessionView {
-  sessionInfo: unknown;
-  messages: unknown[];
-}
-
-export async function fetchSessionView(client: OpenCodeClient, sessionId: string): Promise<SessionView> {
-  const sessionInfo = await client.session.get({ path: { id: sessionId } });
-  const messages = await readSessionMessages(client, sessionId);
-  return { sessionInfo, messages };
 }
 
 // Lineage from current session (for nested dynamic_task calls).

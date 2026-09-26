@@ -1,80 +1,49 @@
 // Session read executors (result/status/list): store-authoritative views with
-// advisory live reads. Pure readers — they mutate nothing except read-path
-// TTL pruning.
+// the server's own liveness read beside them. Pure readers — they mutate
+// nothing except read-path TTL pruning.
 import { eventField, errorMessage } from "../shared/session-lifecycle.js";
-import { getLatestAssistantText, extractSessionStatus } from "../shared/prompt.js";
+import { getLatestAssistantText } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
+import { readLiveness, readSessionMessages, statusFromHostState, type LivenessReading } from "../shared/liveness.js";
 import {
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
 } from "../shared/task-formatting.js";
 import { pruneRetainedTasks, findTask, listTasks } from "../shared/task-state.js";
-import { fetchSessionView, unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 
 export interface ReadArgs {
   session_id?: string | undefined;
 }
 
-// The tracked-task prelude both readers share: read-path pruning, then the
-// lookup. Pruning first is the point — a retained record past its TTL must not
-// answer as though it were live — and both readers depend on that order, so
-// it is one function rather than two copies free to drift.
-function findTrackedTask(scope: ResolvedSessionScope) {
+// The prologue both readers share: resolve the session, prune, look up. Pruning
+// first is the point — a retained record past its TTL must not answer as though
+// it were live — and both readers depend on that order, so it is one function
+// rather than two copies free to drift.
+function readTarget(scope: ResolvedSessionScope) {
   pruneRetainedTasks(scope.store, scope.config);
-  return findTask(scope.store, scope.sessionId);
+  const { client, sessionId } = scope;
+  return { client, sessionId, task: findTask(scope.store, sessionId) };
 }
 
 export async function executeTaskResult(scope: ResolvedSessionScope): Promise<string> {
-  const { client, sessionId } = scope;
-  const task = findTrackedTask(scope);
-  if (task) {
-    try {
-      const { sessionInfo, messages } = await fetchSessionView(client, sessionId);
-      // The store is the liveness authority: Status reports the tracked
-      // state verbatim and never contradicts the task_continue gate.
-      // The live API inference is advisory only — a child that just
-      // wrote text (e.g. a task_notify) reads "completed" from the
-      // message stream while still active, so it renders as a
-      // subordinate block, computed for active tasks alone.
-      const live = task.state === "active"
-        ? extractSessionStatus(sessionInfo, messages)
-        : undefined;
-
-      return formatTaskResultSummary({
-        sessionId,
-        status: task.state,
-        messageCount: messages.length,
-        latestText: getLatestAssistantText(messages) || "(No assistant text found)",
-        tracked: true,
-        notification: getTurnNotification(sessionId, task.startedAt),
-        liveStatus: live,
-      });
-    } catch {
-      // API error — return what we know from state
-      return formatTaskResultSummary({
-        sessionId,
-        status: task.state,
-        messageCount: 0,
-        latestText: "(API unavailable)",
-        tracked: true,
-        notification: getTurnNotification(sessionId, task.startedAt),
-      });
-    }
-  }
-
-  // Not in our state — query API, gracefully handle errors
+  const { client, sessionId, task } = readTarget(scope);
   try {
-    const { sessionInfo, messages } = await fetchSessionView(client, sessionId);
-    const status = extractSessionStatus(sessionInfo, messages);
-
+    const messages = await readSessionMessages(client, sessionId);
+    // One read, one rendering. The store's word when it has a record, the
+    // server's own word when it does not — and never a guess about message
+    // shapes, which is what used to make a working child read as completed.
+    const liveness = await readLivenessSafely(client, sessionId, messages);
     return formatTaskResultSummary({
       sessionId,
-      status,
+      status: task ? task.state : statusFromHostState(liveness?.hostState ?? null),
       messageCount: messages.length,
       latestText: getLatestAssistantText(messages) || "(No assistant text found)",
-      tracked: false,
-      notification: getLatestNotification(sessionId),
+      tracked: task !== undefined,
+      notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
+      task: task ?? null,
+      liveness,
     });
   } catch (err: unknown) {
     // 404 or network error → unknown/error states in the same markdown voice.
@@ -85,24 +54,57 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
       return unknownSessionResult(sessionId);
     }
     const retryable = code === "ECONNREFUSED" || code === "ETIMEDOUT";
+    if (!task) {
+      return formatTaskResultSummary({
+        sessionId,
+        status: "error",
+        messageCount: 0,
+        latestText: "(See error above)",
+        tracked: false,
+        error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
+      });
+    }
+    // A tracked task whose read failed still has a store state to report, and
+    // saying so is the honest answer — the liveness block is simply absent.
     return formatTaskResultSummary({
       sessionId,
-      status: "error",
+      status: task.state,
       messageCount: 0,
-      latestText: "(See error above)",
-      tracked: false,
-      error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
+      latestText: "(API unavailable)",
+      tracked: true,
+      notification: getTurnNotification(sessionId, task.startedAt),
     });
   }
 }
 
 export async function executeTaskStatus(scope: ResolvedSessionScope): Promise<string> {
-  const { sessionId } = scope;
-  const task = findTrackedTask(scope);
+  const { client, sessionId, task } = readTarget(scope);
   if (!task) {
     return unknownSessionResult(sessionId);
   }
-  return formatTaskStatusDetail(task, getTurnNotification(sessionId, task.startedAt));
+  // The same read task_result makes: a status view that cannot see the server's
+  // own word is not a status view, and the two tools answering differently
+  // about one child is how a reader comes to the wrong recovery.
+  return formatTaskStatusDetail(
+    task,
+    getTurnNotification(sessionId, task.startedAt),
+    await readLivenessSafely(client, sessionId),
+  );
+}
+
+// Liveness is a read, not a precondition: a status view must render the record
+// it has even when the server cannot be asked. A failed read says so, which is
+// the difference between "the server says idle" and "the server did not answer".
+async function readLivenessSafely(
+  client: ResolvedSessionScope["client"],
+  sessionId: string,
+  messages?: unknown[],
+): Promise<LivenessReading | null> {
+  try {
+    return await readLiveness(client, sessionId, messages);
+  } catch {
+    return null;
+  }
 }
 
 export async function executeTaskList(deps: ToolDeps): Promise<string> {

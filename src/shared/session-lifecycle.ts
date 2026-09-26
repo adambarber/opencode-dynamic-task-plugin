@@ -42,6 +42,9 @@ export function errorMessage(error: unknown): string {
   return String(error);
 }
 
+// The settlement kind reader's own vocabulary normalizer: the host spells a
+// status as a bare string in one event shape and as {type} in another, and the
+// two must not become two different words.
 export function normalizeStatus(raw: unknown): string {
   if (typeof raw === "string") return raw.toLowerCase();
   if (isEventRecord(raw) && typeof raw.type === "string") return raw.type.toLowerCase();

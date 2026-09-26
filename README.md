@@ -20,10 +20,10 @@ npm install && npm run build
 | `dynamic_task` | Spawn a background subagent session; returns immediately |
 | `task_continue` | Steer a running child (its turn stops, the message becomes the next turn) or revive a settled one |
 | `task_notify` | Child-to-parent channel: progress, findings, or a block needing input (requires a child agent with plugin tools, e.g. `general` — read-only agents such as `explore` cannot signal) |
-| `task_result` | Report tracked status (store state, authoritative) plus an advisory live read for active tasks |
+| `task_result` | Report tracked status (the store's own state, authoritative for settleability) beside a sourced live read: the server's own turn status, the child's last message time, and this plugin's last observed event |
 | `task_interrupt` | Stop a running child session (abort attempted; state settled first) |
 | `task_list` | List all tracked tasks with lifecycle states |
-| `task_status` | Detailed tracked state for one task (store read, no API calls) |
+| `task_status` | Detailed tracked state for one task, beside the same sourced live read `task_result` makes |
 
 ### Key parameters
 
@@ -48,9 +48,12 @@ The plugin arms no timers and never waits. Every task runs in the background.
 Settled turns report exactly once through a `[dynamic-task-notify]` message
 in the parent; a child's mid-flight `task_notify` arrives separately as a
 `[dynamic-task-notice]` message, so settlement vs. spoke routes on the tag
-without parsing prose. `task_result` reports the tracked store state as
-`Status` (confirm settleability with `task_status`, a pure store read) with
-the live API read as a subordinate advisory block. There is
+without parsing prose. `task_result` and `task_status` both report the store's
+own state as the authority on settleability, and every live line beside it names
+its own source: `Server status:` is the server's word, `Last child message:` is
+the child's own transcript, `Last plugin event:` is what this plugin's event
+head has seen. No view infers a status the sources did not state — a session the
+server does not list reads as `unknown`, not as idle. There is
 no timeout to configure: a slow child is indistinguishable from a working one
 by design, and the only bound on a child is operator intent (`task_interrupt`).
 
@@ -105,7 +108,7 @@ src/
 │   ├── spawn.ts             dynamic_task executor (the only session.create site)
 │   ├── continue.ts          task_continue executor (steer + revive)
 │   ├── notice.ts            task_notify executor (mid-flight voice)
-│   ├── read.ts              task_result/status/list executors (store reads)
+│   ├── read.ts              task_result/status/list executors (store record + the one shared live liveness read)
 │   └── interrupt.ts         task_interrupt executor (settle-first abort)
 └── shared/
     ├── client.ts            SDK facade — the only @opencode-ai/sdk import
@@ -115,6 +118,7 @@ src/
     ├── notify.ts            Parent-notification gate: exactly-once per turn
     ├── task-policy.ts       Pure validators — agent, lineage, depth
     ├── task-state.ts        TaskStore (active/retained), settle & revival matrix
+    ├── liveness.ts          The one live liveness read — the server's turn status + the child's own last message
     ├── session-lifecycle.ts Event parsing, status normalization, ledger I/O
     ├── task-formatting.ts   Result/status/fleet formatting for humans
     └── question-handling.ts Question API auto-answer/reject
@@ -123,11 +127,11 @@ src/
 ## Development
 
 ```bash
-npm test                  # full suite + safety invariants (node:test)
+npm test                  # build + clone gate + full suite (node:test) — the one command a change must pass
 npm run lint              # tsc --noEmit (full strict flags)
 npm run build             # compiles to dist/
-npm run test:coverage     # 90/80/90 gate enforced
-npm run test:duplication  # jscpd clone gate (zero clones)
+npm run test:coverage     # build + clone gate + 90/80/90 coverage gate enforced
+npm run test:duplication  # jscpd clone gate (zero clones) — runs inside npm test too
 ```
 
 ## License

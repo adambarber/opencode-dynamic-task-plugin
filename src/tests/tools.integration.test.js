@@ -14,8 +14,12 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   deferred, events, setupHarness, setupTwoTurnHarness, sleep, tmpProjectDir,
-  withChild, withEnv, withSettledChild,
+  withChild, withEnv, withSettledChild, resultForChild, resultForUnreadableChild,
 } from './support/harness.js';
+
+// A message with no clock at all — what a plugin booted mid-turn sees, and the
+// case where an age must not be invented from the spawn.
+const NO_CLOCK_MESSAGE = { role: "user", parts: [{ type: "text", text: "go" }] };
 
 /**
  * Boot, spawn, and start a steer whose abort parks at the gate — the
@@ -529,20 +533,17 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok((await h.tool.task_result.execute({})).includes("required"));
     });
 
-  // One hypothesis: task_result reports the STORE's state, and the live read is
-  // only ever advisory — it appears while the task can still change and never
-  // contradicts a settled record. Each case names the fragments that must (or
-  // must not) be in the report for its state.
+  // One hypothesis: task_result reports the STORE's state, and the liveness read
+  // underneath it is the SERVER's own word plus the child's own last message —
+  // never a guess about message shapes. Each case names the fragments that must
+  // (or must not) be in the report for its state.
   const reports = [
-    ["task_result reports store state for active tasks with the live read as advisory",
-      withChild, [["Status: active", true], ["Live inference", true], ["task_status", true], ["Tracked: yes", true]]],
-    // One default assistant message with no status field reads busy (role
-    // inference needs two) — crucially never the invented "idle" the old mock
-    // returned for a shape production never emits.
-    ["live inference reads the message stream — production get() carries no status field",
-      withChild, [["Session API suggests: busy", true], ["suggests: idle", false]]],
-    ["task_result reports settled state with no advisory block",
-      withSettledChild, [["Status: completed", true], ["Live inference", false]]],
+    ["task_result reports store state for active tasks with the server's liveness beside it",
+      withChild, [["Status: active", true], ["Server status: busy", true], ["task_status", true], ["Tracked: yes", true]]],
+    ["task_result never guesses a status from the message stream",
+      withChild, [["suggests", false], ["Last child message", true], ["Last plugin event", true]]],
+    ["task_result reports settled state with the server's word beside it",
+      withSettledChild, [["Status: completed", true], ["Server status: idle", true]]],
   ];
   for (const [name, scenario, expectations] of reports) {
     it(name, async () => {
@@ -557,6 +558,52 @@ describe("task_result and task_interrupt paths", () => {
     });
   }
 
+  // Liveness is a four-way question and each answer names its own source, so a
+  // reader can never take "active" for "working" or a stall for a store that
+  // simply has not been told. The two failure modes are the ones that produce
+  // wrong recoveries: waiting on a dead child, and interrupting a live one.
+  const liveness = [
+    ["a running child reads the server's word and the child's own last message",
+      async ({ c, id }) => {
+        const out = await c.status();
+        return [out, [[/Server status: busy/, true], [/Last child message: \d+s ago/, true]]];
+      }],
+    ["a just-steered turn waiting to start reads as pending, not as work in progress",
+      async ({ c }) => {
+        // The abort parks the turn on the server, so the status channel reads
+        // idle until the replacement's first event — the exact window turn
+        // attribution exists to cover.
+        await c.steer("pivot");
+        const out = await c.status();
+        return [out, [[/Server status: idle/, true], [/replacement turn has not started/i, true], [/stalled/i, false]]];
+      }],
+    ["a store the server has stopped reporting is flagged, not read as work",
+      async ({ h, c }) => {
+        h.setHostStatus(c.id, "idle");
+        const out = await c.status();
+        return [out, [[/missed the ending/i, true], [/task_interrupt/, true]]];
+      }],
+    ["a settled child the server still calls busy says its settlement was premature",
+      async ({ h, c }) => {
+        await h.settle(c.id);
+        h.setHostStatus(c.id, "busy");
+        const out = await c.status();
+        return [out, [[/Server status: busy/, true], [/still working/i, true]]];
+      }],
+  ];
+  for (const [name, read] of liveness) {
+    it(name, async () => {
+      const ctx = await withChild();
+      const [out, expectations] = await read(ctx);
+      for (const [pattern, present] of expectations) {
+        assert.ok(
+          pattern.test(out) === present,
+          `${present ? "must" : "must not"} match ${pattern}. got: ${out}`,
+        );
+      }
+    });
+  }
+
   it("task_result maps API 404 to unknown, in the same markdown voice", async () => {
     const h = await setupHarness();
     const summary = await h.tool.task_result.execute({ session_id: "ses_gone" });
@@ -564,11 +611,74 @@ describe("task_result and task_interrupt paths", () => {
     assert.ok(summary.startsWith("## Task Result"), `one format for all reads. got: ${summary}`);
     });
 
-  it("task_result maps transport errors to error state", async () => {
-    const failing = await setupHarness({ hooks: { getThrows: Object.assign(new Error("boom"), {}) } });
+  it("task_result maps a failed read to error state", async () => {
+    // The read that fails is the one the tool actually makes. A transport
+    // failure is reported as an error status, never as a quiet success.
+    const failing = await setupHarness({ hooks: { messages: () => { throw new Error("boom"); } } });
     const summary = await failing.tool.task_result.execute({ session_id: "ses_any" });
-    assert.ok(summary.includes('"error"') || summary.includes("error"), `got: ${summary}`);
+    assert.ok(summary.includes("Status: error"), `got: ${summary}`);
+    assert.ok(summary.includes("boom"), `the cause rides along. got: ${summary}`);
     });
+
+  it("a tracked task whose read fails still reports the store's own state", async () => {
+    const summary = await resultForUnreadableChild();
+    assert.ok(summary.includes("Status: active"), `the store is the authority. got: ${summary}`);
+    assert.ok(summary.includes("(API unavailable)"), `the failed read says so. got: ${summary}`);
+    assert.ok(!summary.includes("Server status"), `no reading, no liveness block. got: ${summary}`);
+  });
+
+  it("a status channel that cannot be asked renders the record without a diagnosis", async () => {
+    // Absence of a reading is not evidence of anything. The record renders; the
+    // stall line may fire on the plugin's own clock, but nothing claims to know
+    // what turn the server is on.
+    const { c } = await withChild({ harness: { hooks: { statusThrows: new Error("status down") } } });
+    const status = await c.status();
+    assert.ok(status.includes("State: active"), `got: ${status}`);
+    assert.ok(status.includes("Last plugin event:"), `the plugin's own clock still reads. got: ${status}`);
+    assert.ok(!status.includes("Server status"), `an unanswered channel renders nothing. got: ${status}`);
+    assert.ok(!status.includes("missed the ending"), `no reading, no verdict. got: ${status}`);
+  });
+
+  // What a child's *written* output is reported as when there is none to
+  // report. One arrangement — a child whose single message carries no clock and
+  // no assistant text, which is exactly what a plugin booted mid-turn sees —
+  // and the two lines that must state the absence rather than invent it.
+  const nothingWritten = [
+    ["no message times", "Last child message: (none yet)"],
+    ["no assistant text", "(No assistant text found)"],
+  ];
+  for (const [name, expected] of nothingWritten) {
+    it(`a child with ${name} says so rather than guessing an age`, async () => {
+      const summary = await resultForChild([NO_CLOCK_MESSAGE]);
+      assert.ok(summary.includes(expected), `no invention. got: ${summary}`);
+    });
+  }
+
+  it("an untracked session with no status channel is unknown, not idle", async () => {
+    // No record to reconcile and no server word: the only honest status is the
+    // absence of one. Reporting "completed" here is how a caller resumes a
+    // session that is still working.
+    const h = await setupHarness({
+      hooks: {
+        statusThrows: new Error("status down"),
+        messages: () => [{ role: "assistant", parts: [{ type: "text", text: "working" }] }],
+      },
+    });
+    const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
+    assert.ok(summary.includes("Status: unknown"), `got: ${summary}`);
+    assert.ok(!summary.includes("Server status"), `nothing was learned. got: ${summary}`);
+  });
+
+  it("a retryable transport failure says so", async () => {
+    const refused = await setupHarness({ hooks: { messages: () => {
+      const err = new Error("connect ECONNREFUSED");
+      err.code = "ECONNREFUSED";
+      throw err;
+    } } });
+    const summary = await refused.tool.task_result.execute({ session_id: "ses_any" });
+    assert.ok(summary.includes("Status: error"), `got: ${summary}`);
+    assert.ok(summary.includes("(retryable)"), `a refused connection is worth retrying. got: ${summary}`);
+  });
 
   it("interrupt on a settled task reports the settled state, not a fresh interrupt", async () => {
     const { h, c, id } = await withSettledChild();

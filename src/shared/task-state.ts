@@ -356,16 +356,23 @@ export function clearTurnReplacement(store: TaskStore, childSessionId: string): 
 }
 
 /**
- * Can a terminal event on this child be attributed to the current turn?
+ * Has this turn replaced another and not yet been seen doing anything?
  *
- * The settle gate's one question, and the whole of it: a turn that replaced
- * another cannot be said to have ended until it has been seen doing something.
- * A fresh spawn answers yes unconditionally, because nothing precedes it.
+ * The record-level half of the settle gate, and the only part of it that is not
+ * a lookup: a turn that replaced another cannot be said to have ended until it
+ * has been seen doing something. A fresh spawn answers false, because nothing
+ * precedes it.
  */
+export function turnReplacementPending(
+  task: { replacedAt?: number | undefined; turnLiveAt?: number | undefined } | undefined,
+): boolean {
+  if (!task || task.replacedAt === undefined) return false;
+  return (task.turnLiveAt ?? 0) < task.replacedAt;
+}
+
+/** Can a terminal event on this child be attributed to the current turn? */
 export function terminalEventIsAttributable(store: TaskStore, childSessionId: string): boolean {
-  const active = store.activeTasks.get(childSessionId);
-  if (!active || active.replacedAt === undefined) return true;
-  return (active.turnLiveAt ?? 0) >= active.replacedAt;
+  return !turnReplacementPending(store.activeTasks.get(childSessionId));
 }
 
 // Read-path TTL pruning (Task 06): expired retained entries are dropped

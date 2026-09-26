@@ -3,7 +3,8 @@
 // truncateText and formatAge live in notify.ts / task-state.ts respectively —
 // one home each, imported here.
 import { truncateText, type NotificationRecord } from "./notify.js";
-import { formatAge } from "./task-state.js";
+import { formatAge, turnReplacementPending, type TaskRecord } from "./task-state.js";
+import { hostTurnRunning, type LivenessReading } from "./liveness.js";
 
 // Stall visibility without clocks-as-decisions: past this age an active turn
 // with no activity renders a warning line. Display only — nothing branches
@@ -71,9 +72,71 @@ function formatNotificationLine(notification: NotificationRecord): string {
     : `Last notification: ${notification.kind} (FAILED after ${notification.attempts} attempt(s))`;
 }
 
+/**
+ * The liveness block, shared by both read tools: one rendering of one reading,
+ * so `task_result` and `task_status` can never disagree about the same child.
+ *
+ * Every line names its source, because the sources answer different questions
+ * and the reader needs to know which one spoke — the server's own word for the
+ * turn, the child's own message clock, and this plugin's observation of motion
+ * (finer than the message clock, since a streaming turn writes parts for
+ * minutes before it completes a message).
+ */
+export function formatLivenessLines(
+  task: TaskRecord,
+  liveness: LivenessReading | null,
+): string[] {
+  const lines: string[] = [];
+  if (liveness) {
+    lines.push(`Server status: ${liveness.hostState ?? "(not listed by the server)"}`);
+    lines.push(
+      liveness.lastMessageAt === null
+        ? "Last child message: (none yet)"
+        : `Last child message: ${formatAge(liveness.lastMessageAt)} ago`,
+    );
+  }
+  if (task.state === "active") {
+    // Observed motion, newest of three clocks: the event heartbeat (any host
+    // event for this child's session), an explicit notice, and the spawn as
+    // the floor for a child that has gone unheard since it was registered.
+    const observed = Math.max(task.startedAt, task.lastNotice?.at ?? 0, task.lastActivityAt ?? 0);
+    lines.push(`Last plugin event: ${formatAge(observed)} ago`);
+    // The three states an active task can be in, each its own failure with its
+    // own action — so they read as distinct, and none of them reads as
+    // patience. Without a server reading only the silence is knowable, and
+    // silence alone must not be dressed up as a diagnosis.
+    if (liveness && turnReplacementPending(task)) {
+      if (!hostTurnRunning(liveness)) {
+        lines.push(
+          "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not.",
+        );
+      }
+    } else if (liveness && !hostTurnRunning(liveness)) {
+      // The store is waiting on an ending the server has already delivered and
+      // this plugin did not hear. Nothing will settle it, which is the one
+      // liveness reading that must never be mistaken for patience.
+      lines.push(
+        "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt.",
+      );
+    } else if (Date.now() - observed > STALE_TURN_AFTER_MS) {
+      lines.push(
+        `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`,
+      );
+    }
+  } else if (liveness && hostTurnRunning(liveness)) {
+    // A settled record the server still calls busy: the child is working, so
+    // the settlement was premature and its output is not final.
+    lines.push(
+      "The server reports this session still working, so this settlement was premature — the child's output is not final.",
+    );
+  }
+  return lines;
+}
+
 export function formatTaskStatusDetail(
-  task: import("./task-state.js").TaskRecord,
+  task: TaskRecord,
   notification: NotificationRecord | null,
+  liveness?: LivenessReading | null,
 ): string {
   const lines = [
     "## Task Status",
@@ -87,17 +150,10 @@ export function formatTaskStatusDetail(
     `Model: ${task.requestedModel ? `${task.requestedModel.providerID}/${task.requestedModel.modelID}` : "(default)"}`,
     `Depends on: ${task.dependsOn && task.dependsOn.length > 0 ? task.dependsOn.join(", ") : "(none)"}`,
     ...(task.dependsOnSettled && task.dependsOnSettled.length > 0 ? [`Depends on (settled): ${task.dependsOnSettled.join(", ")}`] : []),
+    ...formatLivenessLines(task, liveness ?? null),
   ];
   if (task.state === "active") {
     lines.push(`Started: ${formatAge(task.startedAt)} ago`);
-    // Observed motion, newest of three clocks: the event heartbeat (any host
-    // event for this child's session), an explicit notice, and the spawn as
-    // the floor for a child that has gone unheard since it was registered.
-    const lastActivity = Math.max(task.startedAt, task.lastNotice?.at ?? 0, task.lastActivityAt ?? 0);
-    lines.push(`Last activity: ${formatAge(lastActivity)} ago`);
-    if (Date.now() - lastActivity > STALE_TURN_AFTER_MS) {
-      lines.push(`Warning: no child events in ${formatAge(lastActivity)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`);
-    }
     if (task.lastNotice) {
       lines.push(`Last notice (${formatAge(task.lastNotice.at)} ago): ${truncateText(task.lastNotice.message, 120)}`);
     }
@@ -123,15 +179,19 @@ export function formatTaskResultSummary(input: {
   // Transport/read failures render through this same funnel (never raw
   // JSON): one voice for every read path, the error rides as data.
   error?: string | undefined;
-  // Advisory live API inference, rendered as a subordinate block only. Never
-  // overrides Status: the store is the liveness authority. Present only for
-  // tracked active tasks, where the API read can disagree with the store.
-  liveStatus?: string | undefined;
+  // The store record behind the Status line, when there is one — its liveness
+  // block is the same one task_status renders, so the two tools cannot tell
+  // different stories about the same child.
+  task?: TaskRecord | null | undefined;
+  liveness?: LivenessReading | null | undefined;
 }): string {
   const running = input.status === "busy" || input.status === "active";
+  // task_status is the settleability authority (it renders the same liveness
+  // block beside the store's own state), so a running child is pointed there
+  // rather than back at this tool, which cannot answer the question.
   const action =
     running
-      ? "Recommended next action: use task_result again later."
+      ? "Recommended next action: use task_status for settleability, or task_result again later."
       : input.status === "error"
         ? "Recommended next action: inspect latest output, then use task_continue if recovery is possible."
         : "Recommended next action: no follow-up needed unless you want to continue the child session.";
@@ -149,13 +209,12 @@ export function formatTaskResultSummary(input: {
     lines.push(`Error: ${input.error}`);
   }
 
-  if (input.liveStatus !== undefined) {
-    lines.push(
-      "",
-      "### Live inference (advisory — Status above is authoritative)",
-      `Session API suggests: ${input.liveStatus} across ${input.messageCount} message(s).`,
-      "This never overrides Status; confirm settleability with task_status.",
-    );
+  if (input.task) {
+    lines.push(...formatLivenessLines(input.task, input.liveness ?? null));
+  } else if (input.liveness) {
+    // An untracked session has no store record to reconcile, so only the
+    // sourced facts render — never a status inferred from message shapes.
+    lines.push(`Server status: ${input.liveness.hostState ?? "(not listed by the server)"}`);
   }
 
   if (input.notification) {

@@ -28,10 +28,29 @@ export function eventField(event: unknown, ...path: string[]): unknown {
   return current;
 }
 
-/** Read a nested field as a non-empty string, or undefined. */
+/**
+ * Read a nested field as a non-empty string, or undefined.
+ */
 export function eventString(event: unknown, ...path: string[]): string | undefined {
   const value = eventField(event, ...path);
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The one way this codebase turns an unknown throwable into words.
+ *
+ * It lived in session-lifecycle, which is the wrong floor for it twice over: the
+ * modules that most need to name a failure are the low ones (the notification
+ * gate, the tool executors), and they could only reach it by importing a module
+ * that imports them back. One site paid for that with a hand-rolled
+ * `error instanceof Error ? error.message : String(error)` — a second spelling
+ * of a reader that already exists, and the one spelling that loses an error
+ * object's `message` when it is a record rather than an Error.
+ */
+export function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (isEventRecord(error) && "message" in error) return String(error["message"]);
+  return String(error);
 }
 
 /**

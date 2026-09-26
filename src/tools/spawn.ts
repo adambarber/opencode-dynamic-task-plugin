@@ -11,7 +11,8 @@ import {
   fetchAgents,
   admitToolPrompt,
 } from "../shared/admission.js";
-import { resolveParentSessionId, validateSessionResult, errorMessage, abortSession } from "../shared/session-lifecycle.js";
+import { resolveParentSessionId, validateSessionResult, abortSession } from "../shared/session-lifecycle.js";
+import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import { transitionState, holdDispatchWait } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";

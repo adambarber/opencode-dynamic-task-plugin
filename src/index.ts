@@ -15,10 +15,11 @@
 
 import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "./shared/client.js";
-import { getSessionIdFromEvent, errorMessage, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
+import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
+import { errorMessage } from "./shared/host-shape.js";
 import { isEventRecord, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
-import { safeLog } from "./shared/notify.js";
+import { safeLog, containFailure } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
 import { handleQuestionEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
@@ -91,7 +92,7 @@ export default async function dynamicTaskPlugin(
       try {
         await handleChildLifecycleEvent(client, store, event);
       } catch (error: unknown) {
-        await safeLog(client, "warn", `event handler error: ${errorMessage(error)}`);
+        await containFailure(client, "event handler error", error);
         debugLog("event-handler", "event-handler", "event-handler-error", {
           error: errorMessage(error),
         });

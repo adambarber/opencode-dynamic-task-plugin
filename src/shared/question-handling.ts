@@ -11,7 +11,7 @@
 // a host that does not exist: opencode publishes `question.asked`, carrying
 // `questions: QuestionInfo[]`, and routes replies to `/question/{requestID}`.
 
-import { errorMessage } from "./session-lifecycle.js";
+import { errorMessage } from "./host-shape.js";
 import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import type { OpenCodeClient } from "./client.js";

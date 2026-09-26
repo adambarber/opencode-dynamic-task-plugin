@@ -10,6 +10,7 @@ import { hostTurnRunning, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
+  containFailure,
   getPendingDeliveries,
   notifyParent,
   restorePendingDeliveries,
@@ -126,7 +127,7 @@ async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Prom
           : {}),
       });
     } catch (error: unknown) {
-      await safeLog(client, "warn", `Could not reconcile restored task ${childSessionId}: ${error instanceof Error ? error.message : String(error)}; left active`);
+      await containFailure(client, `Could not reconcile restored task ${childSessionId}`, error, "left active");
     }
   }
 }

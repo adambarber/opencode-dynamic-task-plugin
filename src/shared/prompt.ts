@@ -7,7 +7,8 @@
 
 import type { OpenCodeClient } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
-import { errorMessage, hostPayload } from "./session-lifecycle.js";
+import { hostPayload } from "./session-lifecycle.js";
+import { errorMessage } from "./host-shape.js";
 import { eventField, isEventRecord } from "./host-shape.js";
 import { withBound, READ_BOUNDS } from "./execution-bound.js";
 import type { Verdict } from "./verdict.js";

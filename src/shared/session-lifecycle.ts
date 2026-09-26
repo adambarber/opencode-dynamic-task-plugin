@@ -15,7 +15,7 @@ import type { OpenCodeClient } from "./client.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase, TaskState } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
-import { eventField, eventString, isEventRecord } from "./host-shape.js";
+import { eventField, eventString, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
@@ -47,12 +47,6 @@ export function hostPayload(result: unknown): unknown {
   // No envelope: the payload is the record itself (a map keyed by session id,
   // or a session record carrying its own id).
   return result;
-}
-
-export function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (isEventRecord(error) && "message" in error) return String(error["message"]);
-  return String(error);
 }
 
 // The settlement kind reader's own vocabulary normalizer: the host spells a

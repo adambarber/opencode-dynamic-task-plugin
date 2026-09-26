@@ -10,6 +10,7 @@
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import { textBlock } from "./text-block.js";
+import { errorMessage } from "./host-shape.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -23,6 +24,31 @@ export async function safeLog(
   } catch {
     // logging is best-effort by design
   }
+}
+
+/**
+ * Contain a failure in work that must not take the host's turn with it: one
+ * normalization of the unknown, one level, and the caller's own words for what
+ * failed and what was done about it.
+ *
+ * Not a wrapper for every catch. A child that was created and then failed has to
+ * be aborted, and that arm keeps its own body — that failure is not contained,
+ * it is undone. This is for the failures the process walks away from, and the
+ * level is warn because the turn continued: a failure worth `error` here would
+ * be one the turn did not survive.
+ *
+ * The two callers that need this arm each restated it, and one of them spelled
+ * the normalization out by hand while the other used errorMessage — two
+ * spellings of one fact about an unknown throwable, which is the drift this
+ * arrangement exists to end.
+ */
+export async function containFailure(
+  client: OpenCodeClient,
+  what: string,
+  error: unknown,
+  tail = "",
+): Promise<void> {
+  await safeLog(client, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
 }
 
 export type NotifyKind = "completed" | "error" | "blocked" | "notice";

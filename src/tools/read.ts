@@ -1,7 +1,7 @@
 // Session read executors (result/status/list): store-authoritative views with
 // the server's own liveness read beside them. Pure readers — they mutate
 // nothing except read-path TTL pruning.
-import { errorMessage } from "../shared/session-lifecycle.js";
+import { errorMessage } from "../shared/host-shape.js";
 import { eventField } from "../shared/host-shape.js";
 import { getLatestAssistantText } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";

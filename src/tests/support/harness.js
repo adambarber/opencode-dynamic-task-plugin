@@ -573,3 +573,25 @@ export async function setupTwoTurnHarness() {
   };
   return harness;
 }
+
+/**
+ * A host theme, for the screens that resolve their design tokens from one.
+ *
+ * The host derives `text` from the TERMINAL's own `defaultForeground` and `textMuted`
+ * from a gray scale over the terminal background, so these are a dark terminal's
+ * foreground and one step of gray below it — the values that actually occur, rather than
+ * a theme shaped to suit an assertion. A case that wants a LIGHT theme builds one with
+ * `lightTheme` rather than editing this, because the point of the tokens is that they
+ * follow the theme and a case cannot prove that against a constant.
+ */
+export const darkTheme = () => ({
+  current: { text: RGBA.fromInts(0xd0, 0xd0, 0xd0), textMuted: RGBA.fromInts(0x6c, 0x6c, 0x6c) },
+  mode: () => "dark",
+});
+
+/** The same shape, inverted — what a light terminal hands the host. */
+export const lightTheme = () => ({
+  current: { text: RGBA.fromInts(0x20, 0x20, 0x20), textMuted: RGBA.fromInts(0x90, 0x90, 0x90) },
+  mode: () => "light",
+});
+import { RGBA } from "@opentui/core";

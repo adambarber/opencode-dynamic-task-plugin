@@ -154,35 +154,9 @@ export function capCellOf(row: AgentEntry, cap: AgentCapName): CapCell {
   return { value, stated: row.stated[cap] !== undefined };
 }
 
-/** A cell as the row reads it. `4 from config` is the inherited spelling. */
-export function capCell(row: AgentEntry, cap: AgentCapName): string {
-  const cell = capCellOf(row, cap);
-  return cell.stated ? `${cell.value}` : `${cell.value} from config`;
-}
-
-/**
- * One row: the agent, then both caps.
- *
- * Both caps on one row, not one row per cap, because that is what the operator asked
- * to see — the two numbers side by side for one agent — and because the host's row is
- * `title` then a single footer with no column to align, so two rows of one agent would
- * print the name twice and split the pair apart.
- */
-export function agentSummary(row: AgentEntry): string {
-  return AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${capCell(row, cap)}`).join(` ${SEP} `);
-}
-
 /** The resolved pair, without the agent name the row already carries. */
 function capsOf(policy: { maxConcurrent: number; maxDepth: number }): ResolvedCaps {
   return { maxConcurrent: policy.maxConcurrent, maxDepth: policy.maxDepth };
-}
-
-/** The mark between a row's label and its value, and between its two cells. */
-export const SEP = "·";
-
-/** A value cell, marked off from the label it belongs to. */
-export function cell(value: string): string {
-  return `${SEP} ${value}`;
 }
 
 // ─── the edit ────────────────────────────────────────────────────────────────

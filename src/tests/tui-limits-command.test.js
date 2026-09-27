@@ -34,7 +34,9 @@ import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../d
 import { bothCaps, withTempDir } from "./support/fixtures.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, capCell } from "../../dist/tui/agent-editor.js";
+import { CAP_CHOICES, CAP_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
+import { screenTokens } from "../../dist/tui/theme.js";
+import { darkTheme } from "./support/harness.js";
 import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
 
 /** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
@@ -139,6 +141,12 @@ function hostApi(directory) {
     renderer: renderer.state,
     api: {
       state: { ready: true, config: {}, provider: [], path: { state: "", config: "", worktree: "", directory }, vcs: undefined },
+      // The host's theme, because the screen resolves its design tokens from it. The
+      // host derives `text` from the TERMINAL's own default foreground (theme.ts
+      // `generateSystem`), so a double carrying a dark terminal's foreground and a
+      // muted gray is the shape that actually occurs — not a theme the suite invented
+      // to suit the assertions.
+      theme: HOST_THEME,
       keymap: {
         registerLayer: (layer) => {
           seen.layers.push(layer);
@@ -173,6 +181,28 @@ function readOverlay(directory) {
 }
 
 /**
+ * The host's theme, once. Both the api double and the token resolution read this, so a
+ * case cannot pass a hand-made token object and prove something the screen would never
+ * paint — the tokens below are the production `screenTokens` over this theme.
+ */
+const HOST_THEME = darkTheme();
+const TOKENS = screenTokens(HOST_THEME);
+
+/**
+ * A row's footer as TEXT, whichever of the two things a footer can be.
+ *
+ * A footer is a string when nothing is styled about it and a `StyledText` when the row
+ * is saying two things at two weights, so a reader that only understood one of them
+ * would pass on half the rows. This reads both, which is the only reason the string
+ * assertions below can stay as they are.
+ */
+function footerText(footer) {
+  if (footer === undefined) return "";
+  if (typeof footer === "string") return footer;
+  return footer.chunks.map((run) => run.text).join("");
+}
+
+/**
  * The dialog's content, as the host's own props, with no host in sight.
  *
  * The real reader, the real view, the real prop builders. This is what most cases
@@ -181,7 +211,7 @@ function readOverlay(directory) {
  */
 function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
-  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, read.problem), NO_ASKS);
+  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, read.problem), NO_ASKS, TOKENS);
 }
 
 /** The row for one agent, by its host spelling. */
@@ -198,7 +228,7 @@ const row = (list, title) => list.options.find((candidate) => candidate.title ==
  */
 const rowText = (list, title) => {
   const found = row(list, title);
-  return [[found.title, found.footer ?? "", found.description ?? ""].join(" ").trim(), ...(found.details ?? [])].join("\n");
+  return [[found.title, footerText(found.footer), found.description ?? ""].join(" ").trim(), ...(found.details ?? [])].join("\n");
 };
 
 /** The dialog the operator is looking at: the most recent one mounted. */

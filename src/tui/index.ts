@@ -50,15 +50,14 @@ import {
   CAP_CHOICES,
   CAP_LABEL,
   agentDialogFrom,
-  agentSummary,
   applyCapEdit,
-  capCell,
-  cell,
+  capCellOf,
   overlayFrom,
   type AgentDialog,
   type AgentEntry,
   type CapChoice,
 } from "./agent-editor.js";
+import { cellFooter, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -244,12 +243,23 @@ export default plugin;
  * filter", which describes the widget rather than the vocabulary, so the box above the
  * list read as a form field that had lost its label.
  */
-export function limitsListProps(dialog: AgentDialog, ask: (agent: string) => void): TuiDialogSelectProps<ListChoice> {
+export function limitsListProps(
+  dialog: AgentDialog,
+  ask: (agent: string) => void,
+  tokens: ScreenTokens,
+): TuiDialogSelectProps<ListChoice> {
   return {
     title: "Task limits",
     options: dialog.rows.map((row) => ({
       title: row.name,
-      footer: cell(agentSummary(row)),
+      // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
+      // is — and what the host's TextNodeRenderable accepts as a child — is a
+      // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
+      // checked, and never by a cast: sound only because the host's own
+      // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
+      // the host's source at the tag this binary was built from. A `span` element would
+      // need an active renderer, which a props builder does not have outside a test.
+      ...({ footer: summaryFooter(row, tokens) } as Record<string, unknown>),
       value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
       onSelect: () => ask(row.name),
     })),
@@ -280,13 +290,14 @@ export function agentCapsProps(
   row: AgentEntry,
   ask: (cap: AgentCapName) => void,
   back: () => void,
+  tokens: ScreenTokens,
 ): TuiDialogSelectProps<CapsChoice> {
   return {
     title: agent,
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
         title: CAP_LABEL[cap],
-        footer: cell(capCell(row, cap)),
+        ...({ footer: cellFooter(capCellOf(row, cap), tokens) } as Record<string, unknown>),
         value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
         onSelect: () => ask(cap),
       })),
@@ -408,7 +419,8 @@ async function openLimits(api: TuiApi): Promise<void> {
 
 /** The list, over a view already read. The re-open path, so a second read is not paid for. */
 function showLimits(api: TuiApi, view: LimitsView): void {
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (agent) => openAgentCaps(api, view, agent)));
+  const tokens = screenTokens(api.theme);
+  mountLimitsSelect(api, () => limitsListProps(view.dialog, (agent) => openAgentCaps(api, view, agent), tokens));
 }
 
 /**
@@ -421,7 +433,10 @@ function showLimits(api: TuiApi, view: LimitsView): void {
  */
 function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
   const row = rowOf(view.dialog, agent, view.base);
-  mountLimitsSelect(api, () => agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)));
+  const tokens = screenTokens(api.theme);
+  mountLimitsSelect(api, () =>
+    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view), tokens),
+  );
 }
 
 /**

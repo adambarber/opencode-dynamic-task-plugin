@@ -73,24 +73,50 @@ depth source as the plugin's own rule and not the host's.
 
 ## The TUI
 
-A second module, `src/tui/` → `dist/tui/index.js`, exporting `{ tui }` and
-**not** exporting `server` — `TuiPluginModule` is one side or the other, never
-both. It is a second entry in the `plugin` array in `opencode.json(c)`:
+A second module, `src/tui/` → `dist/tui/index.js`, **default**-exporting
+`{ id, tui }` and **not** exporting `server` — `TuiPluginModule` is one side or
+the other, never both, and the loader rejects a module that is both.
+
+It is registered in `tui.json`, NOT in opencode's `plugin` array:
 
 ```jsonc
-"plugin": [
-  "...other plugins...",
-  "/path/to/dynamic-task-plugin/dist/index.js",
-  "/path/to/dynamic-task-plugin/dist/tui/index.js"
-]
+// .opencode/tui.json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["../dist/tui/index.js"]
+}
 ```
+
+Four things in that arrangement are load-bearing, and each of them fails
+**silently** — no error, no warning, just a command palette with nothing in it:
+
+- **`tui.json`, not the `plugin` array.** The `plugin` array is the SERVER plugin
+  list. A TUI module listed there is a module with no `server` export, so the
+  server ignores it. There is no directory auto-discovery for TUI plugins, so a
+  module in the wrong file is never loaded at all.
+- **Default export.** The loader reads the module's default export and ignores
+  named exports. `export const tui` is invisible to it.
+- **A non-empty `id`.** It is the module's runtime identity, the key
+  `plugin_enabled` uses, and what a later duplicate is rejected against.
+- **`namespace: "palette"` on the command.** The host surfaces palette commands
+  BY NAMESPACE. A command without one is registered, dispatchable by name and
+  runnable from a keybinding, and appears in no list.
+
+None of the four is enforced by the compiler: `Command` carries an index
+signature (`[key: string]: unknown`), so a misspelled palette field is silently a
+custom field the host never reads. They are pinned in
+`src/tests/tui-lane-command.test.js` against the host's documented field list,
+each one falsifiable against the shape it replaces.
 
 Every element is the SDK's own. Nothing is drawn:
 
-- a keymap layer with one command, `dynamic-task.lanes`, whose name, title and
-  `slash.name` all carry the word — because which fields the ctrl+p palette
-  searches is the host's configuration, so the word goes in every field we set
-  rather than the one we guessed at;
+- a keymap layer with one command, `dynamic-task.lanes`, whose `namespace` is
+  `palette` and whose name, title and `slashName` all carry the word — because
+  which fields the ctrl+p palette searches is the host's configuration, so the
+  word goes in every field we set rather than the one we guessed at. The
+  metadata fields are the host's spellings (`desc`, not `description`;
+  `slashName`, not the legacy `slash: { name }` of the deprecated
+  `api.command` API);
 - `api.ui.DialogSelect` to pick a lane or to add one. Adding is a separate
   discriminated choice (`ChoiceKind.Add`), not a magic lane name, so a lane
   called `new` is still a lane;
@@ -108,10 +134,11 @@ from the server and cannot see its memory:
   reader the server uses, and the row says so. A cap shown next to a count that
   may be two dispatches out of date reads as a live gauge, and makes the operator
   distrust the cap — the one number they can act on.
-- **Inherited caps are the DEFAULTS.** The TUI cannot see the `plugin` array's
-  tuple or the project options file, so a row whose caps come from there is
-  labelled `caps from the config file` rather than presented as this process's
-  truth. The overlay's own rows — the ones the dialog edits — are unaffected.
+- **Inherited caps are the DEFAULTS.** The TUI cannot see the config file's
+  tuple options or the project options file, so a row whose caps come from
+  there is labelled `caps from the config file` rather than presented as this
+  process's truth. The overlay's own rows — the ones the dialog edits — are
+  unaffected.
 
 The dialog's logic lives in `src/tui/lane-editor.ts` with no SDK import, so the
 part worth checking (what a typed answer is *allowed* to become) is testable

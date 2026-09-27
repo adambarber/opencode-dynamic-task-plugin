@@ -34,7 +34,7 @@
  * dispatch path already reads, so there is no second source of truth to reconcile
  * and no server endpoint added to read a number a file already holds.
  */
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { TuiDialogPromptProps, TuiDialogSelectProps, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { normalizeDynamicTaskConfig } from "../shared/config.js";
 import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
 import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
@@ -133,23 +133,17 @@ function openLaneManager(api: TuiApi): void {
     // and repair is the most likely reason they opened this.
     api.ui.toast({ variant: "warning", title: "Lanes", message: view.problem });
   }
-  api.ui.dialog.replace(() =>
-    api.ui.DialogSelect<LaneChoice>({
-      title: "Lanes",
-      placeholder: "a lane, or 'add a lane'",
-      // Every option carries its own `onSelect`, and the dialog carries none.
-      // Two places to answer "what happens when this row is chosen" is how a new
-      // row type ends up handled in one of them and silently ignored in the other.
-      options: [
-        ...view.rows.map((row) => laneOption(api, view, row)),
-        {
-          title: "Add a lane…",
-          value: { kind: ChoiceKind.Add } as const satisfies LaneChoice,
-          onSelect: () => askForName(api, view),
-        },
-      ],
-    }),
-  );
+  const asks: LaneAsks = {
+    caps: (row) => askForCaps(api, view, row),
+    add: () => askForName(api, view),
+  };
+  // Mounted the way every other plugin mounts: one argument, no dismiss handler.
+  // ESC is the HOST's — @cortexkit/opencode-magic-context mounts ten dialogs this
+  // exact way and at src/tui/index.tsx:1017 names the handler it sometimes passes
+  // "User dismissed via Escape rather than confirming". So the handler is a
+  // notification that ESC happened, never the mechanism that closes the dialog, and
+  // passing one here would be inventing a second exit the host does not ask for.
+  api.ui.dialog.replace(() => api.ui.DialogSelect(laneSelectProps(view, asks)));
 }
 
 /**
@@ -167,19 +161,86 @@ type LaneView = LaneDialog & {
   directory: string;
 };
 
-function laneOption(api: TuiApi, view: LaneView, row: LaneEntry) {
-  const caps = capsOf(row.lane);
+/**
+ * The view, from what the dialog shows and where it will write back.
+ *
+ * Pure, so the whole content of both dialogs can be checked with no host at all: the
+ * read is an ARGUMENT here rather than a side effect of opening. That is what lets
+ * the dialog's props be asserted on directly, with no stand-in for the host's widgets.
+ *
+ * The argument is the READER'S RESULT, not the overlay: taking the overlay alone
+ * would let the two nest wrongly — a whole reader result passed where the overlay
+ * belongs reads as an overlay with no lanes, which is an empty list, not an error —
+ * and it would drop the problem the reader reported, turning "this file is odd" into
+ * a dialog that silently shows less.
+ */
+export function laneViewFrom(read: ReturnType<typeof readLaneOverlay>, running: Map<string, number>, directory: string): LaneView {
+  // The base config, with NO plugin options: those are resolved in the server
+  // process from the plugin array's tuple and a project file, neither of which the
+  // TUI can see. So the inherited caps here are the DEFAULTS, and the rows that
+  // matter — the overlay's own — are unaffected: the dialog edits the overlay, and
+  // a row whose caps came from elsewhere is labelled as such rather than presented as
+  // this process's truth.
+  const dialog = laneDialogFrom(read.raw, running, normalizeDynamicTaskConfig(null));
+  return { rows: dialog.rows, problem: dialog.problem ?? read.problem, overlay: overlayFrom(read.raw), directory };
+}
+
+/** What a row's selection asks for. The dialog's two ways forward, named. */
+export type LaneAsks = {
+  caps: (row: LaneEntry) => void;
+  add: () => void;
+};
+
+/**
+ * The lane list, as the host's own prop type.
+ *
+ * Returning the host's declared shape instead of handing props to the widget in
+ * line is what makes the dialog checkable: the props ARE the value, so they are
+ * asserted on directly, and a field the host never reads — `description` for the
+ * palette's `desc`, the legacy `slash` for `slashName` — becomes a type error here
+ * rather than a silent custom property that only a terminal would reveal.
+ */
+export function laneSelectProps(view: LaneView, asks: LaneAsks): TuiDialogSelectProps<LaneChoice> {
   return {
-    title: row.name,
-    value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
-    description: [
-      `${caps.concurrency} concurrent`,
-      `depth ${caps.depth}`,
-      row.running === 0 ? "idle" : `${row.running} running, as last recorded`,
-      row.inherited ? "caps from the config file" : "set in the overlay",
-    ].join(" · "),
-    onSelect: () => askForCaps(api, view, row),
+    title: "Lanes",
+    placeholder: "a lane, or 'add a lane'",
+    // Every option carries its own `onSelect`, and the dialog carries none.
+    // Two places to answer "what happens when this row is chosen" is how a new
+    // row type ends up handled in one of them and silently ignored in the other.
+    options: [
+      ...view.rows.map((row) => ({
+        title: row.name,
+        value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
+        description: describeLane(row),
+        onSelect: () => asks.caps(row),
+      })),
+      {
+        title: "Add a lane…",
+        value: { kind: ChoiceKind.Add } as const satisfies LaneChoice,
+        onSelect: asks.add,
+      },
+    ],
   };
+}
+
+/** The caps question, as the host's own prop type. */
+export function lanePromptProps(
+  title: string,
+  placeholder: string,
+  onConfirm: (typed: string) => void,
+): TuiDialogPromptProps {
+  return { title, placeholder, onConfirm };
+}
+
+/** One row's line: the caps, and where they came from, so the operator knows what they are editing. */
+function describeLane(row: LaneEntry): string {
+  const caps = capsOf(row.lane);
+  return [
+    `${caps.concurrency} concurrent`,
+    `depth ${caps.depth}`,
+    row.running === 0 ? "idle" : `${row.running} running, as last recorded`,
+    row.inherited ? "caps from the config file" : "set in the overlay",
+  ].join(" · ");
 }
 
 function askForName(api: TuiApi, view: LaneView): void {
@@ -194,17 +255,15 @@ function askForName(api: TuiApi, view: LaneView): void {
 }
 
 /**
- * A question asked on top of the lane list, with dismissing it returning to the
- * list. Every question in this dialog has those two halves, so they are stated
- * once: a question that forgets the way back strands the operator in a prompt
- * over a dialog they can no longer see.
+ * A question asked on top of the lane list.
+ *
+ * A question replaces the list, and confirming or ESC both leave — ESC by the host,
+ * confirming by re-opening the list below. So there is no dismiss handler here
+ * either: one would be told about an ESC the host has already handled, and this
+ * plugin's own reports do not establish that it fires on a programmatic clear too.
  */
 function askOverLaneList(api: TuiApi, title: string, placeholder: string, onConfirm: (typed: string) => void): void {
-  const back = () => openLaneManager(api);
-  api.ui.dialog.replace(
-    () => api.ui.DialogPrompt({ title, placeholder, onConfirm, onCancel: back }),
-    back,
-  );
+  api.ui.dialog.replace(() => api.ui.DialogPrompt(lanePromptProps(title, placeholder, onConfirm)));
 }
 
 function askForCaps(api: TuiApi, view: LaneView, row: LaneEntry): void {
@@ -236,15 +295,7 @@ function askForCaps(api: TuiApi, view: LaneView, row: LaneEntry): void {
  */
 function readLanes(api: TuiApi): LaneView {
   const directory = api.state.path.directory;
-  const raw = readLaneOverlay(directory);
-  // The base config, with NO plugin options: those are resolved in the server
-  // process from the plugin array's tuple and a project file, neither of which
-  // the TUI can see. So the inherited caps here are the DEFAULTS, and the rows
-  // that matter — the overlay's own — are unaffected: the dialog edits the
-  // overlay, and a row whose caps came from elsewhere is labelled as such rather
-  // than presented as this process's truth.
-  const dialog = laneDialogFrom(raw.raw, runningByLane(directory), normalizeDynamicTaskConfig(null));
-  return { rows: dialog.rows, problem: dialog.problem ?? raw.problem, overlay: overlayFrom(raw.raw), directory };
+  return laneViewFrom(readLaneOverlay(directory), runningByLane(directory), directory);
 }
 
 /**
@@ -271,7 +322,7 @@ function overlayFrom(raw: unknown): LaneOverlay {
  * cannot fire is worse than none: it says "this boundary is dangerous" to every
  * reader while quietly proving the opposite.
  */
-function runningByLane(directory: string): Map<string, number> {
+export function runningByLane(directory: string): Map<string, number> {
   const counts = new Map<string, number>();
   // A PATH, not the directory. Passing the directory made the read fail on every
   // call, and the catch that hid that reported "no tasks are running" — so the row

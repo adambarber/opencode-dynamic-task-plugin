@@ -139,9 +139,14 @@ export function newLaneEntry(name: string): LaneEntry {
 
 /** The prompt for one row: both caps at once, because two nested dialogs to set two numbers is one too many. */
 export function promptFor(row: LaneEntry): LanePrompt {
+  // `capsOf`, not the caps spelled again. This hand-rolled them — and spelled the
+  // first one "?" where `capsOf` spells an absent cap `off`, so the list said "off"
+  // and the box the operator types into said "?". One vocabulary for a cap, or the
+  // operator is invited to replace a word the dialog has never used.
+  const caps = capsOf(row.lane);
   return {
     title: `Lanes · ${row.name}`,
-    placeholder: `${row.lane.maxConcurrent ?? "?"} ${row.lane.maxDepth ?? UNBOUNDED}`,
+    placeholder: `${caps.concurrency} ${caps.depth}`,
     hint: `"n" caps concurrency · "n d" also caps depth · "${UNBOUNDED}" removes a cap · "delete" drops the lane`,
   };
 }

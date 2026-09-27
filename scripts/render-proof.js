@@ -24,6 +24,7 @@ import { capCellOf } from "../dist/tui/agent-editor.js";
 /** The colours a dark terminal hands the host, which is where `theme.text` comes from. */
 const value = RGBA.fromInts(0xd0, 0xd0, 0xd0);
 const context = RGBA.fromInts(0x6c, 0x6c, 0x6c);
+const aside = RGBA.fromInts(0x50, 0x50, 0x50);
 
 /**
  * The row, built by the PRODUCTION functions.
@@ -34,7 +35,7 @@ const context = RGBA.fromInts(0x6c, 0x6c, 0x6c);
  * different qualifier — left this green while the screen said something else. The screen
  * is the thing under test, so the screen's own builder produces the runs.
  */
-const TOKEN_THEME = { current: { text: value, textMuted: context, accent: RGBA.fromInts(0x88, 0x88, 0xff) }, mode: () => "dark" };
+const TOKEN_THEME = { current: { text: value, textMuted: context, accent: RGBA.fromInts(0x88, 0x88, 0xff), syntaxComment: aside }, mode: () => "dark" };
 const tokens = screenTokens(TOKEN_THEME);
 const row = (entry) => ({ name: entry.name, resolved: entry.resolved, stated: entry.stated, depth: entry.depth });
 const runs = () => summaryRuns(row(entry()), tokens);
@@ -100,8 +101,8 @@ const claims = [
   ["the concurrency number is bold", "2", (s) => (s.attributes & TextAttributes.BOLD) === TextAttributes.BOLD],
   ["the REACHABLE depth is the value colour, which a same-text trap once hid", "3", (s) => hexOf(s) === asHex(value)],
   ["the reachable depth is bold, so the pair reads as one figure", "3", (s) => (s.attributes & TextAttributes.BOLD) === TextAttributes.BOLD],
-  ["the cap it is held below is the quiet role, not the loud one", "/4", (s) => hexOf(s) === asHex(context)],
-  ["the qualifier names what holds it, in the quiet role", "agent set binds", (s) => hexOf(s) === asHex(context)],
+  ["the cap it is held below is the ASIDE tier, not the label's", "/4", (s) => hexOf(s) === asHex(aside)],
+  ["the reason it is held down is in the aside tier too", "agent set binds", (s) => hexOf(s) === asHex(aside)],
   ["the label stays muted, so the eye lands on the figures", "at once", (s) => hexOf(s) === asHex(context)],
 ];
 

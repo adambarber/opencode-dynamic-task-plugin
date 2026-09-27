@@ -18,7 +18,7 @@ import assert from "node:assert/strict";
 import { TextAttributes } from "@opentui/core";
 import { cellFooter, plainCell, plainSummary, screenTokens, summaryFooter, summaryRuns, widthsAgree } from "../../dist/tui/theme.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
-import { capCell, darkTheme, lightTheme } from "./support/harness.js";
+import { bareTheme, capCell, darkTheme, lightTheme, themeRoles } from "./support/harness.js";
 
 const THEME = darkTheme();
 const TOKENS = screenTokens(THEME);
@@ -39,15 +39,37 @@ const bound = (configured, effective) => ({ configured, effective, boundBy: "age
 const runOf = (footer, text) => footer.chunks.find((run) => run.text === text);
 
 describe("the design tokens are roles, not colours", () => {
-  it("resolves both roles from the theme in force, so a light theme is not painted dark", () => {
+  it("resolves every role from the theme in force, so a light theme is not painted dark", () => {
     const light = screenTokens(lightTheme());
     assert.notDeepEqual(light.value, TOKENS.value, "the value follows the theme rather than a constant");
-    assert.notDeepEqual(light.context, TOKENS.context, "and so does the qualifier");
+    assert.notDeepEqual(light.context, TOKENS.context, "and so does the label");
+    assert.notDeepEqual(light.aside, TOKENS.aside, "and so does the note");
   });
 
   it("takes the value from `text`, the token the host derives from the TERMINAL's own foreground", () => {
     assert.deepEqual(TOKENS.value, THEME.current.text, "not selectedListItemText, which a theme may never define");
-    assert.deepEqual(TOKENS.context, THEME.current.textMuted, "the qualifier is the host's own de-emphasis token");
+    assert.deepEqual(TOKENS.context, THEME.current.textMuted, "the label is the host's own de-emphasis token");
+  });
+
+  it("takes the note from `syntaxComment`, the host's role for readable-but-recessive annotation", () => {
+    // A provenance note IS a comment on a value, and the host already has a role for that
+    // — one of some fifty this module was not reading. The alternative was a third hex,
+    // which reads as "bright" against a dark terminal and vanishes against a light one.
+    assert.deepEqual(TOKENS.aside, THEME.current.syntaxComment, "the note is a note, in the host's own words for one");
+  });
+
+  it("resolves a tier below the label in BOTH fixtures, because a tier one side cannot see is not a tier", () => {
+    // This is the pin that would have caught the drift: `syntaxComment` was missing from
+    // the light fixture while the tier that reads it was already written, so every claim
+    // about the note's tier passed against a theme that had none. The two fixtures now
+    // take their shape from one place, and this says so rather than trusting it.
+    const dark = screenTokens(darkTheme());
+    const light = screenTokens(lightTheme());
+    assert.deepEqual(themeRoles(), Object.keys(lightTheme().current), "the fixtures declare the same roles");
+    assert.deepEqual(Object.keys(light), Object.keys(dark), "and the screen reads the same tiers from each");
+    for (const tier of ["value", "context", "aside"]) {
+      assert.notDeepEqual(light[tier], dark[tier], `the ${tier} tier follows the theme, in both fixtures`);
+    }
   });
 });
 
@@ -64,11 +86,27 @@ describe("a cell separates the value from what qualifies it", () => {
     assert.equal(value.attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and is bold");
   });
 
-  it("paints the qualifier in the context role and NOT bold, so it reads as metadata", () => {
+  it("paints the note a TIER below the label, because muting it is not the same as setting it apart", () => {
+    // The operator read `4 from config` as a two-word value twice, and muting the note to
+    // the label's own colour is what had already been tried. What makes a note a note is
+    // being quieter than the LABEL, not quieter than the number — one step below the
+    // label, so the row reads `at once` (label) `4` (value) `from config` (a note ABOUT
+    // the 4) as three kinds of thing rather than five words with two of them bright.
     const footer = cellFooter(capCell(4, false), TOKENS);
-    const qualifier = runOf(footer, " from config");
-    assert.deepEqual(qualifier.fg, TOKENS.context, "the qualifier is recessive");
-    assert.equal(qualifier.attributes & TextAttributes.BOLD, 0, "and carries no weight the value has");
+    const note = runOf(footer, " from config");
+    assert.deepEqual(note.fg, TOKENS.aside, "the note wears the aside tier");
+    assert.notDeepEqual(note.fg, TOKENS.context, "which is not the label's tier — that is the whole point of it");
+    assert.equal(note.attributes & TextAttributes.BOLD, 0, "and carries no weight the value has");
+  });
+
+  it("draws a note in the label's tier when the theme declares no aside, rather than leaving it invisible", () => {
+    // `syntaxComment` is optional in a theme's JSON even though the host's type declares
+    // it, so the fallback is load-bearing: a note painted in an inherited colour would
+    // take the host's muted wrapper, and the operator would be back to reading it as a
+    // value. Degrading to the two-tier screen is the honest outcome here.
+    const bare = screenTokens(bareTheme());
+    assert.deepEqual(bare.aside, bare.context, "a theme with no aside role falls back to the label's");
+    assert.deepEqual(bare.value, darkTheme().current.text, "and the value is unaffected by the missing role");
   });
 
   it("states a number with no qualifier at all, rather than an empty one", () => {
@@ -83,9 +121,10 @@ describe("a cell separates the value from what qualifies it", () => {
     assert.equal(footerText(BOUNDED), "· 3/4 agent set binds", "the reachable depth first, the cap beside it");
   });
 
-  it("puts the reachable depth in the loud role and the cap it is held below in the quiet one", () => {
+  it("puts the reachable depth in the loud role and the cap it is held below in the ASIDE tier", () => {
     assert.deepEqual(runOf(BOUNDED, "3").fg, TOKENS.value, "the depth that binds dispatches is the figure");
-    assert.deepEqual(runOf(BOUNDED, "/4").fg, TOKENS.context, "the cap beside it is the same voice as a label");
+    assert.deepEqual(runOf(BOUNDED, "/4").fg, TOKENS.aside, "the cap beside it is a note about that figure, not a label beside it");
+    assert.deepEqual(runOf(BOUNDED, " agent set binds").fg, TOKENS.aside, "and so is the reason it is held down");
     assert.equal(runOf(BOUNDED, "3").attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and the pair reads as one figure");
   });
 

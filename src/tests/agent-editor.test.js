@@ -20,7 +20,7 @@ import { applyAgentOverlay, readAgentOverlay, readAgentOverlayCaps, writeAgentOv
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
-import { plainCell, plainSummary } from "../../dist/tui/theme.js";
+import { CELL_GAP, plainCell, plainSummary } from "../../dist/tui/theme.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
 
@@ -156,8 +156,9 @@ describe("the limits list", () => {
 
   it("shows BOTH caps of an agent on its one row, side by side", () => {
     // The operator's own framing: the concurrency cap "next to" the depth. Two rows
-    // of one agent would print the name twice and split the pair apart.
-    assert.equal(plainSummary(exploreRow(bothCaps(1, 2))), "at once 1 · depth 2");
+    // of one agent would print the name twice and split the pair apart. The gap is the
+    // module's, so this says the two cells are ADJACENT without retyping how wide that is.
+    assert.equal(plainSummary(exploreRow(bothCaps(1, 2))), `at once 1${CELL_GAP}depth 2`);
   });
 
   it("says which caps are INHERITED, because an agent at 4 by default and one set to 4 look the same", () => {

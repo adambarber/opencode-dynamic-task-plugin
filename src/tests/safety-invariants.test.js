@@ -633,6 +633,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     'answerSays(missing, "unknown")',
   ];
 
+
   /**
    * Every string production BINDS to a name, and where.
    *
@@ -664,6 +665,13 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
       // and a gate that guesses is a gate that cries wolf. The comparison the
       // discriminant rule polices is unaffected: it reads the enums, not this map.
       if (DISCRIMINANT_VALUES.includes(literal)) return;
+      // A literal with no distinguishing content is LAYOUT, not a decision. `CELL_GAP`
+      // is two spaces, and a test that writes two spaces is writing prose — a
+      // whitespace-only id, a blank-ish note — so binding it reported four unrelated
+      // suites the moment the constant was introduced. Same principle as the vocabulary
+      // exemption above and for the same reason: the rule exists to catch a test that
+      // restates a production DECISION, and a run of spaces is not one.
+      if (literal.trim() === "") return;
       if (literal.length > 1 && !bound.has(literal)) bound.set(literal, { name, file });
     };
     for (const file of listProdFiles()) {
@@ -735,9 +743,21 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
   // written for the purpose, one per binding form, so each is shown to be reachable —
   // and the two negatives, because a rule that reads a vocabulary as a decision is
   // worse than no rule: it would push every state assertion through a constant.
+
+  /**
+   * The extracted constants, memoised, and a matcher over them.
+   *
+   * A FUNCTION rather than two `const`s at the describe body, because the extraction
+   * reads `DISCRIMINANT_VALUES` and the describe body runs before that is initialised —
+   * so calling it here is a temporal-dead-zone error, and calling it twice in two cases
+   * is the copy the duplicate gate reported. Memoised on first use, the two cases below
+   * read one extraction.
+   */
+  let extracted = null;
+  const probe = () => (extracted ??= { constants: boundValues(), reported: (source) => retypeFindings(source, extracted.constants) });
+
   it("every binding form is reported, and neither prose nor a vocabulary is", () => {
-    const constants = boundValues();
-    const reported = (source) => retypeFindings(source, constants);
+    const { constants, reported } = probe();
     // A wire string the gate must be able to name, taken from the vocabulary
     // rather than retyped here, so this probe cannot go stale with the enums.
     const vocabularyMember = DISCRIMINANT_VALUES[0];
@@ -765,6 +785,22 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
       `a const over an invented vocabulary's own wire string (${vocabularyMember}) is a spelling of ` +
       "that vocabulary, not a scalar decision; the discriminant gate polices the comparison instead");
     assert.deepStrictEqual(reported("const n = 1;", constants), [], "an unrelated source has nothing to report");
+  });
+
+  it("exempts a whitespace-only literal, and still reports a literal that merely CONTAINS one", () => {
+    // The exemption is for layout, and it is the whole value that is exempt — so a
+    // separator like `" | "` is still reported, because a test that retypes it is
+    // restating a decision about how a row is drawn. Proving the boundary needs both
+    // sides: exempt the pure-whitespace value, and keep a value with content in it.
+    const { constants, reported: matches } = probe();
+    const layout = [...constants].find(([, owner]) => owner.name === "CELL_GAP")?.[0];
+    assert.equal(layout, undefined, "a whitespace-only constant is not bound at all, so it cannot cry wolf");
+    const withContent = [...constants].find(([literal]) => literal.trim() !== "" && /\s/.test(literal))?.[0];
+    assert.ok(withContent, "expected a bound constant whose value contains whitespace");
+    assert.ok(matches(`const sep = ${JSON.stringify(withContent)};`).length > 0,
+      `a value that CONTAINS whitespace is still a decision, and is reported (${JSON.stringify(withContent)})`);
+    assert.deepStrictEqual(matches(`const pad = ${JSON.stringify(layout ?? "  ")};`), [],
+      "and a pure-whitespace run is prose, not a restatement");
   });
 });
 

@@ -38,49 +38,97 @@ import { CAP_LABEL, capCellOf, type AgentEntry, type CapCell } from "./agent-edi
 /**
  * How a theme is reached from the plugin api, named so `screenTokens` can take it.
  *
- * `text` and `accent` are both declared `readonly RGBA` by the host and both are still
- * probed for absence below, because the declaration is not a promise: a theme's JSON may
- * omit a key, and the host itself guards `selectedListItemText` at runtime with
- * `_hasSelectedListItemText` rather than trusting its own type. A theme that drops `text`
- * would otherwise hand `fg(undefined)`, which renders as INHERITED — the host's muted
- * wrapper — putting the value back in the colour this module exists to take it out of,
- * with nothing in the build to say so.
+ * `text`, `accent` and `syntaxComment` are all declared `readonly RGBA` by the host and
+ * all are still probed for absence below, because the declaration is not a promise: a
+ * theme's JSON may omit a key, and the host itself guards `selectedListItemText` at
+ * runtime with `_hasSelectedListItemText` rather than trusting its own type. A theme that
+ * drops `text` would otherwise hand `fg(undefined)`, which renders as INHERITED — the
+ * host's muted wrapper — putting the value back in the colour this module exists to take
+ * it out of, with nothing in the build to say so.
  */
-type ThemeLike = { readonly current: { text: RGBA; textMuted: RGBA; accent: RGBA } };
+type ThemeLike = {
+  readonly current: { text: RGBA; textMuted: RGBA; accent: RGBA; syntaxComment?: RGBA };
+};
 
 /**
  * The colours this screen paints with, as roles.
  *
- * Two, because the row draws two things: the value the operator came to read, and the
- * context that qualifies it. A third role for anything else is a role with no difference
- * between it and one of these two.
+ * THREE, and the count is the number of KINDS of thing a row draws. The previous two were
+ * justified as "the row draws two things", which was a miscount that a render settled: a
+ * row is a value, a label naming the value, and a note about where the value came from —
+ * and folding the last two together put six of the row's eleven tokens in one colour, so
+ * `4 from config` read as a two-word value and the operator read the note as a broken
+ * input. Muting the note was never going to fix that; only a tier below the label can.
+ *
+ * So the tiers are ordered by how much they are the reason the eye came:
+ *
+ *   value   `text`          the number, bold      the answer
+ *   context `textMuted`     `at once`, `depth`    which question the number answers
+ *   aside   `syntaxComment` `from config`         a note ABOUT the number
+ *
+ * `syntaxComment` is the host's own role for readable-but-recessive annotation, which is
+ * exactly what a provenance note is — a comment on the value. It was available all along:
+ * the host declares some fifty roles and this module was reading three of them. Its virtue
+ * is that it is SEMANTIC, so a theme that ranks it near its own muted level degrades to the
+ * two-tier screen rather than to something unreadable, and a theme that ranks it lower gets
+ * the separation for free. Nothing here is a hex: a literal would read as "bright" against
+ * a dark terminal and vanish against a light one, which is the whole defect.
  */
 export interface ScreenTokens {
   /** The number in force. The theme's own foreground, in bold. */
   value: RGBA;
-  /** What qualifies a value rather than being one: a label, a mark, "from config". */
+  /** The label naming which cap a number is: `at once`, `depth`. */
   context: RGBA;
+  /** A note about a number rather than a number: `from config`, `agent set binds`. */
+  aside: RGBA;
 }
 
 /**
- * The two roles, resolved once from the theme in force.
+ * The three roles, resolved once from the theme in force.
  *
  * The `??` on the value is the same move the other cortexkit sidebars make
  * (`theme.success ?? theme.accent`): a missing role falls back to a role that is present
  * rather than to nothing, because a wrong-but-visible colour is recoverable and an
  * inherited one is invisible. The context role needs no fallback — an absent `textMuted`
- * inherits the host's own muted wrapper, which is what it asked for anyway.
+ * inherits the host's own muted wrapper, which is what it asked for anyway. The aside
+ * falls back to `textMuted` because a theme that never heard of `syntaxComment` should
+ * draw a note in the label's tier rather than leave the note invisible.
  */
 export function screenTokens(theme: ThemeLike): ScreenTokens {
-  return { value: theme.current.text ?? theme.current.accent, context: theme.current.textMuted };
+  const current = theme.current;
+  return {
+    value: current.text ?? current.accent,
+    context: current.textMuted,
+    aside: current.syntaxComment ?? current.textMuted,
+  };
 }
 
-/** The mark between a row's label and its value, and between its two cells. */
-export const SEP = "·";
+/**
+ * The gap between a row's two cells, in place of the mark that used to be there.
+ *
+ * The `·` is deleted rather than re-coloured. A separator is a symbol with no information
+ * in it, and at the label's own tier it read as a word — so `from config · depth` scanned
+ * as one phrase and the two cells stopped grouping. The reference rows this screen was
+ * built against separate their cells with space and a rule drawn by the layout, not with a
+ * character between the figures; a double space is the whole of that, and the host's
+ * `space-between` already supplies the rest of the separation on the row itself.
+ */
+export const CELL_GAP = "  ";
 
-/** The qualifier a cell carries when the number is the config file's rather than the operator's. */
+/**
+ * The mark that OPENS a cell on the screen where the cell is the whole footer.
+ *
+ * Not the deleted separator, and kept apart from it because the two answer different
+ * questions. That one sat BETWEEN two cells that already had their own labels, where it
+ * was a symbol standing in for information the layout could have supplied. This one opens
+ * a footer that IS one cell, with no label of its own and no column to align against, so
+ * without it `4` reads as the tail of the word beside it. Different job, same character.
+ */
+export const LEAD = "·";
+
+/** The note a cell carries when the number is the config file's rather than the operator's. */
 const INHERITED = "from config";
-/** The qualifier for a depth the agent set holds below the cap. */
+/** The note for a depth the agent set holds below the cap. */
 const CEILING = "agent set binds";
 
 /**
@@ -100,29 +148,39 @@ export function plainCell(cell: CapCell): string {
 
 /** What one agent's row says, unstyled: the width contract for a whole row. */
 export function plainSummary(row: AgentEntry): string {
-  return AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`).join(` ${SEP} `);
+  return AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`).join(CELL_GAP);
 }
 
 /**
  * A cell's painted runs.
  *
  * CHUNKS rather than an element, and one span per cell in the callers, because the
- * number and its qualifier have to be the SAME run sequence for a row — a cell that
+ * number and its note have to be the SAME run sequence for a row — a cell that
  * opened its own span would break the row's single line. `bold(fg(…))` nests into one
  * chunk carrying both, rather than two adjacent runs that could be split by a
  * reflow.
+ *
+ * The note is drawn in the ASIDE tier, a step below the label, because that step is the
+ * whole difference between a note and a value. In the label's own tier `4 from config`
+ * was read as a two-word figure — the operator called it a broken input, twice, and
+ * muting it is what had already been tried. A note that is a tier quieter is a note.
  */
 export function cellRuns(cell: CapCell, tokens: ScreenTokens): TextChunk[] {
   // The reachable number is the loud one even in `3/4`, because it is the one a
-  // dispatch is judged against; the cap beside it is context, the same voice as a label.
-  // Both in bold: the pair is one reading, and splitting it across weights would ask the
-  // eye to hold `3` and then re-read `4` as a separate value.
+  // dispatch is judged against; the cap beside it is a NOTE about it, so it takes the
+  // aside tier rather than the label's. Both in bold: the pair is one reading, and
+  // splitting it across weights would ask the eye to hold `3` and then re-read `4` as
+  // a separate value.
   if (cell.bounded !== null) {
-    return [bold(fg(tokens.value)(String(cell.bounded))), bold(fg(tokens.context)(`/${cell.value}`)), fg(tokens.context)(" " + CEILING)];
+    return [
+      bold(fg(tokens.value)(String(cell.bounded))),
+      bold(fg(tokens.aside)(`/${cell.value}`)),
+      fg(tokens.aside)(" " + CEILING),
+    ];
   }
   return [
     bold(fg(tokens.value)(String(cell.value))),
-    ...(cell.stated ? [] : [fg(tokens.context)(" " + INHERITED)]),
+    ...(cell.stated ? [] : [fg(tokens.aside)(" " + INHERITED)]),
   ];
 }
 
@@ -137,7 +195,7 @@ export function cellRuns(cell: CapCell, tokens: ScreenTokens): TextChunk[] {
  */
 export function summaryRuns(row: AgentEntry, tokens: ScreenTokens): TextChunk[] {
   return AGENT_CAP_NAMES.flatMap((cap, index) => [
-    ...(index === 0 ? [] : [fg(tokens.context)(` ${SEP} `)]),
+    ...(index === 0 ? [] : [fg(tokens.context)(CELL_GAP)]),
     fg(tokens.context)(`${CAP_LABEL[cap]} `),
     ...cellRuns(capCellOf(row, cap), tokens),
   ]);
@@ -188,7 +246,7 @@ export function widthsAgree(runs: TextChunk[], plain: string): boolean {
  * same two things.
  */
 export function cellFooter(cell: CapCell, tokens: ScreenTokens): StyledText {
-  return new StyledText([fg(tokens.context)(`${SEP} `), ...cellRuns(cell, tokens)]);
+  return new StyledText([fg(tokens.context)(`${LEAD} `), ...cellRuns(cell, tokens)]);
 }
 
 /** One agent's row value, as the value a row's `footer` carries. */

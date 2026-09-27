@@ -35,7 +35,7 @@ import { bothCaps, withTempDir } from "./support/fixtures.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
-import { screenTokens } from "../../dist/tui/theme.js";
+import { CELL_GAP, screenTokens } from "../../dist/tui/theme.js";
 import { darkTheme } from "./support/harness.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
@@ -573,8 +573,12 @@ describe("the limits list is the question the operator came with", () => {
 
   it("puts both caps of an agent on its ONE row, so the pair is read together", () =>
     withList({ agents: { explore: bothCaps(2, 1) } }, (list) => {
-      assert.match(rowText(list, "explore"), /at once 2 · depth 1/,
-        "concurrency and depth side by side, which is the ask the row exists for");
+      // The gap comes from the module, not from a retyped run of spaces: a test that
+      // spelled it would be a second place to change, and would keep passing after the
+      // cells were separated by something the operator could read as a word.
+      const adjacency = `at once 2${CELL_GAP}depth 1`;
+      assert.ok(rowText(list, "explore").includes(adjacency),
+        `concurrency and depth adjacent as ${JSON.stringify(adjacency)}, which is the ask the row exists for`);
       assert.equal(titlesOf(list).filter((title) => title === "explore").length, 1,
         "two rows of one agent would print the name twice and split the pair apart");
     }));

@@ -589,18 +589,39 @@ export const darkTheme = () => ({
     text: RGBA.fromInts(0xd0, 0xd0, 0xd0),
     textMuted: RGBA.fromInts(0x6c, 0x6c, 0x6c),
     accent: RGBA.fromInts(0x88, 0x88, 0xff),
+    // Distinct from `textMuted` on purpose. A fixture that left this out would resolve
+    // the aside tier to the label's colour, and every pin about the note's tier would
+    // pass on a theme that has no such tier — which is how the tier went unproven while
+    // the code that reads it was already written.
+    syntaxComment: RGBA.fromInts(0x50, 0x50, 0x50),
   },
   mode: () => "dark",
 });
 
-/** The same shape, inverted — what a light terminal hands the host. */
+/**
+ * The same shape, inverted — what a light terminal hands the host.
+ *
+ * DERIVED from the dark one, role by role, rather than written out a second time. Two
+ * hand-written copies of one shape is the arrangement where a role added to the first
+ * quietly does not exist in the second, and the suite then proves the fallback instead of
+ * the code: `syntaxComment` was absent here while the tier that reads it was already
+ * written, so every pin about that tier passed on a theme with no such tier. The values
+ * invert because a light terminal's foreground is dark, and the ORDER of the tiers is
+ * preserved — which is the claim the pins actually make.
+ */
+const LIGHT_VALUES = { text: 0x20, textMuted: 0x90, accent: 0x33, syntaxComment: 0xb0 };
 export const lightTheme = () => ({
-  current: {
-    text: RGBA.fromInts(0x20, 0x20, 0x20),
-    textMuted: RGBA.fromInts(0x90, 0x90, 0x90),
-    accent: RGBA.fromInts(0x33, 0x33, 0xcc),
-  },
+  current: Object.fromEntries(Object.keys(darkTheme().current).map((role) => [role, RGBA.fromInts(LIGHT_VALUES[role], LIGHT_VALUES[role], LIGHT_VALUES[role])])),
   mode: () => "light",
+});
+
+/** The role names both fixtures declare, for the pin that they declare the SAME ones. */
+export const themeRoles = () => Object.keys(darkTheme().current);
+
+/** A theme that declares none of the optional roles, which is what a theme's JSON may do. */
+export const bareTheme = () => ({
+  current: { text: RGBA.fromInts(0xd0, 0xd0, 0xd0) },
+  mode: () => "dark",
 });
 
 /**

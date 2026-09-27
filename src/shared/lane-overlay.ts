@@ -132,7 +132,7 @@ export function applyLaneOverlay(
     return { source: null, problem: "the overlay is not a JSON object" };
   }
   const overlay = raw as Record<string, unknown>;
-  const lanes: Record<string, { maxConcurrent?: number; maxDepth?: number }> = {};
+  const lanes: Record<string, LaneConfig> = {};
   let sawLane = false;
   const rawLanes = overlay["lanes"];
   if (rawLanes !== undefined) {

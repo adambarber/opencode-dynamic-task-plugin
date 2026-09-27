@@ -378,6 +378,20 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
             dropped++;
           }
         }
+        // A child occupies EXACTLY ONE half, so a key in BOTH halves is a file that
+        // contradicts itself, and the contradiction has to be resolved HERE rather
+        // than left to whichever consumer reads first. It was: the boot pass restored
+        // from the settled half, so a genuinely running child came back as completed.
+        // The ACTIVE half wins, because it was written by a process that believed the
+        // child alive and the settled half is the older fact a reclaim failed to
+        // remove. The losing entry is counted as dropped so the operator is told the
+        // file contradicted itself instead of only being told what survived.
+        for (const key of [...retained.keys()]) {
+          if (active.has(key)) {
+            retained.delete(key);
+            dropped++;
+          }
+        }
         if (dropped > 0) discarded = `${dropped} record(s) in the file failed validation and were dropped`;
       }
     } catch (error: unknown) {

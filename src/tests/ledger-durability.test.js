@@ -21,7 +21,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createTaskStore, noteLateOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { childParams, defaultConfig } from "./support/fixtures.js";
@@ -62,6 +62,17 @@ function withSettledChild(fn) {
   });
 }
 
+/**
+ * The same child, then reclaimed: a settled record replaced by a running one, which
+ * is the transition the two cases below both need and neither of them owns.
+ */
+function withRevivedChild(fn) {
+  return withSettledChild((file, store) => {
+    reviveRetainedTask(store, "ses_c1");
+    return fn(file);
+  });
+}
+
 describe("durable ledger — what a restart would believe", () => {
   it("records a late error escalation as error, and a restart reads it as error", () =>
     withSettledChild((file, store) => {
@@ -75,16 +86,29 @@ describe("durable ledger — what a restart would believe", () => {
       assertIs(loadTaskLedger(file).retained.get("ses_c1")?.state, "error", "and a restart reads the failure, not the success");
     }));
 
-  it("keeps a reclaimed child in one half of the ledger, and a restart does not read it as settled", () =>
-    withSettledChild((file, store) => {
-      reviveRetainedTask(store, "ses_c1");
-
+  it("never reads a child as settled while the file also says it is running", () =>
+    withRevivedChild((file) => {
       const onDisk = fileSays(file);
       assertIs(onDisk.active["ses_c1"]?.state, "active", "the revived child is running on disk");
       assertAbsent(onDisk.tasks["ses_c1"], "and is not ALSO still sitting in settled history");
 
-      const rebooted = loadTaskLedger(file);
-      assertIs(rebooted.retained.size, 0, "no stale settled record survived for the boot pass to restore as completed");
-      assertIs(rebooted.active.has("ses_c1"), true, "the running child is the one the next process adopts");
+      const written = loadTaskLedger(file);
+      assertIs(written.retained.size, 0, "no stale settled record survived for the boot pass to restore as completed");
+      assertIs(written.active.has("ses_c1"), true, "the running child is the one the next process adopts");
+
+      // Second witness, and the reason the loader had to change rather than the writer
+      // alone: the contradiction written BY HAND. The point is not that this plugin
+      // wrote it — it stopped doing so in the fix above — but that any writer may: a
+      // regression, a merge, an edit, a bug fixed in one place and reintroduced in
+      // another. The reader is the only place that cannot regress, because it is where
+      // the question is actually asked.
+      const corrupt = fileSays(file);
+      corrupt.tasks["ses_c1"] = { ...corrupt.active["ses_c1"], state: "completed", retainedAt: 1 };
+      writeFileSync(file, JSON.stringify(corrupt));
+
+      const rebuilt = loadTaskLedger(file);
+      assertIs(rebuilt.retained.has("ses_c1"), false, "the settled half does not survive a file that also calls the child running");
+      assertIs(rebuilt.active.get("ses_c1")?.state, "active", "and the running half is what the next process adopts");
+      assertIs(rebuilt.discarded !== null, true, "the contradiction is reported, not silently resolved");
     }));
 });

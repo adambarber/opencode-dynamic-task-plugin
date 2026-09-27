@@ -90,20 +90,35 @@ export const importLines = (source) => {
 };
 
 /**
- * The comparable stream: significant tokens only, with string CONTENTS erased.
- * Erasing the contents is the point — a test that copies production's format
- * strings verbatim matches even when the format later changes, which is the drift
- * this is looking for.
+ * The comparable stream: significant tokens only.
+ *
+ * A string token's key CARRIES ITS CONTENT — `string:"alpha"` and `string:"one"`
+ * are different tokens, the same way `alpha` and `one` are different identifiers.
+ * This used to collapse every literal to a bare `string`, on the argument that a
+ * test copying production's format strings should keep matching after the format
+ * changes. That argument was answering a question this detector does not have to
+ * answer, and the cost of buying it was that unrelated code matched: two files
+ * holding `["alpha","beta","gamma","delta"]` and `["one","two","three","four"]`
+ * shared a 14-token, 6-line run, over a floor of 12 tokens and 3 lines, and were
+ * reported as duplicated. The only thing those two files had in common was being
+ * arrays of four strings. That is not duplication, and a gate that reports it is a
+ * gate whose findings have to be re-argued one at a time.
+ *
+ * The `scripts/measure.mjs` policy is the OPPOSITE and deliberately so. There, a
+ * string collapses to a bare `string`, because that stream CONFIRMS a match jscpd
+ * has already reported: both sides hold the same literal, so the collapse cannot
+ * break contiguity, and it costs nothing. Here, the stream has to DISCOVER a match
+ * nobody has found yet, and the two sides may hold different literals — so content
+ * is the only thing distinguishing "the same constant" from "the same shape". One
+ * measures a known run, the other looks for an unknown one, and that is the whole
+ * reason the two policies differ.
  */
 export const stream = (path) => {
   const source = readFileSync(path, "utf8");
   const imports = importLines(source);
   return tokenize(source, "typescript")
     .filter((t) => t.type !== "empty" && t.type !== "new_line" && !imports.has(t.loc.start.line))
-    .map((t) => ({
-      key: t.type === "string" ? "string" : `${t.type}:${t.value}`,
-      line: t.loc.start.line,
-    }));
+    .map((t) => ({ key: `${t.type}:${t.value}`, line: t.loc.start.line }));
 };
 
 /** Maximal runs shared by two streams, found by window hash then extension. */
@@ -195,19 +210,26 @@ export const corpus = () => ({
 export const shortPath = (p) => relative(REPO, p);
 
 /**
- * A two-file corpus holding the same body, for proving the detector can still SEE.
- * The corpus shape is this module's own, so it is this module that builds one:
- * a test that assembles the probe out of mkdtempSync and a hand-written join
- * re-declares what a production file and a test file are, in the one place whose
- * subject is exactly that question.
+ * A two-file corpus for proving what the detector does and does not report. The
+ * corpus shape is this module's own, so it is this module that builds one: a test
+ * that assembles a probe out of mkdtempSync and a hand-written join re-declares
+ * what a production file and a test file are, in the one place whose subject is
+ * exactly that question.
+ *
+ * `testBody` defaults to `body`, which is the right default for the question this
+ * was built for — can the detector still SEE a match? — because that needs two
+ * identical files. Answering the other question, does it report a match that is not
+ * there, needs two files that are genuinely different, and the one-argument form
+ * silently cannot express that: it writes the same body twice and reports the
+ * result, which looks like a passing answer to a question it never asked.
  */
-export const withProbeCorpus = (body, fn) => {
+export const withProbeCorpus = (body, fn, testBody = body) => {
   const dir = mkdtempSync(join(tmpdir(), "dt-cross-boundary-"));
   const prod = join(dir, "probe.ts");
   const test = join(dir, "probe.js");
   try {
     writeFileSync(prod, body);
-    writeFileSync(test, body);
+    writeFileSync(test, testBody);
     return fn({ tests: [test], production: [prod] });
   } finally {
     rmSync(dir, { recursive: true, force: true });

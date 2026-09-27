@@ -62,6 +62,44 @@ describe("invariant: no duplication across the test/production boundary (Tenet 1
     const findings = withProbeCorpus(body, (probe) => findCrossBoundaryClones(probe));
     assert.ok(findings.length > 0, "identical bodies on opposite sides of the boundary must be reported");
   });
+
+  // The other half of the detector's honesty, and the half that was broken: a string
+  // token used to collapse to a bare "string", so two files holding
+  // ["alpha","beta","gamma","delta"] and ["one","two","three","four"] shared a
+  // 14-token, 6-line run over a floor of 12 tokens and 3 lines. The only thing those
+  // files had in common was being arrays of four strings, and a finding like that
+  // has to be re-argued by hand before it can be believed — which is the same cost
+  // as no gate at all, paid on every run.
+  it("two files of the same shape but different constants are not duplication", () => {
+    const production = `export const RETRYABLE = [
+  "alpha",
+  "beta",
+  "gamma",
+  "delta",
+];`;
+    const test = `const RETRYABLE = [
+  "one",
+  "two",
+  "three",
+  "four",
+];`;
+    const findings = withProbeCorpus(production, (probe) => findCrossBoundaryClones(probe), test);
+    assert.deepStrictEqual(findings, [], "unrelated constants are not a shared run");
+  });
+
+  // ...and the same shape WITH the same constant still is, so the fix above cannot be
+  // satisfied by simply comparing less. A test holding production's own list is
+  // exactly the mirror this gate exists to find.
+  it("and the same constant is still reported in both files", () => {
+    const production = `export const RETRYABLE = [
+  "alpha",
+  "beta",
+  "gamma",
+  "delta",
+];`;
+    const findings = withProbeCorpus(production, (probe) => findCrossBoundaryClones(probe), production);
+    assert.ok(findings.length > 0, "a copied constant list must still be reported");
+  });
 });
 
 // The import filter the measurement rests on. It had an off-by-one that walked

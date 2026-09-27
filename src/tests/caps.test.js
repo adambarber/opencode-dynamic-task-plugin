@@ -61,11 +61,18 @@ function registration(childSessionId, agent = "general") {
  * and what the view shows are three answers about one store, and spelling the store
  * out at each of them is how the three drift into testing three different stores.
  */
+/**
+ * A cap wide enough that a fixture never refuses a registration it was not asked
+ * to. Named once, because the claim it protects is "the gate did not refuse" and a
+ * per-test copy of this number is a literal free to drift toward a value that
+ * makes the gate refuse — the fixture would then test the refusal while the case
+ * above it claims the registration.
+ */
+const WIDE = normalizeDynamicTaskConfig({ maxConcurrent: 9 });
+
 function storeRunning(agent, ...ids) {
   const store = createTaskStore();
-  // A cap of 9 so the fixture never refuses a registration it was not asked to.
-  const cap = normalizeDynamicTaskConfig({ maxConcurrent: 9 });
-  for (const id of ids) registerActiveTask(store, registration(id, agent), cap);
+  for (const id of ids) registerActiveTask(store, registration(id, agent), WIDE);
   return store;
 }
 
@@ -252,9 +259,8 @@ describe("the occupancy view", () => {
 
   it("counts the running set into the rows", () => {
     const store = storeRunning("explore", "ses_a", "ses_b");
-    registerActiveTask(store, registration("ses_c", "general"), normalizeDynamicTaskConfig({ maxConcurrent: 9 }));
-    const cap = normalizeDynamicTaskConfig({ maxConcurrent: 9 });
-    const rows = agentOccupancy(cap, ["explore", "general"], activeByAgent(store), false);
+    registerActiveTask(store, registration("ses_c", "general"), WIDE);
+    const rows = agentOccupancy(WIDE, ["explore", "general"], activeByAgent(store), false);
     assert.deepStrictEqual(rows.map((row) => [row.agent, row.active]), [["explore", 2], ["general", 1]]);
   });
 });
@@ -276,12 +282,15 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     return { store, cap: normalizeDynamicTaskConfig({ maxConcurrent: 1 }) };
   };
 
-  /** A store whose single boot slot is already taken. */
-  const fullAtBootCap = (id) => {
+  /** The one-slot store with `id` already occupying it. */
+  const slotHeldBy = (id) => {
     const { store, cap } = oneSlot();
     registerActiveTask(store, registration(id), cap);
     return { store, cap };
   };
+
+  /** A store whose single boot slot is already taken. */
+  const fullAtBootCap = (id) => slotHeldBy(id);
 
   /** A store holding a settled task and a live holder, so the one slot is full. */
   const withASettledTask = () => {

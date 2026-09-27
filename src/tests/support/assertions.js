@@ -23,32 +23,34 @@ import assert from "node:assert";
  */
 export const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found)}`;
 
+/**
+ * The two comparisons every claim here shares, once each.
+ *
+ * A claim helper is a NAME for a claim, not a comparison: "nothing", "empty" and
+ * "absent" are different claims that happen to compare the same two ways. Written
+ * out five times, the comparison was written out five times, and the rule this
+ * file's own header states — the answer rides in the failure — held only because
+ * every copy remembered to obey it. Here it cannot be forgotten: a new claim names
+ * a claim and gets the failure line for free.
+ */
+const sameValue = (found, expected, why) => assert.strictEqual(found, expected, claimFailure(why, found));
+const sameShape = (found, expected, why) => assert.deepStrictEqual(found, expected, claimFailure(why, found));
+
 /** "The answer is nothing" — the claim behind a free slot and an unknown session. */
-export function assertNothing(found, why) {
-  assert.strictEqual(found, null, claimFailure(why, found));
-}
+export const assertNothing = (found, why) => sameValue(found, null, why);
 
-export function assertEmpty(found, why) {
-  assert.strictEqual(found, "", claimFailure(why, found));
-}
+/** "The answer is an empty answer" — a slot allocated and left unfilled. */
+export const assertEmpty = (found, why) => sameValue(found, "", why);
 
-export function assertAbsent(found, why) {
-  assert.strictEqual(found, undefined, claimFailure(why, found));
-}
+export const assertAbsent = (found, why) => sameValue(found, undefined, why);
 
-export function assertIs(found, expected, why) {
-  assert.strictEqual(found, expected, claimFailure(why, found));
-}
+export const assertIs = (found, expected, why) => sameValue(found, expected, why);
 
 /** "Nothing usable in it" — the claim behind a parser handed garbage, a list or nothing. */
-export function assertNoAgents(found, why) {
-  assert.deepStrictEqual(found, [], claimFailure(why, found));
-}
+export const assertNoAgents = (found, why) => sameShape(found, [], why);
 
 /** A reader's whole answer — the identity it read off a question, or the decision it made. */
-export function assertAnswer(answer, expected, why) {
-  assert.deepStrictEqual(answer, expected, claimFailure(why, answer));
-}
+export const assertAnswer = (answer, expected, why) => sameShape(answer, expected, why);
 
 /**
  * A gate's verdict, with the refusal's own words in the failure. A gate answers
@@ -57,7 +59,7 @@ export function assertAnswer(answer, expected, why) {
  * read the same as one that explained itself.
  */
 export function verdict(result, expected, why) {
-  assert.strictEqual(result.ok, expected, claimFailure(why, result));
+  sameValue(result.ok, expected, why);
   return result;
 }
 

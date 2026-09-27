@@ -454,7 +454,7 @@ describe("pruneRetainedTasks — TTL and max entry eviction", () => {
     const store = createTaskStore();
     const now = Date.now();
     for (const [id, age] of agesById) {
-      store.retainedTasks.set(id, retainedEntry({ childSessionId: id, retainedAt: now - age }));
+      store.markRetained(id, retainedEntry({ childSessionId: id, retainedAt: now - age }));
     }
     return store;
   };
@@ -491,7 +491,7 @@ describe("findTask — edge cases", () => {
     registerActiveTask(store, childParams({ id: "ses_dup", description: "t" }), defaultConfig);
     // Same key in both maps — should not happen in practice — and while the task
     // runs, the running record is the truth.
-    store.retainedTasks.set("ses_dup", retainedEntry({ childSessionId: "ses_dup", description: "t" }));
+    store.markRetained("ses_dup", retainedEntry({ childSessionId: "ses_dup", description: "t" }));
 
     const result = findTask(store, "ses_dup");
     assert.strictEqual(result?.state, "active", "Should find active before retained");

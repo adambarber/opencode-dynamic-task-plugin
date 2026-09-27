@@ -140,9 +140,20 @@ const gate = (patterns, doc, why, extra = {}) => ({ patterns, doc, why, ...extra
 // fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/
 // turnLiveAt) belong to the state machine alone: outside task-state.ts they may
 // be read, never written.
+//
+// The rule used to ban `activeTasks.set` and `retainedTasks.delete` here too, and
+// that half is GONE — not relaxed, gone. TaskStore is a class now (src/shared/
+// store.ts) with `#private` maps, so a direct write to either is a type error
+// rather than a spelling, and src/tests/type-invariants.ts asserts exactly that
+// with @ts-expect-error: reopen a map and `npx tsc --noEmit` fails on the unused
+// directive. A regex could not tell a write from a mention of one — it had already
+// fired on a docblock quoting the shape — and it only ever guarded this file
+// boundary, so inside the file that owned the funnel nothing was enforced. What
+// remains is the half no type system reaches: reassigning a field ON a record
+// that was read out of the store.
 const LIFECYCLE_MUTATION = gate(
   [
-    /activeTasks\s*\.\s*(set|delete)|retainedTasks\s*\.\s*(set|delete)|\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
+    /\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
   ],
   DOC_LIFECYCLE,
   "Direct task-state mutation bypasses transitionState's matrix.",
@@ -281,7 +292,7 @@ const STALE_DISPATCH_FILTER = gate(
 // Primitive: task-state mutation. Funnel: src/shared/task-state.ts owns every
 // Map write and every completed/timeoutNotified assignment (Tenets 1, 3, 5).
 describe("invariant: lifecycle mutations funnel through task-state (Task 01)", () => {
-  rule({ name: "no raw store/flag mutation outside task-state.ts", ...LIFECYCLE_MUTATION, sanctioned: ["task-state.ts"] });
+  rule({ name: "no raw record mutation outside task-state.ts", ...LIFECYCLE_MUTATION, sanctioned: ["task-state.ts"] });
 });
 
 // --- Task 09: non-blocking settlement -------------------------------------

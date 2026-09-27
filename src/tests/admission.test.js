@@ -307,7 +307,7 @@ describe("admission gate: resolveDependencies", () => {
   it("admits when deps completed", () => {
     const store = storeWith("s1", "completed");
     const s2 = createTaskStore();
-    for (const [id, task] of store.retainedTasks) s2.retainedTasks.set(id, task);
+    for (const [id, task] of store.retainedTasks) s2.markRetained(id, task);
     admits(resolveDependencies(s2, ["s1"]), "a completed dependency admits");
   });
 

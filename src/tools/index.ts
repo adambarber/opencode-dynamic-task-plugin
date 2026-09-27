@@ -36,6 +36,16 @@ export function buildToolMap(deps: ToolDeps) {
   // (and driftable) inside four executors, and an executor's signature has no
   // room for an unresolved id. The refusal is reported by the resolve step,
   // before the executor exists.
+  //
+  // `args: never` is not a hole, and it should not be "fixed". The four executors
+  // that read their raw arguments declare them under their own real types
+  // (SpawnArgs, ContinueArgs, NotifyArgs) and TypeScript still accepts them here
+  // because `never` is the bottom type — assignable to every type, which is
+  // exactly the property that lets one signature admit four different arg types.
+  // The alternative is a per-call-site `raw as SpawnArgs`, which is a LARGER claim
+  // (each site would assert its own type) and no safer: the resolver above has
+  // already established that the value's shape, which is the whole reason the raw
+  // arguments can be handed over un-narrowed.
   const registeredTool = <T>(resolve: (raw: unknown) => Verdict<T>) =>
     (description: string, args: ToolArgs, execute: (input: T, args: never, ctx: ToolContext) => Promise<string>) =>
       tool({
@@ -133,13 +143,14 @@ export function buildToolMap(deps: ToolDeps) {
         executeTaskInterrupt,
       ),
 
-      task_list: tool({
-        description: TASK_LIST_DESCRIPTION,
-        args: {},
-        async execute() {
-          return executeTaskList(deps);
-        },
-      }),
+      // Through the same door as the other five. It was the one tool registered
+      // by calling `tool(...)` inline, with the resolver it needed written as a
+      // closure over `deps` — so the comment on `registeredTool` above ("the ONLY
+      // door into any registered tool") was false, and a second registration path
+      // was a second place for a session guard to be forgotten. It runs against
+      // the PLUGIN, not a session scope, so it is a pluginTool like dynamic_task
+      // and task_notify; the difference is that its executor takes no raw args.
+      task_list: pluginTool(TASK_LIST_DESCRIPTION, {}, (input) => executeTaskList(input)),
 
       task_status: scopedTool(TASK_STATUS_DESCRIPTION, { session_id: SESSION_ID }, executeTaskStatus),
   };

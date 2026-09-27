@@ -543,7 +543,10 @@ export function reviveRetainedTask(
     replacedAt: Date.now(),
     ...(model !== undefined ? { requestedModel: model } : {}),
   });
-  emitRetainedChange(store);
+  // No publish here. The reclaim above emitted the `Running` change, and that
+  // change now also clears the settled half — a second, empty publish would be
+  // dropped by the writer, and the promise of a write that never happens is what
+  // hid this bug in the first place.
   return revived;
 }
 

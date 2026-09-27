@@ -466,8 +466,19 @@ export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly Ledg
       }
       case LedgerChangeKind.Running:
       case LedgerChangeKind.Stopped: {
-        if (change.kind === LedgerChangeKind.Stopped) active.delete(change.id);
-        else active.set(change.id, change.record);
+        if (change.kind === LedgerChangeKind.Stopped) {
+          active.delete(change.id);
+        } else {
+          // A child occupies EXACTLY ONE half of the ledger. A `Running` change is
+          // the reclaim, so it also CLEARS the settled record it replaces. It did not,
+          // and a revived or withdrawn child then sat in both halves at once: the
+          // boot pass found the settled record first and restored a genuinely running
+          // child as completed — a durable false success, not a wrong answer to a live
+          // question, and so invisible to anything that read the store instead of the
+          // file.
+          retained.delete(change.id);
+          active.set(change.id, change.record);
+        }
         break;
       }
       // One lookup for both: what makes two notices the SAME notice is

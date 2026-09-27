@@ -26,7 +26,7 @@ import { createTaskStore, noteLateOutcome, registerActiveTask, reviveRetainedTas
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { childParams, defaultConfig } from "./support/fixtures.js";
 import { tmpLedgerPath, withTempFile } from "./support/harness.js";
-import { assertIs, assertNothing } from "./support/assertions.js";
+import { assertAbsent, assertIs } from "./support/assertions.js";
 
 /** The on-disk shape, read raw — what a restart's first read would parse. */
 const fileSays = (file) => JSON.parse(readFileSync(file, "utf8"));
@@ -81,7 +81,7 @@ describe("durable ledger — what a restart would believe", () => {
 
       const onDisk = fileSays(file);
       assertIs(onDisk.active["ses_c1"]?.state, "active", "the revived child is running on disk");
-      assertNothing(onDisk.tasks["ses_c1"], "and is not ALSO still sitting in settled history");
+      assertAbsent(onDisk.tasks["ses_c1"], "and is not ALSO still sitting in settled history");
 
       const rebooted = loadTaskLedger(file);
       assertIs(rebooted.retained.size, 0, "no stale settled record survived for the boot pass to restore as completed");

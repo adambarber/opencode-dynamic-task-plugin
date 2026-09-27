@@ -99,16 +99,36 @@ function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
+/**
+ * One field off an untyped source, read ONCE, into the target if it is a positive int.
+ *
+ * The read used to be written twice per field — `positiveInt(s.x) !== undefined ?
+ * target.x = positiveInt(s.x) : nothing` — so a key off an untyped record was indexed
+ * twice and validated twice for one decision. A helper is the fix rather than a `const`
+ * per field, because it also puts the field name in exactly one place: the key is a
+ * literal here, so the absence of this key is a compile error rather than an
+ * `undefined` at runtime, which is the whole reason the key space is a `const` union.
+ */
+function takePositiveInt(target: DynamicTaskConfig, src: Record<string, unknown>, key: PositiveIntField): void {
+  const value = positiveInt(src[key]);
+  if (value !== undefined) target[key] = value;
+}
+
+/** The numeric fields `takePositiveInt` may write, so a typo cannot reach `target`. */
+type PositiveIntField = {
+  [K in keyof DynamicTaskConfig]: DynamicTaskConfig[K] extends number ? K : never;
+}[keyof DynamicTaskConfig];
+
 // Shape-checked merge of one untyped config source (tuple options or parsed
 // file) onto the target — invalid fields are ignored, never coerced.
 function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
   if (!isPlainRecord(src)) return;
   const s = src;
-  if (positiveInt(s.maxDepth) !== undefined) target.maxDepth = positiveInt(s.maxDepth) as number;
-  if (positiveInt(s.maxConcurrent) !== undefined) target.maxConcurrent = positiveInt(s.maxConcurrent) as number;
-  if (positiveInt(s.agentCacheTtlMs) !== undefined) target.agentCacheTtlMs = positiveInt(s.agentCacheTtlMs) as number;
-  if (positiveInt(s.retainedTaskTtlMs) !== undefined) target.retainedTaskTtlMs = positiveInt(s.retainedTaskTtlMs) as number;
-  if (positiveInt(s.retainedTaskMaxEntries) !== undefined) target.retainedTaskMaxEntries = positiveInt(s.retainedTaskMaxEntries) as number;
+  takePositiveInt(target, s, "maxDepth");
+  takePositiveInt(target, s, "maxConcurrent");
+  takePositiveInt(target, s, "agentCacheTtlMs");
+  takePositiveInt(target, s, "retainedTaskTtlMs");
+  takePositiveInt(target, s, "retainedTaskMaxEntries");
   if (Array.isArray(s.blockedAgents)) {
     // An explicit empty list is a real setting ("block nothing"), not an
     // absent one — it must override the default blocklist.

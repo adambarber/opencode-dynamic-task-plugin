@@ -19,7 +19,7 @@ import { readdirSync } from "node:fs";
 import { applyLaneOverlay, readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay } from "../../dist/shared/lane-overlay.js";
 import { DEFAULT_LANE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, withTempDir } from "./support/fixtures.js";
-import { LANE_FIELDS, UNBOUNDED, applyLaneEdit, capShown, laneDialogFrom, laneFieldPrompt, newLaneEntry } from "../../dist/tui/lane-editor.js";
+import { CAP_MEANING, LANE_FIELDS, UNBOUNDED, applyLaneEdit, capShown, laneDialogFrom, laneFieldPrompt, newLaneEntry } from "../../dist/tui/lane-editor.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
 
@@ -28,8 +28,8 @@ const CONCURRENCY = LANE_FIELDS.maxConcurrent;
 const DEPTH = LANE_FIELDS.maxDepth;
 
 /** The dialog's current state, the way the renderer sees it. */
-function view(raw, running = {}) {
-  return laneDialogFrom(raw, new Map(Object.entries(running)), BASE);
+function view(raw) {
+  return laneDialogFrom(raw, BASE);
 }
 
 /**
@@ -69,7 +69,7 @@ describe("the lane dialog", () => {
 
   it("offers a lane the CONFIG FILE declares, so the dialog cannot disagree with the refusals", () => {
     const base = normalizeDynamicTaskConfig(null, { lanes: { build: { maxConcurrent: 9 } } });
-    const { rows } = laneDialogFrom(null, new Map(), base);
+    const { rows } = laneDialogFrom(null, base);
     assert.ok(rows.some((row) => row.name === "build"),
       "a lane the config declares is a lane the operator expects to find here");
   });
@@ -88,9 +88,15 @@ describe("the lane dialog", () => {
     assert.ok(rows.length > 0, "and the dialog is not empty — there has to be a way to fix it");
   });
 
-  it("counts running tasks against the lane they were dispatched into", () => {
-    const { rows } = view({ lanes: { build: { maxConcurrent: 2 } } }, { build: 2 });
-    assert.equal(rows.find((row) => row.name === "build")?.running, 2);
+  it("carries no occupancy, because nothing in the dialog reads one any more", () => {
+    // The row used to say how many tasks were charged to it, read from the ledger
+    // file. That is the last RECORDED set, not a live count, and printing it beside
+    // a cap gave the operator reason to distrust the one number they could act on.
+    // The row is now only a name and its caps, so the field is gone rather than
+    // left at zero — a zero would be a claim that nothing is running.
+    const { rows } = view({ lanes: { build: { maxConcurrent: 2 } } });
+    assert.ok(!("running" in rows.find((row) => row.name === "build")),
+      "an entry that cannot say how busy a lane is does not carry a number saying zero");
   });
 });
 
@@ -110,16 +116,23 @@ describe("the cap vocabulary", () => {
     );
   });
 
-  it("gives every cap a label and a clause, because those are what the operator reads", () => {
+  it("gives every cap a label and a summary, because those are what the operator reads", () => {
     const lane = bothCaps(2, 3);
     for (const field of Object.values(LANE_FIELDS)) {
       assert.ok(field.label.length > 0, `${field.cap} has no label`);
-      const clause = field.listClause(capShown(lane, field.cap));
-      assert.ok(clause.includes("2") || clause.includes("3"), `${field.cap}'s clause drops the value: ${clause}`);
-      assert.ok(clause.trim().length > String(lane[field.cap]).length, `${field.cap}'s clause names nothing: ${clause}`);
-      assert.match(field.meaning, new RegExp(UNBOUNDED), `${field.cap} does not say how to remove its cap`);
+      assert.doesNotMatch(field.label, new RegExp(`\\b${field.cap}\\b`),
+        `${field.cap}'s label is the config's noun rather than a question about tasks`);
+      const summary = field.summary(capShown(lane, field.cap));
+      assert.match(summary, /\d/, `${field.cap}'s summary drops the value: ${summary}`);
+      assert.ok(summary.length > String(lane[field.cap]).length, `${field.cap}'s summary names nothing: ${summary}`);
     }
   });
+
+  it("and says once, under every field, how a cap is removed", () =>
+    // It was a per-field `meaning`, and both fields carried the same sentence about
+    // the same word — a fact twice, which is a fact free to disagree. It is now the
+    // one line, and the form shows it under both rows.
+    assert.match(CAP_MEANING, new RegExp(UNBOUNDED)));
 });
 
 describe("an answer sets the cap it was asked for", () => {
@@ -135,10 +148,14 @@ describe("an answer sets the cap it was asked for", () => {
     assert.deepEqual(outcome.overlay.lanes.build, bothCaps(1, 3));
   });
 
-  it("zero is an answer, not a mistake: it parks a lane without deleting it", () => {
-    assert.deepEqual(edit("build", CONCURRENCY, "0", {}).overlay.lanes.build, { maxConcurrent: 0 },
-      "a lane that admits nothing is a real state");
-  });
+  it("refuses a zero, because a cap the reader discards is not a cap", () =>
+    // This case used to say the opposite — "zero is an answer, not a mistake: it
+    // parks a lane without deleting it" — and it was wrong. The reader requires a
+    // POSITIVE cap, so a zero written here was dropped on the next read and the
+    // lane fell through to the top-level default: an operator tightening a lane to
+    // nothing got the loosest cap the config has, under a success toast. The test
+    // passed because it only ever asked what the dialog WROTE.
+    assert.equal(edit("build", CONCURRENCY, "0", {}).kind, "invalid"));
 
   it("a new lane is created with only the cap that was set", () => {
     assert.deepEqual(edit("build", CONCURRENCY, "3", {}).overlay.lanes, { build: { maxConcurrent: 3 } });
@@ -319,19 +336,65 @@ describe("a hand-mangled overlay", () => {
 
 describe("an overlay whose shapes are wrong in ways the reader must survive", () => {
   it("a lane body that is not an object is an empty lane, not a crash and not a cap", () => {
-    const { rows, problem } = laneDialogFrom({ lanes: { build: "four", deploy: 7 } }, new Map(), BASE);
+    const { rows, problem } = laneDialogFrom({ lanes: { build: "four", deploy: 7 } }, BASE);
     assert.deepEqual(shownCaps(rows.find((row) => row.name === "build").lane), bothCaps(UNBOUNDED, UNBOUNDED));
     assert.equal(problem, null, "a body that is not an object states no cap to ignore, so nothing is reported");
   });
 
   it("lanes that are not an object reads as no overlay at all, and says so", () => {
-    const { problem } = laneDialogFrom({ lanes: ["build"] }, new Map(), BASE);
+    const { problem } = laneDialogFrom({ lanes: ["build"] }, BASE);
     assert.match(problem, /JSON object/);
   });
 
   it("no overlay at all is the empty set, and the dialog still has the config's lanes", () => {
-    const { rows, problem } = laneDialogFrom(null, new Map(), BASE);
+    const { rows, problem } = laneDialogFrom(null, BASE);
     assert.deepEqual(rows.map((row) => row.name), [DEFAULT_LANE]);
     assert.equal(problem, null);
   });
+});
+
+/**
+ * The writer and the reader must agree about what a cap is.
+ *
+ * The bug this pins was not a wrong number but a right one in the wrong place: the
+ * dialog's grammar accepted a zero, wrote `{"maxConcurrent": 0}`, and told the
+ * operator it was "in force on the next dispatch" — and the reader, which requires a
+ * positive cap, dropped it on the next read, so the lane fell through to the
+ * top-level default. In this project that turned a cap of 1 into 4. Nothing in the
+ * suite could see it, because every case here asked what the dialog WROTE and none
+ * asked what the reader would then READ BACK.
+ *
+ * So the join is the assertion, and it is stated as the invariant rather than as the
+ * one number that broke: for every cap the dialog will write, the reader must keep
+ * it. The refusals are asserted alongside, because a grammar that accepted nothing
+ * would satisfy the first half alone.
+ */
+describe("every cap the dialog writes is a cap the reader keeps", () => {
+  for (const field of [CONCURRENCY, DEPTH]) {
+    for (const answer of ["1", "2", "3", "8", "64", "10000"]) {
+      it(`${field.cap} ${answer} survives the round trip`, () => {
+        const outcome = edit("build", field, answer, {});
+        assert.equal(outcome.kind, "written", "the dialog accepts it");
+        const read = readLaneOverlayLanes(outcome.overlay);
+        assert.deepEqual(read.dropped, {}, "the reader discards nothing about it");
+        assert.equal(read.lanes.build[field.cap], Number(answer), "and the value is the value that was typed");
+      });
+    }
+  }
+
+  it("and the word that removes a cap writes an ABSENT key, not a zero", () => {
+    const outcome = edit("build", CONCURRENCY, UNBOUNDED, { lanes: { build: bothCaps(2, 2) } });
+    assert.equal(outcome.kind, "written");
+    assert.deepEqual(outcome.overlay.lanes.build, { maxDepth: 2 });
+    assert.ok(!(CONCURRENCY.cap in outcome.overlay.lanes.build),
+      "an absent key and a zero are different statements, and only one of them means 'no cap'");
+  });
+
+  for (const answer of ["0", "00", "-1", "1.5", "four", "1e3", " "]) {
+    it(`refuses ${JSON.stringify(answer)} rather than writing a cap nothing will honour`, () => {
+      const outcome = edit("build", CONCURRENCY, answer, { lanes: { build: bothCaps(2, 2) } });
+      assert.equal(outcome.kind, outcome.kind === "unchanged" ? "unchanged" : "invalid",
+        "the answer is either left alone or refused — never written");
+    });
+  }
 });

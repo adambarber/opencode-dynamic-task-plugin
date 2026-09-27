@@ -14,7 +14,7 @@
  * testable and the renderer stays a thin adapter over it.
  */
 import { DEFAULT_LANE, LANE_CAP_NAMES, type DynamicTaskConfig, type LaneConfig, type LaneConfigName } from "../shared/config.js";
-import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.js";
+import { isLaneCap, readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.js";
 
 /**
  * One entry in the dialog's list.
@@ -43,8 +43,6 @@ import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.j
 export type LaneEntry = {
   name: string;
   lane: LaneConfig;
-  /** Running tasks charged to this lane, as last recorded on disk. */
-  running: number;
   /** True when this row is inherited from the base config rather than the overlay. */
   inherited: boolean;
 };
@@ -60,12 +58,11 @@ export const UNBOUNDED = "off";
 /**
  * One cap, as the operator is asked about it.
  *
- * A cap carries three names in this dialog — the word in a lane row's scanning line,
- * the label on the form's field, and the title of the prompt that asks for it — and
- * they used to be written out in three places. They drifted: the prompt spelled an
- * absent cap "?" where the list said "off", so the box the operator typed into
- * offered a character the dialog had never used anywhere else. One table, so they
- * cannot.
+ * A cap carries a name in this dialog — the row that sets it, the prompt that asks
+ * for it, and the compact form a lane row shows it in — and they used to be written
+ * out in several places, under several vocabularies. They drifted: the prompt spelled
+ * an absent cap "?" where the list said "off", and the list called a cap "Concurrency"
+ * where the form said "Tasks running at once". One table, so they cannot.
  *
  * The table is TOTAL over `LANE_CAP_NAMES` — a `Record`, not a list — so a cap added
  * to the lane config is a TYPE ERROR here until it has a label, rather than a cap
@@ -76,25 +73,37 @@ export const UNBOUNDED = "off";
 export type LaneField = {
   /** The cap's own name, which is also its key in the overlay. */
   cap: LaneConfigName;
-  /** What the operator calls it: the form's row, and the prompt's title. */
+  /**
+   * What the operator calls it, in a question, not in the config's nouns.
+   *
+   * The same words are the list's row, the form's field and the prompt's title, so
+   * this table is also what stops the same cap being called "Concurrency" in one
+   * screen and "Tasks running at once" in another. `maxConcurrent` says how many
+   * tasks may run at once and `maxDepth` says how deep their dispatches may nest —
+   * neither of which is the word the config file happens to use.
+   */
   label: string;
   /**
-   * The clause a lane row gives this cap — how its value and its word read together.
+   * The compact form a LANE row gives this cap — a cap and its number together.
    *
-   * A FUNCTION rather than a unit word, because the two caps' words sit on different
-   * sides of their number and that is English rather than a choice: "2 concurrent"
-   * puts the adjective after, "depth 3" puts the noun before. Handing `laneRowText` a
-   * word and a position flag would have been the same fact written twice; the clause
-   * is the fact, and the value is the one thing about it that changes per lane.
+   * A function rather than a unit word, because the two caps' words sit on different
+   * sides of their number and that is English rather than a choice: "2 at once" puts
+   * the qualifier after, "depth 3" puts it before. A word plus a position flag would
+   * be the same fact written twice.
+   *
+   * Only for a cap that is SET: `laneSummary` says "no limits" in one word when
+   * every cap is unbounded, because two "no limit"s side by side is a worse sentence
+   * than the honest one.
    */
-  listClause: (shown: string) => string;
-  /** Said UNDER the field, so the grammar is visible before an answer is asked for. */
-  meaning: string;
+  summary: (shown: string) => string;
 };
 
+/** Said under every field row, because it is true of every cap rather than of one. */
+export const CAP_MEANING = `${UNBOUNDED} means no limit`;
+
 export const LANE_FIELDS: Record<LaneConfigName, LaneField> = {
-  maxConcurrent: { cap: "maxConcurrent", label: "Concurrency", listClause: (shown) => `${shown} concurrent`, meaning: `tasks in this lane at once · ${UNBOUNDED} removes the cap` },
-  maxDepth: { cap: "maxDepth", label: "Dispatch depth", listClause: (shown) => `depth ${shown}`, meaning: `generations deep · ${UNBOUNDED} removes the cap` },
+  maxConcurrent: { cap: "maxConcurrent", label: "Tasks running at once", summary: (shown) => `${shown} at once` },
+  maxDepth: { cap: "maxDepth", label: "How deep they can nest", summary: (shown) => `depth ${shown}` },
 };
 
 /** The fields in the order the form shows them, which is the order they were declared. */
@@ -127,21 +136,21 @@ type CapPatch = { [K in keyof LaneConfig]?: number | null };
  * operator is looking at a number that will not apply, and "unset" reads as
  * "inherited" only if nobody says otherwise.
  */
-export function laneDialogFrom(raw: unknown, running: ReadonlyMap<string, number>, base: DynamicTaskConfig): LaneDialog {
+export function laneDialogFrom(raw: unknown, base: DynamicTaskConfig): LaneDialog {
   const read = readLaneOverlayLanes(raw);
   if (read === null) {
-    return { rows: rowsFrom({}, running, base), problem: "the overlay is a JSON object, or nothing at all" };
+    return { rows: rowsFrom({}, base), problem: "the overlay is a JSON object, or nothing at all" };
   }
   const ignored = Object.entries(read.dropped).map(
     ([name, keys]) => `${name}: ${keys.join(", ")} is not a whole positive number, so the cap there is ignored`,
   );
   return {
-    rows: rowsFrom(read.lanes, running, base),
+    rows: rowsFrom(read.lanes, base),
     problem: ignored.length > 0 ? ignored.join(" · ") : null,
   };
 }
 
-function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string, number>, base: DynamicTaskConfig): LaneEntry[] {
+function rowsFrom(lanes: Record<string, LaneConfig>, base: DynamicTaskConfig): LaneEntry[] {
   // The base config's lanes are part of the answer even when the overlay is
   // empty: a lane declared in the config file is a lane an operator expects to
   // find in the dialog, and leaving it out makes the dialog disagree with the
@@ -153,7 +162,6 @@ function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string
     return {
       name,
       lane: declared ?? fromConfig ?? base.lanes[DEFAULT_LANE] ?? {},
-      running: running.get(name) ?? 0,
       inherited: declared === undefined,
     };
   });
@@ -165,11 +173,51 @@ function rowsFrom(lanes: Record<string, LaneConfig>, running: ReadonlyMap<string
  * This is the funnel for "a lane the operator just named". The renderer and the
  * tests both need one, and each hand-rolling its own literal is how a fabricated
  * row ends up carrying fields the real rows do not — which then reads as a lane
- * that exists, is idle, and inherits its caps, all of which are claims nothing
- * has checked.
+ * that exists and inherits its caps, claims nothing has checked.
  */
 export function newLaneEntry(name: string): LaneEntry {
-  return { name, lane: {}, running: 0, inherited: true };
+  return { name, lane: {}, inherited: true };
+}
+
+/**
+ * The row every dispatch falls back to, out of a row set that always holds it.
+ *
+ * The list does not show the default lane as a lane. It shows its two caps as the
+ * screen's own rows, because a cap the operator has to open a second dialog to
+ * reach is a cap they will not set, and the default lane's caps are the ones that
+ * govern almost every dispatch. So the list needs this one row, and it needs it to
+ * be the SAME row the form and the writer would have found — a second lookup by
+ * name is a second answer to "which caps are in force", and the two could differ
+ * the moment a lane is renamed.
+ *
+ * It THROWS rather than inventing a row if the lane is somehow absent. Every other
+ * claim in this file is a value the operator sees, and a fabricated default lane
+ * would show caps nobody set — a lie on the one screen whose whole job is to be
+ * true about caps. The absence is unreachable by construction: `rowsFrom` adds
+ * `DEFAULT_LANE` to every row set, so a row set that lacks it was not built by the
+ * reader this row is drawn from. This is the assertion that says so, not a recovery
+ * path, and it is why the throw is a throw.
+ */
+export function defaultLaneOf(rows: readonly LaneEntry[]): LaneEntry {
+  const found = rows.find((row) => row.name === DEFAULT_LANE);
+  if (found === undefined) throw new Error(`no ${DEFAULT_LANE} lane in the row set`);
+  return found;
+}
+
+/**
+ * One lane's caps as a single cell: "2 at once · depth 3", or "no limits".
+ *
+ * A LANE row has one cell for two caps, so the two are joined; when neither is set
+ * the honest answer is the one that says so rather than a row of repeated negations.
+ * Every cap here is SET in that case, which is why `LaneField.summary` never has to
+ * describe an uncapped value.
+ */
+export function laneSummary(lane: LaneConfig): string {
+  // Read the CAP, not the clause it renders: whether a cap is set is a fact about
+  // the lane, and asking a formatted string whether it starts with the word for
+  // "unset" is how a summary starts lying the moment a label changes.
+  const set = LANE_FIELD_LIST.filter((field) => lane[field.cap] !== undefined);
+  return set.length === 0 ? "no limits" : set.map((field) => field.summary(capShown(lane, field.cap))).join(" · ");
 }
 
 /** The prompt for one field of one lane: one cap, named, with the value in force. */
@@ -281,20 +329,31 @@ function applyCap(lane: LaneConfig, key: keyof LaneConfig, value: number | null)
 export type LaneFieldPrompt = { title: string; placeholder: string };
 
 /**
- * The grammar for ONE cap: a whole number, or the word that lifts it.
+ * The grammar for ONE cap, and it is the READER'S grammar.
  *
  * It answers for the empty input too, rather than leaving that to the caller,
  * because the caller checking it first meant two checks for one fact — the
  * caller's said "nothing typed" and this one's branch could never run, so the
  * grammar it actually enforced was not the grammar the dialog described.
+ *
+ * `isLaneCap` is the reader's own predicate, not a restatement of it. This function
+ * used to hold its own rule, which accepted a zero; it wrote one, told the operator
+ * it was in force, and the reader dropped it on the next read — so a lane the
+ * operator had just capped tighter fell through to the top-level default, which in
+ * this project is 4 against the 1 that was there before. A writer that can produce a
+ * value the reader discards is the one bug a dialog cannot recover from, because the
+ * operator watches the confirmation and not the file.
  */
 function asCap(word: string): number | null | string {
   if (word.toLowerCase() === UNBOUNDED) return null;
   if (!/^\d+$/.test(word)) return `"${word}" is not a count — use a whole number, or "${UNBOUNDED}" to remove the cap`;
   const value = Number(word);
-  // Zero is a real answer here: it is a lane that admits nothing, which is how
-  // an operator parks a lane without deleting it. A cap is not a slot count, so
-  // the ceiling is high enough to be a mistake rather than a bound.
+  if (!isLaneCap(value)) {
+    // The one answer here that has to name what the operator probably wanted, since
+    // a zero is the number people reach for when they mean "none" — and "none" is
+    // spelled two ways, only one of which this box accepts.
+    return `0 is not a cap — a lane that admits nothing refuses every dispatch in it. Use "${UNBOUNDED}" to remove the cap, or an empty lane to count it separately on the shared budget`;
+  }
   if (value > 10_000) return `a cap of ${value} is a typo, not a policy`;
   return value;
 }

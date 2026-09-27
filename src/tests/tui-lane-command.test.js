@@ -38,13 +38,13 @@ import { retainedEntry, runningEntry } from "./support/records.js";
 import { DEFAULT_LANE } from "../../dist/shared/config.js";
 import { LANE_FIELDS, UNBOUNDED } from "../../dist/tui/lane-editor.js";
 import { bothCaps, withTempDir } from "./support/fixtures.js";
-import tuiModule, { fitsItsDialog, laneSelectProps, laneViewFrom, runningByLane, tui } from "../../dist/tui/index.js";
+import tuiModule, { fitsItsDialog, laneSelectProps, laneViewFrom, LANES_SECTION, LIMITS_SECTION, tui } from "../../dist/tui/index.js";
 
 /** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Nothing asked, for the cases about what a row SAYS rather than what choosing it does. */
-const NO_ASKS = { edit: () => {}, add: () => {} };
+const NO_ASKS = { edit: () => {}, cap: () => {}, add: () => {} };
 
 /**
  * The dialog stack, modelled on the host's own `useDialog` rather than on what a
@@ -166,28 +166,29 @@ function readOverlay(directory) {
 /**
  * The lane list the host would be handed, for a directory, with no host in sight.
  *
- * The real reader, the real occupancy read, the real view, the real props. This is
- * what most cases below use, and it is why they need no double: the props are the
- * value, and nothing between the disk and the assertion is a stand-in.
+ * The real reader, the real view, the real props. This is what most cases below use,
+ * and it is why they need no double: the props are the value, and nothing between
+ * the disk and the assertion is a stand-in.
  */
 function listOver(directory) {
-  return laneSelectProps(laneViewFrom(readLaneOverlay(directory), runningByLane(directory), directory), NO_ASKS);
+  return laneSelectProps(laneViewFrom(readLaneOverlay(directory), directory), NO_ASKS);
 }
 
 /** The row for one lane, by name. */
 const row = (list, title) => list.options.find((candidate) => candidate.title === title);
 
 /**
- * Every line a row puts on screen, as the host lays them out.
+ * Every word a row puts on screen, as the host lays them out.
  *
- * The title and the description SHARE the first line — the host renders them into
- * one clipping `<text>` — and each entry of `details` is a line of its own below.
- * So a fact that is in the dialog somewhere is in one of these, and a fact that is
- * missing from all of them is genuinely gone from the operator's view.
+ * `title` and `description` SHARE the first line — the host renders them into one
+ * clipping `<text>` — while `footer` is drawn in a box of its own that never shrinks,
+ * and each entry of `details` is a line of its own below. So a fact that is in the
+ * dialog somewhere is in one of these, and a fact missing from all of them is
+ * genuinely gone from the operator's view.
  */
 const rowText = (list, title) => {
   const found = row(list, title);
-  return [`${found.title} ${found.description ?? ""}`.trim(), ...(found.details ?? [])].join("\n");
+  return [[found.title, found.footer ?? "", found.description ?? ""].join(" ").trim(), ...(found.details ?? [])].join("\n");
 };
 
 /** The dialog the operator is looking at: the most recent of either kind. */
@@ -418,40 +419,60 @@ describe("the lane command reaches the palette", () => {
 });
 
 /**
- * A list holding one `build` lane with both caps set, handed over in all three
- * shapes the drawing cases read: the list, its row, and that row's rendered text.
+ * A list holding one `build` lane with both caps set, handed over in all the shapes
+ * the drawing cases read: the list, its row, and that row's rendered text.
  *
- * One fixture because these cases are all about the same row — the one that is long
- * enough to clip — and three of them each spelling out the overlay is the shape the
- * duplicate gate is there to refuse.
+ * One fixture because these cases are all about the same row — the one whose name is
+ * long enough to sit next to a value — and three of them each spelling out the
+ * overlay is the shape the duplicate gate is there to refuse.
  */
 const withCapsRow = (fn) =>
   withList(buildLane(2, 3), (list) => fn({ list, row: row(list, "build"), text: rowText(list, "build") }));
 
-describe("the lane list says what it is showing", () => {
-  it("names each lane's caps and where they came from, so the operator knows what they are editing", () =>
-    // Asserted as the WHOLE row, newline and all, because the claim is that everything
-    // is said — which field each clause travels in is the layout's business, below.
-    withCapsRow(({ list, text }) => {
-      assert.equal(list.title, "Lanes");
-      assert.equal(text, "build 2 concurrent · depth 3\nidle · set in the overlay");
+/** The cap rows — the two fields the default lane IS in this dialog. */
+const capRow = (list, cap) => list.options.find((candidate) => candidate.value?.field?.cap === cap);
+
+describe("the lane list is the question the operator came with", () => {
+  it("draws the default lane's caps as its own rows, the lanes you named beside them, and nothing else", () =>
+    // The WHOLE screen, in the order the host will draw it, as one assertion. It was
+    // five partial ones — a title here, a category there, a value somewhere else —
+    // and a screen described in pieces is a screen nobody has read: a row added for
+    // a reason nobody recorded would satisfy all five. Read as a list, a row that is
+    // not in this shape is a failure.
+    //
+    // Every string on it has to survive "what does this tell me?". The old screen
+    // was titled "Lanes", listed a row called "default", explained itself in "idle ·
+    // set in the overlay", and described its add row as "name a lane, then set its
+    // caps" — four ways of saying nothing, and the two numbers the operator came for
+    // were three interactions away.
+    withList({ lanes: { [DEFAULT_LANE]: { maxConcurrent: 1 }, build: bothCaps(2, 3), review: {} } }, (list) => {
+      assert.equal(list.title, "How many tasks run at once");
+      assert.deepEqual(list.options.map((option) => [option.category, option.title, option.footer ?? null]), [
+        [LIMITS_SECTION, CONCURRENCY, "1"],
+        [LIMITS_SECTION, DEPTH, UNBOUNDED],
+        [LANES_SECTION, "build", "2 at once · depth 3"],
+        [LANES_SECTION, "review", "no limits"],
+        [LANES_SECTION, "Add a lane", null],
+      ]);
     }));
 
-  it("does not let an inherited cap read as one this dialog set", () =>
-    withList(undefined, (list) => {
-      assert.match(rowText(list, DEFAULT_LANE), /caps from the config file/);
+  it("and every row is a distinguishable choice, so a lane named 'add' is still a lane", () =>
+    withList({ lanes: { add: { maxConcurrent: 5 } } }, (list) => {
+      assert.deepEqual(list.options.map((option) => [option.title, option.value.kind]), [
+        [CONCURRENCY, "cap"],
+        [DEPTH, "cap"],
+        ["add", "lane"],
+        ["Add a lane", "add"],
+      ]);
     }));
 
-  it("says the occupancy is as last recorded, because it is a file read and not a live gauge", () =>
+  it("shows no occupancy, because a count read from a file is not a gauge", () =>
+    // It showed one, labelled "as last recorded", which is honest and useless: it
+    // put a number that may be two dispatches out of date beside the one number the
+    // operator could act on, and gave them reason to distrust that. A cap is what
+    // this screen is for, and `task_list` is where the running set is read.
     withList(buildLane(1), (list) => {
-      assert.match(rowText(list, "build"), /idle/);
-    }));
-
-  it("offers a way to add a lane, as its own choice rather than a name nobody would pick", () =>
-    withList(undefined, (list) => {
-      const add = row(list, "Add a lane…");
-      assert.ok(add, "adding a lane is a distinguishable choice, not a magic lane name");
-      assert.equal(add.value.kind, "add", "and a discriminated one, so a lane called 'add' is still a lane");
+      assert.doesNotMatch(rowText(list, "build"), /idle|running|recorded/);
     }));
 
   it("an overlay it cannot read is said out loud AND the list still opens, because repair is why it was opened", () =>
@@ -484,20 +505,14 @@ describe("a row fits the dialog it is drawn in", () => {
       assertEveryRowFits(list);
     }));
 
-  it("and with occupancy spelled out in full, which is the longest a row ever gets", () =>
-    withList({ lanes: { [LONG]: bothCaps(12, 7) } }, (list) => {
-      assert.ok(fitsItsDialog(row(list, LONG)));
-    }, { active: [["ses_r", runningEntry("ses_r", { lane: LONG })]] }));
-
-  it("the caps stay on the line they are compared on, and the context below", () =>
-    // The budget could also be met by cramming everything back onto one line, which
-    // is the shape that was there before. So the SPLIT is asserted, not just the fit:
-    // what the operator scans between lanes is the caps, and what explains a row is
-    // underneath it.
+  it("the caps sit in the cell the host never clips, not in the sentence it does", () =>
+    // The budget could also be met by cramming everything back onto one clipped
+    // line, which is the shape that was there before. So the CELL is asserted, not
+    // just the fit: what the operator compares between lanes is the value, and it
+    // has to be in the field the host draws outside the clipping text.
     withCapsRow(({ row: found }) => {
-      assert.match(found.description, /2 concurrent · depth 3/, "the caps are the headline");
-      assert.doesNotMatch(found.description, /overlay|config/, "provenance is not competing for the headline");
-      assert.match(found.details.join("\n"), /set in the overlay/, "and is still said, below");
+      assert.equal(found.footer, "2 at once · depth 3", "the caps are the value");
+      assert.equal(found.description, undefined, "and nothing crowds the line they are on");
     }));
 
   it("and so do the form's own rows, which are drawn in the same dialog", () =>
@@ -513,7 +528,7 @@ describe("choosing a lane", () => {
   it("opens a FORM — a row per cap, each labelled, each showing the value in force", () =>
     withFormOpen((host) => {
       const form = top(host.seen);
-      assert.equal(form.title, "Lanes · build");
+      assert.equal(form.title, "build");
       assert.equal(row(form, CONCURRENCY).footer, "2",
         "the value is ON the row, not in a format string the operator has to decode");
       assert.equal(row(form, DEPTH).footer, UNBOUNDED, "including a cap that is not set");
@@ -538,11 +553,15 @@ describe("choosing a lane", () => {
       assert.equal(host.seen.prompts[0].placeholder, "2", "so the operator edits a number they can see");
     }));
 
-  it("offers no way to delete a lane the overlay does not hold, because it could only fail", () =>
+  it("offers no way to delete a lane that is not on disk yet, because it could only fail", () =>
+    // Naming a new lane lands on its form before the lane exists, so the one thing
+    // that form must not offer is the removal of something the file does not hold.
+    // A row that can only fail teaches the operator that this dialog is careless.
     withOpen((host) => {
-      row(host.seen.selects[0], DEFAULT_LANE).onSelect();
+      row(host.seen.selects[0], "Add a lane").onSelect();
+      answerPrompt(host, "deploy");
       assert.equal(row(top(host.seen), "Delete lane"), undefined,
-        "the lane's caps come from the config file, which this dialog does not write");
+        "there is no overlay entry to remove, and this dialog does not write the config file");
     }));
 
   /**
@@ -557,7 +576,7 @@ describe("choosing a lane", () => {
     withConcurrencySet((host) => {
       assert.equal(host.seen.prompts.length, 1, "the question is answered, not stacked");
       const form = top(host.seen);
-      assert.equal(form.title, "Lanes · build", "the operator is back on the form, where the other cap is");
+      assert.equal(form.title, "build", "named after the lane, and nothing else");
       assert.equal(row(form, CONCURRENCY).footer, "4", "showing the cap just typed");
       assert.equal(row(form, DEPTH).footer, UNBOUNDED, "and the other one, untouched");
     }));
@@ -572,13 +591,13 @@ describe("choosing a lane", () => {
         "both caps the operator set, and neither clobbered by the other");
     }));
 
-  it("'Back to lanes' returns to the list, which shows the same answer the form does", () =>
+  it("'Back to lanes' returns to the list, showing the cap the form just wrote", () =>
     withConcurrencySet((host) => {
       row(top(host.seen), "Back to lanes").onSelect();
       const list = top(host.seen);
-      assert.equal(list.title, "Lanes");
-      assert.match(row(list, "build").description, /4 concurrent/,
-        "the list and the form are the same fact, so they cannot disagree about it");
+      assert.equal(list.title, "How many tasks run at once");
+      assert.equal(row(list, "build").footer, "4 at once",
+        "the list and the form draw a cap from one funnel, so they cannot disagree about what it is");
     }));
 
   it("a bad answer is refused in place, keeping what was typed, and nothing is written", () =>
@@ -686,8 +705,9 @@ describe("escape gets the operator out of the lane list", () => {
 
       // Choosing a row mounts a question OVER the list, and `replace` walks the
       // outgoing entry's onClose — so the gate has to be re-armed by the mount, not
-      // left wherever the replaced dialog left it.
-      row(host.seen.selects[0], DEFAULT_LANE).onSelect();
+      // left wherever the replaced dialog left it. A CAP row, because that is now
+      // what the list offers directly: the default lane's two caps are its own rows.
+      capRow(host.seen.selects[0], LANE_FIELDS.maxConcurrent.cap).onSelect();
       assert.equal(host.escapeLayer.enabled(), true, "still live over the prompt, not dropped by the replacement");
     }));
 
@@ -705,14 +725,14 @@ describe("adding a lane", () => {
   it("a name that already exists opens that lane rather than making a second one", () =>
     withBuildOpen((host) => {
       nameNewLane(host, "build");
-      assert.equal(top(host.seen).title, "Lanes · build",
+      assert.equal(top(host.seen).title, "build",
         "a name that already exists is that lane, not a new one — the operator meant to edit it");
     }));
 
   it("a new name opens its form, and the first cap set is what creates the lane", () =>
     withBuildOpen((host, directory) => {
       nameNewLane(host, "deploy");
-      assert.equal(top(host.seen).title, "Lanes · deploy",
+      assert.equal(top(host.seen).title, "deploy",
         "naming a lane lands on its FORM, not on a box for two numbers in an order");
       answerFieldOn(host, CONCURRENCY, "2");      assert.deepEqual(readOverlay(directory).lanes.deploy, { maxConcurrent: 2 },
         "only the cap that was set, and no depth the operator was never asked about");
@@ -725,28 +745,53 @@ describe("adding a lane", () => {
     }));
 });
 
-describe("occupancy is read, not assumed", () => {
-  it("counts the running tasks charged to each lane, and only the running ones", () =>
-    withList(buildLane(4), (list) => {
-      assert.match(rowText(list, "build"), /1 running, as last recorded/);
-    }, { active: [["ses_r", runningEntry("ses_r", { lane: "build" })]] }));
+describe("removing a lane", () => {
+  /**
+   * The build lane's form with Delete chosen — the state every case below starts
+   * from, named once so the three ways it can be wrong are three ASSERTIONS rather
+   * than three copies of a sequence in which a wrong step looks like a right one.
+   */
+  const withDeleteChosen = (fn, opts) =>
+    withOpen((host, directory) => {
+      row(host.seen.selects[0], "build").onSelect();
+      row(top(host.seen), "Delete lane").onSelect();
+      fn(host, directory);
+    }, { overlay: buildLane(2), ...opts });
 
-  it("a settled task in the same lane is not occupancy — it is history, not a slot in use", () =>
-    withList(buildLane(4), (list) => {
-      assert.match(rowText(list, "build"), /idle/);
-    }, {
-      retained: [["ses_d", retainedEntry({ childSessionId: "ses_d", lane: "build", state: TaskState.Completed })]],
+  it("takes only that lane out of the overlay, and says what it did", () =>
+    // The removal had no case of its own: the only assertion in the file was that
+    // the row is ABSENT for a lane that is not on disk, so the row's presence and
+    // its effect were both untested. A row that removes nothing and a row that is
+    // not there at all look the same from the list, which is the whole screen.
+    //
+    // One lane and one survivor in the same file, because "it is gone" and "nothing
+    // else went with it" are one claim about a rewrite, and a case per clause would
+    // be two ways to pass while the other fails.
+    withDeleteChosen((host, directory) => {
+      assert.deepEqual(readOverlay(directory).lanes, { review: { maxDepth: 2 } },
+        "the lane is gone, and a lane nobody asked about is not collateral of removing it");
+      assert.ok(
+        host.seen.toasts.some((toast) => toast.variant === "success" && /build/.test(toast.message)),
+        "and the operator is told which lane went, rather than watching the list change under them",
+      );
+    }, { overlay: { lanes: { build: { maxConcurrent: 2 }, review: { maxDepth: 2 } } } }));
+
+  it("and comes back to the list, which is the only screen left to go back to", () =>
+    withDeleteChosen((host) => {
+      assert.equal(top(host.seen).title, "How many tasks run at once");
     }));
+});
 
-  it("a ledger that cannot be read leaves the list open, because a count is not worth a closed dialog", () =>
-    // NOT `withList`: the ledger has to be broken BEFORE the list is read, or the
-    // assertion is about a good ledger and proves nothing. The one case whose
-    // premise is the order of two reads, so it says so by doing the reads itself.
+describe("the list does not read the ledger", () => {
+  it("opens with the ledger unreadable, because it is not on the path that draws it", () =>
+    // The claim is an ABSENCE, so it needs a ledger that could not be read if it were
+    // read. This used to be a test of the opposite: that a broken ledger still let
+    // the list open, because the list was reading one to count occupancy. The count
+    // is gone, and with it the read — so the breakage here proves the read is not
+    // merely made safe, but absent.
     withProject((directory) => {
       writeLaneOverlay(directory, buildLane(4));
-      // Written as garbage rather than through the helper, because the claim is
-      // about a file the reader cannot parse.
       writeFileSync(resolveTaskLedgerPath(directory), "{ not a ledger", "utf8");
-      assert.match(rowText(listOver(directory), "build"), /idle/);
+      assert.ok(listOver(directory).options.length > 0, "the list is built, and says nothing about tasks running");
     }));
 });

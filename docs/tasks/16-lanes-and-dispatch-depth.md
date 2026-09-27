@@ -117,16 +117,24 @@ Every element is the SDK's own. Nothing is drawn:
   metadata fields are the host's spellings (`desc`, not `description`;
   `slashName`, not the legacy `slash: { name }` of the deprecated
   `api.command` API);
-- `api.ui.DialogSelect` to pick a lane or to add one. Adding is a separate
-  discriminated choice (`ChoiceKind.Add`), not a magic lane name, so a lane
-  called `new` is still a lane;
-- a second `api.ui.DialogSelect` per lane, as its EDITOR: one row per cap, each
-  labelled, each showing the value in force in its `footer` — the one field the
-  host draws outside the clipping text, so the number is never cut off and always
-  sits in the same column. The host has no form widget, so a two-field form is a
-  list whose rows are fields, and that is the better answer anyway: the operator
-  sees BOTH caps at once, which one input box could not, and each field carries
-  its own name instead of a position in a format string. `LANE_FIELDS` in
+- `api.ui.DialogSelect` for the FIRST screen, and it is the operator's question
+  rather than the plugin's data model. The default lane's two caps are its own rows
+  under a `Limits` heading — so the numbers that govern almost every dispatch are
+  one keystroke away instead of three — and the lanes you named, with the one you
+  can add, sit under `Lanes`. The title is the question (`How many tasks run at
+  once`) and the placeholder says what typing does. It used to be titled `Lanes`,
+  list a row called `default` that opened a form, and put `idle · set in the
+  overlay` under each one: four ways of saying nothing, with the two numbers the
+  operator came for three interactions away. Adding a lane is a separate
+  discriminated choice (`ChoiceKind.Add`), not a magic lane name, so a lane called
+  `new` is still a lane;
+- a second `api.ui.DialogSelect` per NAMED lane, as its EDITOR: one row per cap,
+  each labelled, each showing the value in force in its `footer` — the one field
+  the host draws outside the clipping text, so the number is never cut off and
+  always sits in the same column. The host has no form widget, so a two-field form
+  is a list whose rows are fields, and that is the better answer anyway: the
+  operator sees BOTH caps at once, which one input box could not, and each field
+  carries its own name instead of a position in a format string. `LANE_FIELDS` in
   `src/tui/lane-editor.ts` is that table, and it is total over `LANE_CAP_NAMES`,
   so a cap added to the lane config is a type error until it has a label;
 - `api.ui.DialogPrompt` for ONE cap, titled by the field and the lane, with the
@@ -140,33 +148,54 @@ Every element is the SDK's own. Nothing is drawn:
 
 There is no custom route and no bespoke widget.
 
-One consequence of the editor being a form is that a change lands back on the
-FORM, not on the list: it is the only screen showing both caps at once, and one
-cap is rarely the whole job. So the form is re-read after a write — the ROW
-included, not just the view, because a row carries the caps as they were before
-the answer and the next field answered on it would otherwise be written from caps
-the file no longer has. `Back to lanes` is a row rather than a nicety: the host's
+A cap is a row on BOTH screens, and both draw it from one funnel (`capRows` in
+`src/tui/index.ts`) that takes the decoration as an argument — the heading on the
+list, the sentence under the row on the form. It was written out twice and the
+copies had already drifted on which field the value rode in. `CapChoice` is the
+row's identity, and both `LaneChoice` and `LaneEditorChoice` are built from it, so
+a cap cannot mean one thing in the list and another in the form.
+
+A change lands back where it was asked from, which is why the destination is an
+argument rather than a decision: a cap answered on the FORM returns to the form,
+because it is the only screen showing both caps of one lane at once and one cap is
+rarely the whole job; a cap answered on the LIST returns to the list, because the
+default lane has no form — the list IS its editor. A write re-reads first, and the
+ROW as well as the view, because a row carries the caps as they were before the
+answer and the next field answered on it would otherwise be written from caps the
+file no longer has. `Back to lanes` is a row rather than a nicety: the host's
 `replace` sets the dialog stack to a single entry, so there is no previous screen
 to pop back to and escape leaves the manager entirely.
 
-Two things about honesty in the dialog, because the TUI is a different process
+One thing about honesty in the dialog, because the TUI is a different process
 from the server and cannot see its memory:
 
-- **Occupancy is the last RECORDED set**, read from the ledger with the same
-  reader the server uses, and the row says so. A cap shown next to a count that
-  may be two dispatches out of date reads as a live gauge, and makes the operator
-  distrust the cap — the one number they can act on.
 - **Inherited caps are the DEFAULTS.** The TUI cannot see the config file's
   tuple options or the project options file, so a row whose caps come from
-  there is labelled `caps from the config file` rather than presented as this
-  process's truth. The overlay's own rows — the ones the dialog edits — are
-  unaffected.
+  there is the config's defaults rather than this process's truth. The overlay's
+  own rows — the ones the dialog edits — are unaffected.
+- **No occupancy is shown, and none is read.** The row used to carry a count read
+  from the ledger, labelled `as last recorded`. That is the last RECORDED set, not
+  a live gauge, and printing it beside a cap gave the operator reason to distrust
+  the one number they could act on. So the read is gone rather than made safe:
+  `task_list` is where the running set is, and this screen is about limits.
 
 The dialog's logic lives in `src/tui/lane-editor.ts` with no SDK import, so the
 part worth checking (what a typed answer is *allowed* to become) is testable
 without a terminal. `off` **deletes** a key rather than writing `null`, which
 `exactOptionalPropertyTypes` enforces: two spellings of "no cap" is a reader bug
 waiting to happen.
+
+The writer and the reader are held to ONE rule — `isLaneCap` in
+`src/shared/lane-overlay.ts` — because they once disagreed and the seam between
+them was a safety cap. The dialog's grammar accepted a zero, wrote
+`{"maxConcurrent": 0}`, and told the operator it was "in force on the next
+dispatch"; the reader requires a positive cap, dropped it on the next read, and
+the lane fell through to the top-level default. In this project that turned a cap
+of 1 into 4: an operator tightening a lane to nothing got the loosest cap the
+config has, under a success message. Nothing in the suite could see it, because
+every case asked what the dialog WROTE and none asked what the reader would then
+READ BACK. So the join is asserted now, as an invariant over every cap the dialog
+will write, and the refusals alongside it.
 
 Not shipped, deliberately: a host slot occupancy gauge, and per-key bindings.
 
@@ -182,5 +211,6 @@ Not shipped, deliberately:
   wearing the same label.
 - A key binding. A palette command is reachable from ctrl+p and from `/lanes`;
   a per-key binding is a global keyboard claim for a settings dialog.
-- Editing the config file's own caps from the dialog. It cannot see them, and
-  `delete` says whose caps those are rather than pretending to remove them.
+- Editing the config file's own caps from the dialog. It cannot see them, and a
+  lane the overlay does not hold is offered no `Delete lane` row at all, rather
+  than one that could only fail.

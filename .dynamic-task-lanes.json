@@ -1,7 +1,0 @@
-{
-  "lanes": {
-    "default": {
-      "maxConcurrent": 1
-    }
-  }
-}

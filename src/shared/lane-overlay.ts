@@ -86,9 +86,21 @@ export function laneOverlayPath(directory: string | undefined): string {
  * (`maxConcurrent: 0` refuses every dispatch with no way to name why) or running
  * without limit (`-1` never refuses). Both read as a broken plugin, so the value
  * is dropped and the underlying config answers instead.
+ *
+ * EXPORTED, and the one place the question is asked, because the dialog that WRITES
+ * caps used to answer it separately and the two disagreed. It accepted a zero,
+ * wrote it, told the operator it was "in force on the next dispatch" — and the next
+ * read dropped it, so the lane fell through to the top-level default. A cap an
+ * operator typed to make a lane TIGHTER came back four times LOOSER, under a success
+ * message. Nothing about that is a reader bug: the reader was right and the writer
+ * was wrong, and the only fix is for there to be one rule both ask.
  */
+export function isLaneCap(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 function cap(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+  return isLaneCap(value) ? value : undefined;
 }
 
 /**

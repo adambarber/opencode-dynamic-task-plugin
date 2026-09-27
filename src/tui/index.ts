@@ -22,29 +22,31 @@
  * names are the host's, and why the suite pins them against the documented list
  * rather than against whatever this file happens to say.
  *
- * It lives in a different process from the server, which decides everything
- * about what it can honestly show. The running task set is in the server's
- * memory, so the occupancy number here comes from the ledger file the server
- * writes — the last RECORDED set, not a live read. The dialog says so in the row
- * rather than presenting a stale count as occupancy, because a cap shown next to
- * a count that may be two dispatches out of date reads as a live gauge and makes
- * the operator distrust the cap, which is the one number they can act on.
+ * It lives in a different process from the server, which is what decides what it
+ * can honestly show. The dialog used to read the ledger file and print how many
+ * tasks were charged to each lane; it does not any more, and the reason is the same
+ * fact. That number is the last RECORDED set, not a live read, so printing it beside
+ * a cap made a two-dispatches-out-of-date count look like a live gauge and gave the
+ * operator reason to distrust the one number on the row they could actually act on.
+ * A cap is what this screen is for; `task_list` is where the running set is read, and
+ * it is read there.
  *
  * The overlay file is shared, not duplicated: this edits the same format the
  * dispatch path already reads, so there is no second source of truth to reconcile
  * and no server endpoint added to read a number a file already holds.
  */
-import type { TuiDialogPromptProps, TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { TuiDialogPromptProps, TuiDialogSelectOption, TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { normalizeDynamicTaskConfig } from "../shared/config.js";
 import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
-import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
-import { TaskState } from "../shared/task-state.js";
 import {
+  CAP_MEANING,
   LANE_FIELD_LIST,
   applyLaneEdit,
   capShown,
+  defaultLaneOf,
   laneDialogFrom,
   laneFieldPrompt,
+  laneSummary,
   newLaneEntry,
   type LaneDialog,
   type LaneEntry,
@@ -86,8 +88,14 @@ let laneDialogUp = false;
  * alternative puts a sentinel in the same field as a real value, so "add a lane"
  * can only be spelled as a lane name nobody would choose, and one that somebody
  * does choose makes the dialog edit the wrong row.
+ *
+ * `Cap` carries the LANE as well as the field, because the list sets a cap on the
+ * default lane directly while the form sets one on a named lane, and both arrive
+ * here. A cap choice that named only its field would make the caller re-derive
+ * which lane it was on from the screen it was called from — the two answers to
+ * "which lane is this" are then free to disagree.
  */
-type LaneChoice = { kind: ChoiceKind.Lane; row: LaneEntry } | { kind: ChoiceKind.Add };
+type LaneChoice = { kind: ChoiceKind.Lane; row: LaneEntry } | { kind: ChoiceKind.Add } | CapChoice;
 
 /**
  * What a row in a lane's own form stands for.
@@ -96,12 +104,22 @@ type LaneChoice = { kind: ChoiceKind.Lane; row: LaneEntry } | { kind: ChoiceKind
  * the list's would mean a field row carrying a `LaneEntry` it has nothing to do
  * with, and the two dialogs' meanings of "what did the operator pick" would have to
  * be told apart by which fields are present.
+ *
+ * A `Cap` still carries its lane, as the list's does: the list and the form are two
+ * ways to reach the SAME edit, so the edit is named once in both and the two differ
+ * only in where a finished answer lands.
  */
-type LaneEditorChoice =
-  | { kind: ChoiceKind.Cap; field: LaneField }
-  | { kind: ChoiceKind.Delete }
-  | { kind: ChoiceKind.Back };
+type LaneEditorChoice = CapChoice | { kind: ChoiceKind.Delete } | { kind: ChoiceKind.Back };
 
+/**
+ * The kinds of row either list can hold.
+ *
+ * Every option carries its own `onSelect` and neither dialog carries one. Two places
+ * to answer "what happens when this row is chosen" is how a new row type ends up
+ * handled in one of them and silently ignored in the other — and it was stated twice,
+ * once per screen, which is the same claim in two places and so a claim free to
+ * disagree with itself. It belongs here, where the two lists' vocabularies meet.
+ */
 enum ChoiceKind {
   Lane = "lane",
   Add = "add",
@@ -240,6 +258,9 @@ function openLaneManager(api: TuiApi): void {
   }
   const asks: LaneAsks = {
     edit: (row) => openLaneEditor(api, view, row),
+    // A cap answered from the LIST goes back to the list: the default lane has no
+    // form, because the list IS its editor.
+    cap: (row, field) => askForField(api, view, row, field, () => openLaneManager(api)),
     add: () => askForName(api, view),
   };
   // Mounted the way every other plugin mounts: through the one funnel that also
@@ -261,6 +282,8 @@ function openLaneManager(api: TuiApi): void {
  * and the writer keeps working from a value the reader never sent.
  */
 type LaneView = LaneDialog & {
+  /** The lane every dispatch falls back to, resolved once by the reader. */
+  defaultRow: LaneEntry;
   overlay: LaneOverlay;
   directory: string;
 };
@@ -278,20 +301,31 @@ type LaneView = LaneDialog & {
  * and it would drop the problem the reader reported, turning "this file is odd" into
  * a dialog that silently shows less.
  */
-export function laneViewFrom(read: ReturnType<typeof readLaneOverlay>, running: Map<string, number>, directory: string): LaneView {
+export function laneViewFrom(read: ReturnType<typeof readLaneOverlay>, directory: string): LaneView {
   // The base config, with NO plugin options: those are resolved in the server
   // process from the plugin array's tuple and a project file, neither of which the
   // TUI can see. So the inherited caps here are the DEFAULTS, and the rows that
   // matter — the overlay's own — are unaffected: the dialog edits the overlay, and
   // a row whose caps came from elsewhere is labelled as such rather than presented as
   // this process's truth.
-  const dialog = laneDialogFrom(read.raw, running, normalizeDynamicTaskConfig(null));
-  return { rows: dialog.rows, problem: dialog.problem ?? read.problem, overlay: overlayFrom(read.raw), directory };
+  const dialog = laneDialogFrom(read.raw, normalizeDynamicTaskConfig(null));
+  return {
+    rows: dialog.rows,
+    // Resolved HERE, once, and handed over as a field. The list needs the default
+    // lane's caps as its own rows, so it needs that row; a second lookup by name in
+    // the renderer is a second answer to "which caps are in force", and the two are
+    // free to disagree the moment the row set is built by something else.
+    defaultRow: defaultLaneOf(dialog.rows),
+    problem: dialog.problem ?? read.problem,
+    overlay: overlayFrom(read.raw),
+    directory,
+  };
 }
 
 /** What a row's selection asks for. The dialog's ways forward, named. */
 export type LaneAsks = {
   edit: (row: LaneEntry) => void;
+  cap: (row: LaneEntry, field: LaneField) => void;
   add: () => void;
 };
 
@@ -313,28 +347,79 @@ export type LaneEditorAsks = {
  */
 export function laneSelectProps(view: LaneView, asks: LaneAsks): TuiDialogSelectProps<LaneChoice> {
   return {
-    title: "Lanes",
-    placeholder: "a lane, or 'add a lane'",
-    // Every option carries its own `onSelect`, and the dialog carries none.
-    // Two places to answer "what happens when this row is chosen" is how a new
-    // row type ends up handled in one of them and silently ignored in the other.
+    title: "How many tasks run at once",
+    placeholder: "type to filter",
     options: [
-      ...view.rows.map((row) => ({
-        title: row.name,
-        value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
-        ...laneRowText(row),
-        onSelect: () => asks.edit(row),
-      })),
+      // The default lane's caps ARE the screen, not a row among others. It is the
+      // lane every dispatch that does not name one falls back to, so a row called
+      // "default" announced an implementation detail, and then made the operator
+      // open a second dialog to reach the two numbers they came for.
+      ...capRows(view.defaultRow, (field) => asks.cap(view.defaultRow, field), { category: LIMITS_SECTION }),
+      // The lanes you named, and the one you can name. One section, because a lane
+      // and the act of adding one are the same kind of thing; a heading over the
+      // add row alone would be a section of one.
+      ...view.rows
+        .filter((row) => row.name !== view.defaultRow.name)
+        .map((row) => ({
+          title: row.name,
+          category: LANES_SECTION,
+          footer: laneSummary(row.lane),
+          value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
+          onSelect: () => asks.edit(row),
+        })),
       {
-        title: "Add a lane…",
+        title: "Add a lane",
+        category: LANES_SECTION,
         value: { kind: ChoiceKind.Add } as const satisfies LaneChoice,
-        // Described like a real row, so it does not read as the one entry the
-        // dialog forgot to fill in.
-        description: "name a lane, then set its caps",
         onSelect: asks.add,
       },
     ],
   };
+}
+
+/**
+ * The two section headings, as constants because the list and its tests both have
+ * to name them, and a test that spells them out is a test that can pass against a
+ * screen nobody is looking at.
+ *
+ * `Limits` heads the default lane's caps without using the word "default": the
+ * title above already says these are the numbers that apply when nothing else does,
+ * and `default` is a lane name the operator did not choose.
+ */
+export const LIMITS_SECTION = "Limits";
+export const LANES_SECTION = "Lanes";
+
+/** A row that sets one cap of one lane. Both screens draw it, and it is this. */
+type CapChoice = { kind: ChoiceKind.Cap; row: LaneEntry; field: LaneField };
+
+/**
+ * Every cap of one lane, as the rows of a list.
+ *
+ * The list and the form each draw this, and each decorates it differently — a
+ * heading on the list, a sentence under the row on the form — so the ROW is built
+ * here and only the decoration is the caller's. It was written out twice, and the
+ * two copies had already drifted on which field the value rode in: `footer` on one
+ * side, `description` on the other, which is the difference between a number in a
+ * column the host never clips and a number cut off mid-sentence.
+ *
+ * `footer` rather than `description` is the load-bearing choice here, and it is
+ * load-bearing for both callers: it is the one field the host draws outside the
+ * clipping text, so a value is never cut off, and it sits in the same column
+ * whatever the label is. That is what makes a cap row read as a form's field rather
+ * than as a sentence.
+ */
+function capRows(
+  row: LaneEntry,
+  onSelect: (field: LaneField) => void,
+  decoration: { category?: string; details?: string[] } = {},
+): TuiDialogSelectOption<CapChoice>[] {
+  return LANE_FIELD_LIST.map((field) => ({
+    title: field.label,
+    footer: capShown(row.lane, field.cap),
+    value: { kind: ChoiceKind.Cap, row, field },
+    ...decoration,
+    onSelect: () => onSelect(field),
+  }));
 }
 
 /** The caps question, as the host's own prop type. */
@@ -346,50 +431,6 @@ export function lanePromptProps(
   return { title, placeholder, onConfirm };
 }
 
-/**
- * One row's two lines, and WHY they are two.
- *
- * A row's title and description share ONE line: the host renders them into a
- * single `<text>` with `wrapMode="none"` and `overflow="hidden"`
- * (dialog-select.tsx:766-783), so a description is a SUFFIX, not a subtitle. It
- * never wraps, and past the width it is simply clipped. This list put all four of
- * its facts there — 60 characters before the row's 3-column indent, in a dialog 60
- * columns wide — so the last clause was cut off on every lane, every time, and a
- * row read as a truncated sentence.
- *
- * The host has a second line for exactly this: `details`, drawn as its own row
- * below with a budget it applies itself (`truncateMiddle(detail, min(76,
- * width - 12))`, dialog-select.tsx:702) and counted in the list's height (line
- * 209). So the facts are sorted by how much they matter, and each goes where it
- * fits:
- *
- *  - the two CAPS on the line they are compared on. Comparing them is the reason
- *    to open this dialog at all, so they get the scanning position.
- *  - the OCCUPANCY and the PROVENANCE below, where there is room to say them in
- *    full. Provenance decides whether editing this row does anything at all, so
- *    it is the last thing that may be truncated, and `details` is the only field
- *    the host budgets rather than clips.
- *
- * `details` is absent from the published `TuiDialogSelectOption` although the host
- * reads it. The type is returned by SPREAD rather than spelled out, because a
- * spread is not excess-property-checked and a cast is not permitted here — an
- * escape hatch, sound only because the field was read in the host's own source at
- * the tag this binary was built from. That is a fact about a file we do not own,
- * so `fitsItsDialog` below re-derives the host's layout and fails the build if the
- * content stops fitting it.
- */
-function laneRowText(row: LaneEntry): { description: string; details: string[] } {
-  const occupancy = row.running === 0 ? "idle" : `${row.running} running, as last recorded`;
-  const provenance = row.inherited ? "caps from the config file" : "set in the overlay";
-  return {
-    // Every cap, from the one table — so a cap the form has a row for cannot be
-    // missing from this line, and a cap this line shows cannot be uneditable.
-    description: LANE_FIELD_LIST.map((field) => field.listClause(capShown(row.lane, field.cap))).join(" · "),
-    // One detail, not two: a row is two lines tall, and the two context facts are a
-    // single thought — how busy it is, and whose caps those are.
-    details: [[occupancy, provenance].join(" · ")],
-  };
-}
 
 /**
  * One lane's editor, as the host's own prop type: a FORM.
@@ -404,22 +445,30 @@ function laneRowText(row: LaneEntry): { description: string; details: string[] }
  * The value rides in `footer` — the one field the host draws outside the clipping
  * text — so a number is never cut off, and it sits in the same column whatever the
  * label is. That is what makes this read as a form rather than as three sentences.
+ *
+ * `details` is the one field the host budgets rather than clips: it draws the string
+ * as its own row below, capped at `min(76, width - 12)` (dialog-select.tsx:702) and
+ * counted in the list's height (line 209). A row's title and description share ONE
+ * clipped line instead, so the sentence under a field cannot be a suffix that runs
+ * off the end.
+ *
+ * `details` is absent from the published `TuiDialogSelectOption` although the host
+ * reads it. The prop is returned by SPREAD rather than spelled out, because a spread
+ * is not excess-property-checked and a cast is not permitted here — an escape hatch,
+ * sound only because the field was read in the host's own source at the tag this
+ * binary was built from. That is a fact about a file we do not own, so
+ * `fitsItsDialog` below re-derives the host's layout and fails the build if the
+ * content stops fitting it.
  */
 export function laneEditorProps(row: LaneEntry, asks: LaneEditorAsks): TuiDialogSelectProps<LaneEditorChoice> {
   return {
-    title: `Lanes · ${row.name}`,
-    placeholder: "a cap to change",
-    // Every option carries its own `onSelect`, and the dialog carries none: two places
-    // to answer "what happens when this row is chosen" is how a new row type ends up
-    // handled in one and silently ignored in the other.
+    // The lane's own name. The word "Lanes" was doing no work here — it is the
+    // palette command's title, so it is one keypress away, and repeating it on
+    // every screen taught the operator a noun they never chose.
+    title: row.name,
+    placeholder: "type to filter",
     options: [
-      ...LANE_FIELD_LIST.map((field) => ({
-        title: field.label,
-        value: { kind: ChoiceKind.Cap, field } as const satisfies LaneEditorChoice,
-        footer: capShown(row.lane, field.cap),
-        details: [field.meaning],
-        onSelect: () => asks.cap(field),
-      })),
+      ...capRows(row, (field) => asks.cap(field), { details: [CAP_MEANING] }),
       // Only where it can work. Removing a lane the overlay does not hold would only
       // remove the config file's declaration, which this dialog does not write — so
       // the row would be one that can only ever fail.
@@ -484,33 +533,42 @@ function askForName(api: TuiApi, view: LaneView): void {
  */
 function openLaneEditor(api: TuiApi, view: LaneView, row: LaneEntry): void {
   const asks: LaneEditorAsks = {
-    cap: (field) => askForField(api, view, row, field),
+    cap: (field) => askForField(api, view, row, field, () => reOpenForm(api, row)),
     remove: () => applyEdit(api, view, row, { kind: "delete" }, "", { land: () => openLaneManager(api), retry: () => openLaneEditor(api, view, row) }),
     back: () => openLaneManager(api),
   };
   mountLaneSelect(api, () => laneEditorProps(row, asks));
 }
 
-/** Ask for ONE cap, by the name the form gave it. */
-function askForField(api: TuiApi, view: LaneView, row: LaneEntry, field: LaneField): void {
+/**
+ * Back to a lane's form, re-read — and re-read INCLUDING the row.
+ *
+ * A write makes the row the caller is holding stale: it carries the caps as they
+ * were before the answer. Re-reading only the VIEW and keeping the old row would
+ * show the old number, and the next field answered on that row would be written
+ * from caps the file no longer has — silently dropping the cap just set. The form
+ * is the only screen showing both caps of one lane at once, so it is also the only
+ * place that bug could hide.
+ */
+function reOpenForm(api: TuiApi, row: LaneEntry): void {
+  const fresh = readLanes(api);
+  openLaneEditor(api, fresh, fresh.rows.find((candidate) => candidate.name === row.name) ?? row);
+}
+
+/**
+ * Ask for ONE cap, by the name the screen gave it.
+ *
+ * `land` is an argument because a cap is answered from two screens that go back to
+ * two different ones: the FORM returns to itself, while the LIST — where the default
+ * lane's caps are the list's own rows — returns to the list. Deciding that here
+ * instead would have meant reading the caller's screen, or picking one destination
+ * for both and making the other screen's cap edits land somewhere the operator did
+ * not ask for.
+ */
+function askForField(api: TuiApi, view: LaneView, row: LaneEntry, field: LaneField, land: () => void): void {
   const prompt = laneFieldPrompt(row, field);
-  /**
-   * Back to the FORM after a change, re-read — and re-read INCLUDING the row.
-   *
-   * A write makes the row this function is holding stale: it carries the caps as
-   * they were before the answer. Re-reading only the VIEW and keeping the old row
-   * would show the old number, and the next field answered on that row would be
-   * written from caps the file no longer has — silently dropping the cap just set.
-   * The form is the only screen showing both caps at once, so it is also the only
-   * place that bug could hide; which is why this is a comment and not a shorter
-   * expression.
-   */
-  const land = () => {
-    const fresh = readLanes(api);
-    openLaneEditor(api, fresh, fresh.rows.find((candidate) => candidate.name === row.name) ?? row);
-  };
   askOverLaneList(api, prompt.title, prompt.placeholder, (typed) =>
-    applyEdit(api, view, row, { kind: "cap", field }, typed, { land, retry: () => askForField(api, view, row, field) }),
+    applyEdit(api, view, row, { kind: "cap", field }, typed, { land, retry: () => askForField(api, view, row, field, land) }),
   );
 }
 
@@ -566,13 +624,13 @@ function askOverLaneList(api: TuiApi, title: string, placeholder: string, onConf
 }
 
 /**
- * Read the three things the dialog shows: the overlay, the base config's lanes,
- * and the last recorded occupancy. Each comes from the same file the server
- * reads, so the dialog and the refusals are describing one system.
+ * Read the two things the dialog shows: the overlay, and the base config's lanes.
+ * Both come from the same file the server reads, so the dialog and the refusals are
+ * describing one system.
  */
 function readLanes(api: TuiApi): LaneView {
   const directory = api.state.path.directory;
-  return laneViewFrom(readLaneOverlay(directory), runningByLane(directory), directory);
+  return laneViewFrom(readLaneOverlay(directory), directory);
 }
 
 /**
@@ -589,25 +647,3 @@ function overlayFrom(raw: unknown): LaneOverlay {
   return read === null ? { lanes: {} } : { lanes: read.lanes };
 }
 
-/**
- * Running tasks per lane, from the ledger's active set.
- *
- * No try/catch, and that is a claim rather than an omission: `loadTaskLedger`
- * REPORTS every way it can fail rather than throwing — a missing file, a
- * directory where the file belongs, and unparseable JSON were each probed and each
- * returns an empty ledger. So a catch here could never fire, and a catch that
- * cannot fire is worse than none: it says "this boundary is dangerous" to every
- * reader while quietly proving the opposite.
- */
-export function runningByLane(directory: string): Map<string, number> {
-  const counts = new Map<string, number>();
-  // A PATH, not the directory. Passing the directory made the read fail on every
-  // call, and the catch that hid that reported "no tasks are running" — so the row
-  // confidently said `idle` for a lane with work in it.
-  const loaded: LoadedTaskLedger = loadTaskLedger(resolveTaskLedgerPath(directory));
-  for (const task of loaded.active.values()) {
-    if (task.state !== TaskState.Active) continue;
-    counts.set(task.lane, (counts.get(task.lane) ?? 0) + 1);
-  }
-  return counts;
-}

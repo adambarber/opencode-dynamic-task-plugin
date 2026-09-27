@@ -26,7 +26,7 @@ export function normalizeAgentName(agentName: unknown): string | null {
 // ─── validateAgent ─────────────────────────────────────────────────
 // Checks if an agent is in the blocked list. Returns ok:false with message if blocked.
 
-export function validateAgent(agentName: unknown, config: DynamicTaskConfig): PolicyResult {
+export function validateAgent(agentName: unknown, config: Pick<DynamicTaskConfig, "blockedAgents">): PolicyResult {
   const name = normalizeAgentName(agentName);
   if (!name) {
     return { ok: false, error: "Invalid agent name: must be a non-empty string." };

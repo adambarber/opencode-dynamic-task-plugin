@@ -94,7 +94,7 @@ export function dispatchableAgentNames(
   agents: readonly AgentRecord[],
   config: Pick<DynamicTaskConfig, "blockedAgents">,
 ): string[] {
-  return agents.filter((agent) => validateAgent(agent.name, config as DynamicTaskConfig).ok).map((agent) => agent.name);
+  return agents.filter((agent) => validateAgent(agent.name, config).ok).map((agent) => agent.name);
 }
 
 export function resolveAdmission(

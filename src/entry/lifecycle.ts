@@ -15,9 +15,9 @@ import { debugLog } from "../debug-logger.js";
 import {
   invokePrompt,
   classifyPromptError,
-  isTransientOutcomeError,
   hydrateLatestOutcome,
 } from "../shared/prompt.js";
+import { classifyFailure, failureNote } from "../shared/failure-class.js";
 import {
   notifyParent,
   safeLog,
@@ -225,19 +225,20 @@ export async function settleRunningChild(
   // What told us it was over, when no event did. Names the loss of contact so a
   // vanished child is never read as a child whose work failed.
   const causeNote = cause ? `\n\n${cause}` : "";
-  // Transient failures name the resume path: a network/provider blip that
-  // killed the turn usually resumes cleanly via task_continue, while a
-  // fatal cause must not invite a blind retry. Advisory only — kind and
-  // state are already decided above.
-  const resumeHint = kind === NotifyKind.Error && isTransientOutcomeError(outcome.errorDetail)
-    ? "\n\nThis failure looks transient (network/provider blip) — task_continue can usually resume the child from here."
-    : "";
+  // WHY it failed, in words the parent can act on. A network blip and a broken
+  // child arrive as the same host error string, and a parent who cannot tell
+  // them apart either ignores real failures or root-causes a socket reset. The
+  // class is decided once, by the classifier, and its wording lives beside it —
+  // the two used to be separate (a boolean here appending a sentence about a
+  // classification that did not exist), which is how the sentence stopped
+  // describing the decision.
+  const classNote = failureNote(classifyFailure(verdict, outcome.errorDetail));
   // Detached: the synchronous claim above is the settlement guarantee;
   // delivery transport must never hold the event pump head-of-line.
   // Observability survives via the ledger record, logged on completion.
   // deliverParent is the single funnel for parent-directed writes: it
   // records parentless settlements instead of dialing a phantom session.
-  void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${resumeHint}${unreadableNote}`)
+  void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${classNote}${unreadableNote}`)
     .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
   // This settlement may also be the answer to a dispatch another parent was
   // refused. Released HERE — the one place a task settles — so a wait is

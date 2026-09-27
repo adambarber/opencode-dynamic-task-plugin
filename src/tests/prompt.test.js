@@ -8,7 +8,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, isTransientOutcomeError, messageErrorDetail, messageRoleOf, parseModelOverride } from "../../dist/shared/prompt.js";
+import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride } from "../../dist/shared/prompt.js";
 import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 
 // The smallest shapes the reader tests are about, stated once: a text part, and
@@ -108,22 +108,6 @@ describe("messageErrorDetail", () => {
     assert.strictEqual(messageErrorDetail(null), "");
     assert.strictEqual(messageErrorDetail("junk"), "");
     assertEmpty(messageErrorDetail({ role: ASSISTANT_ROLE }), "an assistant message carrying no error part");
-  });
-});
-
-describe("isTransientOutcomeError", () => {
-  it("marks provider and network blips transient", () => {
-    assert.strictEqual(isTransientOutcomeError("429 rate limit exceeded, retry shortly"), true);
-    assert.strictEqual(isTransientOutcomeError("Upstream overloaded, please try again"), true);
-    assert.strictEqual(isTransientOutcomeError("fetch failed: socket hang up"), true);
-    assert.strictEqual(isTransientOutcomeError("Request timeout after 120s"), true);
-  });
-
-  it("treats auth, permission, and empty details as fatal-or-unknown", () => {
-    assert.strictEqual(isTransientOutcomeError("permission denied for model"), false);
-    assert.strictEqual(isTransientOutcomeError("authentication required"), false);
-    assert.strictEqual(isTransientOutcomeError(""), false);
-    assertIs(isTransientOutcomeError(undefined), false, "a non-error is not a transient host error");
   });
 });
 

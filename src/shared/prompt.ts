@@ -121,29 +121,12 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
   };
 }
 
-// Advisory-only transient markers for settled outcomes. Unlike
-// RETRYABLE_FRAGMENTS (which gate the prompt-failure path), these never
-// decide anything — they annotate the settlement so the parent can judge
-// "safe to task_continue". Heuristics are permitted here precisely because
-// they are not load-bearing (Tenet 2): the worst case is a wrong hint, never
-// a wrong state.
-const TRANSIENT_OUTCOME_FRAGMENTS = [
-  ...RETRYABLE_FRAGMENTS,
-  "429",
-  "rate limit",
-  "overload",
-  "temporar",
-  "unavailable",
-  "500",
-  "502",
-  "503",
-];
-
-export function isTransientOutcomeError(detail: unknown): boolean {
-  if (typeof detail !== "string" || !detail.trim()) return false;
-  const lowered = detail.toLowerCase();
-  return TRANSIENT_OUTCOME_FRAGMENTS.some((fragment) => lowered.includes(fragment));
-}
+// A SETTLED outcome's transient markers used to live here, as a boolean that
+// only decorated a sentence. They are now a named classification in
+// `failure-class.ts` — which is a decision, not a hint, and so it has to carry
+// the evidence and the conservative default with it. This module keeps only the
+// markers that answer a question about a failed WRITE, which is a different
+// question asked of a different error.
 
 // ─── Message/Part family (Task 08 Cycle 5) ─────────────────────────
 // The one hand-made type design in the program: the shapes the extraction

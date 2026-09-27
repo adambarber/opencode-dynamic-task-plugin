@@ -18,7 +18,7 @@
 
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LaneConfig, LaneConfigSource } from "./config.js";
+import { LANE_CAP_NAMES, type LaneConfig, type LaneConfigSource } from "./config.js";
 
 /** Beside the ledger, in the project directory the host hands us. */
 export const LANE_OVERLAY_FILE = ".dynamic-task-lanes.json";
@@ -98,15 +98,20 @@ function cap(value: unknown): number | undefined {
  * for the same untrusted file is how two processes come to disagree: the dialog
  * shows a cap the dispatch path silently drops, and the operator edits a number
  * that has no effect. One reader, so that cannot happen.
+ *
+ * Iterated over `LANE_CAP_NAMES` rather than written out per field. Written out,
+ * this function is a list of the caps someone remembered, and the cap they did
+ * not is dropped from every overlay the plugin ever applies — silently, because
+ * a field a reader never mentions cannot be a type error against it.
  */
 export function readLaneBody(raw: unknown): LaneConfig {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const body = raw as Record<string, unknown>;
   const out: LaneConfig = {};
-  const concurrent = cap(body["maxConcurrent"]);
-  const depth = cap(body["maxDepth"]);
-  if (concurrent !== undefined) out.maxConcurrent = concurrent;
-  if (depth !== undefined) out.maxDepth = depth;
+  for (const name of LANE_CAP_NAMES) {
+    const value = cap(body[name]);
+    if (value !== undefined) out[name] = value;
+  }
   return out;
 }
 

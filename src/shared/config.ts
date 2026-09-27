@@ -6,11 +6,32 @@ import { readFileSync } from "node:fs";
 import type { PluginOptions } from "@opencode-ai/plugin";
 
 /**
- * One lane's own limits. Both fields are optional because a lane may set only
- * one of them and inherit the rest from the top level — the resolved value
- * (LanePolicy) is the one that has both.
+ * A lane's own caps, BY NAME. This list is the source and `LaneConfig` is derived
+ * from it, which is the only reason the list is a value.
+ *
+ * A lane cap reaches the plugin through two paths — the config file at boot and
+ * the overlay file while running — and both are read field by field, by a reader
+ * that had no way to learn a field existed. Adding a cap to the type therefore
+ * did nothing: the reader still ignored it, every overlay dropped it, and the
+ * build stayed green because a type the reader never mentions cannot be violated.
+ * `readLaneBody` now iterates THIS list, so a cap that is declared is a cap that
+ * is read, and the one that has to be remembered is the one nobody can add
+ * quietly.
+ *
+ * A cap is a positive integer, which is what makes the derived shape uniform: a
+ * new cap is a new name here, never a new type to widen the union below.
  */
-export type LaneConfig = { maxConcurrent?: number; maxDepth?: number };
+export const LANE_CAP_NAMES = ["maxConcurrent", "maxDepth"] as const;
+
+/** One lane's own limit. Named so a reader can iterate it; see `LANE_CAP_NAMES`. */
+export type LaneConfigName = (typeof LANE_CAP_NAMES)[number];
+
+/**
+ * One lane's own limits. Every field is optional because a lane may set only some
+ * of them and inherit the rest from the top level — the resolved value
+ * (LanePolicy) is the one that has all of them.
+ */
+export type LaneConfig = { [K in LaneConfigName]?: number };
 
 export interface DynamicTaskConfig {
   maxDepth: number;

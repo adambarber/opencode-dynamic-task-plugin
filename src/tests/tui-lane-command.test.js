@@ -16,8 +16,9 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { LANE_OVERLAY_FILE, writeLaneOverlay } from "../../dist/shared/lane-overlay.js";
 import { resolveTaskLedgerPath, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { TaskState } from "../../dist/shared/task-state.js";
@@ -25,7 +26,10 @@ import { retainedEntry, runningEntry } from "./support/records.js";
 import { DEFAULT_LANE } from "../../dist/shared/config.js";
 import { UNBOUNDED } from "../../dist/tui/lane-editor.js";
 import { withTempDir } from "./support/fixtures.js";
-import { tui } from "../../dist/tui/index.js";
+import tuiModule, { tui } from "../../dist/tui/index.js";
+
+/** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /**
  * A minimal api that records what was asked for.
@@ -36,16 +40,13 @@ import { tui } from "../../dist/tui/index.js";
  * shows up as undefined rather than as a blank row on a real screen.
  */
 function fakeApi(directory) {
-  const seen = { layers: [], toasts: [], prompts: [], selects: [], disposed: [] };
+  const seen = { layers: [], toasts: [], prompts: [], selects: [] };
   const api = {
     state: { path: { directory } },
-    lifecycle: {
-      signal: new AbortController().signal,
-      onDispose: (fn) => {
-        seen.disposed.push(fn);
-        return () => {};
-      },
-    },
+    // No `lifecycle`. The host disposes a plugin's keymap registrations when the
+    // plugin deactivates, so the module has no teardown of its own to wire up, and
+    // leaving the hook off this fake means a reintroduced call site fails here
+    // instead of passing silently.
     keymap: {
       registerLayer: (layer) => {
         seen.layers.push(layer);
@@ -82,7 +83,10 @@ function readOverlay(directory) {
 /** Boot the module and hand back what it registered, without pressing anything. */
 async function registered(directory) {
   const { api, seen } = fakeApi(directory);
-  await tui(api, undefined, { id: "dynamic-task" });
+  // The host hands the plugin its OWN declared id as meta, so this reads the
+  // module's id rather than repeating the string: a test that retyped it would be a
+  // second place to change, and the suite already gates on exactly that.
+  await tui(api, undefined, { id: tuiModule.id });
   assert.equal(seen.layers.length, 1, "one layer, so the palette has one entry to find");
   return { api, seen, command: seen.layers[0].commands[0] };
 }
@@ -131,26 +135,91 @@ async function opened(directory) {
   };
 }
 
-describe("the lane command reaches the palette", () => {
-  it("registers one command in one layer, and disposes the layer with the plugin", async () => {
-    await withTempDir(async (directory) => {
-      const { seen, command } = await registered(directory);
-      assert.ok(command, "one command, so the palette has one entry to find");
-      assert.equal(seen.disposed.length, 1,
-        "a layer left registered outlives the plugin and answers a second opencode");
-    });
+/**
+ * A project directory with the command registered, and nothing pressed.
+ *
+ * The three palette cases differ only in what they read off the command, and each
+ * was spelling out `withTempDir` + `registered` + the destructure — a seven-line
+ * preamble whose subject is none of them, repeated until the gate called it a clone.
+ */
+const withCommand = (fn) => withTempDir(async (directory) => fn((await registered(directory)).command));
+
+/**
+ * The registration, read from the repo's own `tui.json`.
+ *
+ * The half of the contract that cannot be reached from the module: the host loads TUI
+ * modules from `tui.json`, not from opencode's `plugin` array, and there is no
+ * directory auto-discovery — so an unregistered module is not degraded, it is never
+ * loaded, and it fails silently as an empty command palette. The module can be
+ * perfectly shaped and still go nowhere, which is exactly what happened, so the
+ * registration is pinned here rather than left to a config file nobody checks.
+ */
+describe("the TUI module is registered where the host looks for it", () => {
+  it("is listed in .opencode/tui.json, and the path resolves to a loadable module", async () => {
+    const manifest = JSON.parse(readFileSync(join(REPO, ".opencode", "tui.json"), "utf8"));
+    const specs = (manifest.plugin ?? []).map((entry) => (Array.isArray(entry) ? entry[0] : entry));
+    assert.ok(specs.length > 0, "an empty tui.json plugin array loads nothing at all");
+
+    // Relative specs resolve against the config file that declared them, so the
+    // repo's own manifest can be portable rather than carrying one machine's path.
+    const resolved = specs.map((spec) => resolve(REPO, ".opencode", spec));
+    for (const file of resolved) {
+      assert.ok(existsSync(file), `${file} is listed but absent — the palette entry cannot load`);
+    }
+
+    const loaded = await import(pathToFileURL(resolved[0]).href);
+    assert.ok(loaded.default?.id, "a listed file plugin must default-export a non-empty id");
+    assert.ok(!("server" in loaded.default), "a listed TUI module must not export server alongside tui");
+  });
+});
+
+describe("the module the host loads", () => {
+  it("default-exports a non-empty id, because that is all the loader reads", async () => {
+    // The loader reads the DEFAULT export and ignores named exports, and a file
+    // plugin with no id has no runtime identity to be enabled or rejected against.
+    // Both of those are the difference between a loaded module and no module, and
+    // neither is a type error — a named export typechecks exactly as well.
+    assert.ok(tuiModule.id, "a file plugin must export a non-empty id");
+    assert.equal(typeof tuiModule.tui, "function");
   });
 
-  it("is findable by typing \"lanes\", under every field the palette might search", async () => {
-    await withTempDir(async (directory) => {
-      const { command } = await registered(directory);
-      // ctrl+p then "lanes". Which fields the palette searches is the host's
-      // configuration, so the word is in all three of the ones we set rather than
-      // in the one we guessed: name, title, and the slash spelling. The last is
-      // the same command, so the two spellings cannot drift into two entries.
+  it("exports no server alongside tui, which the loader rejects rather than prefers", () => {
+    assert.ok(!("server" in tuiModule), "a module is server OR tui; a module that is both is refused");
+  });
+});
+
+describe("the lane command reaches the palette", () => {
+  /**
+   * One command, so one case.
+   *
+   * These were three tests, and the gate called the shape a clone — correctly, since
+   * `it(<title>, async () => { await withCommand(async (command) => { assert…(command` is
+   * identical between them once the differing title is a bare string token. They are
+   * three reads of the SAME command's fields, not three situations, so the checks
+   * belong together; each keeps its own message, so a failure still names which field
+   * broke and why the host cares.
+   */
+  it("is listed in the palette, under the host's field names, findable by \"lanes\"", async () => {
+    await withCommand(async (command) => {
+      // LISTED. The host surfaces palette commands BY NAMESPACE; without this the
+      // command is registered, dispatchable by name and runnable from a keybinding,
+      // and appears in no list — an empty ctrl+p with no error anywhere.
+      assert.equal(command.namespace, "palette",
+        "no namespace means registered but listed nowhere, which is the empty panel");
+
+      // READ. `Command` carries an index signature, so a misspelled field is silently
+      // a custom property the palette ignores. The legacy `slash: { name }` form
+      // belongs to the deprecated `api.command` API and is never read here.
+      assert.equal(command.slashName, "lanes", "the palette's slash spelling is `slashName`");
+      assert.ok(command.desc, "the palette's second line is `desc`");
+      assert.ok(!("description" in command), "`description` is a custom field the host never reads");
+      assert.ok(!("slash" in command), "`slash` is the legacy api.command shape, not a palette field");
+
+      // FOUND. Which fields the palette fuzzy-searches is the host's configuration, so
+      // the word is in all three we set rather than in the one we guessed.
       assert.match(command.name, /lanes/);
       assert.match(command.title, /lanes/i);
-      assert.equal(command.slash.name, "lanes");
+      assert.match(command.desc, /lanes|caps/i);
     });
   });
 });
@@ -286,15 +355,15 @@ describe("choosing a lane", () => {
   });
 });
 
-describe("what this suite cannot prove", () => {
-  it("the palette's fuzzy search is the host's configuration, so ctrl+p is what settles it", () => {
-    // Stated as a fact about the suite rather than left implicit: nothing here
-    // can observe which fields opencode's palette searches. What the suite does
-    // establish is that the word is in the name AND the title, so a search over
-    // either lands on this entry.
-    assert.ok(true);
-  });
-});
+/**
+ * What this suite still cannot prove, said out loud rather than left implicit:
+ * that the host's palette fuzzy-matches the fields we set. That is the host's
+ * search configuration, not ours. What the suite does establish is that the
+ * command is NAMESPACED to the palette, uses the host's field spellings, and
+ * carries the word in every field we set — so ctrl+p and then "lanes" is the
+ * one thing left to press.
+ */
+export const PALETTE_REMAINS_UNOBSERVED = true;
 
 describe("adding a lane", () => {
   it("a name that already exists opens that lane rather than making a second one", async () => {

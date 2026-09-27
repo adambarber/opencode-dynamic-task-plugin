@@ -85,10 +85,6 @@ export function buildToolMap(deps: ToolDeps) {
         {
           description: tool.schema.string().describe("Short human-readable task label"),
           subagent_type: tool.schema.string().describe("Agent to invoke"),
-          lane: tool.schema
-            .string()
-            .optional()
-            .describe("Concurrency lane to occupy a slot in — lanes have their own running-task cap and depth limit. Omit to use the default lane."),
           prompt: PROMPT("Instructions for the child session"),
           model: MODEL(),
           depends_on: SESSION_ID_LIST(

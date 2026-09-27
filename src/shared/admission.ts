@@ -6,10 +6,28 @@
 // can bypass it.
 
 import type { DynamicTaskConfig } from "./config.js";
-import { admissibleLaneNames, resolveLane as lanePolicyFor, resolveLaneName } from "./config.js";
-import { liveLanes } from "./lane-overlay.js";
-import type { OpenCodeClient } from "./client.js";
-import { safeLog } from "./notify.js";
+import { resolveAgentCaps } from "./caps.js";
+import { liveAgentCaps } from "./caps.js";
+import { safeLog, type LogSink } from "./notify.js";
+
+/**
+ * The one host call the agent listing needs.
+ *
+ * Not the plugin's client. The TUI process holds a different SDK generation's client
+ * and calls this same function, and typing the parameter as `OpenCodeClient` made that
+ * a compile error over a `question` namespace the TUI has no use for — with a cast as
+ * the only way past it, which is a cast that says the TUI has a question API. The
+ * narrower type is both true and the reason the two processes can share one reader.
+ */
+export interface AgentLister extends LogSink {
+  // No `parameters` argument, deliberately. The v2 SDK's `agents` takes an optional
+  // query object, and declaring one here would make the parameter type `unknown` —
+  // which no concrete `{ query?: ... }` satisfies, so the TUI's client stopped
+  // assigning. A zero-arg function type accepts a function with only optional
+  // parameters, and this caller passes none either way.
+  app: { agents: () => Promise<unknown>; log?: unknown };
+}
+
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import type { Verdict } from "./verdict.js";
 import { hostPayload } from './session-lifecycle.js';
@@ -60,17 +78,11 @@ const unknownAgent = (requested: unknown, available: string): AdmissionDenial =>
   refusal: `ERROR: Agent "${String(requested)}" not found.\n\nAvailable: ${available}`,
 });
 
-const unknownLane = (requested: string, known: string[]): AdmissionDenial => ({
-  refusal:
-    `ERROR: Unknown lane "${requested}".\n\nDeclared lanes: ${known.length > 0 ? known.join(", ") : "(none declared)"}. ` +
-    "Declare one in the dynamic-task config, or dispatch without a lane to use the default.",
-});
-
 /** The two refusals a policy check hands over as a bare sentence. */
 const policyRefused = (message: string): AdmissionDenial => ({ refusal: `ERROR: ${message}` });
 
 export type Admission =
-  | { ok: true; agent: AgentRecord; newLineage: string[]; lane: string }
+  | { ok: true; agent: AgentRecord; newLineage: string[] }
   | { ok: false; reason: AdmissionDenial };
 
 // ─── resolveAdmission ──────────────────────────────────────────────
@@ -102,7 +114,6 @@ export function resolveAdmission(
   requestedName: unknown,
   lineage: string[],
   config: DynamicTaskConfig,
-  requestedLane?: unknown,
 ): Admission {
   const available = buildAgentList(agents);
   const normalized =
@@ -121,60 +132,23 @@ export function resolveAdmission(
     return { ok: false, reason: policyRefused(agentCheck.error) };
   }
 
-  const laneCheck = admitLaneName(config, requestedLane);
-  if (!laneCheck.ok) {
-    return { ok: false, reason: laneCheck.reason };
-  }
-
-  // Depth is judged against the LANE's cap, with the dispatchable set in hand so
-  // the refusal can name the constraint that actually binds. A lane that declares
-  // its own maxDepth is only real if this reads the resolved lane rather than the
-  // top-level number.
-  const lanePolicy = lanePolicyFor(liveLanes(config), laneCheck.lane);
+  // Depth is judged against THIS AGENT's cap, read live so an edit in the dialog
+  // applies to the next dispatch. There is no separate lane to admit: the agent name
+  // a dispatch supplies IS the key space, and `unknownAgent` above has already
+  // checked it against the host's registered set, so a second gate asking "is this
+  // key declared" would only be able to disagree with the first.
+  const policy = resolveAgentCaps(liveAgentCaps(config), agent.name);
   const lineageCheck = validateLineage(
     lineage,
     agent.name,
-    { maxDepth: lanePolicy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
+    { maxDepth: policy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
     dispatchableAgentNames(agents, config),
-    laneCheck.lane,
   );
   if (!lineageCheck.ok) {
     return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
 
-  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name), lane: laneCheck.lane };
-}
-
-// Lane admission, separated from the lane's LIMITS (config.ts owns those).
-// The gate is total: anything that is not a usable lane name is a refusal, and a
-// refusal that is NOT a fall back to the default lane, because a typo silently
-// spending a different budget than the operator meant is the failure mode a
-// named-lane feature exists to prevent.
-//
-// With no lanes declared the accept-set is the default lane alone, so naming a
-// lane then REFUSES. That is the one behaviour that cannot be left implicit:
-// before lanes existed, any string here was ignored, so a name that used to be
-// decorative is now a typo the parent has to be told about. Declaring the lane
-// is the remedy, and the refusal says so.
-function admitLaneName(
-  config: DynamicTaskConfig,
-  requestedLane: unknown,
-): { ok: true; lane: string } | { ok: false; reason: AdmissionDenial } {
-  // Live policy, for the same reason the capacity judgment is live: a lane
-  // created in the UI is admissible on the very next dispatch, so the accept-set
-  // is read from the overlay rather than from the config frozen at boot. A lane
-  // the UI just made would otherwise be refused by name for as long as the
-  // process lived, and the refusal would name the remedy as "declare it in the
-  // config" — advice that is already stale.
-  const known = admissibleLaneNames(liveLanes(config));
-  if (typeof requestedLane !== "string" && requestedLane !== undefined) {
-    return { ok: false, reason: unknownLane(String(requestedLane), known) };
-  }
-  const lane = resolveLaneName(requestedLane);
-  if (!known.includes(lane)) {
-    return { ok: false, reason: unknownLane(lane, known) };
-  }
-  return { ok: true, lane };
+  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
@@ -343,7 +317,7 @@ export function buildAgentList(agents: unknown): string {
   return names.join(", ");
 }
 
-export async function fetchAgents(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
+export async function fetchAgents(client: AgentLister, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
   return (await fetchAgentListing(client, cacheTtlMs)).agents;
 }
 
@@ -365,14 +339,33 @@ export interface AgentListing {
   known: boolean;
 }
 
+/**
+ * The dispatchable agent NAMES, or null when the host could not be asked.
+ *
+ * Two processes need this and neither can see the other's answer: the tool that
+ * renders `task_list` and the TUI that renders the cap screen are separate modules in
+ * separate processes, and both must ask "what could this project delegate to" the same
+ * way. `null` is carried rather than collapsed into an empty list because the two
+ * render differently and mean opposite things — no agents means this project cannot
+ * delegate at all, a failed read means we do not know — and a caller that cannot tell
+ * them apart will report a fleet it never observed.
+ */
+export async function dispatchableAgentNamesOrNull(
+  client: AgentLister,
+  config: DynamicTaskConfig,
+): Promise<string[] | null> {
+  const listing = await fetchAgentsOrUnknown(client, config.agentCacheTtlMs);
+  return listing.known ? dispatchableAgentNames(listing.agents, config) : null;
+}
+
 export async function fetchAgentsOrUnknown(
-  client: OpenCodeClient,
+  client: AgentLister,
   cacheTtlMs: number = CACHE_TTL,
 ): Promise<AgentListing> {
   return fetchAgentListing(client, cacheTtlMs);
 }
 
-async function fetchAgentListing(client: OpenCodeClient, cacheTtlMs: number = CACHE_TTL): Promise<AgentListing> {
+async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE_TTL): Promise<AgentListing> {
   // Non-object clients (the host's probes) can't key a WeakMap; they also
   // can't serve a successful fetch, so they simply never cache.
   const cacheKey: object | null = typeof client === "object" && client !== null ? client : null;

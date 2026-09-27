@@ -2,51 +2,34 @@
 // Normalizes plugin options and environment overrides into one typed record.
 // Durable-state bounds live here (retention TTL, entry cap). There are no
 // wait budgets to own: the plugin arms no timers — settlement is event-driven.
+//
+// This module owns PRECEDENCE — which of the places a config comes from wins — and
+// nothing else. What a cap MEANS, which agent it belongs to, and whether a dispatch
+// may spend one are `caps.ts`, which imports the shape from here. The split is the
+// point: a config that also judged its own numbers had two answers to "how many of
+// this agent may run", and the one that happened to be called first was the one the
+// operator saw.
 import { readFileSync } from "node:fs";
 import type { PluginOptions } from "@opencode-ai/plugin";
-
-/**
- * A lane's own caps, BY NAME. This list is the source and `LaneConfig` is derived
- * from it, which is the only reason the list is a value.
- *
- * A lane cap reaches the plugin through two paths — the config file at boot and
- * the overlay file while running — and both are read field by field, by a reader
- * that had no way to learn a field existed. Adding a cap to the type therefore
- * did nothing: the reader still ignored it, every overlay dropped it, and the
- * build stayed green because a type the reader never mentions cannot be violated.
- * `readLaneBody` now iterates THIS list, so a cap that is declared is a cap that
- * is read, and the one that has to be remembered is the one nobody can add
- * quietly.
- *
- * A cap is a positive integer, which is what makes the derived shape uniform: a
- * new cap is a new name here, never a new type to widen the union below.
- */
-export const LANE_CAP_NAMES = ["maxConcurrent", "maxDepth"] as const;
-
-/** One lane's own limit. Named so a reader can iterate it; see `LANE_CAP_NAMES`. */
-export type LaneConfigName = (typeof LANE_CAP_NAMES)[number];
-
-/**
- * One lane's own limits. Every field is optional because a lane may set only some
- * of them and inherit the rest from the top level — the resolved value
- * (LanePolicy) is the one that has all of them.
- */
-export type LaneConfig = { [K in LaneConfigName]?: number };
+import { agentKey, parseAgentCaps, type AgentCaps } from "./caps.js";
+import { isPlainRecord } from "./host-shape.js";
 
 export interface DynamicTaskConfig {
   maxDepth: number;
   maxConcurrent: number;
-  /** Named concurrency lanes. Empty means "no lanes declared", not "no lanes". */
-  lanes: Record<string, LaneConfig>;
+  /**
+   * Per-agent caps, by agent name. Empty means "no agent is capped separately", not
+   * "no agents" — the keys are the HOST's registered agents, so this is a set of
+   * exceptions to the two numbers above, never a second vocabulary of the
+   * operator's own. See `resolveAgentCaps`.
+   */
+  agents: Record<string, AgentCaps>;
   agentCacheTtlMs: number;
   retainedTaskTtlMs: number;
   retainedTaskMaxEntries: number;
   blockedAgents: string[];
   allowSameAgentRecursion: boolean;
 }
-
-/** The lane every dispatch lands in when it does not name one. */
-export const DEFAULT_LANE = "default";
 
 /**
  * A fresh default set, BY CONSTRUCTION rather than by copying.
@@ -66,7 +49,7 @@ function buildDefaultConfig(): DynamicTaskConfig {
   return {
     maxDepth: 2,
     maxConcurrent: 4,
-    lanes: {},
+    agents: {},
     agentCacheTtlMs: 300_000,
     retainedTaskTtlMs: 3_600_000,
     retainedTaskMaxEntries: 100,
@@ -109,9 +92,7 @@ function trimStringList(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
+
 
 function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
@@ -120,7 +101,7 @@ function positiveInt(value: unknown): number | undefined {
 // Shape-checked merge of one untyped config source (tuple options or parsed
 // file) onto the target — invalid fields are ignored, never coerced.
 function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
-  if (!isRecord(src)) return;
+  if (!isPlainRecord(src)) return;
   const s = src;
   if (positiveInt(s.maxDepth) !== undefined) target.maxDepth = positiveInt(s.maxDepth) as number;
   if (positiveInt(s.maxConcurrent) !== undefined) target.maxConcurrent = positiveInt(s.maxConcurrent) as number;
@@ -133,57 +114,19 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
     target.blockedAgents = s.blockedAgents.filter((a): a is string => typeof a === "string" && a.trim().length > 0);
   }
   if (typeof s.allowSameAgentRecursion === "boolean") target.allowSameAgentRecursion = s.allowSameAgentRecursion;
-  if (!isRecord(s.lanes)) return;
-  for (const [rawName, rawLane] of Object.entries(s.lanes)) {
-    const name = normalizeLaneName(rawName);
-    // A lane carrying no usable number is not a lane. Keeping it would make
-    // "declared" and "actually constrained" two different sets, and a lane the
-    // operator can see in the UI but that constrains nothing is worse than one
-    // that was never declared.
-    const lane = parseLane(rawLane);
-    if (!name || !lane) continue;
-    target.lanes[name] = { ...target.lanes[name], ...lane };
+  if (!isPlainRecord(s.agents)) return;
+  for (const [rawName, rawBody] of Object.entries(s.agents)) {
+    // `agentKey` and `parseAgentCaps` are the caps module's, deliberately: this is the
+    // WRITE side of the same two questions the resolver asks on the read side, and an
+    // answer to each that lived on both sides is an answer that can disagree. A cap
+    // written here is then guaranteed to be one `resolveAgentCaps` will find.
+    const name = agentKey(rawName);
+    const caps = parseAgentCaps(rawBody);
+    if (!name || !caps) continue;
+    target.agents[name] = { ...target.agents[name], ...caps };
   }
 }
 
-/**
- * A lane's declared overrides, or null when the lane does not exist.
- *
- * Two ways to write a body mean different things, and conflating them is a
- * silent wrong answer in both directions:
- *
- * - A body that names NO knob (`{}`) is a declaration with no overrides — the
- *   only spelling available for "a lane of its own, on the same budget", which
- *   is the point of declaring a lane for concurrency accounting alone. Inheriting
- *   the top-level numbers is what it means.
- * - A body that names a knob and gets an unusable value (`{maxDepth: -2}`) is a
- *   lane the operator tried to size and we cannot honour. It is DROPPED, and
- *   dropping is the loud option among the silent ones: standing in the top-level
- *   numbers instead would answer a question the operator did not ask, by quietly
- *   spending a depth they explicitly overrode.
- */
-function parseLane(raw: unknown): LaneConfig | null {
-  if (!isRecord(raw)) return null;
-  const maxConcurrent = positiveInt(raw.maxConcurrent);
-  const maxDepth = positiveInt(raw.maxDepth);
-  if ("maxConcurrent" in raw || "maxDepth" in raw) {
-    if (maxConcurrent === undefined && maxDepth === undefined) return null;
-    return {
-      ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
-      ...(maxDepth !== undefined ? { maxDepth } : {}),
-    };
-  }
-  return {};
-}
-
-function normalizeLaneName(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
-}
-
-/** The lane a value denotes. Total: anything unusable is the default lane. */
-export function resolveLaneName(value: unknown): string {
-  return normalizeLaneName(value) || DEFAULT_LANE;
-}
 
 /**
  * The environment variable each knob is read from, named once.
@@ -240,89 +183,13 @@ export function normalizeDynamicTaskConfig(
   return {
     maxDepth: merged.maxDepth,
     maxConcurrent: merged.maxConcurrent,
-    lanes: merged.lanes,
+    agents: merged.agents,
     agentCacheTtlMs: merged.agentCacheTtlMs,
     retainedTaskTtlMs: merged.retainedTaskTtlMs,
     retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
     blockedAgents: merged.blockedAgents,
     allowSameAgentRecursion: merged.allowSameAgentRecursion,
   };
-}
-
-/** The only part of the config a lane decision reads. */
-export type LaneConfigSource = Pick<DynamicTaskConfig, "maxConcurrent" | "maxDepth" | "lanes">;
-
-export interface LanePolicy {
-  name: string;
-  maxConcurrent: number;
-  maxDepth: number;
-}
-
-/** The lane a name resolves to, with every number filled in. */
-export function resolveLane(config: LaneConfigSource, name: string): LanePolicy {
-  const lane = config.lanes[name] ?? {};
-  return {
-    name,
-    maxConcurrent: lane.maxConcurrent ?? config.maxConcurrent,
-    maxDepth: lane.maxDepth ?? config.maxDepth,
-  };
-}
-
-/** Every declared lane, in declaration order. Empty means none were declared. */
-export function knownLaneNames(config: LaneConfigSource): string[] {
-  return Object.keys(config.lanes);
-}
-
-/**
- * Every lane name admission will accept: the default lane, always, plus the
- * declared ones. The default is unconditional on purpose — it is where every
- * dispatch lands when it does not name a lane, so making it conditional means
- * that declaring ONE lane silently invalidates every dispatch that omits it, and
- * an operator's first `lanes` block would break their existing calls.
- *
- * One definition, because the gate's accept-set and the UI's list of lanes to
- * offer are the same rule. Two derivations of it would drift, and the drift
- * would be a lane the UI offers that admission then refuses.
- */
-export function admissibleLaneNames(config: LaneConfigSource): string[] {
-  return [DEFAULT_LANE, ...knownLaneNames(config).filter((name) => name !== DEFAULT_LANE)];
-}
-
-export interface LaneCapacity {
-  /** Running tasks in the lane being admitted. */
-  laneActive: number;
-  /** Running tasks in the whole store, every lane. */
-  totalActive: number;
-}
-
-/**
- * The one capacity judgment, and it answers two questions in two different
- * words.
- *
- * A lane cap and the cross-lane ceiling are separate refusals: telling an
- * operator "4 active" when their own lane is empty and someone else's fleet
- * filled the ceiling is the case this split exists for, because the knob that
- * fixes it is not the one the message would otherwise name.
- *
- * Lanes partition concurrency, they never multiply it — the ceiling is the
- * top-level maxConcurrent regardless of how many lanes exist, so declaring
- * eight lanes of four cannot spend more than four.
- */
-export function checkLaneCapacity(capacity: LaneCapacity, lane: LanePolicy, ceiling: number): string | null {
-  const hint =
-    "Wait for a completion notification to arrive, or raise the cap. Use task_list to see the slot holders; task_interrupt frees a slot, and reviving a settled task needs a free slot too.";
-  if (capacity.laneActive >= lane.maxConcurrent) {
-    return `ConcurrencyLimitExceeded: lane "${lane.name}" cannot run more than ${counted(lane.maxConcurrent)} (current: ${capacity.laneActive}). ${hint}`;
-  }
-  if (capacity.totalActive >= ceiling) {
-    return `ConcurrencyLimitExceeded: the total ceiling of ${counted(ceiling)} is reached across all lanes (current: ${capacity.totalActive}), so a free slot in lane "${lane.name}" cannot be used. ${hint}`;
-  }
-  return null;
-}
-
-/** "1 active task", "4 active tasks" — a cap's own number, read as English. */
-function counted(n: number): string {
-  return `${n} active ${n === 1 ? "task" : "tasks"}`;
 }
 
 // File config (.opencode/dynamic-task-plugin.jsonc) parsed leniently and

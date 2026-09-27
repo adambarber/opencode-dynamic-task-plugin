@@ -325,7 +325,7 @@ describe("task fleet views", () => {
     answerSays(list, "Retained: 1");
     });
 
-  describe("the lanes line", () => {
+  describe("the agents line", () => {
     // Each case declares the agent set it is reasoning about, so the expected
     // depth follows from the case instead of from whatever the mock happens to
     // publish today.
@@ -344,18 +344,49 @@ describe("task fleet views", () => {
       return h.tool.task_list.execute({});
     };
 
-    it("shows the default lane even with none declared, so a cap is always visible", async () => {
-      const list = await listed({ maxDepth: 2 });
-      answerSays(list, "Lanes (active/cap):", "the section is present with no lanes configured");
-      assert.match(list, /- default 0\/4 · depth 2/, "occupancy, cap, and the depth in force");
+    /**
+     * The agents section of a list, as its own lines, so a case states the config and
+     * not a string it is hunting for.
+     *
+     * Cut at the blank line, not at the end of the text: the section is one of three
+     * and a helper that ran on would make a case about depth assert over the retained
+     * block too — which passes while saying nothing about the row it was written for.
+     */
+    const agentsLine = async (options, hooks) => {
+      const list = await listed(options, hooks);
+      const at = list.indexOf("Agents (active/cap):");
+      assert.notEqual(at, -1, "the agents line is present");
+      const rest = list.slice(at + "Agents (active/cap):".length);
+      return rest.split("\n").slice(1).filter(Boolean).slice(0, rest.split("\n").slice(1).indexOf(""));
+    };
+
+    /**
+     * This config must produce exactly this agents line, and say why if it does not.
+     *
+     * The claim, not the string, is the point — so the expected lines are built from
+     * the same cap numbers the config carries rather than typed out, and a change to
+     * the row's spelling fails one place with one message instead of three.
+     */
+    const expectAgentsLine = async (options, expected, why, hooks) =>
+      assert.deepEqual(await agentsLine(options, hooks), expected, why);
+
+    it("shows every REGISTERED agent even with nothing capped, so a cap is always visible", async () => {
+      // The whole point of keying by agent: the rows come from the host's own set, so
+      // the line is populated on a project that has never been configured. Under lanes
+      // this could only show a "default" row standing in for one nobody had declared.
+      await expectAgentsLine({ maxDepth: 2 },
+        AGENTS.map((agent) => `- ${agent.name} 0/4 at once · depth 2`),
+        "occupancy, cap, and the depth in force, for every agent the host publishes, and nothing else");
     });
 
-    it("counts a running task against the lane it was dispatched into", async () => {
+    it("counts a running task against the AGENT it was dispatched as", async () => {
       // Not `listed`, because the case is about what a SPAWN does to the count, so
       // it has to hold the harness to spawn through rather than have one built for it.
-      const h = await setupHarness({ options: { lanes: { build: { maxConcurrent: 3 } } }, hooks: { agentsList: AGENTS } });
-      await h.spawn({ description: "in the build lane", lane: "build" });
-      assert.match(await h.tool.task_list.execute({}), /- build 1\/3/, "the task is charged to the lane it named");
+      const h = await setupHarness({ options: { agents: { explore: { maxConcurrent: 3 } } }, hooks: { agentsList: AGENTS } });
+      await h.spawn({ description: "an explore child" });
+      const list = await h.tool.task_list.execute({});
+      assert.match(list, /- explore 1\/3/, "the task is charged to the agent it ran as");
+      assert.match(list, /- coder 0\/4/, "and no other agent is charged for it — a cap is not a shared pool");
     });
 
     it("names the constraint that caps depth, because the cap alone is not in force", async () => {
@@ -371,8 +402,14 @@ describe("task fleet views", () => {
     });
 
     it("a host that cannot list agents leaves the depth UNKNOWN, not zero", async () => {
-      assert.match(await listed({ maxDepth: 4 }, { agentsListThrows: true }), /depth 4 \(dispatchable agents unknown\)/,
+      // Stated on an agent the overlay caps, because that is the only case where a row
+      // exists at all: with a failed read and nothing capped there is no agent to report
+      // on, and the line is simply absent rather than reporting a depth of nothing.
+      const config = { maxDepth: 4, agents: { explore: { maxDepth: 4 } } };
+      const lines = await agentsLine(config, { agentsListThrows: true });
+      assert.deepEqual(lines, [`- explore 0/4 at once (yours) · depth ${config.maxDepth} (dispatchable agents unknown)`],
         "an unreadable agent set is an unknown; saying 0 would claim no delegation is possible");
+      assert.doesNotMatch(lines.join("\n"), /depth 0/, "and 0 is the specific number that must never stand in for it");
     });
   });
 

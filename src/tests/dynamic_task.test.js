@@ -74,7 +74,7 @@ describe("dynamic_task validation", () => {
 
     const second = await limited.tool.dynamic_task.execute(dispatchArgs("task two"), { sessionID: "p1" });
     answerSays(second, "ConcurrencyLimitExceeded", "the refusal is the limit, in its own words");
-    answerSays(second, "lane", "and names the lane that is full, so the operator knows which knob to raise");
+    answerSays(second, 'agent "explore"', "and names the agent that is full, so the operator knows which knob to raise");
     answerSays(second, "1 active task", "singular for a cap of one — a slot count is read by a person");
     answerSays(second, "task_list", "points at the slot holders");
     });

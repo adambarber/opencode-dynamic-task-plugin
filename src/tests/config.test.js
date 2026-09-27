@@ -8,7 +8,8 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
-import { ENV, DEFAULT_CONFIG, DEFAULT_LANE, admissibleLaneNames, checkLaneCapacity, knownLaneNames, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, resolveLane, resolveLaneName } from "../../dist/shared/config.js";
+import { ENV, DEFAULT_CONFIG, normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../../dist/shared/config.js";
+import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
 import { bothCaps } from "./support/fixtures.js";
@@ -198,138 +199,112 @@ describe("config field parsing edges", () => {
   });
 });
 
-describe("lanes: which policy a lane name resolves to", () => {
+describe("agents: which policy an agent name resolves to", () => {
   /**
-   * One budget, three spellings of a lane: both knobs overridden, one knob
-   * overridden, and a name with no knobs of its own. A describe-level config
-   * because the cases below are about how a NAME resolves — spelling a config
-   * per case would make each one about the spelling instead.
+   * One budget, three spellings of an agent's caps: both overridden, one
+   * overridden, and — the case the config file cannot express — an agent the
+   * operator has not capped at all. A describe-level config because the cases below
+   * are about how a NAME resolves; spelling a config per case would make each one
+   * about the spelling instead.
    */
-  const sharedLanes = normalizeDynamicTaskConfig({
+  const shared = normalizeDynamicTaskConfig({
     maxDepth: 3,
     maxConcurrent: 5,
-    lanes: { deep: { maxDepth: 4 }, quick: { maxConcurrent: 2 }, accounting: {} },
+    agents: { deep: { maxDepth: 4 }, quick: { maxConcurrent: 2 } },
   });
 
-  /** A lane's LIMITS, without the name — two lanes mean the same policy when these match. */
-  const limits = (config, name) => {
-    const { maxDepth, maxConcurrent } = resolveLane(config, name);
+  /** An agent's CAPS, without the name — two agents mean the same policy when these match. */
+  const caps = (config, name) => {
+    const { maxDepth, maxConcurrent } = resolveAgentCaps(config, name);
     return { maxDepth, maxConcurrent };
   };
 
-  it("with no lanes configured, any name runs on the top-level numbers", () => {
-    // Not a lane: this is the config's OWN caps, which share the keys only because a
-    // lane inherits them. `bothCaps` would say these belong to a lane.
+  it("with no agents configured, any name runs on the top-level numbers", () => {
+    // The common case, and it is the top-level numbers because an agent is counted
+    // on its own without being declared: `knownCappedAgents` being empty means no
+    // agent is capped SEPARATELY, not that there are no agents.
     const config = normalizeDynamicTaskConfig({ maxConcurrent: 3, maxDepth: 2 });
-    const lane = resolveLane(config, "anything");
-    assert.deepStrictEqual(lane, { name: "anything", maxConcurrent: 3, maxDepth: 2 });
+    assert.deepStrictEqual(resolveAgentCaps(config, "anything"), { agent: "anything", maxConcurrent: 3, maxDepth: 2 });
   });
 
-  it("a configured lane resolves to its own numbers", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, lanes: { deep: bothCaps(1, 3) } });
-    assert.deepStrictEqual(resolveLane(config, "deep"), { name: "deep", maxConcurrent: 1, maxDepth: 3 });
+  it("a configured agent resolves to its own numbers", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, agents: { deep: bothCaps(1, 3) } });
+    assert.deepStrictEqual(resolveAgentCaps(config, "deep"), { agent: "deep", maxConcurrent: 1, maxDepth: 3 });
   });
 
-  it("a lane that omits one number inherits the top-level value for it", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, maxDepth: 5, lanes: { deep: { maxDepth: 3 } } });
-    assert.deepStrictEqual(resolveLane(config, "deep"), { name: "deep", maxConcurrent: 4, maxDepth: 3 });
+  it("an agent that omits one number inherits the top-level value for it", () => {
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, maxDepth: 5, agents: { deep: { maxDepth: 3 } } });
+    assert.deepStrictEqual(resolveAgentCaps(config, "deep"), { agent: "deep", maxConcurrent: 4, maxDepth: 3 });
   });
 
-  it("knownLaneNames lists the configured lanes, and nothing when none are", () => {
-    assert.deepStrictEqual(knownLaneNames(normalizeDynamicTaskConfig(null)), []);
+  it("knownCappedAgents lists the configured agents, and nothing when none are", () => {
+    assert.deepStrictEqual(knownCappedAgents(normalizeDynamicTaskConfig(null)), []);
     assert.deepStrictEqual(
-      knownLaneNames(normalizeDynamicTaskConfig({ lanes: { deep: { maxDepth: 3 }, quick: { maxConcurrent: 2 } } })).sort(),
+      knownCappedAgents(normalizeDynamicTaskConfig({ agents: { deep: { maxDepth: 3 }, quick: { maxConcurrent: 2 } } })).sort(),
       ["deep", "quick"],
     );
   });
 
-  it("a name is normalized the same way everywhere it is spelled", () => {
-    assert.strictEqual(resolveLaneName("  Deep  "), "deep");
-    assert.strictEqual(resolveLaneName(""), DEFAULT_LANE);
-    assert.strictEqual(resolveLaneName(undefined), DEFAULT_LANE);
-    assert.strictEqual(resolveLaneName(7), DEFAULT_LANE);
+  it("every normalized config is its own object — declaring an agent in one cannot leak into another", () => {
+    const before = knownCappedAgents(shared);
+    assert.deepStrictEqual(before.sort(), ["deep", "quick"]);
+    assert.deepStrictEqual(knownCappedAgents(normalizeDynamicTaskConfig({})), [], "a config normalized after the agent config must not see it");
+    assert.deepStrictEqual(knownCappedAgents(DEFAULT_CONFIG), [], "and the process-wide default must still be the default");
+    assert.deepStrictEqual(knownCappedAgents(shared), before, "and reading the caps cannot have changed it either");
   });
 
-  it("every normalized config is its own object — declaring a lane in one cannot leak into another", () => {
-    const before = knownLaneNames(sharedLanes);
-    assert.deepStrictEqual(before, ["deep", "quick", "accounting"]);
-    assert.deepStrictEqual(knownLaneNames(normalizeDynamicTaskConfig({})), [], "a config normalized after the lane config must not see it");
-    assert.deepStrictEqual(knownLaneNames(DEFAULT_CONFIG), [], "and the process-wide default must still be the default");
-    assert.deepStrictEqual(knownLaneNames(sharedLanes), before, "and reading a lane cannot have changed it either");
+  it("agents are normalized at the config boundary, so 'Deep' and 'deep' are one agent", () => {
+    // The write side of the key space. Folding only the READ side is how a cap an
+    // operator set applies to no agent at all, with no error and no refusal.
+    const config = normalizeDynamicTaskConfig({ agents: { Deep: { maxConcurrent: 2 } } });
+    assert.deepStrictEqual(knownCappedAgents(config), ["deep"]);
+    assert.strictEqual(resolveAgentCaps(config, "deep").maxConcurrent, 2);
+    assert.strictEqual(resolveAgentCaps(config, "Deep").maxConcurrent, 2, "and the host's spelling finds it too");
   });
 
-  it("the default lane is admissible whether or not any lane was declared", () => {
-    assert.deepStrictEqual(admissibleLaneNames(normalizeDynamicTaskConfig({})), [DEFAULT_LANE], "with nothing declared the default lane is still the one that works");
-    assert.deepStrictEqual(admissibleLaneNames(sharedLanes), [DEFAULT_LANE, "deep", "quick", "accounting"]);
+  it("an agent with unusable numbers is dropped, not coerced to zero and not inherited", () => {
+    const config = normalizeDynamicTaskConfig({ maxDepth: 2, agents: { zero: { maxConcurrent: 0 }, neg: { maxDepth: -2 } } });
+    assert.deepStrictEqual(knownCappedAgents(config), [], "a knob the operator set and we cannot honour is not a cap at all");
     assert.deepStrictEqual(
-      admissibleLaneNames(normalizeDynamicTaskConfig({ lanes: { [DEFAULT_LANE]: { maxDepth: 9 } } })),
-      [DEFAULT_LANE],
-      "declaring the default lane must not make it appear twice, or the UI would offer it twice",
-    );
-  });
-
-  it("lanes are normalized at the config boundary, so 'Deep' and 'deep' are one lane", () => {
-    const config = normalizeDynamicTaskConfig({ lanes: { Deep: { maxConcurrent: 2 } } });
-    assert.deepStrictEqual(knownLaneNames(config), ["deep"]);
-    assert.strictEqual(resolveLane(config, "deep").maxConcurrent, 2);
-  });
-
-  it("a lane with unusable numbers is dropped, not coerced to zero and not inherited", () => {
-    const config = normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { zero: { maxConcurrent: 0 }, neg: { maxDepth: -2 } } });
-    assert.deepStrictEqual(knownLaneNames(config), [], "a knob the operator set and we cannot honour is not a lane at all");
-    assert.deepStrictEqual(
-      knownLaneNames(normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { zero: { maxConcurrent: 0 }, ok: { maxDepth: 9 } } })),
+      knownCappedAgents(normalizeDynamicTaskConfig({ maxDepth: 2, agents: { zero: { maxConcurrent: 0 }, ok: { maxDepth: 9 } } })),
       ["ok"],
-      "and one usable knob is enough to keep a lane that also carries an unusable one",
+      "and one usable knob is enough to keep an agent that also carries an unusable one",
     );
   });
 
-  // The three spellings a lane can be written in, over ONE budget, so the case
-  // below is about how a name RESOLVES rather than about how a config is
-  // spelled. Two of these spellings are the same lane and must be equal: an
-  // operator who wrote no knobs meant the top-level numbers, not a lane that
-  // happens to be missing them.
-  it("a lane resolves to its own overrides, filled in from the top level", () => {
-    assert.deepStrictEqual(resolveLane(sharedLanes, "deep"), { name: "deep", maxDepth: 4, maxConcurrent: 5 });
-    assert.deepStrictEqual(resolveLane(sharedLanes, "quick"), { name: "quick", maxDepth: 3, maxConcurrent: 2 });
-    assert.deepStrictEqual(resolveLane(sharedLanes, "accounting"), { name: "accounting", maxDepth: 3, maxConcurrent: 5 });
-  });
-
-  it("a lane with no knobs of its own is the top-level budget under a name", () => {
-    assert.deepStrictEqual(limits(sharedLanes, "accounting"), limits(sharedLanes, DEFAULT_LANE),
-      "separate accounting on the default budget must be expressible, and must mean the default budget");
-  });
-
-  it("a lane nobody declared resolves to the top level, because the name is not a claim", () => {
-    assert.deepStrictEqual(limits(sharedLanes, "typo"), limits(sharedLanes, DEFAULT_LANE));
+  it("an agent nobody declared resolves to the top level, because the name is not a claim", () => {
+    // A lane had a separate accept-set, so an undeclared name was REFUSED and the
+    // operator was told to declare it. Here the name is the host's own and every
+    // registered agent is admitted without being configured — which is what makes the
+    // screen able to show one row per agent on a project that has never touched it.
+    assert.deepStrictEqual(caps(shared, "typo"), { maxDepth: 3, maxConcurrent: 5 },
+      "an uncapped agent runs on the top-level numbers, which is what the host's own agents do");
   });
 });
 
-describe("lanes: capacity", () => {
-  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { quick: bothCaps(1, 2) } });
-  const quick = resolveLane(config, "quick");
+describe("agents: capacity", () => {
+  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, agents: { quick: bothCaps(1, 2) } });
+  const quick = resolveAgentCaps(config, "quick");
 
-  it("returns null when the lane is under its own cap", () => {
+  it("returns null when the agent is under its own cap", () => {
     assertNothing(
-      checkLaneCapacity({ laneActive: 0, totalActive: 1 }, quick, config.maxConcurrent),
-      "a free slot in the lane is reported as no error at all",
+      checkAgentCapacity({ agentActive: 0, totalActive: 1 }, quick, config.maxConcurrent),
+      "a free slot on the agent is reported as no error at all",
     );
   });
 
-  it("the lane's own cap refuses, and names the lane", () => {
-    const result = checkLaneCapacity({ laneActive: 1, totalActive: 1 }, quick, config.maxConcurrent);
-    assert.ok(result.includes("quick"), "a lane refusal must name the lane, or the operator cannot tell which knob to turn");
+  it("the agent's own cap refuses, and names the agent", () => {
+    const result = checkAgentCapacity({ agentActive: 1, totalActive: 1 }, quick, config.maxConcurrent);
+    assert.ok(result.includes("quick"), "an agent refusal must name the agent, or the operator cannot tell which knob to turn");
     assert.ok(result.includes("1"));
   });
 
-  it("the global ceiling refuses across lanes, and says so", () => {
-    const roomy = resolveLane(normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { a: {}, b: {} } }), "b");
-    const result = checkLaneCapacity({ laneActive: 0, totalActive: 2 }, roomy, 2);
+  it("the ceiling refuses across agents, and says so", () => {
+    // The knob that fixes it is not the one the per-agent message names, so
+    // conflating them sends the operator to edit a cap that was never the constraint.
+    const roomy = resolveAgentCaps(config, "other");
+    const result = checkAgentCapacity({ agentActive: 0, totalActive: 2 }, roomy, 2);
     assert.ok(result.includes("2"));
-    assert.ok(/total|ceiling/i.test(result), "a cross-lane refusal must distinguish the ceiling from a lane cap");
-  });
-
-  it("an empty lane name is impossible: resolveLaneName defaults before a cap is ever judged", () => {
-    assert.strictEqual(resolveLaneName(undefined), DEFAULT_LANE);
+    assert.ok(/total|ceiling/i.test(result), "a cross-agent refusal must distinguish the ceiling from an agent cap");
   });
 });

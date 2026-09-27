@@ -12,7 +12,7 @@ import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, laneCapacityRefusal, TaskState } from "../shared/task-state.js";
+import { transitionState, agentCapacityRefusal, TaskState } from "../shared/task-state.js";
 import { NotifyKind } from "../shared/notify.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
@@ -41,12 +41,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // Admission gate: resolve + policy-check before session.create.
   // Fail-fast ordering: unknown callers are rejected before payload validation.
   const lineage = createDummyLineage(ctx, store);
-  const admission = resolveAdmission(agents, args.subagent_type, lineage, config, args.lane);
+  const admission = resolveAdmission(agents, args.subagent_type, lineage, config);
   if (!admission.ok) {
     return admission.reason.refusal;
   }
   const agent = admission.agent;
-  const lane = admission.lane;
 
   // The shared opening for a prompt-bearing tool: prompt and model shape are
   // admission-checked before the session exists (a bad id would otherwise fail
@@ -90,7 +89,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // The judgment is the store's, not ours — this is the same function the
   // authoritative re-check calls, so an advisory pass and the gate that
   // overrides it cannot come to disagree about what "full" means.
-  const limitError = laneCapacityRefusal(store, lane, config);
+  const limitError = agentCapacityRefusal(store, agent.name, config);
   if (limitError) return `ERROR: ${limitError}`;
 
   let createdSessionId: string | null = null;
@@ -125,7 +124,6 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       agentName: agent.name,
       description: args.description || `Task: ${agent.name}`,
       lineage: admission.newLineage,
-      lane,
       ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
       ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
       ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),

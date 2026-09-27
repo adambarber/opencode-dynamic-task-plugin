@@ -23,11 +23,12 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
-import type { LaneConfigSource, DynamicTaskConfig } from "./config.js";
+import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
+import { agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps, type AgentCapSource } from "./caps.js";
 import type { WaitRegistry } from "./dispatch-wait.js";
-import { liveLanes } from "./lane-overlay.js";
+
 import type { ModelOverride } from "./prompt.js";
-import { checkLaneCapacity, resolveLane, resolveLaneName, DEFAULT_CONFIG } from "./config.js";
+
 
 /**
 /**
@@ -120,12 +121,11 @@ export interface TaskIdentity {
 export interface TaskRecordBase extends TaskIdentity {
   startedAt: number;
   lineage: LineagePath;
-  /**
-   * The concurrency lane this task occupies a slot in. A routing fact, not
-   * lifecycle: a revival keeps the lane its settled record was running in, so
-   * the record and its re-admission are always counted against the same budget.
-   */
-  lane: string;
+  // The agent is the routing fact, and it was here all along: `agentName` is on
+  // `TaskIdentity`, so a task has always known which agent occupies its slot. The
+  // lane field it used to carry alongside was a SECOND answer to the same question,
+  // and the two were free to disagree — which is how a capped lane got filled by
+  // children that were dispatched somewhere else. There is one key now.
   requestedModel?: ModelOverride | undefined;
   dependsOn?: string[] | undefined;
   // Admission-time only: ids that needed settlement, not success, before this
@@ -296,19 +296,19 @@ export function withdrawInterruptClaim(
   store: TaskStore,
   childSessionId: string,
   claimTimeMs: number,
-  bounds?: LaneConfigSource,
+  bounds?: AgentCapSource,
 ): boolean {
   return decideRetained(store, childSessionId, (retained) => {
     if (retained.state !== TaskState.Interrupted) return false;
     // >= not >: a successful abort landing in the same millisecond as the
     // claim is still knowledge — the newer (or same-instant) success wins.
     if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
-    // Reclaiming is a slot claim, judged in the lane the record was in.
+    // Reclaiming is a slot claim, judged against the agent the record names.
     if (
       bounds &&
-      checkLaneCapacity(
-        { laneActive: laneActiveCount(store, retained.lane), totalActive: store.activeTasks.size },
-        resolveLane(bounds, retained.lane),
+      checkAgentCapacity(
+        { agentActive: agentActiveCount(store, retained.agentName), totalActive: store.activeTasks.size },
+        resolveAgentCaps(bounds, retained.agentName),
         bounds.maxConcurrent,
       )
     ) {
@@ -405,56 +405,82 @@ export function createTaskStore(): TaskStore {
  * revival path with no config in hand), not a limit of zero, so it returns
  * rather than refusing.
  */
-/** Running tasks occupying a slot in one lane. */
-export function laneActiveCount(store: TaskStore, lane: string): number {
+/**
+ * Running tasks occupying a slot on one agent's budget.
+ *
+ * FOLDED, not compared: a record's `agentName` is the host's spelling and a policy key
+ * is `agentKey`'s, so an equality test here would silently undercount an agent the host
+ * names `Explore` while the cap was written under `explore` — and undercounting a busy
+ * agent is the one direction of error that never announces itself. One normalizer, on
+ * both sides, is the whole fix.
+ */
+export function agentActiveCount(store: TaskStore, agent: string): number {
+  const key = agentKey(agent);
   let count = 0;
   for (const record of store.activeTasks.values()) {
-    if (record.lane === lane) count++;
+    if (agentKey(record.agentName) === key) count++;
   }
   return count;
 }
 
 /**
- * The store's ONE lane capacity judgment: the refusal text for admitting into
- * this lane, or null when there is room.
+ * Running tasks per agent, for `agentOccupancy`, in the same folded form.
  *
- * Two callers need this and neither may own it. The authoritative gate claims a
- * slot and throws; the spawn tool checks BEFORE creating a session, because
- * refusing after the session exists orphans an untracked child on the server.
- * Same inputs, same answer, one function — the second caller asking its own
- * question here is how an advisory check and the gate that overrides it come to
- * disagree about what "full" means.
- *
- * It is also where LIVE policy enters, deliberately: this is the one function
- * every claim goes through — a fresh spawn, a revival re-claiming its lane, the
- * boot restore — so resolving the overlay here means an operator's edit applies
- * to every claim without any of those callers knowing a project directory exists.
- * Resolving it at the tool instead would leave a revival judged against the cap
- * that was frozen at boot, which is the inconsistency an operator hits the first
- * time they raise a cap and then revive something.
+ * Built here rather than in the caps module because the caps module must not know what
+ * a task is: `task-state` needs `checkAgentCapacity` to judge a claim, so the
+ * dependency runs inward and the count crosses as DATA. Handing `agentOccupancy` the
+ * store instead would have been a cycle wearing a parameter.
  */
-export function laneCapacityRefusal(
+export function activeByAgent(store: TaskStore): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const record of store.activeTasks.values()) {
+    const key = agentKey(record.agentName);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/**
+ * The store's ONE capacity judgment: the refusal text for admitting an agent, or null
+ * when there is room.
+ *
+ * Two callers need this and neither may own it. The authoritative gate claims a slot
+ * and throws; the spawn tool checks BEFORE creating a session, because refusing after
+ * the session exists orphans an untracked child on the server. Same inputs, same
+ * answer, one function — the second caller asking its own question here is how an
+ * advisory check and the gate that overrides it come to disagree about what "full"
+ * means.
+ *
+ * It is also where LIVE policy enters, deliberately: this is the one function every
+ * claim goes through — a fresh spawn, a revival re-claiming its agent's budget, the
+ * boot restore — so resolving the overlay here means an operator's edit applies to
+ * every claim without any of those callers knowing a project directory exists.
+ * Resolving it at the tool instead would leave a revival judged against the cap that
+ * was frozen at boot, which is the inconsistency an operator hits the first time they
+ * raise a cap and then revive something.
+ */
+export function agentCapacityRefusal(
   store: TaskStore,
-  lane: string,
-  config: LaneConfigSource | undefined,
+  agent: string,
+  config: AgentCapSource | undefined,
 ): string | null {
   if (!config) return null;
-  const policy = liveLanes(config);
-  return checkLaneCapacity(
-    { laneActive: laneActiveCount(store, lane), totalActive: store.activeTasks.size },
-    resolveLane(policy, lane),
+  const policy = liveAgentCaps(config);
+  return checkAgentCapacity(
+    { agentActive: agentActiveCount(store, agent), totalActive: store.activeTasks.size },
+    resolveAgentCaps(policy, agent),
     policy.maxConcurrent,
   );
 }
 
 /**
- * The authoritative claim on a slot, for both callers that must not proceed
- * without one: a fresh registration, and a revival re-claiming the lane its
- * settled record was running in. The record decides the lane, so a charge can
- * never be aimed at a lane other than the one the task belongs to.
+ * The authoritative claim on a slot, for both callers that must not proceed without
+ * one: a fresh registration, and a revival re-claiming the budget its settled record
+ * was running on. The record decides the agent, so a charge can never be aimed at an
+ * agent other than the one the task belongs to.
  */
-function claimSlot(store: TaskStore, record: { readonly lane: string }, config: LaneConfigSource | undefined): void {
-  const limitError = laneCapacityRefusal(store, record.lane, config);
+function claimSlot(store: TaskStore, record: { readonly agentName: string }, config: AgentCapSource | undefined): void {
+  const limitError = agentCapacityRefusal(store, record.agentName, config);
   if (limitError) throw new Error(limitError);
 }
 
@@ -487,17 +513,20 @@ export function retainedRecord(
 export function registerActiveTask(
   store: TaskStore,
   task: NewTaskRegistration,
-  config: LaneConfigSource,
+  config: AgentCapSource,
 ): ActiveTaskState {
-  // The lane is resolved HERE, once, on the way in. Four things charge it — the
-  // slot claim below, the record, the durable write, and a later revival's
-  // re-claim — and the field is declared required while every JavaScript caller
-  // is free to omit it. Normalizing at this boundary is what makes the four
-  // agree: without it a registration that omits the lane leaves all four holding
-  // `undefined`, and a revived task is re-admitted against a lane that does not
-  // exist. The normalization is idempotent, so resolving an already-resolved
-  // lane costs nothing.
-  const registration = { ...task, lane: resolveLaneName(task.lane) };
+  // The agent is resolved HERE, once, on the way in. Four things charge it — the slot
+  // claim below, the record, the durable write, and a later revival's re-claim — and
+  // the field is declared required while every JavaScript caller is free to omit it.
+  // Normalizing at this boundary is what makes the four agree: without it a
+  // registration that omits the agent leaves all four holding `undefined`, and a
+  // revived task is re-admitted against an agent that does not exist. Idempotent, so
+  // resolving an already-resolved name costs nothing.
+  //
+  // Under lanes this folded a SECOND routing key that the record did not already
+  // carry. Folding the agent instead removes a field rather than adding a rule, and it
+  // is the one field whose value could disagree with `agentName` on the same record.
+  const registration = { ...task, agentName: agentKey(task.agentName) || task.agentName };
   claimSlot(store, registration, config);
   const record = activeRecord(registration, Date.now());
   setActive(store, task.childSessionId, record);
@@ -558,7 +587,7 @@ export function noteLateOutcome(store: TaskStore, childSessionId: string, outcom
 export function reviveRetainedTask(
   store: TaskStore,
   childSessionId: string,
-  config?: LaneConfigSource,
+  config?: AgentCapSource,
   model?: ModelOverride | undefined,
 ): ActiveTaskState {
   const retained = retainedFor(store, childSessionId);
@@ -568,9 +597,9 @@ export function reviveRetainedTask(
   if (retained.state === TaskState.Interrupted) {
     throw new Error(`Task ${childSessionId} was interrupted by request; interrupted children are not revived — spawn a fresh dynamic_task instead.`);
   }
-  // The lane the settled record was running in, not a fresh default: a revival
-  // re-claims a slot, and charging it to a different lane than the one it
-  // occupied is how a capped lane gets filled by its own recovered children.
+  // The agent the settled record was running under, not a fresh lookup: a revival
+  // re-claims a slot, and charging it to a different agent than the one it occupied is
+  // how a capped agent gets filled by its own recovered children.
   claimSlot(store, retained, config);
   const revived = reclaimAsActive(store, childSessionId, retained, {
     // A revival REPLACES the turn, so the clock restarts: this is a new turn of

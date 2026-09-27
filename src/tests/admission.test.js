@@ -10,7 +10,7 @@
 import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { buildAgentList, fetchAgents, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
-import { DEFAULT_LANE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 
@@ -194,29 +194,41 @@ describe("admission gate: resolveAdmission", () => {
     assert.deepStrictEqual(result.newLineage, ["planner", "explore"]);
   });
 
-  describe("a lane's own depth cap is the one that binds", () => {
-    // The defect this pins: a lane declared `maxDepth` that nothing read, so the
-    // field sat in the operator's config looking authoritative while every
-    // dispatch was judged against the top-level number. A declared limit that
-    // does not limit is worse than no field, because it is trusted.
+  describe("the DISPATCHING agent's own depth cap is the one that binds", () => {
+    // The defect this pins, in its new shape: an agent that declared `maxDepth` that
+    // nothing read, so the field sat in the operator's config looking authoritative
+    // while every dispatch was judged against the top-level number. A declared limit
+    // that does not limit is worse than no field, because it is trusted.
+    //
+    // It is now a PLACEMENT limit — the cap belongs to the agent being dispatched, so
+    // it can only be right if the gate resolves the cap from the agent the dispatch
+    // already names rather than from a second key the caller had to supply.
     const agents = [{ name: "architect" }, { name: "coder" }, { name: "explore" }];
-    const capped = normalizeDynamicTaskConfig({ maxDepth: 5, lanes: { build: { maxDepth: 2 } } });
+    const capped = normalizeDynamicTaskConfig({ maxDepth: 5, agents: { explore: { maxDepth: 2 } } });
 
-    it("admits a chain the lane's cap allows, where the top-level cap would also allow", () => {
-      admits(resolveAdmission(agents, "coder", ["architect"], capped, "build"), "depth 1 into a cap of 2");
+    it("admits a chain the agent's cap allows, where the top-level cap would also allow", () => {
+      admits(resolveAdmission(agents, "explore", ["architect"], capped), "depth 1 into a cap of 2");
     });
 
-    it("refuses past the lane's cap while the top-level cap has plenty of room", () => {
-      const result = resolveAdmission(agents, "explore", ["architect", "coder"], capped, "build");
-      refuses(result, "the lane's cap of 2 is spent at depth 2, and maxDepth 5 never applies");
-      assert.match(result.reason.refusal, /lane "build"/, "the refusal names the lane whose cap bound");
+    it("refuses past the agent's cap while the top-level cap has plenty of room", () => {
+      const result = resolveAdmission(agents, "explore", ["architect", "coder"], capped);
+      refuses(result, "the agent's cap of 2 is spent at depth 2, and maxDepth 5 never applies");
+      assert.match(result.reason.refusal, /agent "explore"/, "the refusal names the agent whose cap bound");
     });
 
-    it("a lane that declares no depth of its own inherits the top-level cap", () => {
-      const inherited = normalizeDynamicTaskConfig({ maxDepth: 2, lanes: { build: {} } });
-      admits(resolveAdmission(agents, "coder", ["architect"], inherited, "build"), "depth 1 of 2");
-      refuses(resolveAdmission(agents, "explore", ["architect", "coder"], inherited, "build"),
-        "depth 2 is past the inherited cap of 2");
+    it("another agent's depth cap is not spent by this agent's chain", () => {
+      // The thing a global cap could not do: `explore` capped at 1 is a direct child
+      // and never nested, while `coder` still reaches the full depth. Under one global
+      // number these two were the same dial.
+      const narrow = normalizeDynamicTaskConfig({ maxDepth: 3, agents: { explore: { maxDepth: 1 } } });
+      admits(resolveAdmission(agents, "coder", ["architect", "explore"], narrow), "coder is uncapped, so the chain stands");
+      refuses(resolveAdmission(agents, "explore", ["architect"], narrow), "explore is a direct child only");
+    });
+
+    it("an agent that declares no depth of its own inherits the top-level cap", () => {
+      const inherited = normalizeDynamicTaskConfig({ maxDepth: 2, agents: { explore: { maxConcurrent: 3 } } });
+      admits(resolveAdmission(agents, "explore", ["architect"], inherited), "depth 1 of 2");
+      refuses(resolveAdmission(agents, "explore", ["architect", "coder"], inherited), "depth 2 is past the inherited cap of 2");
     });
   });
 
@@ -328,40 +340,39 @@ describe("admission gate: resolveDependencies", () => {
   });
 });
 
-describe("admission gate: the lane a dispatch asks for", () => {
-  const agents = [{ name: "explore" }];
-  const withLanes = normalizeDynamicTaskConfig({ lanes: { deep: { maxDepth: 4 } } });
+describe("admission gate: there is no second key to ask for", () => {
+  // Under lanes a dispatch named a lane, and the gate ran an ACCEPT-SET check over it:
+  // absent meant the default lane, a declared name was admitted, and a typo was
+  // refused with the list of lanes that do exist. That check existed only because the
+  // lane was a second key the operator had to keep in step with the agent — so it was
+  // a second place to disagree about the same dispatch, and its refusal ("declare it
+  // in the config") was advice that was stale the moment it was read.
+  //
+  // The key space is now the host's own registered agents, and `unknownAgent` above is
+  // the one check on it. These cases pin what that leaves: an agent needs no
+  // declaration to be dispatchable, and an unrecognised one is refused against the
+  // host's list rather than a config's.
+  const agents = [{ name: "explore" }, { name: "general" }];
 
-  it("an absent lane is the default lane", () => {
-    const result = resolveAdmission(agents, "explore", [], withLanes);
+  it("an agent nobody declared is admitted, because the key space is not the operator's", () => {
+    admits(resolveAdmission(agents, "explore", [], normalizeDynamicTaskConfig({ maxConcurrent: 1 })),
+      "a cap on another agent must not make this one undiscoverable");
+  });
+
+  it("an unrecognised agent is refused against the host's own list", () => {
+    const result = resolveAdmission(agents, "typo", [], defaultConfig);
+    refuses(result, "an agent the host does not publish is not dispatchable");
+    said(result.reason?.refusal, '"typo"', "the refusal names the agent that was asked for");
+    said(result.reason?.refusal, "explore", "and points at the agents that do exist");
+  });
+
+  it("the admission result carries no routing key at all", () => {
+    // The record's `agentName` is the one field a slot is charged against. A second
+    // one beside it could disagree with it, and a capped agent filled by children
+    // dispatched elsewhere is what that looks like.
+    const result = resolveAdmission(agents, "explore", [], defaultConfig);
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.lane, DEFAULT_LANE);
-  });
-
-  it("a declared lane is admitted and reported", () => {
-    const result = resolveAdmission(agents, "explore", [], withLanes, "Deep");
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.lane, "deep");
-  });
-
-  it("a lane nobody declared is refused, and the refusal names the lanes that exist", () => {
-    const result = resolveAdmission(agents, "explore", [], withLanes, "typo");
-    refuses(result, "a typo'd lane name is refused rather than silently given the default's budget");
-    said(result.reason?.refusal, '"typo"', "the refusal names the lane that was asked for");
-    said(result.reason?.refusal, "deep", "the refusal names the lanes that do exist");
-  });
-
-  it("with no lanes declared, only the default lane is a name", () => {
-    const result = resolveAdmission(agents, "explore", [], defaultConfig, "whatever");
-    refuses(result, "with nothing declared there is nothing to name but the default lane");
-    said(result.reason?.refusal, '"whatever"', "the refusal echoes the name that was asked for");
-    said(result.reason?.refusal, DEFAULT_LANE, "and points at the one lane that does exist");
-  });
-
-  it("a non-string lane is a refusal, not a quiet fall back to the default", () => {
-    const result = resolveAdmission(agents, "explore", [], withLanes, 7);
-    refuses(result, "a lane that is not a name cannot be resolved to a budget");
-    said(result.reason?.refusal, '"7"', "the refusal echoes what was passed");
+    assert.deepStrictEqual(Object.keys(result).sort(), ["agent", "newLineage", "ok"]);
   });
 });
 

@@ -8,7 +8,7 @@ import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } f
 import type { LedgerChange } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
-import { applyLaneOverlay, installLiveLanes, laneOverlayPath, readLaneOverlay } from "../shared/lane-overlay.js";
+import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
 import { hostTurnOver, readLiveness } from "../shared/liveness.js";
 import { settleRunningChild } from "./lifecycle.js";
 import {
@@ -43,17 +43,34 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // tests and multi-project hosts is somebody else's tree.
   configureDebugRoot(directory);
   const ledgerPath = resolveTaskLedgerPath(directory);
-  installLiveLanes(() => {
-    const { raw, problem } = readLaneOverlay(directory);
+  installLiveAgentCaps(() => {
+    const { raw, problem } = readAgentOverlay(directory);
     // Reported once, at the one moment a client exists. The per-dispatch read is
     // silent by design (a log line on every refusal would be noise), so without
     // this a mangled overlay would simply never apply and the operator would see
     // the old cap with no explanation anywhere.
     if (problem !== null) {
-      void safeLog(client, "warn", `Dynamic task plugin: ignoring the lane overlay at ${laneOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
-      debugLog("plugin", "lanes", "lane-overlay-ignored", { path: laneOverlayPath(directory), reason: problem });
+      void safeLog(client, "warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
+      debugLog("plugin", "agents", "agent-overlay-ignored", { path: agentOverlayPath(directory), reason: problem });
     }
-    return { source: applyLaneOverlay(config, raw).source, problem };
+    // The overlay this one replaced, named rather than ignored. Deleting a file the
+    // plugin used to read is the kind of change that looks like a bug from the
+    // outside: an operator who had a cap working last week finds it silently not
+    // applying, and the only way to tell that from a mis-set number is to be told.
+    // Silently reading it is the alternative, and it is wrong in a way that cannot
+    // be undone — a lane file whose entries are agent names would re-apply caps
+    // under a key the operator never wrote, and the map from lane to agent is
+    // exactly the thing that was deleted.
+    if (retiredOverlayPresent(directory)) {
+      void safeLog(
+        client,
+        "warn",
+        `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
+          "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.",
+      );
+      debugLog("plugin", "agents", "retired-lane-overlay", { path: retiredLaneOverlayPath(directory) });
+    }
+    return applyAgentOverlay(config, raw);
   });
 
   const ledger = loadTaskLedger(ledgerPath);

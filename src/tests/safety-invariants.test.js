@@ -194,14 +194,18 @@ const THE_ONLY_NOTIFY_OWNER = gate(
   "Exactly one parent-notification owner.",
 );
 const PERSISTENCE_DANCES = ["session-lifecycle.ts", "debug-logger.ts"];
-// The lane overlay is a THIRD dance, and it is third deliberately: the other two
+// The cap overlay is a THIRD dance, and it is third deliberately: the other two
 // write this plugin's own state, while the overlay is an operator's edit to
 // policy that a dispatch path reads on every spawn. It needs the same
 // write-temp-then-rename discipline, but it is a different kind of thing, and
 // lumping it in with the ledger would make the exemption list claim the ledger's
 // justification covers a file the ledger knows nothing about.
-const LANE_OVERLAY_DANCE = "lane-overlay.ts";
-const SANCTIONED_DANCES = [...PERSISTENCE_DANCES, LANE_OVERLAY_DANCE];
+//
+// `caps.ts`, because the overlay moved into the module that OWNS the cap concept
+// when the key space changed from lanes to agents. One exemption, one file, and it
+// names the concept rather than the feature that happened to be current.
+const CAP_OVERLAY_DANCE = "caps.ts";
+const SANCTIONED_DANCES = [...PERSISTENCE_DANCES, CAP_OVERLAY_DANCE];
 const RAW_FILE_WRITE = gate(
   [/writeFileSync|renameSync|appendFileSync/],
   DOC_PERSISTENCE,

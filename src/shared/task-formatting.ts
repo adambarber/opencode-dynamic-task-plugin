@@ -7,7 +7,7 @@ import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type Act
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
 import { textBlock, present } from "./text-block.js";
-import type { LaneOccupancy } from "./lane-occupancy.js";
+import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
 
 // The one thing a settled record can still be told: the server is working on it,
@@ -80,9 +80,9 @@ function formatTreeRow(row: TreeRow): string {
  * The whole reason the effective depth is reported at all: a cap of 4 that the
  * agent set holds to 2 is a contradiction the operator cannot see, and printing
  * "4" would be printing the number that is not in force. So the cell says which
- * constraint is binding, and the lane-cap case says the cap plainly.
+ * constraint is binding, and the cap case says the cap plainly.
  */
-function formatDepth(row: LaneOccupancy): string {
+function formatDepth(row: AgentOccupancy): string {
   if (row.depthEffective === null) return `depth ${row.depthConfigured} (dispatchable agents unknown)`;
   if (row.depthBoundBy === DepthBound.AgentSet) {
     return `depth ${row.depthEffective} (agent set binds; cap is ${row.depthConfigured})`;
@@ -90,8 +90,13 @@ function formatDepth(row: LaneOccupancy): string {
   return `depth ${row.depthConfigured}`;
 }
 
-function formatLaneRow(row: LaneOccupancy): string {
-  return `- ${row.name} ${row.active}/${row.maxConcurrent} · ${formatDepth(row)}`;
+function formatAgentRow(row: AgentOccupancy): string {
+  // An agent with a cap of its own is marked, so the row answers "did I set this, or
+  // am I looking at the fallback" without the operator cross-referencing the config
+  // file. Only the caps they STATED are marked: marking a resolved value would claim
+  // they had set something they had not.
+  const stated = Object.keys(row.stated).length > 0 ? " (yours)" : "";
+  return `- ${row.agent} ${row.active}/${row.maxConcurrent} at once${stated} · ${formatDepth(row)}`;
 }
 
 export function formatTaskListSummary(input: {
@@ -104,9 +109,9 @@ export function formatTaskListSummary(input: {
   retained: FleetRow[];
   maxConcurrent: number;
   pruned: number;
-  // Absent until lanes shipped, and omitted entirely when there are none, so a
-  // project that declares no lanes reads exactly as it did before the feature.
-  lanes?: LaneOccupancy[] | undefined;
+  // Omitted entirely when the agent set is empty, so a project with no
+  // dispatchable agents reads exactly as it did before the feature.
+  agents?: AgentOccupancy[] | undefined;
 }): string {
   return textBlock(
     "## Task List",
@@ -114,8 +119,8 @@ export function formatTaskListSummary(input: {
     `Active: ${input.activeCount}/${input.maxConcurrent}`,
     input.tree.length > 0 ? input.tree.map(formatTreeRow) : "(none)",
     "",
-    ...(input.lanes && input.lanes.length > 0
-      ? ["Lanes (active/cap):", ...input.lanes.map(formatLaneRow), ""]
+    ...(input.agents && input.agents.length > 0
+      ? ["Agents (active/cap):", ...input.agents.map(formatAgentRow), ""]
       : []),
     `Retained: ${input.retained.length}`,
     input.retained.length > 0 ? input.retained.map(formatFleetRow) : "(none)",

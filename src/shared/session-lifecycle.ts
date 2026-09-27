@@ -19,7 +19,6 @@ import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
-import { resolveLaneName } from "./config.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
 // narrow them live in host-shape.ts, the bottom of the shape layer.
@@ -182,7 +181,6 @@ interface ValidLedgerEntry extends TaskIdentity {
   lineage: LineagePath;
   state: TaskState;
   startedAt: number;
-  lane?: unknown;
   retainedAt?: unknown;
   dependsOn?: unknown;
   dependsOnSettled?: unknown;
@@ -303,10 +301,14 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
     parentSessionId: entry.parentSessionId,
     agentName: entry.agentName,
     description: entry.description,
-    // A record written before lanes existed has no lane, and dropping it would
-    // lose a live child across a plugin upgrade — so absence reads as the
-    // default lane, which is exactly the lane it was occupying.
-    lane: resolveLaneName(entry.lane),
+    // `agentName` above is the whole routing key now. A record written by an older
+    // build also carried a `lane`, and it is dropped rather than migrated: the lane
+    // name was the operator's own vocabulary, not an agent, so there is no agent it
+    // could be folded into — and a live child restored against the WRONG agent's
+    // budget is worse than one restored against its own, so a record that somehow
+    // reaches here without an agent is restored without caps rather than with a
+    // guess. `agentName` was already required on every record, so this branch is
+    // unreachable in practice; it is here because the durable read is untrusted.
     lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
     startedAt: entry.startedAt,
     ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),

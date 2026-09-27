@@ -18,6 +18,23 @@ export function isEventRecord(value: unknown): value is Record<string, unknown> 
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * A plain object — an event record that is NOT an array.
+ *
+ * Separate from `isEventRecord` because an array passes that one, and a reader that
+ * treats an array as a keyed map is reading `length` and `map` as though the operator
+ * had written fields by those names. Both a config file and the cap overlay are
+ * hand-editable, so "this file says `agents` is a list" is a thing that happens, and
+ * the question it provokes is whether the value is a map at all.
+ *
+ * It lives here rather than beside either reader because both needed it, and a guard
+ * copied into the two modules that read untrusted files is a guard whose two copies
+ * are free to disagree about what an array is.
+ */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isEventRecord(value) && !Array.isArray(value);
+}
+
 /** Read a nested field by path, stopping at the first non-record. */
 export function eventField(event: unknown, ...path: string[]): unknown {
   let current: unknown = event;

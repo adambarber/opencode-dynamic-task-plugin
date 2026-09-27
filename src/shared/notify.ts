@@ -17,13 +17,64 @@ import { TaskState, type SettlementVerdict } from "./task-state.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
+/**
+ * The one host call logging needs — OPTIONAL, and that is the point.
+ *
+ * Narrower than `OpenCodeClient` for the same reason `AgentLister` is narrower than it:
+ * every call site of this function uses it to reach `app.log` and nothing else, and a
+ * parameter typed as the whole client rejects a caller holding a different SDK
+ * generation's client over capabilities this function never touches. The alternative
+ * was a cast at each such caller, and a cast is an assertion that outlives its reason.
+ *
+ * The log call itself is optional because the two SDK generations spell it
+ * differently and a client from the TUI side cannot be required to carry the server
+ * side's shape. Requiring it would mean a cast on the one path that logs a failed
+ * agent read — and this function has ALWAYS swallowed every failure, including a
+ * missing call, so a client that cannot log is not a new case. Making that guarantee
+ * structural is better than making it true by inspection of a try block.
+ */
+export interface LogSink {
+  // `unknown`, and that is the point: the call is CHECKED at the boundary rather than
+  // asserted in a type. The two SDK generations this plugin runs against spell `app.log`
+  // differently — the server's takes `{ body }` and the TUI's takes an optional query
+  // object with a wider body — so no single signature accepts both, and writing one
+  // would have rejected a client that logs perfectly well. The alternative was a cast
+  // at every cross-process call site; this is one named question instead.
+  app: { log?: unknown };
+}
+
+/** The body this plugin writes, and the only one it writes. */
+interface LogBody {
+  service: string;
+  level: "info" | "warn" | "error";
+  message: string;
+}
+
+/**
+ * The `app.log` call, or null when this client has no usable one.
+ *
+ * The same sanctioned idiom as `hasQuestionCall` below, for the same reason: the cast
+ * widens to an untyped map to ASK whether the key is a function, which is the question
+ * — it does not assert an answer. Narrowing what was found is a second step with its
+ * own check, so a client whose `log` is a string of the wrong length fails to log
+ * rather than throwing inside a catch that swallows it.
+ */
+function hostLogCall(client: LogSink | null | undefined): ((args: { body: LogBody }) => Promise<unknown>) | null {
+  const log = client?.app?.log;
+  if (typeof log !== "function") return null;
+  const call = log as (args: { body: LogBody }) => Promise<unknown>;
+  return typeof call === "function" ? call : null;
+}
+
 export async function safeLog(
-  client: OpenCodeClient,
+  client: LogSink,
   level: "info" | "warn" | "error",
   message: string,
 ): Promise<void> {
+  const log = hostLogCall(client);
+  if (!log) return;
   try {
-    await client.app.log({ body: { service: "dynamic-task", level, message } });
+    await log({ body: { service: "dynamic-task", level, message } });
   } catch {
     // logging is best-effort by design
   }

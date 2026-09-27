@@ -20,11 +20,10 @@ export interface PromptToolArgs {
   model?: string | undefined;
 }
 
-/** What creating a task adds on top: what to call it, which agent, which lane, and what it waits for. */
+/** What creating a task adds on top: what to call it, which agent, and what it waits for. */
 export interface SpawnArgs extends PromptToolArgs {
   description?: string | undefined;
   subagent_type?: string | undefined;
-  lane?: string | undefined;
   depends_on?: string[] | undefined;
   depends_on_settled?: string[] | undefined;
 }

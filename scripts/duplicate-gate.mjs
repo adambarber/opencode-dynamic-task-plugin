@@ -17,27 +17,31 @@
  * That rule was arrived at by getting it wrong twice, and both failures were the
  * same shape — a private arithmetic that quietly disagreed with jscpd's:
  *
- *   1. The stream dropped `new_line`. jscpd counts line breaks in a clone's token
- *      total, so every shared run came out shorter than the count it was compared
- *      against. Nine findings were discarded; five were real, including
- *      `LedgerChangeKind.Settled` and `.Forgotten` in session-lifecycle.ts, whose
- *      three-line bodies are byte-identical. The gate printed "Found 0 clones" and
- *      exited 0 over them.
+ *   1. The stream dropped `new_line`, and nine findings were discarded, five of
+ *      them real, including `LedgerChangeKind.Settled` and `.Forgotten` in
+ *      session-lifecycle.ts, whose three-line bodies are byte-identical. The gate
+ *      printed "Found 0 clones" and exited 0 over them. Note what the reason
+ *      turned out NOT to be: this header used to say jscpd counts line breaks in
+ *      a clone's token total, and it does not. Dropping a token from both sides
+ *      shortens a shared run whenever that token sat inside the match, which is
+ *      what actually happened — see `measure.mjs`, where the measurement and the
+ *      real safety argument are both written down.
  *
- *   2. The stream KEPT `comment`. A doc comment is prose about the code, and prose
- *      worded differently between two declarations is evidence they were written
- *      independently — not evidence the declarations differ. Keeping comments
- *      breaks a shared run at the first reworded sentence, which hid the same
- *      defect again: `lane-occupancy.ts` and `task-formatting.ts` declare the same
- *      three fields with the same names, types and nullability, one a
- *      hand-maintained mirror of the other's interface, and the gate measured 8
- *      shared tokens there because the doc comments were not worded identically.
+ *   2. The stream KEPT `comment`, and it hid the same defect again:
+ *      `lane-occupancy.ts` and `task-formatting.ts` declare the same three
+ *      fields with the same names, types and nullability, one a
+ *      hand-maintained mirror of the other's interface, measured at 8 shared
+ *      tokens because the two doc comments were not worded identically. The
+ *      declaration was the duplicate; only the prose about it differed.
  *
- * A verification step that discards findings because it measured them differently
- * from the thing it verifies is not a verification step. So the two decisions are
- * written down where they are made — see `stream` below — and `gate-invariants.test.js`
- * pins both by name, along with the threshold and the comparison's shape. A
- * re-treading of either is a failing test rather than a silent narrowing.
+ * WHAT IS SAFE, measured rather than argued: jscpd's own match contains no
+ * comments and no line breaks, so it sits contiguously in this stream and the run
+ * measured here is at least as long. Every clone jscpd reports at or above the
+ * bar therefore reproduces here — the gate cannot be made to miss one by
+ * changing the filter policy, because the policy only decides what it catches
+ * EXTRA. And the policy lives in `measure.mjs`, not here, so
+ * `gate-invariants.test.js` can ask this script's real question without starting
+ * a process scan — which is the whole reason it can now pin anything at all.
  *
  * Two properties make the gate safe in the direction that matters. A real clone
  * still fails: shared code at the reported coordinates is the definition of a clone.
@@ -48,81 +52,24 @@
  */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-const require = createRequire(import.meta.url);
-const { tokenize } = require("@jscpd/tokenizer");
+import { longestSharedRun, readMinTokens, stream } from "./measure.mjs";
 
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";
 
-/**
- * The bar a shared run has to clear, read from the config rather than restated.
- *
- * Restating it is how the two numbers drift apart, and a drift here is silent in
- * the one direction that matters: a threshold the gate holds itself to, never
- * compared against jscpd's own count, means the same code is judged by the same
- * number jscpd used to decide it was worth reporting.
- */
-const minTokens = JSON.parse(readFileSync(join(REPO, ".jscpd.json"), "utf8")).minTokens;
+const minTokens = readMinTokens(join(REPO, ".jscpd.json"));
 
-/**
- * Every token of CODE jscpd counts, tagged with the line it starts on.
- *
- * Two classes are excluded, and each for its own stated reason.
- *
- * `new_line` is KEPT. jscpd counts line breaks in a clone's token total, so
- * dropping them does not make the comparison stricter, it makes it incomparable.
- *
- * `comment` is DROPPED. A doc comment is prose about the code, and prose worded
- * differently between two declarations is evidence they were written
- * independently — not evidence that the declarations differ. Keeping comments
- * breaks a shared run at the first reworded sentence, which is what hid the
- * lane-occupancy/task-formatting clone the second time this gate was wrong:
- * three fields with the same names, types and nullability, measured at 8 shared
- * tokens because the two doc comments were not worded identically, and it really
- * is 14. Excluding comments is the only change in this file that can make a run
- * LONGER, so it can only ever catch more, never fewer.
- */
-const stream = (path) => {
-  const source = readFileSync(path, "utf8");
-  return tokenize(source, "typescript")
-    .filter((t) => t.type !== "empty" && t.type !== "comment")
-    .map((t) => ({
-      key: t.type === "string" ? "string" : `${t.type}:${t.value}`,
-      line: t.loc.start.line,
-    }));
-};
-
+// One policy, and it is not this file's: `stream` and `longestSharedRun` come
+// from measure.mjs, which is also what the test suite measures with. There is
+// deliberately no filter line below — a second `.filter` here is a second
+// measurement, and the pin that forbids one exists because the two decisions
+// this file used to own privately are how it was wrong twice.
 const streams = new Map();
 const tokensIn = (repoPath, from, to) => {
-  if (!streams.has(repoPath)) streams.set(repoPath, stream(join(REPO, "src", repoPath)));
+  if (!streams.has(repoPath)) streams.set(repoPath, stream(readFileSync(join(REPO, "src", repoPath), "utf8")));
   return streams.get(repoPath).filter((t) => t.line >= from && t.line <= to).map((t) => t.key);
-};
-
-/**
- * The longest run of tokens the two ranges share, contiguously.
- *
- * jscpd's reported `start`/`end` are the BOUNDING BOXES of a match, not its
- * extent: a 16-token match inside a 37-token, 4-line box reports the box. So
- * comparing the boxes would call a real clone a phantom, which is the failure
- * this gate exists to prevent. What has to reproduce is the claim — a shared
- * contiguous run at least as long as the one reported.
- */
-const longestSharedRun = (a, b) => {
-  let best = 0;
-  let previous = new Array(b.length + 1).fill(0);
-  for (let i = 1; i <= a.length; i++) {
-    const row = new Array(b.length + 1).fill(0);
-    for (let j = 1; j <= b.length; j++) {
-      row[j] = a[i - 1] === b[j - 1] ? previous[j - 1] + 1 : 0;
-      if (row[j] > best) best = row[j];
-    }
-    previous = row;
-  }
-  return best;
 };
 
 /**

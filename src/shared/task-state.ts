@@ -25,7 +25,13 @@
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
 import { agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps, type AgentCapSource } from "./caps.js";
-import type { WaitRegistry } from "./dispatch-wait.js";
+// The store is its own subject: it owns the SET and the only way to change it,
+// while this module owns what a set MEANS. Re-exported here because task-state is
+// where the state machine reads and writes it, and eight modules already reach the
+// store through this path; the alternative is eight import lines for a type they
+// did not previously have to name.
+export { TaskStore, createTaskStore, type LedgerChangeSink } from "./store.js";
+import { TaskStore, type LedgerChangeSink } from "./store.js";
 
 import type { ModelOverride } from "./prompt.js";
 
@@ -227,48 +233,6 @@ export interface RetainedTaskState extends TaskRecordBase {
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
 
-/**
- * The wait registry's map is a store field because the store is the only thing
- * that outlives a single tool call, but the waits themselves are a separate
- * subject and live in ./dispatch-wait.js — see WaitRegistry there for why the
- * store is passed to that module structurally rather than by import.
- */
-export interface TaskStore extends WaitRegistry {
-  activeTasks: Map<string, ActiveTaskState>;
-  retainedTasks: Map<string, RetainedTaskState>;
-  // Durable-state observer (Task 06): invoked after retained entries change.
-  onRetainedChange?: LedgerChangeSink | undefined;
-  // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
-  // a running task — the set of what a crash would leave behind. Separate from
-  // onRetainedChange because the two halves persist for different reasons, and
-  // joined here so a settlement writes the whole file exactly once.
-  onActiveChange?: LedgerChangeSink | undefined;
-}
-
-/**
- * How the store tells its durable writer WHAT changed. Named once because the two
- * observers share a shape and a reason, and a reader who meets the signature
- * spelled out twice has to work out whether the halves really are one contract.
- */
-export type LedgerChangeSink = (changes: readonly LedgerChange[]) => void;
-
-// The one write path into the running set. Every structural change to a live
-// task goes through here, so the durable ledger has exactly one place to learn
-// that a task exists or stopped existing — and, just as deliberately, one place
-// the advisory writers below do NOT touch: a heartbeat or a mid-flight notice
-// would otherwise put a file write on every host event, turning the event head
-// into a filesystem hot path. The advisory fields are stripped on the way to
-// disk anyway (durableActiveTask), because a fresh process cannot verify them.
-function setActive(store: TaskStore, childSessionId: string, record: ActiveTaskState): void {
-  store.activeTasks.set(childSessionId, record);
-  store.onActiveChange?.([{ kind: LedgerChangeKind.Running, id: childSessionId, record }]);
-}
-
-function removeActive(store: TaskStore, childSessionId: string): void {
-  store.activeTasks.delete(childSessionId);
-  store.onActiveChange?.([{ kind: LedgerChangeKind.Stopped, id: childSessionId }]);
-}
-
 // State machine (the one true lifecycle matrix). Active tasks move to a terminal
 // state exactly once; terminal states never regress. Late error escalation
 // (completed -> error) is a SEPARATE, explicitly-marked edge handled by
@@ -336,8 +300,8 @@ function reclaimAsActive(
 ): ActiveTaskState {
   const { state: _settled, retainedAt: _at, abortError: _err, lastAbortAt: _abort, ...carried } = retained;
   const reclaimed: ActiveTaskState = { ...carried, state: TaskState.Active, ...overrides };
-  store.retainedTasks.delete(childSessionId);
-  setActive(store, childSessionId, reclaimed);
+  store.dropRetained(childSessionId);
+  notifyRunning(store, store.markRunning(childSessionId, reclaimed));
   return reclaimed;
 }
 
@@ -374,16 +338,6 @@ export function noteAbortLanded(store: TaskStore, childSessionId: string): boole
     retained.lastAbortAt = Date.now();
     return true;
   });
-}
-
-export function createTaskStore(): TaskStore {
-  return {
-    activeTasks: new Map(),
-    retainedTasks: new Map(),
-    waits: new Map(),
-    onRetainedChange: undefined,
-    onActiveChange: undefined,
-  };
 }
 
 /**
@@ -525,7 +479,7 @@ export function registerActiveTask(
   const registration = { ...task, agentName: agentKey(task.agentName) || task.agentName };
   claimSlot(store, registration, config);
   const record = activeRecord(registration, Date.now());
-  setActive(store, task.childSessionId, record);
+  notifyRunning(store, store.markRunning(task.childSessionId, record));
   return record;
 }
 
@@ -549,8 +503,8 @@ export function transitionState(
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
           const retained = retainedRecord(active, to, Date.now());
-    removeActive(store, childSessionId);
-    store.retainedTasks.set(childSessionId, retained);
+    notifyRunning(store, store.stopRunning(childSessionId));
+    store.markRetained(childSessionId, retained);
     emitRetainedChange(store, { kind: LedgerChangeKind.Settled, id: childSessionId, record: retained });
     return { state: to, completed: true, task: retained };
   }
@@ -744,7 +698,7 @@ export function pruneRetainedTasks(
   const forgotten: LedgerChange[] = [];
   for (const [id, task] of store.retainedTasks) {
     if (now - task.retainedAt >= config.retainedTaskTtlMs) {
-      store.retainedTasks.delete(id);
+      store.dropRetained(id);
       forgotten.push({ kind: LedgerChangeKind.Forgotten, id });
       dropped++;
     }
@@ -752,7 +706,7 @@ export function pruneRetainedTasks(
   while (store.retainedTasks.size > config.retainedTaskMaxEntries) {
     const oldest = oldestRetainedId(store);
     if (oldest === null) break;
-    store.retainedTasks.delete(oldest);
+    store.dropRetained(oldest);
     forgotten.push({ kind: LedgerChangeKind.Forgotten, id: oldest });
     dropped++;
   }
@@ -824,6 +778,21 @@ function emitRetainedChange(store: TaskStore, ...changes: LedgerChange[]): void 
   store.onRetainedChange?.(changes);
 }
 
+/**
+ * The running set's publisher, named for symmetry with emitRetainedChange above —
+ * and the symmetry is load-bearing, not cosmetic. The change is an ARGUMENT here,
+ * so it is computed by the caller before this is called. The first version of this
+ * encapsulation wrote `store.onActiveChange?.([store.markRunning(...)])` instead,
+ * and the arguments of an optional call are not evaluated when the call is skipped:
+ * the write stopped happening whenever nothing had installed an observer, so a
+ * store with no durable writer attached silently stopped being a store. 47 tests
+ * caught it, but only because they attach no observer. Passing the change in makes
+ * the write unconditional by construction rather than by care.
+ */
+function notifyRunning(store: TaskStore, ...changes: LedgerChange[]): void {
+  store.onActiveChange?.(changes);
+}
+
 // Durability boundary: hydrate entries already validated by the ledger
 // reader (session-lifecycle) into the live maps. The reader owns shape truth;
 // this module owns placement and the caps.
@@ -839,7 +808,7 @@ function emitRetainedChange(store: TaskStore, ...changes: LedgerChange[]): void 
 function hydrate<T extends ActiveTaskState | RetainedTaskState>(
   records: Map<string, T>,
   place: (id: string, record: T) => void,
-  outrankedBy: Map<string, ActiveTaskState | RetainedTaskState>,
+  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
   superseded: string[] = [],
 ): number {
   let restored = 0;
@@ -892,7 +861,7 @@ export function isRunning(store: TaskStore, childSessionId: string): boolean {
  */
 function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
   records: Map<string, T>,
-  outrankedBy: Map<string, ActiveTaskState | RetainedTaskState>,
+  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
   place: (id: string, record: T, changes: LedgerChange[]) => void,
   fire: LedgerChangeSink | undefined,
 ): number {
@@ -913,8 +882,7 @@ export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskS
     records,
     store.retainedTasks,
     (id, record, changes) => {
-      store.activeTasks.set(id, record);
-      changes.push({ kind: LedgerChangeKind.Running, id, record });
+      changes.push(store.markRunning(id, record));
     },
     store.onActiveChange,
   );
@@ -940,7 +908,7 @@ export function restoreRetained(
       // has no way to hand it back: a record it drops must leave the shared file
       // too, and "this process no longer has it" is not the same claim.
       const dropped = pruneIfBounded(store, record, maxEntries);
-      store.retainedTasks.set(id, dropped.kept);
+      store.markRetained(id, dropped.kept);
       if (dropped.forgotten !== null) changes.push({ kind: LedgerChangeKind.Forgotten, id: dropped.forgotten });
       changes.push({ kind: LedgerChangeKind.Settled, id, record: dropped.kept });
     },
@@ -961,7 +929,7 @@ function pruneIfBounded(
   if (store.retainedTasks.size >= maxEntries) {
     const oldestId = oldestRetainedId(store);
     if (oldestId) {
-      store.retainedTasks.delete(oldestId);
+      store.dropRetained(oldestId);
       forgotten = oldestId;
     }
   }

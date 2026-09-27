@@ -113,17 +113,19 @@ export function spawnConfirmation(input: {
         + input.agentName
         + "'s children have no task_notify, so it cannot report progress mid-run and cannot declare that it is blocked. If it hits something it cannot finish, it will say so in its final message and the task will still settle as completed — read that message before treating the outcome as a success.",
     ];
-  if (input.parentSessionId) {
-    return [
-      ...head,
-      `Async notification: enabled (parent ${input.parentSessionId})`,
-      "The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile.",
-      ...noChannel,
-    ].join("\n");
-  }
+  // ONE return, because the two cases differ by a line and not by a shape: an earlier
+  // version branched into two near-identical arrays, which is two places to edit when the
+  // wording moves and one place to forget. `enabled` decides the middle, the rest of the
+  // message is the same whoever is reading it.
+  const enabled = input.parentSessionId !== null;
   return [
     ...head,
-    "Async notification: disabled (parent session ID not available in tool context)",
+    enabled
+      ? `Async notification: enabled (parent ${input.parentSessionId})`
+      : "Async notification: disabled (parent session ID not available in tool context)",
+    ...(enabled
+      ? ["The outcome arrives unprompted as a dynamic-task-notify message; use task_result to inspect progress meanwhile."]
+      : []),
     ...noChannel,
   ].join("\n");
 }

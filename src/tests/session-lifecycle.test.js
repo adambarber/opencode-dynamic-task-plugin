@@ -19,7 +19,7 @@ import { SESSION_ERROR, SESSION_IDLE, SESSION_STATUS } from "../../dist/shared/h
 // than restated as a field list — a test that enumerates the advisories cannot
 // notice a fifth one.
 import { withoutAdvisory } from "../../dist/shared/task-state.js";
-import { withEnv, withTempFile } from "./support/harness.js";
+import { tmpLedgerPath, withEnv, withTempFile } from "./support/harness.js";
 import { sessionUpdatedEnvelope } from "./support/mock-host.js";
 import { activeEntry, owedEntry, retainedEntry } from "./support/records.js";
 import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
@@ -280,10 +280,6 @@ const loadRaw = async (document) => {
   });
   return loaded;
 };
-
-function tmpLedgerPath() {
-  return `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
-}
 
 // Every case here owns a temp ledger for the duration of one assertion. The
 // old hand-rolled cleanup unlinked the file but not the ledger dance's `.tmp`

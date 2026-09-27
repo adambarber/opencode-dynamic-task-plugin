@@ -22,19 +22,35 @@ function storeWithActive(cfg = defaultConfig) {
   return store;
 }
 
-// The persistence signal a retained mutation must emit. Wiring the counter to
-// the store here means no test hand-rolls the callback and then has to read the
-// same counter it wrote.
-function countRetainedChanges(store) {
-  const counter = { calls: 0 };
-  store.onRetainedChange = () => { counter.calls++; };
-  return counter;
+// Every change each of the store's two sinks was handed, in order.
+//
+// The previous shape counted CALLS on the retained sink alone, and that is how a
+// publish of an EMPTY change array satisfied four assertions in this file: the
+// call happened and did nothing, because `persistLedger` returns on a zero-length
+// payload before it writes anything. It is also why a withdrawal's test could
+// only say "the sink was called" — the `Running` change it publishes travels the
+// ACTIVE sink, and one counter for both sinks cannot tell them apart.
+//
+// Production wires both sinks to the same writer (`entry/state.ts`), so what a
+// test observes here is what the file receives — but the sinks stay separate,
+// because "this write must not persist" is a decision about which of the two
+// carried it.
+function recordChanges(store) {
+  const sink = { retained: [], active: [] };
+  store.onRetainedChange = (changes) => { sink.retained.push(...changes); };
+  store.onActiveChange = (changes) => { sink.active.push(...changes); };
+  return sink;
 }
 
-/** The same store with the retained-change signal counted: the callback cases' subject. */
-function countingStore(cfg = defaultConfig) {
+const kinds = (changes) => changes.map((c) => c.kind).join();
+
+/** The kind of the change a sink was handed LAST — the one an amendment just made. */
+const lastKind = (changes) => changes.at(-1)?.kind ?? "";
+
+/** The same store with both change sinks recorded: the callback cases' subject. */
+function recordingStore(cfg = defaultConfig) {
   const store = storeWithActive(cfg);
-  return { store, changes: countRetainedChanges(store) };
+  return { store, changes: recordChanges(store) };
 }
 
 function fillBackgroundTasks(store, config, ids) {
@@ -195,16 +211,15 @@ describe("task-state: revival and annotations", () => {
   // signal already wired. Naming the arrangement is what lets each test state
   // only the rule it is about.
   function interruptClaim(cfg = defaultConfig) {
-    const counted = countingStore(cfg);
+    const counted = recordingStore(cfg);
     transitionState(counted.store, "ses_active", "interrupted", cfg);
     return counted;
   }
 
-  it("withdrawInterruptClaim persists the ledger via emitRetainedChange", () => {
+  it("withdrawInterruptClaim persists the ledger by publishing the reclaim", () => {
     const { store, changes } = interruptClaim();
-    const before = changes.calls;
     withdrawInterruptClaim(store, "ses_active", Date.now(), defaultConfig);
-    assert.strictEqual(changes.calls, before + 1, "withdraw is a retained mutation and must persist");
+    assertIs(lastKind(changes.active), "running", "the reclaim itself is the publish, and it travels the active sink");
     assert.strictEqual(store.activeTasks.get("ses_active")?.state, "active");
   });
 
@@ -334,26 +349,31 @@ describe("task store: retained-change callback", () => {
   }
 
   it("notifies on retained writes, silent on active-only writes", () => {
-    const { store, changes } = countingStore();
+    const { store, changes } = recordingStore();
     seedActive(store, "s1");
-    assert.strictEqual(changes.calls, 0, "active-only writes stay silent");
+    assertIs(kinds(changes.retained), "", "active-only writes stay silent");
     transitionState(store, "s1", "completed");
-    assert.strictEqual(changes.calls, 1);
+    assertIs(kinds(changes.retained), "settled");
     noteLateOutcome(store, "s1", "error");
-    assert.strictEqual(changes.calls, 2);
+    assertIs(kinds(changes.retained), "settled,settled");
+    // The escalation is the one amendment that REWRITES a recorded success, so
+    // the change it publishes has to carry the corrected record. It used to
+    // publish an empty array, which the file writer discards — the correction
+    // lived in memory until a restart put the success back.
+    assertIs(changes.retained[1].record.state, "error", "the published record is the corrected one");
     reviveRetainedTask(store, "s1", defaultConfig);
-    assert.strictEqual(changes.calls, 3, "revival leaves the retained ledger");
+    assertIs(kinds(changes.retained), "settled,settled", "revival reclaims; it does not settle a second time");
+    assertIs(lastKind(changes.active), "running", "and the reclaim it did make is on its way to the file");
   });
 
   it("pruning emits the change signal when entries expire", () => {
     const store = createTaskStore();
-    const changes = { calls: 0 };
-    store.onRetainedChange = () => { changes.calls++; };
+    const changes = recordChanges(store);
     seedActive(store, "s1");
     transitionState(store, "s1", "completed");
     store.retainedTasks.get("s1").retainedAt = 0;
     assert.strictEqual(pruneRetainedTasks(store, { retainedTaskTtlMs: 1000, retainedTaskMaxEntries: 100 }), 1);
-    assert.strictEqual(changes.calls, 2);
+    assertIs(kinds(changes.retained), "settled,forgotten");
   });
 });
 

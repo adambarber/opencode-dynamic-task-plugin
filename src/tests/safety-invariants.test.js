@@ -292,7 +292,17 @@ const STALE_DISPATCH_FILTER = gate(
 // Primitive: task-state mutation. Funnel: src/shared/task-state.ts owns every
 // Map write and every completed/timeoutNotified assignment (Tenets 1, 3, 5).
 describe("invariant: lifecycle mutations funnel through task-state (Task 01)", () => {
-  rule({ name: "no raw record mutation outside task-state.ts", ...LIFECYCLE_MUTATION, sanctioned: ["task-state.ts"] });
+  rule({
+    name: "no raw record mutation outside the settlement funnels",
+    ...LIFECYCLE_MUTATION,
+    // The two files that OWN the funnel, not two exemptions. `task-state.ts` holds
+    // the lifecycle matrix and `settled-record.ts` holds the settled amendment, and
+    // between them they are where a record's field is allowed to be assigned.
+    // Naming them here rather than leaving the rule pointed at one path is what
+    // keeps a new settled-record writer from being invisible: the corpus is every
+    // production file, so a third sanctioned file would have to be added on purpose.
+    sanctioned: ["task-state.ts", "settled-record.ts"],
+  });
 });
 
 // --- Task 09: non-blocking settlement -------------------------------------
@@ -524,20 +534,34 @@ describe("invariant: tests import production, never redefine it (Tenet 12)", () 
  * through the production builder, not to have a second copy of the shape.
  */
 const RECORD_SHAPES = [
+  // The bases are here too, not just the records built on them: a restatement of
+  // `TaskRecordBase` is the same drift risk as a restatement of the record, and
+  // listing it is what lets `requiredFieldsOf` resolve an `extends` that crosses
+  // a module boundary.
+  { name: "TaskRecordBase", file: "shared/task-state.ts" },
   { name: "ActiveTaskState", file: "shared/task-state.ts" },
-  { name: "RetainedTaskState", file: "shared/task-state.ts" },
+  { name: "RetainedTaskState", file: "shared/settled-record.ts" },
   { name: "TaskResultRecord", file: "shared/task-formatting.ts" },
   { name: "NotificationRecord", file: "shared/notify.ts" },
   { name: "PendingDelivery", file: "shared/notify.ts" },
 ];
 
-/** Every field an interface requires, following `extends` inside its own file. */
+/** Every field an interface requires, following `extends` wherever the base is declared. */
 function requiredFieldsOf(file, name, seen = new Set()) {
   if (seen.has(name)) return [];
   seen.add(name);
   const source = readFileSync(path.join(SRC_DIR, file), "utf8");
   const declaration = new RegExp(`(?:export )?interface ${name}\\b([^\\{]*)\\{`).exec(source);
-  assert.ok(declaration, `${name} is not declared in ${file} — this rule reads a shape that no longer exists`);
+  // A base may live in another module — `RetainedTaskState` extends `TaskRecordBase`,
+  // and the settled record was moved to its own file while the base stayed with the
+  // store's vocabulary. Resolving by name across the corpus is what lets a shape
+  // change address without this rule having to be told where to look.
+  const fileOf = (shape) => RECORD_SHAPES.find((s) => s.name === shape)?.file ?? null;
+  if (!declaration) {
+    const home = fileOf(name);
+    assert.ok(home, `${name} is not declared in ${file}, and no record shape declares it — this rule reads a shape that no longer exists`);
+    return requiredFieldsOf(home, name, seen);
+  }
   const open = declaration.index + declaration[0].length;
   let depth = 1;
   let close = open;
@@ -551,7 +575,7 @@ function requiredFieldsOf(file, name, seen = new Set()) {
     .filter(([, field]) => !body.match(new RegExp(`^\\s*${field}\\s*\\?`, "m")))
     .map(([, field]) => field);
   const inherited = declaration[1].match(/extends\s+([A-Za-z][A-Za-z0-9]*)/);
-  return inherited ? [...requiredFieldsOf(file, inherited[1], seen), ...required] : required;
+  return inherited ? [...requiredFieldsOf(fileOf(inherited[1]) ?? file, inherited[1], seen), ...required] : required;
 }
 
 /**

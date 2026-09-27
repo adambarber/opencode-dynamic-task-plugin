@@ -23,6 +23,7 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
+import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
 import { agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps, type AgentCapSource } from "./caps.js";
 // The store is its own subject: it owns the SET and the only way to change it,
@@ -220,16 +221,13 @@ export interface ActiveTaskState extends TaskRecordBase {
   // stays active either way, and settlement strips it.
 }
 
-export interface RetainedTaskState extends TaskRecordBase {
-  state: Exclude<TaskState, TaskState.Active>;
-  retainedAt: number;
-  abortError?: string | undefined;
-  // Last successful abort landing on this record. Guards withdrawInterruptClaim
-  // against concurrent interrupts (F-R4): a stale claim never resurrects a
-  // child a newer abort already killed. Transient bookkeeping, not ledger
-  // truth — the reader drops it on load.
-  lastAbortAt?: number | undefined;
-}
+// The settled record's shape lives in `settled-record.ts`, with the read, the
+// amendment, and the change that carries it. It is re-exported here because it is
+// the store's own vocabulary — `TaskRecord`, the reader, and a dozen tools import
+// it by name from this module — and moving a declaration is not a reason to make
+// every reader learn a new address for it.
+export { retainedFor, actOnSettled, decideRetained, settledChange, noteAbortLanded, type RetainedTaskState } from "./settled-record.js";
+import { retainedFor, actOnSettled, decideRetained, settledChange, type RetainedTaskState } from "./settled-record.js";
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
 
@@ -256,17 +254,23 @@ const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
 // forbidden (reviveRetainedTask still throws) — this edge is internal to
 // task_interrupt's failure path, not a policy change. Persists via the
 // ledger observer like every other retained mutation.
+// Withdrawable: an interrupted record that no successful abort has since claimed
+// the right to keep. Named because "may this claim be undone" is a judgment, and
+// it was previously spelled as two separate guards inline.
+//
+// >= not >: a successful abort landing in the same millisecond as the claim is
+// still knowledge — the newer (or same-instant) success wins.
+const isWithdrawable = (retained: RetainedTaskState, claimTimeMs: number): boolean =>
+  retained.state === TaskState.Interrupted && (retained.lastAbortAt ?? 0) < claimTimeMs;
+
 export function withdrawInterruptClaim(
   store: TaskStore,
   childSessionId: string,
   claimTimeMs: number,
   bounds?: AgentCapSource,
 ): boolean {
-  return decideRetained(store, childSessionId, (retained) => {
-    if (retained.state !== TaskState.Interrupted) return false;
-    // >= not >: a successful abort landing in the same millisecond as the
-    // claim is still knowledge — the newer (or same-instant) success wins.
-    if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
+  return actOnSettled(store, childSessionId, (retained) => {
+    if (!isWithdrawable(retained, claimTimeMs)) return false;
     // Reclaiming is a slot claim, and it goes through the SAME funnel as a spawn and a
     // revival rather than asking the question again. It used to spell the judgment out
     // here, which made two answers to "is there room" in one file — and the one nobody
@@ -305,40 +309,12 @@ function reclaimAsActive(
   return reclaimed;
 }
 
-/**
- * The ONE way a retained (settled) record is read for a decision. All three
- * halves are load-bearing and none is the caller's business: a record that is
- * gone must be a no-op, a decision that declines itself must publish nothing,
- * and a decision that DID act must publish through the retained funnel, because
- * the durable ledger is written from that event. A mutation that skipped the
- * publish left a persisted record disagreeing with the store — a settled task
- * that comes back wrong after a restart.
- *
- * The decision is one predicate over the record and nothing more: stamping an
- * abort, annotating a notice, and withdrawing an interrupt claim are all "look,
- * decide, act", so the lookup and the publish are not three callers' chance to
- * spell them differently.
- */
-function decideRetained(
-  store: TaskStore,
-  childSessionId: string,
-  amend: (retained: RetainedTaskState) => boolean,
-): boolean {
-  const retained = retainedFor(store, childSessionId);
-  if (retained === undefined) return false; // nothing settled to edit
-  if (!amend(retained)) return false; // the amendment declined itself
-  emitRetainedChange(store);
-  return true;
-}
-
-// Stamp a successful abort landing on a retained record (F-R4): concurrent
-// interruptors observe it through withdrawInterruptClaim's guard.
-export function noteAbortLanded(store: TaskStore, childSessionId: string): boolean {
-  return decideRetained(store, childSessionId, (retained) => {
-    retained.lastAbortAt = Date.now();
-    return true;
-  });
-}
+// The settled record's read, amendment, and change live in `settled-record.ts`.
+// `reclaimAsActive` below is the one exception kept here rather than there: it is
+// the move from settled back to running, and it is where the running set's
+// publisher is called, so a settled record's fate crosses back into this module
+// there. A revision and a withdrawal are two ways to reach that move, written
+// once for the same reason.
 
 /**
  * The one place a slot is claimed.
@@ -520,11 +496,16 @@ export function transitionState(
 // Late-error escalation — the ONE edge that rewrites a retained state.
 // Only a recorded success can be corrected to error: an interrupted or
 // errored task's own abort aftermath must never re-notify the parent.
+//
+// This is the change decideRetained exists for. The rewrite turns a recorded
+// SUCCESS into a recorded failure, which is the one correction that must not be
+// lost to a restart: a child that failed and came back `completed` is a false
+// success the parent will act on.
 export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, TaskState.Active>): boolean {
   return decideRetained(store, childSessionId, (retained) => {
     if (retained.state !== TaskState.Completed || outcome !== TaskState.Error) return false;
     retained.state = outcome;
-    return true;
+    return settledChange(childSessionId, retained);
   });
 }
 
@@ -736,18 +717,22 @@ export function findTask(store: TaskStore, childSessionId: string): TaskRecord |
 
 // Transient abort failures are recorded on the retained entry: an
 // interrupted-but-still-live child must be visible, not silently stranded.
+// `abortError` is kept by the ledger reader (only `lastAbortAt` is dropped), so
+// this one owes the file — the reason a transport failure outlives the process
+// is that the record outlives it.
 export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
   decideRetained(store, childSessionId, (retained) => {
     retained.abortError = error;
-    return true;
+    return settledChange(childSessionId, retained);
   });
 }
 
 // ─── the settled-record primitives ──────────────────────────────────
-// The read, the publish, and the edit. Every function in this module that
-// touches settled history goes through one of these three, which is what makes
-// "a retained record is only ever read here, changed there, and published once"
-// checkable by reading one screen instead of auditing every edge.
+// The read and the edit. The two change publishers live in `change-sinks`.
+// Every function in this module that touches settled history goes through one of
+// these, which is what makes "a retained record is only ever read here, changed
+// there, and published once" checkable by reading one screen instead of auditing
+// every edge.
 
 /**
  * The running record for a child, or undefined. The mirror of `retainedFor`, and
@@ -760,38 +745,6 @@ function activeFor(store: TaskStore, childSessionId: string): ActiveTaskState | 
   return store.activeTasks.get(childSessionId);
 }
 
-/**
- * The settled (retained) record for a child, or undefined. One accessor because
- * "what is this child's settled record" is one question with one answer — and
- * because each call site wrote the lookup with its own idea of what an absent
- * record MEANS: one edge threw, one returned false, one built a refusal
- * sentence. The absence signal is declared once here; the policy that answers it
- * stays with the edge, because an internal rollback and a policy revival
- * genuinely disagree about a missing record.
- */
-function retainedFor(store: TaskStore, childSessionId: string): RetainedTaskState | undefined {
-  return store.retainedTasks.get(childSessionId);
-}
-
-/** The one retained-write funnel: it states WHAT moved, not the resulting map. */
-function emitRetainedChange(store: TaskStore, ...changes: LedgerChange[]): void {
-  store.onRetainedChange?.(changes);
-}
-
-/**
- * The running set's publisher, named for symmetry with emitRetainedChange above —
- * and the symmetry is load-bearing, not cosmetic. The change is an ARGUMENT here,
- * so it is computed by the caller before this is called. The first version of this
- * encapsulation wrote `store.onActiveChange?.([store.markRunning(...)])` instead,
- * and the arguments of an optional call are not evaluated when the call is skipped:
- * the write stopped happening whenever nothing had installed an observer, so a
- * store with no durable writer attached silently stopped being a store. 47 tests
- * caught it, but only because they attach no observer. Passing the change in makes
- * the write unconditional by construction rather than by care.
- */
-function notifyRunning(store: TaskStore, ...changes: LedgerChange[]): void {
-  store.onActiveChange?.(changes);
-}
 
 // Durability boundary: hydrate entries already validated by the ledger
 // reader (session-lifecycle) into the live maps. The reader owns shape truth;

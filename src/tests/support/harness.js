@@ -87,6 +87,15 @@ export const withEnv = (key, value, fn) =>
  * unlinked only the file, so a failing atomic write could leave the sidecar
  * behind; the absence check is the cleanup, not a hope.
  */
+/**
+ * A unique path for a ledger file, for a case that owns one.
+ *
+ * Shared because two suites durably write ledgers and the factory was copied: the
+ * copy drifted to a different prefix while `withTempFile` still cleaned up both
+ * the path and its `.tmp` sidecar, so nothing caught the divergence.
+ */
+export const tmpLedgerPath = () => `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
+
 export const withTempFile = (path, fn) =>
   // Nothing to install — the case is handed the path, and the undo is the cleanup.
   withSeam(() => () => {

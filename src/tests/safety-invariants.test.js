@@ -158,6 +158,26 @@ const LIFECYCLE_MUTATION = gate(
   DOC_LIFECYCLE,
   "Direct task-state mutation bypasses transitionState's matrix.",
 );
+// An unknown throwable becomes words through `errorMessage` and NOWHERE ELSE.
+// Three sites had answered that question themselves: two hand-rolled
+// `error instanceof Error ? … : String(…)`, and one that used the same narrowing
+// as its CONDITION and so stayed silent for every throw that was not an `Error` —
+// the agent-list fetch, whose one log is how an uncapped or unlistable agent gets
+// diagnosed at all. The two coercions agreed with the funnel for everything their
+// own catches can see (JSON.parse and fs throw Errors), so this was latent rather
+// than live, which is exactly the kind of defect a rule exists to retire in place
+// of a fix somebody has to remember.
+//
+// Token-shape deterrence, not structural containment (see the standing note on
+// regex invariants): a site that renames its binding or reaches for a different
+// coercing helper would pass. The type system cannot reach this one — narrowing
+// an `unknown` to `Error` is legal, correct TypeScript, which is why the rule is
+// the only place it can be closed.
+const ERROR_TO_WORDS = gate(
+  [/instanceof\s+Error/, /String\(\s*error\s*\)/],
+  DOC_TYPES,
+  "A throwable becomes words outside errorMessage, so the answer is a second opinion.",
+);
 const CLOCK_OWNERS = ["notify.ts", "execution-bound.ts"];
 const WALL_CLOCK_WAIT = gate(
   [TIMER_PRIMITIVE],
@@ -292,6 +312,11 @@ const STALE_DISPATCH_FILTER = gate(
 // Primitive: task-state mutation. Funnel: src/shared/task-state.ts owns every
 // Map write and every completed/timeoutNotified assignment (Tenets 1, 3, 5).
 describe("invariant: lifecycle mutations funnel through task-state (Task 01)", () => {
+  rule({
+    name: "an unknown becomes words only through errorMessage",
+    ...ERROR_TO_WORDS,
+    sanctioned: ["host-shape.ts"],
+  });
   rule({
     name: "no raw record mutation outside the settlement funnels",
     ...LIFECYCLE_MUTATION,

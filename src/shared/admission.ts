@@ -31,7 +31,7 @@ export interface AgentLister extends LogSink {
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import type { Verdict } from "./verdict.js";
 import { hostPayload } from './session-lifecycle.js';
-import { isEventRecord } from './host-shape.js';
+import { errorMessage, isEventRecord } from "./host-shape.js";
 import {
   validateAgent,
   validateLineage,
@@ -388,11 +388,18 @@ async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE
       if (cacheKey) agentCaches.set(cacheKey, entry);
       return { agents: entry.agents, known: true };
     } catch (error: unknown) {
-      if (attempt === 1 && error instanceof Error) {
+      // `errorMessage`, not a narrowing guard. A throw that is not an `Error` still
+      // has something to say, and using the same narrowing as the CONDITION meant the
+      // one log that reports the agent list could not be read stayed SILENT for
+      // exactly the throws the host is most likely to make — and silence is the
+      // failure this plugin's whole claim is about. The funnel decides even when its
+      // answer is thin. (The banned idiom is named in DOC_TYPES' own rule rather than
+      // quoted here, so that this comment does not trip the very scan it explains.)
+      if (attempt === 1) {
         // safeLog, not a raw app.log: the client itself may be unusable
         // (host probes entry exports outside the plugin lifecycle) and a
         // throw here fails the entire plugin boot.
-        await safeLog(client, "warn", `Failed to fetch agents: ${error.message}`);
+        await safeLog(client, "warn", `Failed to fetch agents: ${errorMessage(error)}`);
       }
     }
   }

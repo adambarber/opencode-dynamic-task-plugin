@@ -35,6 +35,7 @@
  */
 import type { TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
+import { errorMessage } from "../shared/host-shape.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
   AGENT_CAP_NAMES,
@@ -554,7 +555,7 @@ async function applyEdit(api: TuiApi, view: LimitsView, agent: string, choice: C
     api.ui.toast({
       variant: "error",
       title: agent,
-      message: `could not write ${agentOverlayPath(view.directory)}: ${error instanceof Error ? error.message : String(error)}`,
+      message: `could not write ${agentOverlayPath(view.directory)}: ${errorMessage(error)}`,
     });
     return;
   }

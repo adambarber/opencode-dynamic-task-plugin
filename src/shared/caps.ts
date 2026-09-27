@@ -17,7 +17,7 @@
 // way `agentKey` says to.
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { isPlainRecord } from "./host-shape.js";
+import { errorMessage, isPlainRecord } from "./host-shape.js";
 import { DepthBound, depthLimits } from "./task-policy.js";
 
 // ─── the vocabulary ──────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ function readJsonFile(path: string): { raw: unknown; problem: string | null } {
   try {
     return { raw: JSON.parse(text) as unknown, problem: null };
   } catch (error) {
-    return { raw: null, problem: `the overlay is not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
+    return { raw: null, problem: `the overlay is not valid JSON: ${errorMessage(error)}` };
   }
 }
 

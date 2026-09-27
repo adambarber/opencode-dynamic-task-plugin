@@ -2,8 +2,25 @@
  * The TUI half of the plugin: one command, one dialog, one file edited.
  *
  * A TUI module exports `tui` where a server module exports `server` — never both
- * (see `TuiPluginModule`), which is why this is a second entry in the `plugin`
- * array rather than a flag on the first.
+ * (see `TuiPluginModule`), which is why this is a SEPARATE module rather than a flag
+ * on the first. It is not, however, a second entry in opencode's `plugin` array:
+ * that array is the SERVER plugin list. The host loads TUI modules from `tui.json` —
+ * a different file with its own `plugin` array — and there is no directory
+ * auto-discovery for TUI plugins at all, so a module listed in the wrong file is
+ * never loaded. An empty command palette is what that looks like.
+ *
+ * The loader reads the module's DEFAULT export and ignores named exports, and a file
+ * plugin must carry a non-empty `id`: it is the module's runtime identity, the key
+ * `plugin_enabled` uses, and what a later duplicate is rejected against. So the
+ * `export default` below is the module. The named `tui` is kept only so the suite can
+ * drive the plugin function without standing up a loader.
+ *
+ * Nothing about the palette contract below is checkable by the compiler. `Command`
+ * carries an index signature (`[key: string]: unknown`), so `title`, `desc`,
+ * `namespace` and `slashName` are host conventions rather than typed fields, and a
+ * misspelling is silently a custom field the palette never reads. That is why these
+ * names are the host's, and why the suite pins them against the documented list
+ * rather than against whatever this file happens to say.
  *
  * It lives in a different process from the server, which decides everything
  * about what it can honestly show. The running task set is in the server's
@@ -17,7 +34,7 @@
  * dispatch path already reads, so there is no second source of truth to reconcile
  * and no server endpoint added to read a number a file already holds.
  */
-import type { TuiPlugin } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { normalizeDynamicTaskConfig } from "../shared/config.js";
 import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
 import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
@@ -44,6 +61,13 @@ type TuiApi = Parameters<TuiPlugin>[0];
 const COMMAND = "dynamic-task.lanes";
 
 /**
+ * The MODULE's identity, which is not the command's. `plugin_enabled` is keyed by
+ * plugin id, so keying it on the command would make "hide this one command" and
+ * "unload this plugin" the same switch.
+ */
+const PLUGIN_ID = "dynamic-task";
+
+/**
  * What a row in the select stands for.
  *
  * A discriminated union rather than a lane name plus a magic string: the
@@ -59,24 +83,47 @@ enum ChoiceKind {
 }
 
 export const tui: TuiPlugin = async (api) => {
-  const dispose = api.keymap.registerLayer({
+  api.keymap.registerLayer({
     commands: [
       {
         name: COMMAND,
+        // REQUIRED for the command to appear in ctrl+p at all. The host surfaces
+        // palette commands BY NAMESPACE; a command without one is registered,
+        // runnable by keybinding and dispatchable by name, and listed nowhere. This
+        // one field is the whole difference between a working palette entry and an
+        // empty panel, and nothing about it is enforced by the type.
+        namespace: "palette",
         title: "Lanes",
-        description: "Concurrency caps and dispatch depth, per lane",
+        // `desc`, not `description` — the host reads `desc` for the palette's
+        // second line, and a `description` is a custom field it never looks at.
+        desc: "Concurrency caps and dispatch depth, per lane",
         category: "Dynamic Task",
         // The slash spelling is the same command, so there is one entry to
-        // discover and not a second one to keep in step.
-        slash: { name: "lanes" },
+        // discover and not a second one to keep in step. `slashName`, not
+        // `slash: { name }` — the nested form belongs to the legacy `api.command`
+        // API, which the host keeps only so v1 plugins initialize.
+        slashName: "lanes",
         run: () => {
           openLaneManager(api);
         },
       },
     ],
   });
-  api.lifecycle.onDispose(dispose);
+  // No `onDispose` for the layer. The host already disposes keymap registrations
+  // when a plugin deactivates, and the spec says so explicitly; wiring it a second
+  // time is not belt-and-braces, it is a second owner for one teardown.
 };
+
+/**
+ * The module the host actually loads: `{ id, tui }` as the DEFAULT export, with no
+ * `server` alongside it. Target-exclusive is a loader REJECTION, not a preference.
+ */
+const plugin: TuiPluginModule & { id: string } = {
+  id: PLUGIN_ID,
+  tui,
+};
+
+export default plugin;
 
 function openLaneManager(api: TuiApi): void {
   const view = readLanes(api);

@@ -188,18 +188,22 @@ function admitLaneName(
 // blocked dependency settled, but it produced nothing, so anything waiting on it
 // still waits. This list is the one place that says what "done" means, and it is
 // deliberately not derived from the machine — deriving it would make every new
-// state an unexamined dependency-satisfying state.
+// state an unexamined dependency-satisfying state. The type is what keeps that
+// choice honest while it stays a choice: both lists are `TaskState[]`, so the
+// membership test below is a check the compiler makes, and renaming a state is a
+// compile error here rather than a dependency that silently stops being
+// satisfied. The judgement stays a human's; the spellings stop being free.
 //
 // Settlement, by contrast, IS derivable: a dependency that will not run again
 // cannot be waited on, whatever it settled as. Deriving it means a state added
 // to the machine is settled here by construction instead of by a second hand-
 // written list that drifts.
-const SATISFIED_DEPENDENCY_STATES: readonly string[] = ["completed"];
-const SETTLED_DEPENDENCY_STATES: readonly string[] = TASK_STATES.filter((state) => state !== TaskState.Active);
+const SATISFIED_DEPENDENCY_STATES: readonly TaskState[] = [TaskState.Completed];
+const SETTLED_DEPENDENCY_STATES: readonly TaskState[] = TASK_STATES.filter((state) => state !== TaskState.Active);
 
 export interface DependencyBlock {
   id: string;
-  state: string;
+  state: TaskState;
 }
 
 export function resolveDependencies(
@@ -213,7 +217,7 @@ export function resolveDependencies(
   // Strict wins on overlap: an id in both lists must have completed.
   const seen = new Set<string>();
   const pending: DependencyBlock[] = [];
-  const check = (id: string, states: readonly string[]): void => {
+  const check = (id: string, states: readonly TaskState[]): void => {
     if (seen.has(id)) return;
     seen.add(id);
     const task = findTask(store, id);

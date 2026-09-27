@@ -26,19 +26,23 @@ function missingSessionId(args: unknown): string | null {
   return null;
 }
 
-// The session scope a session-scoped tool runs in. Resolution is ONE
-// function, and the resolved branch is the only thing an executor can accept:
-// the guard and the id read are the same hazard — an executor that
-// destructures deps first and reads `args.session_id` later can query the
-// store under "" while its sibling refuses. Making the resolved scope the
-// executor's parameter means "ran with an empty id" is unrepresentable past
-// the tool map, not merely discouraged inside four files.
-export interface ResolvedSessionScope {
-  sessionId: string;
-  client: OpenCodeClient;
-  store: TaskStore;
-  config: DynamicTaskConfig;
-}
+/**
+ * The session scope a session-scoped tool runs in. Resolution is ONE function, and
+ * the resolved branch is the only thing an executor can accept: the guard and the
+ * id read are the same hazard — an executor that destructures deps first and reads
+ * `args.session_id` later can query the store under "" while its sibling refuses.
+ * Making the resolved scope the executor's parameter means "ran with an empty id"
+ * is unrepresentable past the tool map, not merely discouraged inside four files.
+ *
+ * `ToolDeps` minus the one field a session-scoped tool has no business reading,
+ * rather than three of its four fields written out again. The field it drops is the
+ * whole argument for deriving instead of restating: a session has no directory of
+ * its own, and a copy of the list could not say so — it could only omit a field,
+ * which is indistinguishable from forgetting one. A fourth dependency added to
+ * `ToolDeps` reaches every executor automatically now, and the session-scoped ones
+ * will say so by failing to compile if they were relying on it not arriving.
+ */
+export type ResolvedSessionScope = Omit<ToolDeps, "directory"> & { sessionId: string };
 
 export type SessionScope = { ok: true; scope: ResolvedSessionScope } | Refusal;
 

@@ -215,7 +215,7 @@ export interface ActiveTaskState extends TaskRecordBase {
 }
 
 export interface RetainedTaskState extends TaskRecordBase {
-  state: Exclude<TaskState, "active">;
+  state: Exclude<TaskState, TaskState.Active>;
   retainedAt: number;
   abortError?: string | undefined;
   // Last successful abort landing on this record. Guards withdrawInterruptClaim
@@ -476,7 +476,7 @@ export function activeRecord(registration: NewTaskRegistration, startedAt: numbe
  */
 export function retainedRecord(
   active: ActiveTaskState,
-  state: Exclude<TaskState, "active">,
+  state: Exclude<TaskState, TaskState.Active>,
   retainedAt: number,
 ): RetainedTaskState {
   return { ...withoutAdvisory(active), state, retainedAt };
@@ -515,7 +515,7 @@ export function registerActiveTask(
 export function transitionState(
   store: TaskStore,
   childSessionId: string,
-  to: Exclude<TaskState, "active">,
+  to: Exclude<TaskState, TaskState.Active>,
 ): { state: TaskState; completed: boolean; task?: ActiveTaskState | RetainedTaskState } {
   const active = store.activeTasks.get(childSessionId);
   if (active) {
@@ -541,7 +541,7 @@ export function transitionState(
 // Late-error escalation — the ONE edge that rewrites a retained state.
 // Only a recorded success can be corrected to error: an interrupted or
 // errored task's own abort aftermath must never re-notify the parent.
-export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, "active">): boolean {
+export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, TaskState.Active>): boolean {
   return decideRetained(store, childSessionId, (retained) => {
     if (retained.state !== TaskState.Completed || outcome !== TaskState.Error) return false;
     retained.state = outcome;

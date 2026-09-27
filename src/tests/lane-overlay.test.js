@@ -22,7 +22,7 @@ import {
   resetLiveLanes,
 } from "../../dist/shared/lane-overlay.js";
 import { resolveAdmission } from "../../dist/shared/admission.js";
-import { createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
+import { createTaskStore, registerActiveTask, reviveRetainedTask, transitionState, TaskState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { defaultConfig, tempProject } from "./support/fixtures.js";
 
@@ -142,7 +142,7 @@ describe("lane overlay: a cap takes effect without a restart", () => {
     // Settled FIRST, so the single boot slot is free for the holder: the store
     // reaches one active task the same way a real fleet does.
     registerActiveTask(store, registration("ses_settled"), cap);
-    transitionState(store, "ses_settled", "completed");
+    transitionState(store, "ses_settled", TaskState.Completed);
     registerActiveTask(store, registration("ses_holder"), cap);
     return { store, cap };
   };

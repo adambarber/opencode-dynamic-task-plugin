@@ -35,8 +35,18 @@ import type { RGBA, TextChunk } from "@opentui/core";
 import { AGENT_CAP_NAMES } from "../shared/caps.js";
 import { CAP_LABEL, capCellOf, type AgentEntry, type CapCell } from "./agent-editor.js";
 
-/** How a theme is reached from the plugin api, named so `screenTokens` can take it. */
-type ThemeLike = { readonly current: { text: RGBA; textMuted: RGBA } };
+/**
+ * How a theme is reached from the plugin api, named so `screenTokens` can take it.
+ *
+ * `text` and `accent` are both declared `readonly RGBA` by the host and both are still
+ * probed for absence below, because the declaration is not a promise: a theme's JSON may
+ * omit a key, and the host itself guards `selectedListItemText` at runtime with
+ * `_hasSelectedListItemText` rather than trusting its own type. A theme that drops `text`
+ * would otherwise hand `fg(undefined)`, which renders as INHERITED — the host's muted
+ * wrapper — putting the value back in the colour this module exists to take it out of,
+ * with nothing in the build to say so.
+ */
+type ThemeLike = { readonly current: { text: RGBA; textMuted: RGBA; accent: RGBA } };
 
 /**
  * The colours this screen paints with, as roles.
@@ -52,9 +62,17 @@ export interface ScreenTokens {
   context: RGBA;
 }
 
-/** The two roles, resolved once from the theme in force. */
+/**
+ * The two roles, resolved once from the theme in force.
+ *
+ * The `??` on the value is the same move the other cortexkit sidebars make
+ * (`theme.success ?? theme.accent`): a missing role falls back to a role that is present
+ * rather than to nothing, because a wrong-but-visible colour is recoverable and an
+ * inherited one is invisible. The context role needs no fallback — an absent `textMuted`
+ * inherits the host's own muted wrapper, which is what it asked for anyway.
+ */
 export function screenTokens(theme: ThemeLike): ScreenTokens {
-  return { value: theme.current.text, context: theme.current.textMuted };
+  return { value: theme.current.text ?? theme.current.accent, context: theme.current.textMuted };
 }
 
 /** The mark between a row's label and its value, and between its two cells. */

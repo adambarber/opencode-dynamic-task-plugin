@@ -585,13 +585,21 @@ export async function setupTwoTurnHarness() {
  * follow the theme and a case cannot prove that against a constant.
  */
 export const darkTheme = () => ({
-  current: { text: RGBA.fromInts(0xd0, 0xd0, 0xd0), textMuted: RGBA.fromInts(0x6c, 0x6c, 0x6c) },
+  current: {
+    text: RGBA.fromInts(0xd0, 0xd0, 0xd0),
+    textMuted: RGBA.fromInts(0x6c, 0x6c, 0x6c),
+    accent: RGBA.fromInts(0x88, 0x88, 0xff),
+  },
   mode: () => "dark",
 });
 
 /** The same shape, inverted — what a light terminal hands the host. */
 export const lightTheme = () => ({
-  current: { text: RGBA.fromInts(0x20, 0x20, 0x20), textMuted: RGBA.fromInts(0x90, 0x90, 0x90) },
+  current: {
+    text: RGBA.fromInts(0x20, 0x20, 0x20),
+    textMuted: RGBA.fromInts(0x90, 0x90, 0x90),
+    accent: RGBA.fromInts(0x33, 0x33, 0xcc),
+  },
   mode: () => "light",
 });
 import { RGBA } from "@opentui/core";

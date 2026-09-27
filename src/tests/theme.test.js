@@ -105,6 +105,36 @@ describe("the painted row and the plain row are the same row", () => {
   });
 });
 
+describe("screenTokens", () => {
+  it("draws the value in the theme's own foreground, not a literal", () => {
+    // The claim that started this: a hard bright white reads as "bright" in a dark theme
+    // and as INVISIBLE in a light one. So the value must be a ROLE, and the two fixtures
+    // must disagree about it — otherwise this suite would pass with a literal in place.
+    assert.notEqual(
+      screenTokens(darkTheme()).value.buffer.join(),
+      screenTokens(lightTheme()).value.buffer.join(),
+      "a literal colour would satisfy both themes and be unreadable in one of them",
+    );
+  });
+
+  it("falls back to a present role when the theme omits the foreground", () => {
+    // A theme's JSON may omit a key the host's TYPE declares as always there — the host
+    // guards selectedListItemText that way itself. Without a fallback the value renders
+    // INHERITED, which is the muted colour this module exists to take it out of, and
+    // nothing fails.
+    const noForeground = { current: { textMuted: darkTheme().current.textMuted, accent: darkTheme().current.accent } };
+    assert.equal(
+      screenTokens(noForeground).value.buffer.join(),
+      darkTheme().current.accent.buffer.join(),
+      "a missing foreground must land on a colour that is present, not on nothing",
+    );
+  });
+
+  it("prefers the foreground over the fallback when both are there", () => {
+    assert.equal(screenTokens(darkTheme()).value.buffer.join(), darkTheme().current.text.buffer.join());
+  });
+});
+
 /** A footer's characters, whichever of the two things a footer can be. */
 function footerText(footer) {
   return typeof footer === "string" ? footer : footer.chunks.map((run) => run.text).join("");

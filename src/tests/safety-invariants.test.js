@@ -378,6 +378,50 @@ describe("invariant: one parent-notification owner (Task 05)", () => {
   rule({ name: "exactly one notifyParent* function exists", ...THE_ONLY_NOTIFY_OWNER, expect: 1 });
 });
 
+// --- 16: the cap concept's chokepoint ---------------------------------------
+//
+// Primitive: the capacity judgment. Funnel: `checkAgentCapacity` in caps.ts
+// answers ONE question, and `agentCapacityRefusal` in task-state.ts is the only
+// thing allowed to ask it.
+//
+// Why it needs pinning rather than a comment. `withdrawInterruptClaim` used to
+// spell the judgment out inline — same inputs, same answer, spelled a second
+// time in the same file as the funnel that exists precisely so nobody spells it
+// twice. It read correctly and would have kept working, and a per-agent cap would
+// have been enforced by whichever of the two answers a given path happened to
+// reach. This is a TOKEN gate, not containment: it sees a call by name, so a
+// judgment inlined as arithmetic passes it. That is the standing limit of the
+// line-scanner rules in this file and it is why the claim here is about the CALL,
+// not about the arithmetic.
+const CAP_JUDGMENT_CALL = /checkAgentCapacity\s*\(/;
+const CAP_MODULE = "shared/caps.ts";
+const CAP_FUNNEL = "shared/task-state.ts";
+const THE_ONLY_CAP_JUDGMENT = gate(
+  [CAP_JUDGMENT_CALL],
+  "docs/tasks/16-per-agent-caps.md",
+  "The cap judgment is called from exactly one place.",
+);
+rule({
+  name: "exactly one call to the cap judgment, and it is the store's funnel",
+  ...THE_ONLY_CAP_JUDGMENT,
+  expect: 1,
+  sanctioned: [CAP_MODULE],
+});
+
+// And the funnel itself must be the caller, not merely the count: deleting the
+// funnel's call would leave the count at zero and pass the rule above, so the
+// OWNERSHIP is stated rather than inferred from an arithmetic total.
+const CAP_FUNNEL_BODY = /return checkAgentCapacity\(/;
+it("the one call to the cap judgment is the store's capacity funnel", () => {
+  const callers = listProdFiles()
+    .filter((f) => !f.endsWith(CAP_MODULE))
+    .filter((f) => scanLines(f, [CAP_JUDGMENT_CALL], []).length > 0);
+  assert.deepEqual(callers, [listProdFiles().find((f) => f.endsWith(CAP_FUNNEL))],
+    `the cap judgment is reached from ${callers.join(", ")} — every claim must ask the store, not the rule`);
+  assert.ok(scanLines(listProdFiles().find((f) => f.endsWith(CAP_FUNNEL)), [CAP_FUNNEL_BODY], []).length === 1,
+    "and the store must be the one calling it, not merely a file that mentions it");
+});
+
 // --- Task 06: persistence dance --------------------------------------------
 // Primitive: durable file writes. Funnel: session-lifecycle.ts owns the
 // atomic ledger dance; debug-logger.ts owns diagnostics appends (Tenet 6).

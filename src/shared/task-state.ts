@@ -303,15 +303,11 @@ export function withdrawInterruptClaim(
     // >= not >: a successful abort landing in the same millisecond as the
     // claim is still knowledge — the newer (or same-instant) success wins.
     if ((retained.lastAbortAt ?? 0) >= claimTimeMs) return false;
-    // Reclaiming is a slot claim, judged against the agent the record names.
-    if (
-      bounds &&
-      checkAgentCapacity(
-        { agentActive: agentActiveCount(store, retained.agentName), totalActive: store.activeTasks.size },
-        resolveAgentCaps(bounds, retained.agentName),
-        bounds.maxConcurrent,
-      )
-    ) {
+    // Reclaiming is a slot claim, and it goes through the SAME funnel as a spawn and a
+    // revival rather than asking the question again. It used to spell the judgment out
+    // here, which made two answers to "is there room" in one file — and the one nobody
+    // re-reads is the one a per-agent cap would have been enforced by half of.
+    if (bounds && agentCapacityRefusal(store, retained.agentName, bounds)) {
       return false;
     }
     // No turn attribution: a withdrawal UNDOES a claim about this very turn, so

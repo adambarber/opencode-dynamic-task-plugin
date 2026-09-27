@@ -34,7 +34,7 @@
  * dispatch path already reads, so there is no second source of truth to reconcile
  * and no server endpoint added to read a number a file already holds.
  */
-import type { TuiDialogPromptProps, TuiDialogSelectProps, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { TuiDialogPromptProps, TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { normalizeDynamicTaskConfig } from "../shared/config.js";
 import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
 import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
@@ -66,6 +66,15 @@ const COMMAND = "dynamic-task.lanes";
  * "unload this plugin" the same switch.
  */
 const PLUGIN_ID = "dynamic-task";
+
+/**
+ * Whether a dialog of OURS is on screen. Read by the escape layer below.
+ *
+ * A flag rather than `api.ui.dialog.open`, which answers the same question for
+ * EVERY dialog: a plugin that gated on it would answer for other plugins'
+ * dialogs too, and pressing escape in someone else's dialog would close it.
+ */
+let laneDialogUp = false;
 
 /**
  * What a row in the select stands for.
@@ -109,10 +118,63 @@ export const tui: TuiPlugin = async (api) => {
       },
     ],
   });
-  // No `onDispose` for the layer. The host already disposes keymap registrations
-  // when a plugin deactivates, and the spec says so explicitly; wiring it a second
-  // time is not belt-and-braces, it is a second owner for one teardown.
+  // The escape hatch, as a LAYER of its own rather than a binding in the layer
+  // above. `enabled` is a LAYER field in the host's keymap — the keymap's
+  // addons register it on the layer and on the command, never on a binding — so
+  // a gated binding here would gate the whole layer, and the command has to stay
+  // dispatchable while the dialog is down.
+  api.keymap.registerLayer({
+    enabled: () => laneDialogUp,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Close lanes",
+        group: "Dialog",
+        cmd: () => closeLaneDialog(api),
+      },
+    ],
+  });
+  // No `onDispose` for either layer. The host already disposes keymap
+  // registrations when a plugin deactivates, and the spec says so explicitly;
+  // wiring it a second time is not belt-and-braces, it is a second owner for one
+  // teardown.
 };
+
+/**
+ * Every dialog of ours goes through here, which is what makes the flag above true
+ * for all of them rather than for whichever call site remembered to set it.
+ *
+ * `replace` is the host's only way to put a dialog up, and it fires the outgoing
+ * entry's `onClose` on every path that takes a dialog down: the escape and
+ * ctrl+c handlers pop the top entry, `clear` walks the whole stack, and a second
+ * `replace` walks whatever it is replacing. The flag is therefore cleared by the
+ * host rather than by each of our own call sites, which is the only arrangement
+ * that cannot miss one. It sets a boolean and nothing else — an `onClose` that
+ * called `clear()` would recurse forever, because `clear` is itself what calls it.
+ *
+ * The flag is set AFTER the call, not before, and the order is load-bearing: a
+ * `replace` notifies the outgoing entry's handler on its way past, so setting it
+ * first would have that notification set it straight back to false and leave the
+ * escape layer inert over the very dialog that was just mounted. `replace` is
+ * synchronous, so afterwards is also the truth: the new entry is on the stack.
+ */
+function mountLaneDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0]): void {
+  api.ui.dialog.replace(render, () => {
+    laneDialogUp = false;
+  });
+  laneDialogUp = true;
+}
+
+/**
+ * Closing the way the host's own escape handler closes: drop the selection, then
+ * clear the stack. Mirrored rather than shortened because the selection is the
+ * reason this path exists — it is what disables the host's handler — so leaving
+ * it in place would hand the next dialog a selection it did not create.
+ */
+function closeLaneDialog(api: TuiApi): void {
+  if (api.renderer.getSelection()) api.renderer.clearSelection();
+  api.ui.dialog.clear();
+}
 
 /**
  * The module the host actually loads: `{ id, tui }` as the DEFAULT export, with no
@@ -137,13 +199,12 @@ function openLaneManager(api: TuiApi): void {
     caps: (row) => askForCaps(api, view, row),
     add: () => askForName(api, view),
   };
-  // Mounted the way every other plugin mounts: one argument, no dismiss handler.
-  // ESC is the HOST's — @cortexkit/opencode-magic-context mounts ten dialogs this
-  // exact way and at src/tui/index.tsx:1017 names the handler it sometimes passes
-  // "User dismissed via Escape rather than confirming". So the handler is a
-  // notification that ESC happened, never the mechanism that closes the dialog, and
-  // passing one here would be inventing a second exit the host does not ask for.
-  api.ui.dialog.replace(() => api.ui.DialogSelect(laneSelectProps(view, asks)));
+  // Mounted the way every other plugin mounts: through the one funnel that also
+  // owns the escape layer's gate. The handler `mountLaneDialog` passes is a
+  // NOTIFICATION, not a mechanism — the host closes on escape by popping the
+  // stack itself, and this only records that the dialog is gone. See the funnel
+  // for why an `onClose` that closed would recurse.
+  mountLaneDialog(api, () => api.ui.DialogSelect(laneSelectProps(view, asks)));
 }
 
 /**
@@ -257,13 +318,13 @@ function askForName(api: TuiApi, view: LaneView): void {
 /**
  * A question asked on top of the lane list.
  *
- * A question replaces the list, and confirming or ESC both leave — ESC by the host,
- * confirming by re-opening the list below. So there is no dismiss handler here
- * either: one would be told about an ESC the host has already handled, and this
- * plugin's own reports do not establish that it fires on a programmatic clear too.
+ * A question REPLACES the list — the host's `replace` sets the stack to a single
+ * entry, so there is no depth to nest into — which is why escape here leaves the
+ * whole manager rather than returning to the list, and why the confirm path
+ * re-opens the list below rather than popping back to it.
  */
 function askOverLaneList(api: TuiApi, title: string, placeholder: string, onConfirm: (typed: string) => void): void {
-  api.ui.dialog.replace(() => api.ui.DialogPrompt(lanePromptProps(title, placeholder, onConfirm)));
+  mountLaneDialog(api, () => api.ui.DialogPrompt(lanePromptProps(title, placeholder, onConfirm)));
 }
 
 function askForCaps(api: TuiApi, view: LaneView, row: LaneEntry): void {

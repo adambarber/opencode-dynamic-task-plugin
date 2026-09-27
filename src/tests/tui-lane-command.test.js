@@ -26,6 +26,8 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
+import { createTestKeymap, captureKeymapDiagnostics } from "@opentui/keymap/testing";
+import { registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -44,30 +46,73 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const NO_ASKS = { caps: () => {}, add: () => {} };
 
 /**
- * The dialog stack, as the host declares it.
+ * The dialog stack, modelled on the host's own `useDialog` rather than on what a
+ * test would like it to do.
  *
- * `replace` mounts a dialog and nothing else happens: the host owns ESC, so a
- * double that "handles" a dismiss would be deciding the host's behaviour — which is
- * exactly what the earlier double did when it ran the dismiss handler at mount time.
- * This one records only what was mounted, and `clear` is a real host call because
- * the widgets make it, not a stand-in for ESC.
+ * Three properties are the host's, and each was measured against the source at the
+ * tag the running binary was built from (packages/tui/src/ui/dialog.ts):
+ *
+ *  - `replace` SETS the stack to a single entry. There is no push, so depth never
+ *    exceeds one and a second dialog cannot bury the first.
+ *  - `replace` and `clear` both walk the outgoing entries calling their `onClose`.
+ *    That is why an `onClose` which itself cleared would recurse forever.
+ *  - the escape and ctrl+c handlers pop the top entry and call its `onClose`.
+ *
+ * The earlier double had none of these: it ignored `onClose` entirely, which is what
+ * let a suite "prove" a way out of every dialog that the host does not offer.
  */
 function dialogStack() {
   const mounted = [];
+  let stack = [];
+  const notifyOutgoing = () => {
+    for (const entry of stack) entry.onClose?.();
+  };
   return {
     stack: {
-      replace: (render) => {
+      replace: (render, onClose) => {
+        notifyOutgoing();
+        stack = [{ render, onClose }];
         mounted.push(render());
       },
       clear: () => {
+        notifyOutgoing();
+        stack = [];
         mounted.length = 0;
       },
       setSize: () => {},
-      size: "medium",
-      depth: 1,
-      open: true,
+      get size() {
+        return "medium";
+      },
+      get depth() {
+        return stack.length;
+      },
+      get open() {
+        return stack.length > 0;
+      },
+      /** The notification the top entry was mounted with, for asserting on directly. */
+      onCloseOf: () => stack[0]?.onClose,
     },
     mounted,
+  };
+}
+
+/**
+ * The renderer's selection, which is the whole reason escape needs a second way in.
+ *
+ * `getSelection` returning an object whose `getSelectedText` is non-empty is what
+ * disables the host's own escape binding, so the tests have to be able to put that
+ * state in place — and take it away again — rather than assume it.
+ */
+function rendererDouble() {
+  const state = { selection: null };
+  return {
+    state,
+    api: {
+      getSelection: () => state.selection,
+      clearSelection: () => {
+        state.selection = null;
+      },
+    },
   };
 }
 
@@ -83,9 +128,12 @@ function dialogStack() {
 function hostApi(directory) {
   const seen = { layers: [], toasts: [], selects: [], prompts: [] };
   const dialog = dialogStack();
+  const renderer = rendererDouble();
   return {
     seen,
     mounted: dialog.mounted,
+    dialog: dialog.stack,
+    renderer: renderer.state,
     api: {
       state: { ready: true, config: {}, provider: [], path: { state: "", config: "", worktree: "", directory }, vcs: undefined },
       keymap: {
@@ -94,6 +142,7 @@ function hostApi(directory) {
           return () => {};
         },
       },
+      renderer: renderer.api,
       ui: {
         dialog: dialog.stack,
         DialogSelect: (props) => {
@@ -139,8 +188,13 @@ const buildLane = (maxConcurrent) => ({ lanes: { build: { maxConcurrent } } });
  * A host with the module booted, and the command it registered.
  *
  * ONE place the module is booted, because booting IS a production interaction and
- * two call sites spelling it out is two places to forget the plugin's own id, or to
- * stop asserting there is exactly one layer.
+ * two call sites spelling it out is two places to forget the plugin's own id.
+ *
+ * The two layers are kept apart deliberately: the command has to be dispatchable
+ * while no dialog is up, and the escape binding has to be live only while one is,
+ * and the keymap's `enabled` is a LAYER field — so one layer could not be both.
+ * Reading the command out of "the first layer" is therefore a claim about an
+ * ordering nothing guarantees, so it is read by what the layer actually carries.
  */
 async function booted(directory) {
   const host = hostApi(directory);
@@ -148,8 +202,11 @@ async function booted(directory) {
   // module's id rather than repeating the string: a test that retyped it would be a
   // second place to change, and the suite already gates on exactly that.
   await tui(host.api, undefined, { id: tuiModule.id });
-  assert.equal(host.seen.layers.length, 1, "one layer, so the palette has one entry to find");
-  return { ...host, command: host.seen.layers[0].commands[0] };
+  const command = host.seen.layers.find((layer) => layer.commands)?.commands[0];
+  const escapeLayer = host.seen.layers.find((layer) => layer.bindings);
+  assert.ok(command, "the palette command is registered");
+  assert.ok(escapeLayer, "and the escape layer that gets the operator out");
+  return { ...host, command, escape: escapeLayer.bindings[0], escapeLayer };
 }
 
 /** A project directory holding the given files, with nothing booted and nothing pressed. */
@@ -173,12 +230,19 @@ const withProject = (fn, { overlay, active = [], retained = [] } = {}) =>
 const withList = (overlay, fn, opts) => withProject((directory) => fn(listOver(directory), directory), { overlay, ...opts });
 
 /**
+ * …with the module booted and NOTHING pressed, which is the only state in which a
+ * gate can be read at all: press the command and every layer this plugin owns is
+ * live, so a test that wants to watch one wake up has to start before that.
+ */
+const withBooted = (fn, opts) =>
+  withProject(async (directory) => fn(await booted(directory), directory), opts);
+
+/**
  * …with the command pressed, which is the only state in which a dialog exists at all.
  * The host is handed back because the sequences have to choose rows and dismiss.
  */
 const withOpen = (fn, opts) =>
-  withProject(async (directory) => {
-    const host = await booted(directory);
+  withBooted(async (host, directory) => {
     host.command.run();
     assert.equal(host.seen.selects.length, 1, "pressing the command opens the lane list");
     return fn(host, directory);
@@ -378,14 +442,100 @@ describe("choosing a lane", () => {
 });
 
 /**
- * What this suite still cannot prove, said out loud rather than left implicit:
- * that the host's palette fuzzy-matches the fields we set. That is the host's
- * search configuration, not ours. What the suite does establish is that the
- * command is NAMESPACED to the palette, uses the host's field spellings, and
- * carries the word in every field we set — so ctrl+p and then "lanes" is the
- * one thing left to press.
+ * What this suite now observes for real, having stopped for the escape path: the
+ * layer objects below are the module's own, handed to a real @opentui/keymap
+ * dispatcher, with the host's own dialog guard registered alongside them. The
+ * palette's fuzzy search is still the host's configuration and still unobserved.
  */
 export const PALETTE_REMAINS_UNOBSERVED = true;
+
+/**
+ * Escape, pressed for real.
+ *
+ * The module's layers go into an actual @opentui/keymap, and the host's dialog
+ * guard is registered with them — `enabled: stack.length > 0 &&
+ * !renderer.getSelection()?.getSelectedText()`, transcribed from
+ * packages/tui/src/ui/dialog.ts:106 at the tag the running binary was built from.
+ * Everything that decides WHICH handler runs — the per-layer `enabled` gate, the
+ * priority/order tiebreak, the ambiguity resolver — is the library's own code, so
+ * these cases cannot pass by agreeing with a stand-in.
+ *
+ * The host's layer is registered LAST because that is when the host registers it:
+ * the dialog component mounts after the plugin loads. Getting that order backwards
+ * would make the module's binding win every tie and quietly take the key from every
+ * other plugin's dialog, which is the failure this ordering exists to rule out.
+ */
+function pressEscapeForReal(host, { selectedText = "" } = {}) {
+  const { keymap, host: keys, root } = createTestKeymap({ defaultKeys: true });
+  registerEnabledFields(keymap);
+  registerMetadataFields(keymap);
+  const diagnostics = captureKeymapDiagnostics(keymap);
+
+  host.renderer.selection = selectedText ? { getSelectedText: () => selectedText } : null;
+
+  let hostClosed = 0;
+  const register = (layer) => keymap.registerLayer({ target: root, ...layer });
+  for (const layer of host.seen.layers) register(layer);
+  register({
+    enabled: () => host.dialog.depth > 0 && !host.renderer.selection?.getSelectedText(),
+    bindings: [{ key: "escape", desc: "Close dialog", group: "Dialog", cmd: () => { hostClosed++; host.dialog.clear(); } }],
+  });
+
+  keys.press("escape");
+  return { hostClosed, stillOpen: host.dialog.open, diagnostics };
+}
+
+describe("escape gets the operator out of the lane list", () => {
+  it("and the HOST's own handler is the one that acts, so the key is not taken from every other dialog", () =>
+    withOpen((host) => {
+      const { hostClosed, stillOpen, diagnostics } = pressEscapeForReal(host);
+      assert.equal(hostClosed, 1, "the host's dialog handler ran, not the plugin's");
+      assert.equal(stillOpen, false, "and the list is closed");
+      assert.deepEqual([...diagnostics.warnings, ...diagnostics.errors], [],
+        "two layers on one key must resolve without an ambiguity warning");
+    }));
+
+  it("with text selected — which DISABLES the host's binding — the operator is still not stuck", () =>
+    // The defect this exists for. `DialogSelect` is the only widget of ours with a
+    // filter input that can hold a text selection, and that selection is exactly
+    // what switches the host's escape handler off, leaving the footer — which is
+    // reachable only with a mouse — as the sole way out of a keyboard-only dialog.
+    // Verified against the dispatcher alone: with the host's binding and no
+    // selection it closes, and with a selection it does not fire at all.
+    withOpen((host) => {
+      const { hostClosed, stillOpen, diagnostics } = pressEscapeForReal(host, { selectedText: "build" });
+      assert.equal(hostClosed, 0, "the host's handler is disabled while text is selected — the trap");
+      assert.equal(stillOpen, false, "and the list is still closable, which is the whole fix");
+      assert.equal(host.renderer.selection, null, "the selection goes with it, as the host's handler would");
+      assert.deepEqual([...diagnostics.warnings, ...diagnostics.errors], []);
+    }));
+
+  it("the escape layer answers only while a dialog of OURS is up, never for another plugin's", () =>
+    // `withBooted`, not `withOpen`: the first assertion is about the gate BEFORE
+    // anything of ours is on screen, which is the state `withOpen` has already left.
+    withBooted((host) => {
+      assert.equal(host.escapeLayer.enabled(), false, "nothing of ours is open, so the layer is inert");
+      assert.equal(host.escape.key, "escape", "and it is the key the operator actually presses");
+
+      host.command.run();
+      assert.equal(host.escapeLayer.enabled(), true, "the list is up, so escape has to be live");
+
+      // Choosing a row mounts a question OVER the list, and `replace` walks the
+      // outgoing entry's onClose — so the gate has to be re-armed by the mount, not
+      // left wherever the replaced dialog left it.
+      row(host.seen.selects[0], DEFAULT_LANE).onSelect();
+      assert.equal(host.escapeLayer.enabled(), true, "still live over the prompt, not dropped by the replacement");
+    }));
+
+  it("the onClose the funnel passes RECORDS the dismissal; performing one would recurse forever", () =>
+    withOpen((host) => {
+      const notify = host.dialog.onCloseOf();
+      assert.equal(typeof notify, "function", "a notification is passed, so the host can report the dismissal");
+      notify();
+      assert.equal(host.dialog.open, true, "and it did not close the dialog: `clear` is what calls it");
+      assert.equal(host.escapeLayer.enabled(), false, "but it did record that no dialog of ours is up");
+    }));
+});
 
 describe("adding a lane", () => {
   it("a name that already exists opens that lane rather than making a second one", () =>

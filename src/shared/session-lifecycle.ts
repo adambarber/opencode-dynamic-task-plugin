@@ -378,20 +378,9 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
             dropped++;
           }
         }
-        // A child occupies EXACTLY ONE half, so a key in BOTH halves is a file that
-        // contradicts itself, and the contradiction has to be resolved HERE rather
-        // than left to whichever consumer reads first. It was: the boot pass restored
-        // from the settled half, so a genuinely running child came back as completed.
-        // The ACTIVE half wins, because it was written by a process that believed the
-        // child alive and the settled half is the older fact a reclaim failed to
-        // remove. The losing entry is counted as dropped so the operator is told the
-        // file contradicted itself instead of only being told what survived.
-        for (const key of [...retained.keys()]) {
-          if (active.has(key)) {
-            retained.delete(key);
-            dropped++;
-          }
-        }
+        // A child occupies exactly ONE half. See `dropSettledShadows` for why this
+        // is resolved here rather than trusted from the writer.
+        dropped += dropSettledShadows(retained, active);
         if (dropped > 0) discarded = `${dropped} record(s) in the file failed validation and were dropped`;
       }
     } catch (error: unknown) {
@@ -402,6 +391,41 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
     }
   }
   return { retained, active, pending, discarded };
+}
+
+/**
+ * A child occupies exactly ONE half, so a key in BOTH halves is a file that
+ * contradicts itself — and the contradiction has to be resolved where the file is
+ * read, not left to whichever consumer looks first. The boot pass looks at the
+ * settled half, so it read a genuinely running child as `completed`: a durable
+ * false success, and one that nothing reading the store rather than the file could
+ * have seen.
+ *
+ * The ACTIVE half wins. It was written by a process that believed the child alive;
+ * the settled half is the older fact that a reclaim failed to remove. Trusting the
+ * active half can only over-report liveness, and liveness is the half that gets
+ * re-checked by the boot pass on its own.
+ *
+ * This is the reader's job and not the writer's alone. The writer does clear the
+ * settled half on a reclaim, but any writer may not: a regression, a merge, a
+ * hand-edit, or a bug fixed in one place and reintroduced in another. The reader
+ * is the only place in the plugin that cannot regress, because it is the only place
+ * the question is actually asked.
+ *
+ * @returns how many records were dropped, so the operator is told the file
+ *   contradicted itself rather than only being told what survived.
+ */
+function dropSettledShadows(
+  retained: Map<string, RetainedTaskState>,
+  active: Map<string, ActiveTaskState>,
+): number {
+  let dropped = 0;
+  for (const key of [...retained.keys()]) {
+    if (!active.has(key)) continue;
+    retained.delete(key);
+    dropped++;
+  }
+  return dropped;
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the

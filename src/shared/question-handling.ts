@@ -14,7 +14,7 @@
 import { errorMessage } from "./host-shape.js";
 import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
-import type { OpenCodeClient } from "./client.js";
+import { hasQuestionCall, type OpenCodeClient } from "./client.js";
 
 /**
  * What answering a question amounts to. An enum rather than a string-literal
@@ -106,6 +106,7 @@ function unsent(reason: string): Promise<QuestionResult> {
  */
 export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
   if (!questionId || !answer) return unsent("missing question id or answer");
+  if (!hasQuestionCall(client, "reply")) return unsent("this host's client has no question.reply");
   return sendQuestionSettlement(questionId, () =>
     client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer]] } }),
   );
@@ -116,5 +117,6 @@ export function replyToQuestion(client: OpenCodeClient, questionId: string, answ
 // which is also the only place it can honestly go.
 export function rejectQuestion(client: OpenCodeClient, questionId: string): Promise<QuestionResult> {
   if (!questionId) return unsent("missing question id");
+  if (!hasQuestionCall(client, "reject")) return unsent("this host's client has no question.reject");
   return sendQuestionSettlement(questionId, () => client.question.reject({ path: { requestID: questionId } }));
 }

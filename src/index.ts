@@ -30,9 +30,16 @@ export default async function dynamicTaskPlugin(
   input: PluginInput,
   options?: PluginOptions,
 ) {
-  // Single sanctioned boundary cast (Task 08): the host provides the
-  // `question` namespace beyond the generated SDK surface. Everything
-  // downstream takes the augmented OpenCodeClient — no further casts.
+  // The boundary cast (Task 08): the host provides the `question` namespace beyond
+  // the generated SDK surface. Everything downstream takes the augmented
+  // OpenCodeClient — no further casts.
+  //
+  // What earns it, precisely: the guard below probes the four capabilities the tool
+  // map needs, and the fifth — the question namespace — is probed by
+  // `hasQuestionCall` at the two call sites that use it, because a host without it
+  // should lose questions rather than the whole plugin. The premise is documented
+  // and verified in shared/client.ts; these two probes are what stop it being only
+  // a belief.
   const directory = input.directory;
   const client = input.client as OpenCodeClient;
 

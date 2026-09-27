@@ -50,6 +50,30 @@ describe("question gate: reply/reject settlement", () => {
     assert.strictEqual((await replyToQuestion(okClient(), "q1", "")).succeeded, false);
   });
 
+  // The `question` namespace is a documented premise of the client type, and a
+  // premise that is load-bearing at runtime has to be probed. Probed per CALL, not
+  // per namespace, and reported as a refusal rather than thrown — which is the whole
+  // reason this is here: without it a host that lacks the namespace fails inside an
+  // event handler, where nothing can report it.
+  it("a host without a question call is refused, naming the call it lacks", async () => {
+    // The ways the premise can fail, as one table: a namespace missing a call, and a
+    // namespace missing outright. Per CALL and not per client, because a host that
+    // gained `reject` without `reply` must still be able to reject.
+    const cases = [
+      [{ question: { reject: async () => {} } }, replyToQuestion, "question.reply"],
+      [{ question: { reply: async () => {} } }, rejectQuestion, "question.reject"],
+      [{}, replyToQuestion, "question.reply"],
+      [{}, rejectQuestion, "question.reject"],
+    ];
+    for (const [client, call, missing] of cases) {
+      assert.deepStrictEqual(
+        await call(client, "q1", "yes"),
+        { succeeded: false, reason: `this host's client has no ${missing}` },
+        `a client without ${missing} must be a refusal, not a crash`,
+      );
+    }
+  });
+
   it("reject succeeds and absorbs 409 conflicts", async () => {
     assert.deepStrictEqual(await rejectQuestion(okClient(), "q1"), { succeeded: true });
     const conflicted = questionClient({

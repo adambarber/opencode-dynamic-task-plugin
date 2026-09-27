@@ -36,3 +36,29 @@ export interface QuestionNamespace {
 export type OpenCodeClient = PluginInput["client"] & {
   question: QuestionNamespace;
 };
+
+/**
+ * Whether this host's client really carries a question call.
+ *
+ * The premise behind `OpenCodeClient` is documented above and verified against a
+ * real host — but a type is a belief, and a belief that is load-bearing at runtime
+ * is a promise somebody has to keep. `index.ts` earns its own cast by probing the
+ * four capabilities the tool map needs; this is the fifth, and until now nothing
+ * checked it, so a host without the namespace failed by throwing inside a question
+ * event handler — the one failure mode this plugin has no way to report.
+ *
+ * It is a probe of ONE call, not of the namespace, because the two entry points
+ * need different ones and a client that gained `reject` without `reply` should
+ * still be able to reject. Deliberately NOT part of the boot guard: the question
+ * namespace is one feature among the tools, and a host missing it should lose
+ * questions, not the whole plugin. The caller turns a `false` into a refusal it can
+ * report, which is the outcome a throw could not produce.
+ *
+ * The cast below is the sanctioned idiom rather than a second untruth: it widens
+ * to an untyped map to ASK whether a key exists, which is the question, instead of
+ * asserting an answer.
+ */
+export function hasQuestionCall(client: PluginInput["client"], call: "reply" | "reject"): boolean {
+  const question = (client as { question?: Record<string, unknown> }).question;
+  return typeof question?.[call] === "function";
+}

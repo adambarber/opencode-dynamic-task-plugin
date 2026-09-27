@@ -27,6 +27,7 @@ import {
   type AgentCaps,
   type AgentOverlay,
 } from "../shared/caps.js";
+import { DepthBound, depthLimits } from "../shared/task-policy.js";
 
 /**
  * How each cap reads in a cell.
@@ -57,6 +58,7 @@ export const CAP_CHOICES: Record<AgentCapName, readonly number[]> = {
 /** The two cap numbers in force for one agent, with the config file's fallbacks applied. */
 export type ResolvedCaps = { maxConcurrent: number; maxDepth: number };
 
+
 /** One agent, as the screen holds it. */
 export interface AgentEntry {
   /** The agent, in the HOST's spelling — what a dispatch names. */
@@ -65,6 +67,27 @@ export interface AgentEntry {
   resolved: ResolvedCaps;
   /** The caps the overlay states for this agent, which may be none of them. */
   stated: AgentCaps;
+  /**
+   * The nesting depth that is actually reachable, and what holds it there.
+   *
+   * `resolved.maxDepth` is the cap the operator SET, which is not always the depth they
+   * can reach: with distinct-agent recursion off, the agent set binds first, so a cap of
+   * 4 over three agents permits 3 and not 4. This is the screen the cap is set ON, so a
+   * row that printed only the cap would let the operator type a number that does not
+   * take effect and leave them to discover it in `task_list`. Carried per row rather
+   * than derived at the cell because `depthLimits` is the resolver — the same one
+   * `task_list` reads through — and a cell that worked it out itself would be a second
+   * answer to a question the screen already has an answer to.
+   */
+  depth: DepthBinding;
+}
+
+/** The reachable depth, the cap that was set, and the constraint that binds. */
+export interface DepthBinding {
+  readonly configured: number;
+  /** null when the dispatchable agents are unknown, so no depth can be claimed. */
+  readonly effective: number | null;
+  readonly boundBy: DepthBound | null;
 }
 
 /** What the screen shows and where it writes back. */
@@ -91,6 +114,7 @@ export function agentDialogFrom(
   raw: unknown,
   base: AgentCapSource,
   agentNames: readonly string[] | null,
+  allowSameAgentRecursion: boolean,
   problem: string | null,
 ): AgentDialog {
   // Stated caps come from the overlay through the caps module's OWN reader, so an
@@ -106,13 +130,37 @@ export function agentDialogFrom(
   // stated/inherited pair exists to prevent, arriving through the pair itself.
   const inForce = applyAgentOverlay(base, raw) ?? base;
   return {
-    rows: names.map((name) => ({
-      name,
-      stated: stated[agentKey(name)] ?? {},
-      resolved: capsOf(resolveAgentCaps(inForce, name)),
-    })),
+    rows: names.map((name) => {
+      const policy = resolveAgentCaps(inForce, name);
+      return {
+        name,
+        stated: stated[agentKey(name)] ?? {},
+        resolved: capsOf(policy),
+        depth: depthBindingFor(policy.maxDepth, allowSameAgentRecursion, agentNames),
+      };
+    }),
     problem,
   };
+}
+
+/**
+ * The depth an agent can reach, or the honest "not claimable".
+ *
+ * The agent set is `agentNames` and NOT `names`: when the host's agent list could not be
+ * read, `names` falls back to the agents the overlay caps so the screen still has rows to
+ * draw — but that is a DISPLAY decision, and a set of one capped agent would report a
+ * reachable depth of 1 over a project that dispatches to twenty. So the depth is claimed
+ * only from the real set, and an unreadable one claims nothing.
+ *
+ * An EMPTY set is emphatically not the unknown answer: `depthLimits` reads one as depth
+ * 0 with the agent set binding, and "nothing may nest" is a harder claim than "we could
+ * not find out", printed on a screen whose whole job is telling the operator what will
+ * happen to their dispatches.
+ */
+function depthBindingFor(configured: number, allowSameAgentRecursion: boolean, agentNames: readonly string[] | null): DepthBinding {
+  if (agentNames === null) return { configured, effective: null, boundBy: null };
+  const limits = depthLimits({ maxDepth: configured, allowSameAgentRecursion }, agentNames);
+  return { configured, effective: limits.effective, boundBy: limits.boundBy };
 }
 
 /**
@@ -139,6 +187,16 @@ export interface CapCell {
   value: number;
   /** False when the number is the config file's fallback rather than a stated cap. */
   stated: boolean;
+  /**
+   * The depth actually reachable, when something other than this cap is what bounds it.
+   *
+   * A DEPTH cell only. It is the one cap whose number is not the number in force: with
+   * distinct-agent recursion off the agent set binds first, so a cap of 4 over three
+   * agents permits 3. Null for a concurrency cell, and null when nothing else binds — so
+   * "no ceiling but this cap" and "the ceiling is unknown" stay two different answers
+   * rather than both being the absence of a number.
+   */
+  bounded: number | null;
 }
 
 /**
@@ -151,7 +209,22 @@ export interface CapCell {
  */
 export function capCellOf(row: AgentEntry, cap: AgentCapName): CapCell {
   const value = row.resolved[cap];
-  return { value, stated: row.stated[cap] !== undefined };
+  return { value, stated: row.stated[cap] !== undefined, bounded: ceilingOf(row.depth, cap, value) };
+}
+
+/**
+ * The reachable depth when the agent set holds it below the cap, else null.
+ *
+ * Three conditions, and each is a different claim: a concurrency cell has no ceiling
+ * that is not its own value; a depth cell whose effective depth is UNKNOWN must not
+ * claim a ceiling it could not compute; and a ceiling at or above the cap changes
+ * nothing, so `4/4` would be a second number to read for no information.
+ */
+function ceilingOf(depth: DepthBinding, cap: AgentCapName, value: number): number | null {
+  if (cap !== "maxDepth" || depth.boundBy !== DepthBound.AgentSet) return null;
+  const effective = depth.effective;
+  if (effective === null || !isFinite(effective) || effective >= value) return null;
+  return effective;
 }
 
 /** The resolved pair, without the agent name the row already carries. */

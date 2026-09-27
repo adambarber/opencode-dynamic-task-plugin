@@ -602,4 +602,17 @@ export const lightTheme = () => ({
   },
   mode: () => "light",
 });
+
+/**
+ * A cap cell, whole.
+ *
+ * Added because a `bounded` field arrived on `CapCell` and three suites still built
+ * `{ value, stated }` literals: the renderer asked `cell.bounded !== null`, `undefined`
+ * is not null, and the footer painted the string "undefined" where the number was. The
+ * tests are JavaScript, so the type that would have caught it does not run here — which
+ * makes this the only place that CAN catch it. Building cells by hand is how a suite
+ * starts describing a shape the production code no longer has, and it fails as a wrong
+ * number rather than as an error, which is the worst way to fail.
+ */
+export const capCell = (value, stated = true, bounded = null) => ({ value, stated, bounded });
 import { RGBA } from "@opentui/core";

@@ -27,20 +27,21 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { createTestKeymap, captureKeymapDiagnostics } from "@opentui/keymap/testing";
 import { registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../dist/shared/caps.js";
 import { bothCaps, withTempDir } from "./support/fixtures.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
 import { screenTokens } from "../../dist/tui/theme.js";
 import { darkTheme } from "./support/harness.js";
+import { REPO_ROOT } from "./support/corpus.js";
 import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
 
 /** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
-const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 const BASE = normalizeDynamicTaskConfig(null);
@@ -211,7 +212,7 @@ function footerText(footer) {
  */
 function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
-  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, read.problem), NO_ASKS, TOKENS);
+  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, false, read.problem), NO_ASKS, TOKENS);
 }
 
 /** The row for one agent, by its host spelling. */
@@ -283,6 +284,26 @@ const withList = (overlay, fn, opts) => withProject((directory) => fn(listOver(d
  * live, so a test that wants to watch one wake up has to start before that.
  */
 const withBooted = (fn, opts) => withProject(async (directory) => fn(await booted(directory), directory), opts);
+
+/**
+ * The screen the operator actually sees, with a hand-authored config file in the tree.
+ *
+ * Every other case in this file builds `agentDialogFrom` over a BASE it supplies, which
+ * is why none of them caught this: the reader that decides which numbers are in force is
+ * the TUI's, and they all bypassed it. This one writes the file, boots the real module,
+ * runs the real command, and asserts on the text the host would draw — so the question
+ * "does the screen show what the dispatch path enforces" is asked of the screen.
+ */
+const withConfigScreen = (configBody, fn) =>
+  withProject(async (directory) => {
+    const configPath = join(directory, DYNAMIC_TASK_FILE);
+    mkdirSync(dirname(configPath), { recursive: true });
+    writeFileSync(configPath, JSON.stringify(configBody));
+    const host = await booted(directory);
+    await host.command.run();
+    await settle();
+    return fn(host.seen.selects[host.seen.selects.length - 1], directory, host);
+  });
 
 /**
  * Let the microtask queue drain.
@@ -457,13 +478,13 @@ describe("the harness reports a failing case body", () => {
 
 describe("the TUI module is registered where the host looks for it", () => {
   it("is listed in .opencode/tui.json, and the path resolves to a loadable module", async () => {
-    const manifest = JSON.parse(readFileSync(join(REPO, ".opencode", "tui.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, ".opencode", "tui.json"), "utf8"));
     const specs = (manifest.plugin ?? []).map((entry) => (Array.isArray(entry) ? entry[0] : entry));
     assert.ok(specs.length > 0, "an empty tui.json plugin array loads nothing at all");
 
     // Relative specs resolve against the config file that declared them, so the
     // repo's own manifest can be portable rather than carrying one machine's path.
-    const resolved = specs.map((spec) => resolve(REPO, ".opencode", spec));
+    const resolved = specs.map((spec) => resolve(REPO_ROOT, ".opencode", spec));
     for (const file of resolved) {
       assert.ok(existsSync(file), `${file} is listed but absent — the palette entry cannot load`);
     }
@@ -586,13 +607,33 @@ describe("the limits list is the question the operator came with", () => {
         "a row's value names the AGENT it edits, so two rows cannot answer for the same one");
     }));
 
-  it("shows no occupancy, because a count read from a file is not a gauge", () =>
-    // The row used to say how many tasks were charged to it, read from the ledger
+  it("shows no occupancy, because a count read from a file is not a gauge", () =>    // The row used to say how many tasks were charged to it, read from the ledger
     // file. That is the last RECORDED set, not a live count, and printing it beside a
     // cap gave the operator reason to distrust the one number they could act on.
     withList({ agents: { explore: { maxConcurrent: 2 } } }, (list) => {
       assert.doesNotMatch(rowText(list, "explore"), /\d+\/\d+|running|active/i,
         "a number this process cannot verify is not a number to print");
+    }));
+
+  it("shows the caps the hand-authored config file states, because those are the ones a dispatch is judged against", () =>
+    // The whole file config was invisible to this screen: it resolved against DEFAULTS
+    // and said "from config" about them, so a project that capped `explore` at 9 saw 4
+    // here and enforced 9. Not a test-only seam — the same numbers reach the dispatch
+    // path, so the screen was a false witness about its own subject.
+    withConfigScreen({ agents: { explore: { maxConcurrent: 9, maxDepth: 5 } } }, (list) => {
+      const text = rowText(list, "explore");
+      assert.match(text, /at once 9/, "the file's own cap, not the default four");
+      assert.doesNotMatch(text, /at once 4/, "and not the default it used to print and call config");
+    }));
+
+  it("reads a TOP-LEVEL cap out of the same file, for an agent the file does not name", () =>
+    // The other half of the same reader: the file's top level is the fallback for every
+    // agent it leaves alone, and reading per-agent entries without the top level would
+    // make a file that states a global cap look as if it stated nothing at all.
+    withConfigScreen({ maxConcurrent: 3, maxDepth: 1 }, (list) => {
+      const text = rowText(list, "explore");
+      assert.match(text, /at once 3/, "the file's top level is in force for an agent it does not name");
+      assert.match(text, /depth 1\b/, "and so is its depth");
     }));
 
   it("an overlay it cannot read is said out loud AND the list still opens, because repair is why it was opened", () =>

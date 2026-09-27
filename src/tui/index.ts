@@ -34,7 +34,8 @@
  * endpoint added to read a number a file already holds.
  */
 import type { TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
-import { normalizeDynamicTaskConfig, type DynamicTaskConfig } from "../shared/config.js";
+import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
+import { depthLimits } from "../shared/task-policy.js";
 import {
   AGENT_CAP_NAMES,
   agentOverlayPath,
@@ -42,7 +43,6 @@ import {
   resolveAgentCaps,
   writeAgentOverlay,
   type AgentCapName,
-  type AgentCapSource,
   type AgentOverlay,
 } from "../shared/caps.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
@@ -401,6 +401,15 @@ type LimitsView = {
   overlay: AgentOverlay;
   directory: string;
   base: DynamicTaskConfig;
+  /**
+   * The dispatchable agent set, kept because the depth binding is a function of it.
+   *
+   * Carried rather than re-read so `rowOf` can answer "is this cap reachable" for an
+   * agent the list did not draw, using the SAME set the rows were built from. A row
+   * resolved against a different agent set than its neighbours would report a depth
+   * that holds for it and not for the row above.
+   */
+  agents: readonly string[] | null;
 };
 
 async function openLimits(api: TuiApi): Promise<void> {
@@ -432,7 +441,7 @@ function showLimits(api: TuiApi, view: LimitsView): void {
  * row and not a nicety: without it the only way back is to reopen the palette.
  */
 function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
-  const row = rowOf(view.dialog, agent, view.base);
+  const row = rowOf(view, agent);
   const tokens = screenTokens(api.theme);
   mountLimitsSelect(api, () =>
     agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view), tokens),
@@ -452,7 +461,16 @@ function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
 async function readLimits(api: TuiApi): Promise<LimitsView> {
   const directory = api.state.path.directory;
   const read = readAgentOverlay(directory);
-  const base = normalizeDynamicTaskConfig(null);
+  // The dispatch path's own reader, not a second derivation of it. This used to be
+  // `normalizeDynamicTaskConfig(null)` — DEFAULTS only, with the hand-authored config
+  // file never read — so a project that put caps in that file saw the defaults here
+  // while its dispatches were judged against the file, and every "from config" on this
+  // screen was a claim about the defaults. The one source the TUI still cannot see is
+  // the registration tuple, which `readDynamicTaskPolicy` states rather than leaves to
+  // be discovered. The path itself is named in ONE place, and a source-count pin in the
+  // config suite holds that: a comment spelling it here would be a second place to
+  // change, so it does not spell it.
+  const base = readDynamicTaskPolicy(directory, null);
   // `null` here is the FAILED read, not an empty project: it makes the screen show the
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
@@ -461,17 +479,18 @@ async function readLimits(api: TuiApi): Promise<LimitsView> {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree
     // the moment the row set is built by something else.
-    dialog: agentDialogFrom(read.raw, base, agents, read.problem),
+    dialog: agentDialogFrom(read.raw, base, agents, base.allowSameAgentRecursion, read.problem),
     // Read with the one reader rather than cast, so an edit can never launder a value
     // the dispatch path already refuses.
     overlay: overlayFrom(read.raw),
     directory,
     base,
+    agents,
   };
 }
 
 function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentCapName): void {
-  const row = rowOf(view.dialog, agent, view.base);
+  const row = rowOf(view, agent);
   // The landing screen takes the RE-READ view, which is why `confirm` ignores its own
   // `view` argument: a write makes the view the caller is holding out of date, and
   // landing on that one shows the number the operator just replaced.
@@ -487,12 +506,24 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
  * "every cap inherited", which is exactly what resolving an agent with no stated caps
  * means. A hand-built zero pair here would show `0 from config`, and 0 is a cap that
  * refuses every dispatch.
+ *
+ * The fallback also carries a depth binding, and by the SAME resolver the drawn rows
+ * used. An agent the host has published since the list was read is reachable by a
+ * dispatch, so a row that answered the depth question with the cap alone would be the
+ * one row on the screen whose "depth 4" was never checked against the agent set.
  */
-function rowOf(dialog: AgentDialog, agent: string, base: AgentCapSource): AgentEntry {
-  const found = dialog.rows.find((candidate) => candidate.name === agent);
+function rowOf(view: LimitsView, agent: string): AgentEntry {
+  const found = view.dialog.rows.find((candidate) => candidate.name === agent);
   if (found) return found;
-  const resolved = resolveAgentCaps(base, agent);
-  return { name: agent, stated: {}, resolved: { maxConcurrent: resolved.maxConcurrent, maxDepth: resolved.maxDepth } };
+  const policy = resolveAgentCaps(view.base, agent);
+  const names = view.agents ?? [];
+  const limits = depthLimits({ maxDepth: policy.maxDepth, allowSameAgentRecursion: view.base.allowSameAgentRecursion }, names);
+  return {
+    name: agent,
+    stated: {},
+    resolved: { maxConcurrent: policy.maxConcurrent, maxDepth: policy.maxDepth },
+    depth: { configured: policy.maxDepth, effective: limits.effective, boundBy: limits.boundBy },
+  };
 }
 
 /**

@@ -26,7 +26,7 @@ const BASE = normalizeDynamicTaskConfig(null);
 
 /** The dialog's current state, the way the renderer sees it. */
 function view(raw, agentNames) {
-  return agentDialogFrom(raw, BASE, agentNames, null);
+  return agentDialogFrom(raw, BASE, agentNames, false, null);
 }
 
 /** The registered agents these cases use, so a row set is never empty by accident. */
@@ -82,6 +82,67 @@ function inForce(directory) {
   return applied;
 }
 
+describe("a depth the agent set holds below the cap", () => {
+  // The dialog is where the cap is SET, so a cell that printed only the cap let an
+  // operator type 4, be obeyed as far as 3, and find out from a DIFFERENT screen. The
+  // cap is a number they can change; the reachability is a number they cannot, which is
+  // the more important one to be able to read.
+  const TWO_AGENTS = ["explore", "general"];
+
+  it("carries the REACHABLE depth beside the cap, naming which constraint holds it", () => {
+    const { rows } = agentDialogFrom({}, BASE, TWO_AGENTS, false, null);
+    const explore = rows.find((row) => row.name === "explore");
+    assert.equal(explore.depth.configured, 2, "the cap the operator sets");
+    assert.equal(explore.depth.effective, 2, "and the depth that is actually reachable");
+    assert.equal(explore.depth.boundBy, "agent-cap", "at equal depth the cap is what binds, and the screen says which");
+  });
+
+  it("claims no ceiling when the cap is already below the agent set", () => {
+    const base = { ...BASE, maxDepth: 1, allowSameAgentRecursion: false };
+    const { rows } = agentDialogFrom({}, base, TWO_AGENTS, false, null);
+    const explore = rows.find((row) => row.name === "explore");
+    // Naming the CAP as the binding constraint is the more useful half: it tells the
+    // operator the number in front of them is the one doing the work, so raising it is
+    // what would change anything.
+    assert.equal(explore.depth.boundBy, "agent-cap", "a cap of 1 over two agents is held by the cap, not the set");
+    assert.equal(capCellOf(explore, "maxDepth").bounded, null, "so the cell prints one number, not 1/1");
+  });
+
+  it("prints the reachable depth of TWO, with a cap of four, as 2/4", () => {
+    const { rows } = agentDialogFrom({}, { ...BASE, maxDepth: 4 }, TWO_AGENTS, false, null);
+    const explore = rows.find((row) => row.name === "explore");
+    assert.equal(plainCell(capCellOf(explore, "maxDepth")), "2/4 agent set binds", "both numbers, reachable first");
+  });
+
+  it("lets the cap bind when the same agent may recur, because then the set is not the wall", () => {
+    const { rows } = agentDialogFrom({}, { ...BASE, maxDepth: 4 }, TWO_AGENTS, true, null);
+    const explore = rows.find((row) => row.name === "explore");
+    assert.equal(explore.depth.effective, 4, "with recursion allowed a cap of 4 is a depth of 4");
+    assert.equal(capCellOf(explore, "maxDepth").bounded, null, "and there is no ceiling to print");
+  });
+
+  it("claims no depth at all when the dispatchable set is unknown", () =>
+    // A failed agent read is a WARNING over the capped agents, not an empty set. The
+    // rows still appear, so the fallback is real — but it is a DISPLAY decision, and
+    // depthing over it would claim the one capped agent is the whole project. An empty
+    // set is not the answer either: `depthLimits` reads that as depth 0, and "nothing
+    // may nest" is a harder claim than "we could not find out".
+    agentDialogFrom({ agents: { explore: { maxDepth: 4 } } }, BASE, null, false, null).rows.forEach((row) => {
+      assert.equal(row.depth.effective, null, "an unknown set cannot bound a depth");
+      assert.equal(row.depth.boundBy, null, "and nothing is named as the constraint");
+      assert.equal(capCellOf(row, "maxDepth").bounded, null, "so the cell prints the cap alone");
+    }));
+
+  it("counts the set the host PUBLISHES minus the agents the plugin refuses", () =>
+    // `agentNames` arrives already narrowed to the dispatchable set, so the screen counts
+    // what a dispatch could actually name. A refused agent cannot go deeper, and counting
+    // it would report a reach the operator can never use.
+    agentDialogFrom({}, { ...BASE, maxDepth: 4 }, ["explore", "general", "review"], false, null).rows.forEach((row) => {
+      assert.equal(row.depth.effective, 3, "three dispatchable agents permit depth 3, not 4");
+      assert.equal(row.depth.boundBy, "agent-set", "so the agent set is the constraint, not the cap");
+    }));
+});
+
 describe("the limits list", () => {
   it("has one row per REGISTERED agent, with no overlay at all", () => {
     // The point of keying by agent: the key space is GIVEN, so the screen is
@@ -108,7 +169,7 @@ describe("the limits list", () => {
   });
 
   it("still offers rows when the overlay is a shape it cannot read, because repair is why it was opened", () => {
-    const { rows, problem } = agentDialogFrom({ agents: [1, 2, 3] }, BASE, AGENTS, "that is not an object");
+    const { rows, problem } = agentDialogFrom({ agents: [1, 2, 3] }, BASE, AGENTS, false, "that is not an object");
     assert.ok(problem, "the unreadable shape is reported");
     assert.deepEqual(rowNames(rows), AGENTS, "and the list is not empty — there has to be a way to fix it");
   });

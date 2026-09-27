@@ -2,7 +2,7 @@
 // durable-state wiring. Lives apart from the entry so the entry stays wiring.
 import type { PluginOptions } from "@opencode-ai/plugin";
 import type { DynamicTaskConfig } from "../shared/config.js";
-import { normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../shared/config.js";
+import { readDynamicTaskPolicy } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
@@ -29,13 +29,10 @@ export interface PluginState {
 }
 
 export function initPluginState(directory: string, options: PluginOptions | undefined, client: OpenCodeClient): PluginState {
-  // Load dedicated config file if it exists
-  const configPath = directory
-    ? `${directory}/.opencode/dynamic-task-plugin.jsonc`
-    : null;
-  const fileConfig = configPath ? parseDynamicTaskJsonc(configPath) : null;
-
-  const config = normalizeDynamicTaskConfig(options, fileConfig);
+  // The file's own caps, over the defaults, over env — by the ONE reader the TUI also
+  // calls, so the screen an operator reads and the policy a dispatch is judged against
+  // cannot be derived from two different files.
+  const config = readDynamicTaskPolicy(directory, options ?? null);
   const store = createTaskStore();
 
   // State is scoped to the project directory the host provides (the same

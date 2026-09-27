@@ -18,13 +18,22 @@ import assert from "node:assert/strict";
 import { TextAttributes } from "@opentui/core";
 import { cellFooter, plainCell, plainSummary, screenTokens, summaryFooter, summaryRuns, widthsAgree } from "../../dist/tui/theme.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
-import { darkTheme, lightTheme } from "./support/harness.js";
+import { capCell, darkTheme, lightTheme } from "./support/harness.js";
 
 const THEME = darkTheme();
 const TOKENS = screenTokens(THEME);
 
-/** The row a case needs: one cap stated, the other inherited. */
-const row = (resolved, stated) => ({ name: "explore", resolved, stated });
+/**
+ * The row a case needs: one cap stated, the other inherited.
+ *
+ * `depth` defaults to the UNBOUND shape — the cap is what holds it — so a case that
+ * says nothing about nesting gets the ordinary `depth 2` rather than a ceiling it never
+ * asked for. `bound` builds the other one: the agent set holding it below the cap.
+ */
+const unbound = (configured) => ({ configured, effective: configured, boundBy: null });
+const row = (resolved, stated, depth = unbound(resolved.maxDepth)) => ({ name: "explore", resolved, stated, depth });
+/** A depth the agent set holds below the cap, which is the only bound worth drawing. */
+const bound = (configured, effective) => ({ configured, effective, boundBy: "agent-set" });
 
 /** The runs of a footer, by their text, so a case can name one without its index. */
 const runOf = (footer, text) => footer.chunks.find((run) => run.text === text);
@@ -43,27 +52,73 @@ describe("the design tokens are roles, not colours", () => {
 });
 
 describe("a cell separates the value from what qualifies it", () => {
+  // One bounded depth, built once: the two cases below ask different questions about the
+  // SAME figure, and a pair that each rebuilt it could disagree about it without either
+  // of them failing — which is how a cell ends up painted one way and asserted another.
+  const BOUNDED = cellFooter(capCell(4, false, 3), TOKENS);
+
   it("paints the number in the value role, in BOLD, because colour is the theme's to change and weight is not", () => {
-    const footer = cellFooter({ value: 4, stated: true }, TOKENS);
+    const footer = cellFooter(capCell(4, true), TOKENS);
     const value = runOf(footer, "4");
     assert.deepEqual(value.fg, TOKENS.value, "the number wears the value role");
     assert.equal(value.attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and is bold");
   });
 
   it("paints the qualifier in the context role and NOT bold, so it reads as metadata", () => {
-    const footer = cellFooter({ value: 4, stated: false }, TOKENS);
+    const footer = cellFooter(capCell(4, false), TOKENS);
     const qualifier = runOf(footer, " from config");
     assert.deepEqual(qualifier.fg, TOKENS.context, "the qualifier is recessive");
     assert.equal(qualifier.attributes & TextAttributes.BOLD, 0, "and carries no weight the value has");
   });
 
   it("states a number with no qualifier at all, rather than an empty one", () => {
-    const footer = cellFooter({ value: 4, stated: true }, TOKENS);
+    const footer = cellFooter(capCell(4, true), TOKENS);
     assert.equal(footerText(footer), "· 4", "a stated cap is the number and its mark, full stop");
   });
 
+  it("prints BOTH numbers when the agent set holds the depth below the cap", () => {
+    // The cap is what the operator typed and the reachable depth is what a dispatch is
+    // judged against, so printing only one of them is printing a number that is not in
+    // force — on the very screen the cap is set on.
+    assert.equal(footerText(BOUNDED), "· 3/4 agent set binds", "the reachable depth first, the cap beside it");
+  });
+
+  it("puts the reachable depth in the loud role and the cap it is held below in the quiet one", () => {
+    assert.deepEqual(runOf(BOUNDED, "3").fg, TOKENS.value, "the depth that binds dispatches is the figure");
+    assert.deepEqual(runOf(BOUNDED, "/4").fg, TOKENS.context, "the cap beside it is the same voice as a label");
+    assert.equal(runOf(BOUNDED, "3").attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and the pair reads as one figure");
+  });
+
+  it("prints one number when the bound is at or above the cap, because 4/4 says nothing new", () => {
+    // The DECISION is `ceilingOf`'s, not the renderer's, so this goes through a row: a
+    // renderer handed `bounded: 4` correctly prints the pair, because by then a caller
+    // has already said there is a ceiling. What must not happen is a ceiling being
+    // INVENTED for a depth nothing is holding down.
+    const atCap = row({ maxConcurrent: 4, maxDepth: 4 }, {}, bound(4, 4));
+    const aboveCap = row({ maxConcurrent: 4, maxDepth: 4 }, {}, { configured: 4, effective: 9, boundBy: "agent-set" });
+    const unknown = row({ maxConcurrent: 4, maxDepth: 4 }, {}, { configured: 4, effective: null, boundBy: "agent-set" });
+    for (const entry of [atCap, aboveCap, unknown]) {
+      assert.equal(footerText(cellFooter(capCellOf(entry, "maxDepth"), TOKENS)), "· 4 from config", "one number, and no ceiling that is not holding it down");
+    }
+  });
+
+  it("leaves a concurrency cell with no ceiling, because nothing bounds it but its own value", () => {
+    const entry = row({ maxConcurrent: 4, maxDepth: 4 }, {}, bound(4, 2));
+    // `2/4` here would be the depth's ceiling bleeding into a number it has nothing to do
+    // with — the one place a per-row field could be read as a per-screen one.
+    assert.equal(footerText(cellFooter(capCellOf(entry, "maxConcurrent"), TOKENS)), "· 4 from config", "the agent set bounds depth, not concurrency");
+  });
+
+  it("keeps the width contract on a bounded depth, which is the longest cell there is", () => {
+    const bounded = row({ maxConcurrent: 6, maxDepth: 4 }, { maxDepth: 4 }, bound(4, 2));
+    assert.ok(
+      widthsAgree(summaryRuns(bounded, TOKENS), plainSummary(bounded)),
+      "a row carrying both numbers is the one most likely to be clipped, so the budget must measure it",
+    );
+  });
+
   it("marks a whole cell off from the row's title, because the host draws the two hard against each other", () => {
-    const footer = cellFooter({ value: 4, stated: true }, TOKENS);
+    const footer = cellFooter(capCell(4, true), TOKENS);
     assert.deepEqual(runOf(footer, "· ").fg, TOKENS.context, "the mark is punctuation, so it is context");
   });
 });
@@ -90,8 +145,8 @@ describe("an agent's row reads label then value, twice", () => {
 
 describe("the painted row and the plain row are the same row", () => {
   it("agrees on a cell that is stated, and on one that is inherited", () => {
-    const stated = { value: 4, stated: true };
-    const inherited = { value: 4, stated: false };
+    const stated = capCell(4, true);
+    const inherited = capCell(4, false);
     assert.ok(widthsAgree(cellFooter(stated, TOKENS).chunks, `· ${plainCell(stated)}`), "stated");
     assert.ok(widthsAgree(cellFooter(inherited, TOKENS).chunks, `· ${plainCell(inherited)}`), "inherited");
   });

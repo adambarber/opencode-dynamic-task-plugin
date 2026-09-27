@@ -10,6 +10,7 @@
 // this agent may run", and the one that happened to be called first was the one the
 // operator saw.
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PluginOptions } from "@opencode-ai/plugin";
 import { agentKey, parseAgentCaps, type AgentCaps } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
@@ -190,6 +191,35 @@ export function normalizeDynamicTaskConfig(
     blockedAgents: merged.blockedAgents,
     allowSameAgentRecursion: merged.allowSameAgentRecursion,
   };
+}
+
+/**
+ * The hand-authored config file, relative to the project root.
+ *
+ * Named HERE, once, because there are two readers that must agree on where it is and
+ * a path spelled in both is a path that can drift: the plugin resolves its policy from
+ * it at boot, and the TUI resolves the same policy to show the operator what is in
+ * force. A screen that read a different file than the dispatch path would render the
+ * defaults while the dispatch path enforced the file — a claim the screen cannot support.
+ */
+export const DYNAMIC_TASK_FILE = ".opencode/dynamic-task-plugin.jsonc";
+
+/**
+ * The policy in force for a project: the file's own caps, over the defaults, over env.
+ *
+ * The ONE derivation of "what is in force", for the boot path and the TUI alike. It
+ * resolves no per-agent overlay — that is layered on top by `applyAgentOverlay`, per
+ * dispatch, because the overlay is edited while the host runs and this is read once.
+ *
+ * `options` is the plugin's registration tuple, which the TUI genuinely cannot see: a
+ * host that configures caps in the tuple rather than the file gets a screen that shows
+ * the file-and-defaults answer. That is the one divergence, it is the TUI's side, and it
+ * is stated here rather than discovered later. Everything else — the file, the defaults,
+ * the environment — both readers resolve identically, because they call this.
+ */
+export function readDynamicTaskPolicy(directory: string | undefined, options: PluginOptions | null): DynamicTaskConfig {
+  const fileConfig = directory ? parseDynamicTaskJsonc(join(directory, DYNAMIC_TASK_FILE)) : null;
+  return normalizeDynamicTaskConfig(options, fileConfig);
 }
 
 // File config (.opencode/dynamic-task-plugin.jsonc) parsed leniently and

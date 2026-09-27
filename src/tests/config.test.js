@@ -7,10 +7,16 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { writeFileSync } from "node:fs";
-import { ENV, DEFAULT_CONFIG, normalizeDynamicTaskConfig, parseDynamicTaskJsonc } from "../../dist/shared/config.js";
+import { writeFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The repository root, for the source-count pin that cannot retype the path. */
+
+import { ENV, DEFAULT_CONFIG, DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
 import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
+import { REPO_ROOT } from "./support/corpus.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
 import { bothCaps } from "./support/fixtures.js";
 
@@ -151,6 +157,57 @@ const jsoncRead = async (contents) => {
   });
   return parsed;
 };
+
+describe("readDynamicTaskPolicy: the one reader of what is in force", () => {
+  // The TUI showed `normalizeDynamicTaskConfig(null)` — defaults and env, with the
+  // hand-authored file never opened — while the dispatch path resolved the same caps
+  // FROM that file. So a project that put caps in it saw the defaults on the screen that
+  // edits caps, and every "from config" on that screen was a claim about the defaults.
+  // These are the pins that keep the two readers on the same file.
+  // A project root with a hand-authored config in it, handed to the case as a ROOT.
+  // Named `root` and `configPath` rather than `dir` and `dir` because the first draft of
+  // this helper passed `<tmp>/.opencode` as the root — one dirname short — and the reader
+  // helpfully resolved the defaults, so the case failed on a number the file had stated.
+  const withPolicy = (body, run) =>
+    withTempFile(tmpFilePath("dt-policy"), () => {
+      const root = tmpFilePath("dt-policy-root");
+      const configPath = join(root, DYNAMIC_TASK_FILE);
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, body);
+      return run(root);
+    });
+
+  it("reads PER-AGENT caps out of the hand-authored file, which the defaults-only call could not", () => {
+    withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9, maxDepth: 7 } } }), (root) => {
+      const policy = readDynamicTaskPolicy(root, null);
+      assert.deepEqual(policy.agents.explore, { maxConcurrent: 9, maxDepth: 7 }, "the file's own per-agent caps survive to the policy");
+    });
+  });
+
+  it("resolves the same numbers for the screen and the dispatch path, because it is the same function", () => {
+    withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9 } }, maxDepth: 5 }), (root) => {
+      const fileConfig = parseDynamicTaskJsonc(join(root, DYNAMIC_TASK_FILE));
+      const fromScreen = readDynamicTaskPolicy(root, null);
+      const fromDispatch = normalizeDynamicTaskConfig(null, fileConfig);
+      assert.deepEqual(fromScreen, fromDispatch, "two readers of one question must not be able to disagree");
+    });
+  });
+
+  it("SPELLS the path once in production, so the two readers cannot drift apart", () => {
+    // A count, not a value — and the needle is TAKEN FROM the constant, because a test
+    // that retyped the path would be the second spelling this exists to prevent. That is
+    // also why the retype guard refuses the obvious version of this case: the two rules
+    // are the same rule seen from opposite ends.
+    const spelled = readdirSync(join(REPO_ROOT, "src"), { recursive: true })
+      .filter((file) => String(file).endsWith(".ts"))
+      .filter((file) => readFileSync(join(REPO_ROOT, "src", String(file)), "utf8").includes(DYNAMIC_TASK_FILE));
+    assert.deepStrictEqual(spelled, ["shared/config.ts"], `the config path is spelled in ${spelled.length} production files: ${spelled.join(", ")}`);
+  });
+
+  it("resolves the defaults when there is no file, and says so with an identity it did not have to build", () => {
+    assert.deepEqual(readDynamicTaskPolicy(undefined, null), normalizeDynamicTaskConfig(null), "no directory is the same answer as no file");
+  });
+});
 
 describe("parseDynamicTaskJsonc", () => {
   it("returns null for a missing file", () => {

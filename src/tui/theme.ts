@@ -80,9 +80,21 @@ export const SEP = "·";
 
 /** The qualifier a cell carries when the number is the config file's rather than the operator's. */
 const INHERITED = "from config";
+/** The qualifier for a depth the agent set holds below the cap. */
+const CEILING = "agent set binds";
 
-/** What a cell says, unstyled: the width contract. */
+/**
+ * What a cell says, unstyled: the width contract.
+ *
+ * A bounded depth prints BOTH numbers, `3/4`: the reachable one first, because that is
+ * the one a dispatch is judged against, and the cap beside it because that is the one
+ * the operator typed. This is the same shape the cortexkit sidebars use for a value with
+ * a ceiling (`148/158`), and for the same reason — a bare integer cannot say whether it
+ * is the limit or something else holding it down, and a wordier label ("depth 4, capped
+ * at 3 by the agent set") costs more width than it earns in meaning.
+ */
 export function plainCell(cell: CapCell): string {
+  if (cell.bounded !== null) return `${cell.bounded}/${cell.value} ${CEILING}`;
   return cell.stated ? `${cell.value}` : `${cell.value} ${INHERITED}`;
 }
 
@@ -101,6 +113,13 @@ export function plainSummary(row: AgentEntry): string {
  * reflow.
  */
 export function cellRuns(cell: CapCell, tokens: ScreenTokens): TextChunk[] {
+  // The reachable number is the loud one even in `3/4`, because it is the one a
+  // dispatch is judged against; the cap beside it is context, the same voice as a label.
+  // Both in bold: the pair is one reading, and splitting it across weights would ask the
+  // eye to hold `3` and then re-read `4` as a separate value.
+  if (cell.bounded !== null) {
+    return [bold(fg(tokens.value)(String(cell.bounded))), bold(fg(tokens.context)(`/${cell.value}`)), fg(tokens.context)(" " + CEILING)];
+  }
   return [
     bold(fg(tokens.value)(String(cell.value))),
     ...(cell.stated ? [] : [fg(tokens.context)(" " + INHERITED)]),

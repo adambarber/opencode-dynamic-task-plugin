@@ -15,6 +15,17 @@ import { fileURLToPath } from "node:url";
 export const TESTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SRC_DIR = path.join(TESTS_DIR, "..");
 export const SCRIPTS_DIR = path.join(SRC_DIR, "..", "scripts");
+/**
+ * The repository root — the ONE derivation, for every suite that reads a checked-in file
+ * (the `tui.json` manifest, a config file's path spelled once in production).
+ *
+ * It lived here for the corpus alone, and two suites each spelled out the same two lines
+ * of `resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")` when they needed it.
+ * Three spellings of a root is three roots: a suite that resolved its own could read a
+ * different tree from the one the gates scan, and the disagreement would look like a
+ * passing test over the wrong files. Spelled once, from the same `TESTS_DIR` the corpus
+ * uses, so every reader of a checked-in file starts from the same place.
+ */
 export const REPO_ROOT = path.join(TESTS_DIR, "..", "..");
 
 /**

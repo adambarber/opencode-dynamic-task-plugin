@@ -11,6 +11,7 @@ import { writeFileSync } from "node:fs";
 import { ENV, DEFAULT_CONFIG, DEFAULT_LANE, admissibleLaneNames, checkLaneCapacity, knownLaneNames, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, resolveLane, resolveLaneName } from "../../dist/shared/config.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
+import { bothCaps } from "./support/fixtures.js";
 
 /**
  * The safe config defaults, asserted as a set. They are one contract — two
@@ -161,9 +162,13 @@ describe("parseDynamicTaskJsonc", () => {
   });
 
   it("strips comments and parses objects", async () => {
+    // A NEUTRAL key, not one of this plugin's: this is a test of the parser, and
+    // borrowing a production constant's name here would make it a hand-kept mirror
+    // of a vocabulary it knows nothing about — which the retyped-constant rule
+    // rightly refuses.
     assertAnswer(
-      await jsoncRead('{ /* block */ "maxDepth": 3 } // trailing\n'),
-      { maxDepth: 3 },
+      await jsoncRead('{ /* block */ "count": 3 } // trailing\n'),
+      { count: 3 },
       "a commented config parses to the object it describes",
     );
   });
@@ -213,13 +218,15 @@ describe("lanes: which policy a lane name resolves to", () => {
   };
 
   it("with no lanes configured, any name runs on the top-level numbers", () => {
+    // Not a lane: this is the config's OWN caps, which share the keys only because a
+    // lane inherits them. `bothCaps` would say these belong to a lane.
     const config = normalizeDynamicTaskConfig({ maxConcurrent: 3, maxDepth: 2 });
     const lane = resolveLane(config, "anything");
     assert.deepStrictEqual(lane, { name: "anything", maxConcurrent: 3, maxDepth: 2 });
   });
 
   it("a configured lane resolves to its own numbers", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, lanes: { deep: { maxConcurrent: 1, maxDepth: 3 } } });
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, lanes: { deep: bothCaps(1, 3) } });
     assert.deepStrictEqual(resolveLane(config, "deep"), { name: "deep", maxConcurrent: 1, maxDepth: 3 });
   });
 
@@ -299,7 +306,7 @@ describe("lanes: which policy a lane name resolves to", () => {
 });
 
 describe("lanes: capacity", () => {
-  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { quick: { maxConcurrent: 1, maxDepth: 2 } } });
+  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, lanes: { quick: bothCaps(1, 2) } });
   const quick = resolveLane(config, "quick");
 
   it("returns null when the lane is under its own cap", () => {

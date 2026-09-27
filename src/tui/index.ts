@@ -40,13 +40,16 @@ import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverl
 import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
 import { TaskState } from "../shared/task-state.js";
 import {
+  LANE_FIELD_LIST,
   applyLaneEdit,
-  capsOf,
+  capShown,
   laneDialogFrom,
+  laneFieldPrompt,
   newLaneEntry,
-  promptFor,
   type LaneDialog,
   type LaneEntry,
+  type LaneEditTarget,
+  type LaneField,
 } from "./lane-editor.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
@@ -86,9 +89,25 @@ let laneDialogUp = false;
  */
 type LaneChoice = { kind: ChoiceKind.Lane; row: LaneEntry } | { kind: ChoiceKind.Add };
 
+/**
+ * What a row in a lane's own form stands for.
+ *
+ * The editor is a form of FIELDS, not of lanes, so it needs its own union: reusing
+ * the list's would mean a field row carrying a `LaneEntry` it has nothing to do
+ * with, and the two dialogs' meanings of "what did the operator pick" would have to
+ * be told apart by which fields are present.
+ */
+type LaneEditorChoice =
+  | { kind: ChoiceKind.Cap; field: LaneField }
+  | { kind: ChoiceKind.Delete }
+  | { kind: ChoiceKind.Back };
+
 enum ChoiceKind {
   Lane = "lane",
   Add = "add",
+  Cap = "cap",
+  Delete = "delete",
+  Back = "back",
 }
 
 export const tui: TuiPlugin = async (api) => {
@@ -157,12 +176,36 @@ export const tui: TuiPlugin = async (api) => {
  * first would have that notification set it straight back to false and leave the
  * escape layer inert over the very dialog that was just mounted. `replace` is
  * synchronous, so afterwards is also the truth: the new entry is on the stack.
+ *
+ * The WIDTH lives here too, and for the same reason. `replace` resets the dialog to
+ * `medium` (60 columns) on its way through, so `setSize` has to come after the mount
+ * — a fact that was stated at each call site as a comment beside its own `setSize`,
+ * and which the next dialog would have had to rediscover by reading the host. Every
+ * dialog of ours is `large`, so it is the funnel's to set rather than a call site's:
+ * a new dialog that forgot would be silently narrow, and a narrow row is clipped
+ * rather than wrapped, so the symptom is a fact missing from a line that still
+ * looked fine.
  */
 function mountLaneDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0]): void {
   api.ui.dialog.replace(render, () => {
     laneDialogUp = false;
   });
   laneDialogUp = true;
+  api.ui.dialog.setSize("large");
+}
+
+/**
+ * Every LIST of ours goes through here, on top of the mount funnel.
+ *
+ * A list is a prop object built from a navigation table, and the table is the only
+ * thing that differs between the two we have. So the funnel takes the props factory
+ * and the two screens stop restating `mountLaneDialog(...DialogSelect(...))` — which
+ * is not a cosmetic saving: the escape gate's claim is that it covers all of our
+ * dialogs, and a claim restated at each call site is a claim the next screen can
+ * satisfy by accident rather than by construction.
+ */
+function mountLaneSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>): void {
+  mountLaneDialog(api, () => api.ui.DialogSelect(build()));
 }
 
 /**
@@ -196,7 +239,7 @@ function openLaneManager(api: TuiApi): void {
     api.ui.toast({ variant: "warning", title: "Lanes", message: view.problem });
   }
   const asks: LaneAsks = {
-    caps: (row) => askForCaps(api, view, row),
+    edit: (row) => openLaneEditor(api, view, row),
     add: () => askForName(api, view),
   };
   // Mounted the way every other plugin mounts: through the one funnel that also
@@ -204,13 +247,7 @@ function openLaneManager(api: TuiApi): void {
   // NOTIFICATION, not a mechanism — the host closes on escape by popping the
   // stack itself, and this only records that the dialog is gone. See the funnel
   // for why an `onClose` that closed would recurse.
-  mountLaneDialog(api, () => api.ui.DialogSelect(laneSelectProps(view, asks)));
-  // The WIDEST thing this plugin shows, so it asks the host for a wider dialog:
-  // `medium` is 60 columns, which is a name plus a short cap line and nothing
-  // more, and a long lane name clipped its own caps. AFTER the mount, because
-  // `replace` resets the size to medium on its way through (dialog.ts:158) — set
-  // it first and the host would put it straight back.
-  api.ui.dialog.setSize("large");
+  mountLaneSelect(api, () => laneSelectProps(view, asks));
 }
 
 /**
@@ -252,10 +289,17 @@ export function laneViewFrom(read: ReturnType<typeof readLaneOverlay>, running: 
   return { rows: dialog.rows, problem: dialog.problem ?? read.problem, overlay: overlayFrom(read.raw), directory };
 }
 
-/** What a row's selection asks for. The dialog's two ways forward, named. */
+/** What a row's selection asks for. The dialog's ways forward, named. */
 export type LaneAsks = {
-  caps: (row: LaneEntry) => void;
+  edit: (row: LaneEntry) => void;
   add: () => void;
+};
+
+/** What a field row's selection asks for. The form's ways forward, named. */
+export type LaneEditorAsks = {
+  cap: (field: LaneField) => void;
+  remove: () => void;
+  back: () => void;
 };
 
 /**
@@ -279,7 +323,7 @@ export function laneSelectProps(view: LaneView, asks: LaneAsks): TuiDialogSelect
         title: row.name,
         value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
         ...laneRowText(row),
-        onSelect: () => asks.caps(row),
+        onSelect: () => asks.edit(row),
       })),
       {
         title: "Add a lane…",
@@ -335,12 +379,65 @@ export function lanePromptProps(
  * content stops fitting it.
  */
 function laneRowText(row: LaneEntry): { description: string; details: string[] } {
-  const caps = capsOf(row.lane);
   const occupancy = row.running === 0 ? "idle" : `${row.running} running, as last recorded`;
   const provenance = row.inherited ? "caps from the config file" : "set in the overlay";
-  // One detail, not two: a row is two lines tall, and the two context facts are a
-  // single thought — how busy it is, and whose caps those are.
-  return { description: [`${caps.concurrency} concurrent`, `depth ${caps.depth}`].join(" · "), details: [[occupancy, provenance].join(" · ")] };
+  return {
+    // Every cap, from the one table — so a cap the form has a row for cannot be
+    // missing from this line, and a cap this line shows cannot be uneditable.
+    description: LANE_FIELD_LIST.map((field) => field.listClause(capShown(row.lane, field.cap))).join(" · "),
+    // One detail, not two: a row is two lines tall, and the two context facts are a
+    // single thought — how busy it is, and whose caps those are.
+    details: [[occupancy, provenance].join(" · ")],
+  };
+}
+
+/**
+ * One lane's editor, as the host's own prop type: a FORM.
+ *
+ * The host has no form widget — `Dialog`, `DialogAlert`, `DialogConfirm`,
+ * `DialogPrompt` and `DialogSelect` are the whole vocabulary, and only one of them
+ * takes a list — so two labelled fields have to be a list whose rows are fields.
+ * Which is the better answer anyway: the operator sees BOTH caps and both values at
+ * once, which a single input box never could, and each field carries its own name
+ * instead of a position in a format string only this dialog could parse.
+ *
+ * The value rides in `footer` — the one field the host draws outside the clipping
+ * text — so a number is never cut off, and it sits in the same column whatever the
+ * label is. That is what makes this read as a form rather than as three sentences.
+ */
+export function laneEditorProps(row: LaneEntry, asks: LaneEditorAsks): TuiDialogSelectProps<LaneEditorChoice> {
+  return {
+    title: `Lanes · ${row.name}`,
+    placeholder: "a cap to change",
+    // Every option carries its own `onSelect`, and the dialog carries none: two places
+    // to answer "what happens when this row is chosen" is how a new row type ends up
+    // handled in one and silently ignored in the other.
+    options: [
+      ...LANE_FIELD_LIST.map((field) => ({
+        title: field.label,
+        value: { kind: ChoiceKind.Cap, field } as const satisfies LaneEditorChoice,
+        footer: capShown(row.lane, field.cap),
+        details: [field.meaning],
+        onSelect: () => asks.cap(field),
+      })),
+      // Only where it can work. Removing a lane the overlay does not hold would only
+      // remove the config file's declaration, which this dialog does not write — so
+      // the row would be one that can only ever fail.
+      ...(row.inherited
+        ? []
+        : [{
+          title: "Delete lane",
+          value: { kind: ChoiceKind.Delete } as const satisfies LaneEditorChoice,
+          description: "remove it from the overlay",
+          onSelect: asks.remove,
+        }]),
+      {
+        title: "Back to lanes",
+        value: { kind: ChoiceKind.Back } as const satisfies LaneEditorChoice,
+        onSelect: asks.back,
+      },
+    ],
+  };
 }
 
 /**
@@ -372,42 +469,100 @@ function askForName(api: TuiApi, view: LaneView): void {
     // An existing name is not an error to stop on: that row IS the answer,
     // and opening it is what the operator meant.
     const existing = view.rows.find((row) => row.name === trimmed);
-    askForCaps(api, view, existing ?? newLaneEntry(trimmed));
+    openLaneEditor(api, view, existing ?? newLaneEntry(trimmed));
   });
+}
+
+/**
+ * One lane's editor, open.
+ *
+ * Every visible way out of here leads somewhere on purpose. The host's `replace`
+ * sets the stack to a single entry, so there is no previous dialog to pop back to,
+ * and escape from any of these leaves the manager entirely — which is why "Back to
+ * lanes" is a row and not a nicety: without it the only way back is to reopen the
+ * palette.
+ */
+function openLaneEditor(api: TuiApi, view: LaneView, row: LaneEntry): void {
+  const asks: LaneEditorAsks = {
+    cap: (field) => askForField(api, view, row, field),
+    remove: () => applyEdit(api, view, row, { kind: "delete" }, "", { land: () => openLaneManager(api), retry: () => openLaneEditor(api, view, row) }),
+    back: () => openLaneManager(api),
+  };
+  mountLaneSelect(api, () => laneEditorProps(row, asks));
+}
+
+/** Ask for ONE cap, by the name the form gave it. */
+function askForField(api: TuiApi, view: LaneView, row: LaneEntry, field: LaneField): void {
+  const prompt = laneFieldPrompt(row, field);
+  /**
+   * Back to the FORM after a change, re-read — and re-read INCLUDING the row.
+   *
+   * A write makes the row this function is holding stale: it carries the caps as
+   * they were before the answer. Re-reading only the VIEW and keeping the old row
+   * would show the old number, and the next field answered on that row would be
+   * written from caps the file no longer has — silently dropping the cap just set.
+   * The form is the only screen showing both caps at once, so it is also the only
+   * place that bug could hide; which is why this is a comment and not a shorter
+   * expression.
+   */
+  const land = () => {
+    const fresh = readLanes(api);
+    openLaneEditor(api, fresh, fresh.rows.find((candidate) => candidate.name === row.name) ?? row);
+  };
+  askOverLaneList(api, prompt.title, prompt.placeholder, (typed) =>
+    applyEdit(api, view, row, { kind: "cap", field }, typed, { land, retry: () => askForField(api, view, row, field) }),
+  );
+}
+
+/**
+ * Write one outcome and say what happened, in one place.
+ *
+ * Every edit in this dialog ends here, so the two things that must be said together
+ * — a refusal that writes nothing, and a success that only means "in force on the
+ * next dispatch" — are said by one function rather than once per call site. A call
+ * site that wrote and then reported its own way is how a refusal comes to read as a
+ * success, and neither symptom would look like a bug where it happened.
+ *
+ * `land` is a parameter because the two edits end in different places: a cap returns
+ * to the form it was changed on, and removing a lane leaves it for good.
+ */
+function applyEdit(api: TuiApi, view: LaneView, row: LaneEntry, target: LaneEditTarget, typed: string, exits: { land: () => void; retry: () => void }): void {
+  const outcome = applyLaneEdit(view.overlay, row, target, typed);
+  // Nothing typed is nothing changed, and a field is not a mistake to open and leave.
+  if (outcome.kind === "unchanged") return exits.land();
+  if (outcome.kind === "invalid") return refuse(api, row, outcome.problem, exits.retry);
+  try {
+    writeLaneOverlay(view.directory, outcome.overlay);
+  } catch (error) {
+    return refuse(api, row, `could not write the overlay: ${error instanceof Error ? error.message : String(error)}`, exits.retry);
+  }
+  api.ui.toast({ variant: "success", title: "Lanes", message: `${outcome.summary} — in force on the next dispatch` });
+  exits.land();
+}
+
+/**
+ * Say why, and ask the SAME question again.
+ *
+ * An answer that cannot be used is a question the operator still owes, so the
+ * question stays open with what they typed: closing on failure would answer it for
+ * them by throwing their work away, and a refusal that also discards is a refusal
+ * they have to reconstruct from memory.
+ */
+function refuse(api: TuiApi, row: LaneEntry, problem: string, retry: () => void): void {
+  api.ui.toast({ variant: "error", title: row.name, message: problem });
+  retry();
 }
 
 /**
  * A question asked on top of the lane list.
  *
- * A question REPLACES the list — the host's `replace` sets the stack to a single
- * entry, so there is no depth to nest into — which is why escape here leaves the
- * whole manager rather than returning to the list, and why the confirm path
- * re-opens the list below rather than popping back to it.
+ * A question REPLACES whatever was on screen — the host's `replace` sets the stack to
+ * a single entry, so there is no depth to nest into — which is why the confirm path
+ * re-opens what it came from rather than popping back to it, and why each call site
+ * says where a confirmed answer should LAND.
  */
 function askOverLaneList(api: TuiApi, title: string, placeholder: string, onConfirm: (typed: string) => void): void {
   mountLaneDialog(api, () => api.ui.DialogPrompt(lanePromptProps(title, placeholder, onConfirm)));
-}
-
-function askForCaps(api: TuiApi, view: LaneView, row: LaneEntry): void {
-  const prompt = promptFor(row);
-  const askAgain = (problem: string) => {
-    api.ui.toast({ variant: "error", title: row.name, message: problem });
-    // Reopen in place: an answer that cannot be used is a question the operator
-    // still owes, and closing on failure answers it for them by throwing away
-    // everything they typed.
-    askForCaps(api, view, row);
-  };
-  askOverLaneList(api, prompt.title, prompt.placeholder, (typed) => {
-    const outcome = applyLaneEdit(view.overlay, row, typed);
-    if (outcome.kind === "invalid") return askAgain(outcome.problem);
-    try {
-      writeLaneOverlay(view.directory, outcome.overlay);
-    } catch (error) {
-      return askAgain(`could not write the overlay: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    api.ui.toast({ variant: "success", title: "Lanes", message: `${outcome.summary} — in force on the next dispatch` });
-    openLaneManager(api);
-  });
 }
 
 /**

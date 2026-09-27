@@ -24,7 +24,7 @@ import {
 import { resolveAdmission } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, reviveRetainedTask, transitionState, TaskState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { defaultConfig, tempProject } from "./support/fixtures.js";
+import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
 
 // A project directory with an overlay in it, and the wiring production's boot
 // does — so a case cannot pass by reading policy from somewhere the plugin never
@@ -99,7 +99,7 @@ describe("lane overlay: what a cap has to be", () => {
   });
 
   it("a lane the overlay does not mention keeps the config file's numbers", () => {
-    const base = normalizeDynamicTaskConfig({}, { lanes: { build: { maxConcurrent: 3, maxDepth: 2 } } });
+    const base = normalizeDynamicTaskConfig({}, { lanes: { build: bothCaps(3, 2) } });
     const { source } = applyLaneOverlay(base, { lanes: { explore: { maxConcurrent: 9 } } });
     assert.strictEqual(source.lanes.build.maxConcurrent, 3, "an overlay is an edit, not a replacement");
     assert.strictEqual(source.lanes.explore.maxConcurrent, 9);

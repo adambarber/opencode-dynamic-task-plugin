@@ -36,14 +36,15 @@ import { resolveTaskLedgerPath, saveTaskLedger } from "../../dist/shared/session
 import { TaskState } from "../../dist/shared/task-state.js";
 import { retainedEntry, runningEntry } from "./support/records.js";
 import { DEFAULT_LANE } from "../../dist/shared/config.js";
-import { withTempDir } from "./support/fixtures.js";
+import { LANE_FIELDS, UNBOUNDED } from "../../dist/tui/lane-editor.js";
+import { bothCaps, withTempDir } from "./support/fixtures.js";
 import tuiModule, { fitsItsDialog, laneSelectProps, laneViewFrom, runningByLane, tui } from "../../dist/tui/index.js";
 
 /** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** Nothing asked, for the cases about what a row SAYS rather than what choosing it does. */
-const NO_ASKS = { caps: () => {}, add: () => {} };
+const NO_ASKS = { edit: () => {}, add: () => {} };
 
 /**
  * The dialog stack, modelled on the host's own `useDialog` rather than on what a
@@ -272,25 +273,71 @@ const withOpen = (fn, opts) =>
 const withBuildOpen = (fn) => withOpen(fn, { overlay: buildLane(2) });
 
 /**
- * Select a lane and answer its caps prompt.
+ * Answer one field on the form that is ALREADY open.
  *
- * The dialog's one interaction, which several cases each spelled out as "find the
- * row, call onSelect, answer the latest prompt" and none of them was actually about:
- * they were about what happens to the answer.
+ * Its own helper rather than a shared "set a cap" one, because a second cap is a
+ * second trip through the same screen, not a second visit to the lane list. A helper
+ * that guessed which it was in would be a test that could not tell the two flows
+ * apart — and that is exactly the flow a stale-row bug hides inside, since a form
+ * re-opened from a row the write already invalidated shows the old cap and writes
+ * the next one from it.
  */
-const answerCapsFor = (host, lane, answer) => {
-  row(top(host.seen), lane).onSelect();
+const answerFieldOn = (host, field, answer) => {
+  row(top(host.seen), field).onSelect();
+  answerPrompt(host, answer);
+};
+
+/** Put a lane's FORM on screen — the second screen every cap change starts and ends on. */
+const openFormFor = (host, lane) => row(top(host.seen), lane).onSelect();
+
+/**
+ * One scenario step, as a wrapper.
+ *
+ * Every scenario below is the same three lines — put something on screen, then hand
+ * the case the same two arguments the wrapper was given — and spelling that shape at
+ * each step is duplication the gate is right to refuse. So the shape has a name, and
+ * a scenario reads as what it actually does: `given((host) => openFormFor(host, lane))`.
+ */
+const given = (step) => (fn) => async (host, directory) => {
+  await step(host, directory);
+  return fn(host, directory);
+};
+
+/** …with the build lane's form already open, which is where most of the cases below want to be. */
+const withFormOpen = (fn) => withBuildOpen(given((host) => openFormFor(host, "build")));
+
+/** …with concurrency already set to 4 on the build lane: the state the next three cases start from. */
+const withConcurrencySet = (fn) => withFormOpen(given((host) => answerFieldOn(host, CONCURRENCY, "4")));
+
+/**
+ * Every row on a drawn screen fits it.
+ *
+ * The host CLIPS a row's first line rather than wrapping it, so a row that does not
+ * fit does not look long — it looks broken, with a fact missing and nothing saying
+ * which. The arithmetic lives in `fitsItsDialog`; this is the one way a case says
+ * "check this whole screen", so a dialog that grows a row cannot escape the check by
+ * being added somewhere that forgot to ask for it.
+ */
+const assertEveryRowFits = (dialog) => {
+  for (const option of dialog.options) {
+    assert.ok(fitsItsDialog(option), `"${option.title}" is clipped: ${JSON.stringify(option)}`);
+  }
+};
+
+/** Answer whatever question is on screen, wherever it was opened from. */
+const answerPrompt = (host, answer) => {
   host.seen.prompts[host.seen.prompts.length - 1].onConfirm(answer);
 };
+
+/** The field labels the form shows, which are the names an operator reads. */
+const CONCURRENCY = LANE_FIELDS.maxConcurrent.label;
+const DEPTH = LANE_FIELDS.maxDepth.label;
 
 /** Press the list's own "add a lane" choice, then answer the name prompt. */
 const nameNewLane = (host, name) => {
   top(host.seen).options.find((choice) => choice.title.startsWith("Add a lane")).onSelect();
-  host.seen.prompts[host.seen.prompts.length - 1].onConfirm(name);
+  answerPrompt(host, name);
 };
-
-/** Answer whatever question is on top, which after naming is the new lane's caps. */
-const answerLatest = (host, answer) => host.seen.prompts[host.seen.prompts.length - 1].onConfirm(answer);
 
 /**
  * The registration, read from the repo's own `tui.json`.
@@ -433,14 +480,12 @@ describe("a row fits the dialog it is drawn in", () => {
   const LONG = "deployment-review-queue";
 
   it("for a long lane name carrying both caps, and for the row beside it", () =>
-    withList({ lanes: { [LONG]: { maxConcurrent: 12, maxDepth: 7 } } }, (list) => {
-      for (const option of list.options) {
-        assert.ok(fitsItsDialog(option), `"${option.title}" is clipped: ${JSON.stringify(option)}`);
-      }
+    withList({ lanes: { [LONG]: bothCaps(12, 7) } }, (list) => {
+      assertEveryRowFits(list);
     }));
 
   it("and with occupancy spelled out in full, which is the longest a row ever gets", () =>
-    withList({ lanes: { [LONG]: { maxConcurrent: 12, maxDepth: 7 } } }, (list) => {
+    withList({ lanes: { [LONG]: bothCaps(12, 7) } }, (list) => {
       assert.ok(fitsItsDialog(row(list, LONG)));
     }, { active: [["ses_r", runningEntry("ses_r", { lane: LONG })]] }));
 
@@ -454,39 +499,91 @@ describe("a row fits the dialog it is drawn in", () => {
       assert.doesNotMatch(found.description, /overlay|config/, "provenance is not competing for the headline");
       assert.match(found.details.join("\n"), /set in the overlay/, "and is still said, below");
     }));
+
+  it("and so do the form's own rows, which are drawn in the same dialog", () =>
+    // The form's fields carry their MEANING under them, and that is the longest line
+    // this dialog draws anywhere — so the budget has to hold for it too, or the
+    // explanation of what a cap is would be the thing that gets cut off.
+    withFormOpen((host) => {
+      assertEveryRowFits(top(host.seen));
+    }));
 });
 
 describe("choosing a lane", () => {
-  it("offers a prompt whose placeholder is the caps the list just showed", () =>
+  it("opens a FORM — a row per cap, each labelled, each showing the value in force", () =>
+    withFormOpen((host) => {
+      const form = top(host.seen);
+      assert.equal(form.title, "Lanes · build");
+      assert.equal(row(form, CONCURRENCY).footer, "2",
+        "the value is ON the row, not in a format string the operator has to decode");
+      assert.equal(row(form, DEPTH).footer, UNBOUNDED, "including a cap that is not set");
+    }));
+
+  it("says under each field what the cap means and how to lift it, BEFORE asking for one", () =>
+    // The complaint this replaces was an operator being handed "1 1" and left to work
+    // out the order. So the grammar is stated where it is read, not discovered by
+    // getting a refusal.
+    withFormOpen((host) => {
+      for (const label of [CONCURRENCY, DEPTH]) {
+        assert.match(row(top(host.seen), label).details.join(" "), new RegExp(UNBOUNDED),
+          `${label} says how to lift its cap, so "${UNBOUNDED}" is not a guess`);
+      }
+    }));
+
+  it("asks for ONE cap, under the field's own name, with the value in force as the placeholder", () =>
+    withFormOpen((host) => {
+      row(top(host.seen), CONCURRENCY).onSelect();
+      assert.equal(host.seen.prompts[0].title, `Concurrency · build`,
+        "the question names the FIELD and the lane, so it says what it is asking for");
+      assert.equal(host.seen.prompts[0].placeholder, "2", "so the operator edits a number they can see");
+    }));
+
+  it("offers no way to delete a lane the overlay does not hold, because it could only fail", () =>
     withOpen((host) => {
-      const described = row(host.seen.selects[0], DEFAULT_LANE).description;
       row(host.seen.selects[0], DEFAULT_LANE).onSelect();
-      const [concurrency, depth] = host.seen.prompts[0].placeholder.split(" ");
-      assert.equal(concurrency, described.split(" ")[0], "the operator edits the concurrency they can see");
-      assert.equal(depth, described.split(" · ")[1].split(" ")[1], "and the depth");
+      assert.equal(row(top(host.seen), "Delete lane"), undefined,
+        "the lane's caps come from the config file, which this dialog does not write");
     }));
 
   /**
-   * The other half of what the operator reported: confirming an answer has to leave
-   * the operator looking at the LIST, showing the answer they just gave.
+   * The other half of what the operator reported: a confirmation has to leave the
+   * operator LOOKING at the answer, not a toast floating over the old number — which
+   * is indistinguishable from a confirmation that did nothing.
    *
-   * A confirmation that does not visibly change the thing it confirmed is
-   * indistinguishable from a confirmation that did nothing, and a toast floating over
-   * the old number is exactly that. So the sequence is asserted, not just the write.
+   * It lands on the form rather than the list, because the form is the only screen
+   * that shows both caps at once, and one cap is rarely the whole job.
    */
-  it("a confirmed answer comes back as a list showing the new caps, not a toast over the old one", () =>
-    withBuildOpen((host) => {
-      answerCapsFor(host, "build", "4 3");
+  it("a confirmed answer comes back to the form showing the new value, not a toast over the old one", () =>
+    withConcurrencySet((host) => {
       assert.equal(host.seen.prompts.length, 1, "the question is answered, not stacked");
-      const shown = top(host.seen);
-      assert.equal(shown.title, "Lanes", "the operator is back on the list");
-      assert.match(row(shown, "build").description, /4 concurrent · depth 3/,
-        "showing the caps just typed — a toast over the old number reads as nothing happening");
+      const form = top(host.seen);
+      assert.equal(form.title, "Lanes · build", "the operator is back on the form, where the other cap is");
+      assert.equal(row(form, CONCURRENCY).footer, "4", "showing the cap just typed");
+      assert.equal(row(form, DEPTH).footer, UNBOUNDED, "and the other one, untouched");
+    }));
+
+  it("setting both fields in turn keeps the first, because the form is re-read after a write", () =>
+    // The round trip through the real renderer, not through the unit. The row the
+    // second field is answered on has to carry the first field's result, and getting
+    // that wrong writes a lane with one cap where two were asked for.
+    withConcurrencySet((host, directory) => {
+      answerFieldOn(host, DEPTH, "2");
+      assert.deepEqual(readOverlay(directory).lanes.build, bothCaps(4, 2),
+        "both caps the operator set, and neither clobbered by the other");
+    }));
+
+  it("'Back to lanes' returns to the list, which shows the same answer the form does", () =>
+    withConcurrencySet((host) => {
+      row(top(host.seen), "Back to lanes").onSelect();
+      const list = top(host.seen);
+      assert.equal(list.title, "Lanes");
+      assert.match(row(list, "build").description, /4 concurrent/,
+        "the list and the form are the same fact, so they cannot disagree about it");
     }));
 
   it("a bad answer is refused in place, keeping what was typed, and nothing is written", () =>
-    withBuildOpen((host, directory) => {
-      answerCapsFor(host, "build", "nope");
+    withFormOpen((host, directory) => {
+      answerFieldOn(host, CONCURRENCY, "nope");
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /not a count/.test(toast.message)),
         "the operator is told WHY, not just refused");
       assert.equal(host.seen.prompts.length, 2, "the question is still open — closing would discard the answer");
@@ -494,14 +591,14 @@ describe("choosing a lane", () => {
     }));
 
   it("a write that fails says so and asks again, rather than reporting a cap that was not applied", () =>
-    withBuildOpen((host, directory) => {
-      // The prompt is opened FIRST, then the file is broken, then the answer is
+    withFormOpen((host, directory) => {
+      // The question is opened FIRST, then the file is broken, then the answer is
       // given: the claim is about the write failing, so the write has to be the
       // step that is refused.
-      row(host.seen.selects[0], "build").onSelect();
+      row(top(host.seen), CONCURRENCY).onSelect();
       rmSync(join(directory, LANE_OVERLAY_FILE));
       mkdirSync(join(directory, LANE_OVERLAY_FILE));
-      host.seen.prompts[0].onConfirm("4");
+      answerPrompt(host, "4");
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
         "a refused write must not be confirmed as a cap in force");
       assert.equal(host.seen.prompts.length, 2, "and the question is still open");
@@ -612,11 +709,13 @@ describe("adding a lane", () => {
         "a name that already exists is that lane, not a new one — the operator meant to edit it");
     }));
 
-  it("a new name becomes a lane with the caps that get typed", () =>
+  it("a new name opens its form, and the first cap set is what creates the lane", () =>
     withBuildOpen((host, directory) => {
       nameNewLane(host, "deploy");
-      answerLatest(host, "2 1");
-      assert.deepEqual(readOverlay(directory).lanes.deploy, { maxConcurrent: 2, maxDepth: 1 });
+      assert.equal(top(host.seen).title, "Lanes · deploy",
+        "naming a lane lands on its FORM, not on a box for two numbers in an order");
+      answerFieldOn(host, CONCURRENCY, "2");      assert.deepEqual(readOverlay(directory).lanes.deploy, { maxConcurrent: 2 },
+        "only the cap that was set, and no depth the operator was never asked about");
     }));
 
   it("an empty name is not a lane called \"\"", () =>

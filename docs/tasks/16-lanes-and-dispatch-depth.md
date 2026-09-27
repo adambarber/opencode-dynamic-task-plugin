@@ -120,12 +120,34 @@ Every element is the SDK's own. Nothing is drawn:
 - `api.ui.DialogSelect` to pick a lane or to add one. Adding is a separate
   discriminated choice (`ChoiceKind.Add`), not a magic lane name, so a lane
   called `new` is still a lane;
-- `api.ui.DialogPrompt` whose placeholder is the caps as they stand, so the
-  operator edits a number they can see;
+- a second `api.ui.DialogSelect` per lane, as its EDITOR: one row per cap, each
+  labelled, each showing the value in force in its `footer` — the one field the
+  host draws outside the clipping text, so the number is never cut off and always
+  sits in the same column. The host has no form widget, so a two-field form is a
+  list whose rows are fields, and that is the better answer anyway: the operator
+  sees BOTH caps at once, which one input box could not, and each field carries
+  its own name instead of a position in a format string. `LANE_FIELDS` in
+  `src/tui/lane-editor.ts` is that table, and it is total over `LANE_CAP_NAMES`,
+  so a cap added to the lane config is a type error until it has a label;
+- `api.ui.DialogPrompt` for ONE cap, titled by the field and the lane, with the
+  value in force as its placeholder. The prompt used to be POSITIONAL — one box
+  taking `"n d"` for two numbers in an order only the dialog knew — and its own
+  comment admitted the cost: an operator who typed a cap without its depth
+  silently set the OTHER one. Asking for each cap under its own name removes that
+  class of mistake, and with it the grammar's reason to exist;
 - `api.ui.toast` to confirm a write, to refuse an unusable answer, and to warn
   about an overlay the dialog could not read.
 
 There is no custom route and no bespoke widget.
+
+One consequence of the editor being a form is that a change lands back on the
+FORM, not on the list: it is the only screen showing both caps at once, and one
+cap is rarely the whole job. So the form is re-read after a write — the ROW
+included, not just the view, because a row carries the caps as they were before
+the answer and the next field answered on it would otherwise be written from caps
+the file no longer has. `Back to lanes` is a row rather than a nicety: the host's
+`replace` sets the dialog stack to a single entry, so there is no previous screen
+to pop back to and escape leaves the manager entirely.
 
 Two things about honesty in the dialog, because the TUI is a different process
 from the server and cannot see its memory:

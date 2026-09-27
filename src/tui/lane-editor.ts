@@ -13,7 +13,7 @@
  * irrelevant to what it decides; the two are separate so that this file is
  * testable and the renderer stays a thin adapter over it.
  */
-import { DEFAULT_LANE, LANE_CAP_NAMES, type DynamicTaskConfig, type LaneConfig } from "../shared/config.js";
+import { DEFAULT_LANE, LANE_CAP_NAMES, type DynamicTaskConfig, type LaneConfig, type LaneConfigName } from "../shared/config.js";
 import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.js";
 
 /**
@@ -55,15 +55,50 @@ export type LaneDialog = {
   problem: string | null;
 };
 
-/** The prompt a chosen row leads to. */
-export type LanePrompt = {
-  title: string;
-  placeholder: string;
-  /** What a correct answer looks like, for the dialog's description line. */
-  hint: string;
+export const UNBOUNDED = "off";
+
+/**
+ * One cap, as the operator is asked about it.
+ *
+ * A cap carries three names in this dialog — the word in a lane row's scanning line,
+ * the label on the form's field, and the title of the prompt that asks for it — and
+ * they used to be written out in three places. They drifted: the prompt spelled an
+ * absent cap "?" where the list said "off", so the box the operator typed into
+ * offered a character the dialog had never used anywhere else. One table, so they
+ * cannot.
+ *
+ * The table is TOTAL over `LANE_CAP_NAMES` — a `Record`, not a list — so a cap added
+ * to the lane config is a TYPE ERROR here until it has a label, rather than a cap
+ * the list shows and the form has no row to edit it with. That is the guarantee the
+ * positional grammar's own comment used to claim for itself; it is now enforced by
+ * the compiler instead of by a promise in a comment.
+ */
+export type LaneField = {
+  /** The cap's own name, which is also its key in the overlay. */
+  cap: LaneConfigName;
+  /** What the operator calls it: the form's row, and the prompt's title. */
+  label: string;
+  /**
+   * The clause a lane row gives this cap — how its value and its word read together.
+   *
+   * A FUNCTION rather than a unit word, because the two caps' words sit on different
+   * sides of their number and that is English rather than a choice: "2 concurrent"
+   * puts the adjective after, "depth 3" puts the noun before. Handing `laneRowText` a
+   * word and a position flag would have been the same fact written twice; the clause
+   * is the fact, and the value is the one thing about it that changes per lane.
+   */
+  listClause: (shown: string) => string;
+  /** Said UNDER the field, so the grammar is visible before an answer is asked for. */
+  meaning: string;
 };
 
-export const UNBOUNDED = "off";
+export const LANE_FIELDS: Record<LaneConfigName, LaneField> = {
+  maxConcurrent: { cap: "maxConcurrent", label: "Concurrency", listClause: (shown) => `${shown} concurrent`, meaning: `tasks in this lane at once · ${UNBOUNDED} removes the cap` },
+  maxDepth: { cap: "maxDepth", label: "Dispatch depth", listClause: (shown) => `depth ${shown}`, meaning: `generations deep · ${UNBOUNDED} removes the cap` },
+};
+
+/** The fields in the order the form shows them, which is the order they were declared. */
+export const LANE_FIELD_LIST: readonly LaneField[] = Object.values(LANE_FIELDS);
 
 /**
  * A change to one lane's caps, as a PATCH of a `LaneConfig` — the same keys, each
@@ -137,60 +172,73 @@ export function newLaneEntry(name: string): LaneEntry {
   return { name, lane: {}, running: 0, inherited: true };
 }
 
-/** The prompt for one row: both caps at once, because two nested dialogs to set two numbers is one too many. */
-export function promptFor(row: LaneEntry): LanePrompt {
-  // `capsOf`, not the caps spelled again. This hand-rolled them — and spelled the
-  // first one "?" where `capsOf` spells an absent cap `off`, so the list said "off"
-  // and the box the operator types into said "?". One vocabulary for a cap, or the
-  // operator is invited to replace a word the dialog has never used.
-  const caps = capsOf(row.lane);
+/** The prompt for one field of one lane: one cap, named, with the value in force. */
+export function laneFieldPrompt(row: LaneEntry, field: LaneField): LaneFieldPrompt {
   return {
-    title: `Lanes · ${row.name}`,
-    placeholder: `${caps.concurrency} ${caps.depth}`,
-    hint: `"n" caps concurrency · "n d" also caps depth · "${UNBOUNDED}" removes a cap · "delete" drops the lane`,
+    title: `${field.label} · ${row.name}`,
+    // The value in force, as a PLACEHOLDER and not as a pre-filled `value`: a
+    // pre-filled box in a terminal appends, so typing "4" over a "1" would answer
+    // "14" — a worse trap than an empty box. An empty answer means "leave it", which
+    // `applyLaneEdit` says rather than treating as a mistake.
+    placeholder: capShown(row.lane, field.cap),
   };
 }
 
-/** The two caps a lane declares, as the dialog shows them. */
-export function capsOf(lane: LaneConfig): { concurrency: string; depth: string } {
-  return {
-    concurrency: lane.maxConcurrent === undefined ? UNBOUNDED : String(lane.maxConcurrent),
-    depth: lane.maxDepth === undefined ? UNBOUNDED : String(lane.maxDepth),
-  };
+/** How ONE cap is shown: its value, or the word that means "not capped". */
+export function capShown(lane: LaneConfig, cap: LaneConfigName): string {
+  const value = lane[cap];
+  return value === undefined ? UNBOUNDED : String(value);
 }
 
 export type EditOutcome =
   | { kind: "written"; overlay: LaneOverlay; summary: string }
+  | { kind: "unchanged" }
   | { kind: "invalid"; problem: string };
+
+/** What an answer is FOR: one cap of the lane, or the lane itself. */
+export type LaneEditTarget = { kind: "cap"; field: LaneField } | { kind: "delete" };
 
 /**
  * Apply one typed answer to the current overlay.
  *
- * A lane is written with only the fields the operator actually set, so an
- * overlay never grows a knob nobody chose: `maxDepth: undefined` in JSON is not
- * the same as an absent key, and a reader that tests `!== undefined` for the
- * first and `in` for the second is a real class of bug. Same for the lane
- * itself — a lane set back to `{}` stays present, which is a distinct statement
- * from "this lane is gone".
+ * A lane is written with only the field the operator actually set, so an overlay
+ * never grows a knob nobody chose: `maxDepth: undefined` in JSON is not the same as
+ * an absent key, and a reader that tests `!== undefined` for the first and `in` for
+ * the second is a real class of bug. Same for the lane itself — a lane set back to
+ * `{}` stays present, which is a distinct statement from "this lane is gone".
+ *
+ * The target is an argument rather than a branch on a typed string, because the
+ * grammar is no longer POSITIONAL. It was `"n d"`, one box asking for two numbers in
+ * an order only the dialog knew, and the dialog's own comment admitted the cost: an
+ * operator who typed a cap without its depth silently set the OTHER one. Asking for
+ * each cap under its own name removes the class of mistake, so the parse is a
+ * single value and there is nothing left for a position to disambiguate.
  */
-export function applyLaneEdit(current: LaneOverlay, row: LaneEntry, typed: string): EditOutcome {
+export function applyLaneEdit(current: LaneOverlay, row: LaneEntry, target: LaneEditTarget, typed: string): EditOutcome {
   if (row === undefined || row.name === undefined) {
     // A dialog that throws leaves a broken modal on screen and no way back. Every
     // outcome of this function is a string the operator can read, so this is one
     // too — and it is unreachable from the renderer, which is why it is cheap.
     return { kind: "invalid", problem: "no lane to edit" };
   }
+  if (target.kind === "delete") return withoutLane(current, row.name);
   const answer = typed.trim();
-  if (answer.toLowerCase() === "delete") {
-    return withoutLane(current, row.name);
-  }
-  const parsed = parseCaps(answer);
-  if (typeof parsed === "string") return { kind: "invalid", problem: parsed };
+  // An empty answer to a field the operator opened is not a mistake, it is a
+  // decision to change nothing — and it must not write, because the value in force
+  // is inherited and writing it would turn a config-file cap into an overlay one.
+  if (answer === "") return { kind: "unchanged" };
+  const value = asCap(answer);
+  if (typeof value === "string") return { kind: "invalid", problem: value };
   // No pruning of empty bodies: an empty body is a MEANINGFUL value — it means
   // "counted separately, on the shared budget" — so dropping one would silently
-  // turn a parked lane back into an unaccounted one, which is the opposite of
-  // what the operator asked for.
-  return { kind: "written", overlay: overlayWith(current, row.name, withCaps(row.lane, parsed)), summary: `${row.name} → ${describe(parsed)}` };
+  // turn a parked lane back into an unaccounted one.
+  const patch: CapPatch = {};
+  patch[target.field.cap] = value;
+  return {
+    kind: "written",
+    overlay: overlayWith(current, row.name, withCaps(row.lane, patch)),
+    summary: `${row.name} → ${target.field.label} ${value === null ? UNBOUNDED : value}`,
+  };
 }
 
 /**
@@ -210,10 +258,10 @@ export function applyLaneEdit(current: LaneOverlay, row: LaneEntry, typed: strin
  * step: both iterate `LANE_CAP_NAMES`, so a cap the reader accepts is a cap the
  * dialog writes.
  *
- * The PROMPT is still positional over the two caps it presents ("n d" sets both),
- * so this is a writer that no longer has a private list — not a dialog that has
- * gained a knob. Offering a third cap is a change to `promptFor` and the parse,
- * and it is now the only place left that would have to know a cap exists.
+ * The writer has no private list of fields, and now neither does the form: every
+ * cap is a row in `LANE_FIELDS`, which is total over the same names. So a cap the
+ * reader accepts is a cap the dialog writes AND a cap the form has a row for — the
+ * three cannot fall out of step, because they are one declaration.
  */
 function withCaps(lane: LaneConfig, patch: CapPatch): LaneConfig {
   const next: LaneConfig = { ...lane };
@@ -229,49 +277,26 @@ function applyCap(lane: LaneConfig, key: keyof LaneConfig, value: number | null)
   else lane[key] = value;
 }
 
+/** The prompt a chosen field leads to: one cap, asked for by name. */
+export type LaneFieldPrompt = { title: string; placeholder: string };
+
 /**
- * The caps grammar: "n" caps concurrency, "n d" caps both, "n off" caps
- * concurrency and lifts depth.
+ * The grammar for ONE cap: a whole number, or the word that lifts it.
  *
  * It answers for the empty input too, rather than leaving that to the caller,
- * because the caller checking it first meant two checks for one fact: the
+ * because the caller checking it first meant two checks for one fact — the
  * caller's said "nothing typed" and this one's branch could never run, so the
- * grammar it actually enforces was not the grammar the dialog described.
+ * grammar it actually enforced was not the grammar the dialog described.
  */
-function parseCaps(answer: string): CapPatch | string {
-  const [first, second, ...rest] = answer.split(/[\s,]+/).filter((part) => part.length > 0);
-  if (first === undefined) return "nothing typed";
-  if (rest.length > 0) {
-    return `expected "n", "n d", or "off" — got ${rest.length + 2} values`;
-  }
-  const out: CapPatch = {};
-  if (second !== undefined) {
-    const depth = asCap(second);
-    if (typeof depth === "string") return depth;
-    out.maxDepth = depth;
-  }
-  const concurrency = asCap(first);
-  if (typeof concurrency === "string") return concurrency;
-  out.maxConcurrent = concurrency;
-  return out;
-}
-
 function asCap(word: string): number | null | string {
   if (word.toLowerCase() === UNBOUNDED) return null;
-  if (!/^\d+$/.test(word)) return `"${word}" is not a count — use a whole number, or "${UNBOUNDED}"`;
+  if (!/^\d+$/.test(word)) return `"${word}" is not a count — use a whole number, or "${UNBOUNDED}" to remove the cap`;
   const value = Number(word);
   // Zero is a real answer here: it is a lane that admits nothing, which is how
   // an operator parks a lane without deleting it. A cap is not a slot count, so
   // the ceiling is high enough to be a mistake rather than a bound.
   if (value > 10_000) return `a cap of ${value} is a typo, not a policy`;
   return value;
-}
-
-function describe(parsed: CapPatch): string {
-  const parts: string[] = [];
-  if ("maxConcurrent" in parsed) parts.push(`${parsed.maxConcurrent === null ? UNBOUNDED : parsed.maxConcurrent} concurrent`);
-  if ("maxDepth" in parsed) parts.push(`depth ${parsed.maxDepth === null ? UNBOUNDED : parsed.maxDepth}`);
-  return parts.join(" · ");
 }
 
 function withoutLane(current: LaneOverlay, name: string): EditOutcome {

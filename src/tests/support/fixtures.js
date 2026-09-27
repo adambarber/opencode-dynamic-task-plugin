@@ -29,6 +29,17 @@ export const blockingConfig = () => normalizeDynamicTaskConfig({ blockedAgents: 
 export const singleSlotConfig = () => normalizeDynamicTaskConfig({ maxConcurrent: 1 });
 
 /**
+ * A lane body declaring both caps, which is the shape most lane fixtures want.
+ *
+ * It was spelled open in sixteen places across four files, which is a hand-kept
+ * mirror of `LaneConfig` that could drift from it silently — and the duplicate gate
+ * correctly reported two of the copies as the same code. One name for the shape is
+ * the whole of the fix: the caps themselves are named by `config.ts`, and this says
+ * only which two a fixture happens to set.
+ */
+export const bothCaps = (maxConcurrent, maxDepth) => ({ maxConcurrent, maxDepth });
+
+/**
  * The registration literal — the input every task-state and admission test builds
  * — has five fields and only the child id usually matters. This names the shape
  * once, so a test states its intent ("a second agent") instead of a field list

@@ -22,7 +22,15 @@ import { normalizeDynamicTaskConfig } from "../shared/config.js";
 import { readLaneOverlay, readLaneOverlayLanes, writeLaneOverlay, type LaneOverlay } from "../shared/lane-overlay.js";
 import { loadTaskLedger, resolveTaskLedgerPath, type LoadedTaskLedger } from "../shared/session-lifecycle.js";
 import { TaskState } from "../shared/task-state.js";
-import { applyLaneEdit, capsOf, laneDialogFrom, newLaneEntry, promptFor, type LaneEntry } from "./lane-editor.js";
+import {
+  applyLaneEdit,
+  capsOf,
+  laneDialogFrom,
+  newLaneEntry,
+  promptFor,
+  type LaneDialog,
+  type LaneEntry,
+} from "./lane-editor.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -97,9 +105,17 @@ function openLaneManager(api: TuiApi): void {
   );
 }
 
-type LaneView = {
-  rows: LaneEntry[];
-  problem: string | null;
+/**
+ * What the dialog is handed: the dialog's own view of the rows, plus the two things
+ * it needs to write an edit back — the overlay to write into, and where it lives.
+ *
+ * An intersection rather than a restatement because `readLanes` builds this by
+ * re-deriving `rows` and `problem` out of `laneDialogFrom`'s result one line later.
+ * A second copy of that pair is a second claim about one producer's output, and it
+ * can only be right by coincidence: `LaneDialog` gains a field, the copy does not,
+ * and the writer keeps working from a value the reader never sent.
+ */
+type LaneView = LaneDialog & {
   overlay: LaneOverlay;
   directory: string;
 };

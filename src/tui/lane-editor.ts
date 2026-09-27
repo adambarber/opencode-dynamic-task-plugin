@@ -13,7 +13,7 @@
  * irrelevant to what it decides; the two are separate so that this file is
  * testable and the renderer stays a thin adapter over it.
  */
-import { DEFAULT_LANE, type DynamicTaskConfig, type LaneConfig } from "../shared/config.js";
+import { DEFAULT_LANE, LANE_CAP_NAMES, type DynamicTaskConfig, type LaneConfig } from "../shared/config.js";
 import { readLaneOverlayLanes, type LaneOverlay } from "../shared/lane-overlay.js";
 
 /**
@@ -66,13 +66,17 @@ export type LanePrompt = {
 export const UNBOUNDED = "off";
 
 /**
- * A change to one lane's caps. `null` means REMOVE the key, not "set it to
- * nothing" — JSON has no undefined, `{"maxDepth": null}` is a value the reader
- * would have to recognise as absent, and every such reader is a place the two
- * sides can disagree. `exactOptionalPropertyTypes` refuses to let the
- * distinction be made by accident, which is the point of that flag.
+ * A change to one lane's caps, as a PATCH of a `LaneConfig` — the same keys, each
+ * additionally nullable. `null` means REMOVE the key, not "set it to nothing" —
+ * JSON has no undefined, `{"maxDepth": null}` is a value the reader would have to
+ * recognise as absent, and every such reader is a place the two sides can
+ * disagree. `exactOptionalPropertyTypes` refuses to let the distinction be made by
+ * accident, which is the point of that flag.
+ *
+ * Mapped over `LaneConfig` rather than listing the caps, so the patch and the lane
+ * it patches cannot disagree about which caps exist.
  */
-type CapPatch = { maxConcurrent?: number | null; maxDepth?: number | null };
+type CapPatch = { [K in keyof LaneConfig]?: number | null };
 
 /**
  * The rows to offer, from the overlay as it sits on disk.
@@ -187,15 +191,31 @@ export function applyLaneEdit(current: LaneOverlay, row: LaneEntry, typed: strin
 /**
  * Apply a patch, deleting what it clears so the written JSON says what it means.
  *
- * Written out per field rather than looped over `Object.entries(patch)`: the loop
- * needs a cast to land back on `LaneConfig`, because the type system cannot see
- * that a patch's keys are the same two keys. Naming them removes the cast AND the
- * possibility of a third cap being added to `CapPatch` and silently ignored here.
+ * Over `LANE_CAP_NAMES`, the list the server's reader also iterates, which is what
+ * lets this be a loop and still need no cast: iterating `Object.entries(patch)`
+ * would land on `string` keys, and iterating the names lands on `keyof LaneConfig`
+ * because that is what the names ARE.
+ *
+ * The previous version wrote the two fields out and its comment claimed that doing
+ * so removed "the possibility of a third cap being added and silently ignored
+ * here". It did the opposite — a hand-written list of fields is exactly a list of
+ * the fields someone remembered, and a third cap would have been dropped by this
+ * function while every other reader of the same lane honoured it. What is true
+ * now, and was not, is that the writer and the server's reader cannot fall out of
+ * step: both iterate `LANE_CAP_NAMES`, so a cap the reader accepts is a cap the
+ * dialog writes.
+ *
+ * The PROMPT is still positional over the two caps it presents ("n d" sets both),
+ * so this is a writer that no longer has a private list — not a dialog that has
+ * gained a knob. Offering a third cap is a change to `promptFor` and the parse,
+ * and it is now the only place left that would have to know a cap exists.
  */
 function withCaps(lane: LaneConfig, patch: CapPatch): LaneConfig {
   const next: LaneConfig = { ...lane };
-  if (patch.maxConcurrent !== undefined) applyCap(next, "maxConcurrent", patch.maxConcurrent);
-  if (patch.maxDepth !== undefined) applyCap(next, "maxDepth", patch.maxDepth);
+  for (const name of LANE_CAP_NAMES) {
+    const value = patch[name];
+    if (value !== undefined) applyCap(next, name, value);
+  }
   return next;
 }
 

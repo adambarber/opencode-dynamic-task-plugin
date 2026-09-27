@@ -205,6 +205,12 @@ function openLaneManager(api: TuiApi): void {
   // stack itself, and this only records that the dialog is gone. See the funnel
   // for why an `onClose` that closed would recurse.
   mountLaneDialog(api, () => api.ui.DialogSelect(laneSelectProps(view, asks)));
+  // The WIDEST thing this plugin shows, so it asks the host for a wider dialog:
+  // `medium` is 60 columns, which is a name plus a short cap line and nothing
+  // more, and a long lane name clipped its own caps. AFTER the mount, because
+  // `replace` resets the size to medium on its way through (dialog.ts:158) — set
+  // it first and the host would put it straight back.
+  api.ui.dialog.setSize("large");
 }
 
 /**
@@ -272,12 +278,15 @@ export function laneSelectProps(view: LaneView, asks: LaneAsks): TuiDialogSelect
       ...view.rows.map((row) => ({
         title: row.name,
         value: { kind: ChoiceKind.Lane, row } as const satisfies LaneChoice,
-        description: describeLane(row),
+        ...laneRowText(row),
         onSelect: () => asks.caps(row),
       })),
       {
         title: "Add a lane…",
         value: { kind: ChoiceKind.Add } as const satisfies LaneChoice,
+        // Described like a real row, so it does not read as the one entry the
+        // dialog forgot to fill in.
+        description: "name a lane, then set its caps",
         onSelect: asks.add,
       },
     ],
@@ -293,15 +302,67 @@ export function lanePromptProps(
   return { title, placeholder, onConfirm };
 }
 
-/** One row's line: the caps, and where they came from, so the operator knows what they are editing. */
-function describeLane(row: LaneEntry): string {
+/**
+ * One row's two lines, and WHY they are two.
+ *
+ * A row's title and description share ONE line: the host renders them into a
+ * single `<text>` with `wrapMode="none"` and `overflow="hidden"`
+ * (dialog-select.tsx:766-783), so a description is a SUFFIX, not a subtitle. It
+ * never wraps, and past the width it is simply clipped. This list put all four of
+ * its facts there — 60 characters before the row's 3-column indent, in a dialog 60
+ * columns wide — so the last clause was cut off on every lane, every time, and a
+ * row read as a truncated sentence.
+ *
+ * The host has a second line for exactly this: `details`, drawn as its own row
+ * below with a budget it applies itself (`truncateMiddle(detail, min(76,
+ * width - 12))`, dialog-select.tsx:702) and counted in the list's height (line
+ * 209). So the facts are sorted by how much they matter, and each goes where it
+ * fits:
+ *
+ *  - the two CAPS on the line they are compared on. Comparing them is the reason
+ *    to open this dialog at all, so they get the scanning position.
+ *  - the OCCUPANCY and the PROVENANCE below, where there is room to say them in
+ *    full. Provenance decides whether editing this row does anything at all, so
+ *    it is the last thing that may be truncated, and `details` is the only field
+ *    the host budgets rather than clips.
+ *
+ * `details` is absent from the published `TuiDialogSelectOption` although the host
+ * reads it. The type is returned by SPREAD rather than spelled out, because a
+ * spread is not excess-property-checked and a cast is not permitted here — an
+ * escape hatch, sound only because the field was read in the host's own source at
+ * the tag this binary was built from. That is a fact about a file we do not own,
+ * so `fitsItsDialog` below re-derives the host's layout and fails the build if the
+ * content stops fitting it.
+ */
+function laneRowText(row: LaneEntry): { description: string; details: string[] } {
   const caps = capsOf(row.lane);
-  return [
-    `${caps.concurrency} concurrent`,
-    `depth ${caps.depth}`,
-    row.running === 0 ? "idle" : `${row.running} running, as last recorded`,
-    row.inherited ? "caps from the config file" : "set in the overlay",
-  ].join(" · ");
+  const occupancy = row.running === 0 ? "idle" : `${row.running} running, as last recorded`;
+  const provenance = row.inherited ? "caps from the config file" : "set in the overlay";
+  // One detail, not two: a row is two lines tall, and the two context facts are a
+  // single thought — how busy it is, and whose caps those are.
+  return { description: [`${caps.concurrency} concurrent`, `depth ${caps.depth}`].join(" · "), details: [[occupancy, provenance].join(" · ")] };
+}
+
+/**
+ * The width the host lays a row out in, and whether this one fits it.
+ *
+ * The host's own arithmetic, so the budget is enforced where the content is built
+ * rather than discovered as a clipped sentence in a terminal. `large` is 88 columns
+ * (dialog.ts:22-26), the row's text is indented 3 and its box padded 3 more, a
+ * detail line is capped at 76 or the width less 12 (dialog-select.tsx:702), and a
+ * dialog can never exceed the terminal less 2 (dialog.ts:59) — so an 80-column
+ * terminal is the narrow case, and the one worth holding the content to.
+ */
+const DIALOG_WIDTH = 88;
+const TERMINAL_FLOOR = 80;
+const ROW_INDENT = 3;
+const ROW_PADDING = 3;
+
+/** Whether every line of `option` fits the dialog the host will draw it in. */
+export function fitsItsDialog(option: { title: string; description?: string; details?: string[] }): boolean {
+  const width = Math.min(DIALOG_WIDTH, TERMINAL_FLOOR - 2) - ROW_INDENT - ROW_PADDING;
+  const headline = option.title.length + 1 + (option.description?.length ?? 0);
+  return headline <= width && (option.details ?? []).every((line) => line.length <= Math.min(76, width - 12));
 }
 
 function askForName(api: TuiApi, view: LaneView): void {

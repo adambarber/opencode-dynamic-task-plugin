@@ -37,7 +37,7 @@ import { TaskState } from "../../dist/shared/task-state.js";
 import { retainedEntry, runningEntry } from "./support/records.js";
 import { DEFAULT_LANE } from "../../dist/shared/config.js";
 import { withTempDir } from "./support/fixtures.js";
-import tuiModule, { laneSelectProps, laneViewFrom, runningByLane, tui } from "../../dist/tui/index.js";
+import tuiModule, { fitsItsDialog, laneSelectProps, laneViewFrom, runningByLane, tui } from "../../dist/tui/index.js";
 
 /** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -176,13 +176,33 @@ function listOver(directory) {
 /** The row for one lane, by name. */
 const row = (list, title) => list.options.find((candidate) => candidate.title === title);
 
+/**
+ * Every line a row puts on screen, as the host lays them out.
+ *
+ * The title and the description SHARE the first line — the host renders them into
+ * one clipping `<text>` — and each entry of `details` is a line of its own below.
+ * So a fact that is in the dialog somewhere is in one of these, and a fact that is
+ * missing from all of them is genuinely gone from the operator's view.
+ */
+const rowText = (list, title) => {
+  const found = row(list, title);
+  return [`${found.title} ${found.description ?? ""}`.trim(), ...(found.details ?? [])].join("\n");
+};
+
 /** The dialog the operator is looking at: the most recent of either kind. */
 const top = (seen) => (seen.prompts.length > seen.selects.length
   ? seen.prompts[seen.prompts.length - 1]
   : seen.selects[seen.selects.length - 1]);
 
-/** The overlay shape most cases below need: a lane capped at concurrency only. */
-const buildLane = (maxConcurrent) => ({ lanes: { build: { maxConcurrent } } });
+/**
+ * The overlay shape most cases below need: a lane named `build`, capped at a
+ * concurrency, and at a depth when one is given. Depth is a second argument rather
+ * than a second literal at each site, so "a build lane with both caps" is named
+ * once and the cases that need it cannot drift apart.
+ */
+const buildLane = (maxConcurrent, maxDepth) => ({
+  lanes: { build: maxDepth === undefined ? { maxConcurrent } : { maxConcurrent, maxDepth } },
+});
 
 /**
  * A host with the module booted, and the command it registered.
@@ -350,23 +370,34 @@ describe("the lane command reaches the palette", () => {
     }));
 });
 
+/**
+ * A list holding one `build` lane with both caps set, handed over in all three
+ * shapes the drawing cases read: the list, its row, and that row's rendered text.
+ *
+ * One fixture because these cases are all about the same row — the one that is long
+ * enough to clip — and three of them each spelling out the overlay is the shape the
+ * duplicate gate is there to refuse.
+ */
+const withCapsRow = (fn) =>
+  withList(buildLane(2, 3), (list) => fn({ list, row: row(list, "build"), text: rowText(list, "build") }));
+
 describe("the lane list says what it is showing", () => {
   it("names each lane's caps and where they came from, so the operator knows what they are editing", () =>
-    // Not the plain build lane: this is the one case with a depth cap as well.
-    withList({ lanes: { build: { maxConcurrent: 2, maxDepth: 3 } } }, (list) => {
+    // Asserted as the WHOLE row, newline and all, because the claim is that everything
+    // is said — which field each clause travels in is the layout's business, below.
+    withCapsRow(({ list, text }) => {
       assert.equal(list.title, "Lanes");
-      assert.match(row(list, "build").description, /2 concurrent · depth 3/);
-      assert.match(row(list, "build").description, /set in the overlay/);
+      assert.equal(text, "build 2 concurrent · depth 3\nidle · set in the overlay");
     }));
 
   it("does not let an inherited cap read as one this dialog set", () =>
     withList(undefined, (list) => {
-      assert.match(row(list, DEFAULT_LANE).description, /caps from the config file/);
+      assert.match(rowText(list, DEFAULT_LANE), /caps from the config file/);
     }));
 
   it("says the occupancy is as last recorded, because it is a file read and not a live gauge", () =>
     withList(buildLane(1), (list) => {
-      assert.match(row(list, "build").description, /idle/);
+      assert.match(rowText(list, "build"), /idle/);
     }));
 
   it("offers a way to add a lane, as its own choice rather than a name nobody would pick", () =>
@@ -386,6 +417,42 @@ describe("the lane list says what it is showing", () => {
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "warning"),
         "the operator is told the file is odd, rather than shown a list that silently omits their lanes");
       assert.equal(host.seen.selects.length, 1, "and the list is open, so they can fix it");
+    }));
+});
+
+/**
+ * A row is drawn as ONE line for the title and description plus a line per detail,
+ * and the host CLIPS the first line rather than wrapping it. So a row that does not
+ * fit does not look long — it looks broken, with a fact missing and nothing saying
+ * which. This is the only place that arithmetic is known, and it is the gate: the
+ * report that prompted it was a row whose last clause had been silently cut off on
+ * every lane, in a green suite, because nothing anywhere compared the content to
+ * the width it was about to be drawn in.
+ */
+describe("a row fits the dialog it is drawn in", () => {
+  const LONG = "deployment-review-queue";
+
+  it("for a long lane name carrying both caps, and for the row beside it", () =>
+    withList({ lanes: { [LONG]: { maxConcurrent: 12, maxDepth: 7 } } }, (list) => {
+      for (const option of list.options) {
+        assert.ok(fitsItsDialog(option), `"${option.title}" is clipped: ${JSON.stringify(option)}`);
+      }
+    }));
+
+  it("and with occupancy spelled out in full, which is the longest a row ever gets", () =>
+    withList({ lanes: { [LONG]: { maxConcurrent: 12, maxDepth: 7 } } }, (list) => {
+      assert.ok(fitsItsDialog(row(list, LONG)));
+    }, { active: [["ses_r", runningEntry("ses_r", { lane: LONG })]] }));
+
+  it("the caps stay on the line they are compared on, and the context below", () =>
+    // The budget could also be met by cramming everything back onto one line, which
+    // is the shape that was there before. So the SPLIT is asserted, not just the fit:
+    // what the operator scans between lanes is the caps, and what explains a row is
+    // underneath it.
+    withCapsRow(({ row: found }) => {
+      assert.match(found.description, /2 concurrent · depth 3/, "the caps are the headline");
+      assert.doesNotMatch(found.description, /overlay|config/, "provenance is not competing for the headline");
+      assert.match(found.details.join("\n"), /set in the overlay/, "and is still said, below");
     }));
 });
 
@@ -562,12 +629,12 @@ describe("adding a lane", () => {
 describe("occupancy is read, not assumed", () => {
   it("counts the running tasks charged to each lane, and only the running ones", () =>
     withList(buildLane(4), (list) => {
-      assert.match(row(list, "build").description, /1 running, as last recorded/);
+      assert.match(rowText(list, "build"), /1 running, as last recorded/);
     }, { active: [["ses_r", runningEntry("ses_r", { lane: "build" })]] }));
 
   it("a settled task in the same lane is not occupancy — it is history, not a slot in use", () =>
     withList(buildLane(4), (list) => {
-      assert.match(row(list, "build").description, /idle/);
+      assert.match(rowText(list, "build"), /idle/);
     }, {
       retained: [["ses_d", retainedEntry({ childSessionId: "ses_d", lane: "build", state: TaskState.Completed })]],
     }));
@@ -581,6 +648,6 @@ describe("occupancy is read, not assumed", () => {
       // Written as garbage rather than through the helper, because the claim is
       // about a file the reader cannot parse.
       writeFileSync(resolveTaskLedgerPath(directory), "{ not a ledger", "utf8");
-      assert.match(row(listOver(directory), "build").description, /idle/);
+      assert.match(rowText(listOver(directory), "build"), /idle/);
     }));
 });

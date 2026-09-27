@@ -19,6 +19,19 @@ import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/as
 const textPart = (text) => ({ type: "text", text });
 const said = (role, text) => ({ role, parts: [textPart(text)] });
 
+// The host's assistant turn as it actually arrives when the turn was ABORTED:
+// an error envelope, and no `parts` key at all. Transcribed from the host's own
+// record — every one of the 51 aborted turns in the field corpus (2026-09-08→27)
+// carries exactly these keys: agent, cost, error, mode, modelID, parentID, path,
+// providerID, role, time, tokens. A fixture that added `parts: []` would satisfy
+// the reader's guard for the wrong reason, which is how a fully green suite
+// shipped a 12% false-success rate: the one turn that produced no output was the
+// one turn the reader could not see.
+const abortedTurn = (name = "MessageAbortedError", message = "Aborted") => ({
+  role: ASSISTANT_ROLE,
+  error: { name, data: { message } },
+});
+
 describe("describeModelShapeError", () => {
   it("rejects bare ids with the qualified form", () => {
     assert.match(describeModelShapeError("GLM-5.3-Flash"), /providerID\/modelID/);
@@ -219,13 +232,31 @@ describe("message/part family guards (Task 08)", () => {
     assert.ok(!isTextPart(null));
   });
 
-  it("isMessage is a record with an array parts field", () => {
+  it("isMessage is a record that declares a role; parts are content, not identity", () => {
     assert.ok(isMessage({ parts: [] }));
     assert.ok(isMessage({ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "x" }] }));
     assert.ok(!isMessage({ parts: "nope" }));
     assert.ok(!isMessage({}));
     assert.ok(!isMessage(null));
     assert.ok(!isMessage([]));
+  });
+
+  // A turn that produced nothing has no parts. Requiring them made content
+  // presence a precondition for identity, so the empty turn — the only one
+  // whose outcome needed reading — was the one record the reader rejected.
+  it("isMessage accepts the host's aborted turn, which carries no parts", () => {
+    assert.ok(isMessage(abortedTurn()));
+    assert.ok(isMessage({ ...said(ASSISTANT_ROLE, "x"), ...abortedTurn("APIError", "429 Too Many Requests") }));
+  });
+
+  // Both readers walk newest-first. One of them must be able to see a turn
+  // with no parts, or the walk steps over the newest record and reports an
+  // older turn's outcome as the child's.
+  it("the newest message decides even when it carries no parts", () => {
+    const stream = [said(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
+    assert.strictEqual(messageErrorDetail(stream[1]), "Aborted");
+    assert.strictEqual(messageErrorDetail(stream[0]), "");
+    assert.strictEqual(getLatestAssistantText(stream), "the child's real last words");
   });
 
   it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
@@ -287,6 +318,20 @@ describe("prompt dance: hydrateLatestOutcome", () => {
       parts: [],
     }];
     await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });
+  });
+
+  // The field defect, verbatim. A child aborted mid-turn notifies SUCCESS
+  // because the newest turn failed the parts guard, the error walk stepped over
+  // it, and the verdict kept the host's `idle`. The child's last real words
+  // still make good context beside the error — the text is not the bug, the
+  // lost error is — so the outcome keeps both and the kind becomes `error`.
+  it("reports an aborted turn as the failure it is, not the turn before it", async () => {
+    const stream = [said(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
+    await assertHydrated(() => stream, { text: "the child's real last words", errorDetail: "Aborted" });
+  });
+
+  it("an aborted turn with nothing said before it is still a failure, not (completed)", async () => {
+    await assertHydrated(() => [abortedTurn()], { text: "", errorDetail: "Aborted" });
   });
 
   // A read that could not be made is not a read that found nothing, and the

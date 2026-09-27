@@ -172,14 +172,25 @@ export function isTextPart(value: unknown): value is TextPart {
 // Role arrives top-level or nested under info depending on the hydration
 // era (the shape this family exists to absorb); parts stay unknown[] —
 // text members are discriminated per part by isTextPart at read time.
+//
+// `parts` is OPTIONAL, and that is load-bearing. The host omits the key
+// entirely on a turn that produced no output — an aborted turn arrives as
+// role + error and nothing else. Requiring an array here made content
+// presence a precondition for identity, so the empty turn was the one record
+// the reader could not see: latestMessageErrorDetail walked past it, the
+// settlement kept the host's `idle`, and a child that had been aborted was
+// notified as a success. 51 of 421 settlements in the 2026-09 field corpus.
+// A turn declares itself a message by its ROLE; parts are what it said, not
+// what it is. Do not re-tighten this guard.
 export interface Message {
   role?: unknown;
   info?: unknown;
-  parts: unknown[];
+  parts?: unknown[];
 }
 
 export function isMessage(value: unknown): value is Message {
-  return isEventRecord(value) && Array.isArray(value.parts);
+  if (!isEventRecord(value)) return false;
+  return Array.isArray(value.parts) || messageRoleOf(value as Message) !== "";
 }
 
 export function messageRoleOf(message: Message): string {

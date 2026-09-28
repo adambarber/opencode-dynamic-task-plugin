@@ -180,9 +180,25 @@ const WEDGE_TAIL_MESSAGES = 5;
  * live runs only and a wedge has no run.
  *
  * What does distinguish them is the transcript: an assistant message whose
- * `time.completed` is absent. Measured 2026-09-28 on coda, where 67 sessions and
- * 82 turns were pinned this way and every one of them silently swallowed the
- * next prompt.
+ * `time.completed` is absent.
+ *
+ * The evidence for that is THINNER than the shape suggests, and the database is
+ * what corrected it. Audited 2026-09-28 against every assistant turn on the
+ * machine: 49 of ~153,000 carry no completion and are old enough that the turn
+ * cannot still be in flight, across 40 sessions, 8 projects, since 2026-07-21.
+ * All 49 have zero input, output and cache tokens — the model was never reached,
+ * so these are FAILED DISPATCHES, not turns that ran and died. Of the 40
+ * sessions, 32 carry later completed turns: the host recovered, unprompted, from
+ * a row this function would call a wedge. Eight have nothing after them at all.
+ * Exactly ONE session machine-wide shows the real thing — an unterminated
+ * assistant turn followed by a user prompt that was never answered.
+ *
+ * So the marker is real, rare, and mostly not what its name suggests. It is kept
+ * because it is the only signal the host exposes, and because the cost of firing
+ * on a row the host recovered from is one deferred notice that a later boot
+ * retries — while the cost of missing a true wedge is a debt that ages out
+ * undelivered. That asymmetry is the whole justification, and it rests on ONE
+ * observed instance, not the dozens an earlier reading of this comment claimed.
  *
  * Two refusals to guess, both deliberate. A read that FAILS is not a wedge —
  * reading failure as refusal would drop every debt whenever the channel is

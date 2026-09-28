@@ -8,7 +8,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { buildAgentList, fetchAgents, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
+import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
@@ -176,6 +176,24 @@ describe("fetchAgents", () => {
     resetAgentCache();
     await fetchAgents(mockClient, 60000);
     assert.strictEqual(mockClient.agentCalls, 2, "reset must not leave any client's entry fresh");
+  });
+
+  it("an EMPTY list is re-asked rather than cached, because empty is not a neutral answer", async () => {
+    // A host answering `app.agents()` with an empty list while it is still
+    // registering its agents is a real race, and the empty list is not cached
+    // because `[]` is served as a KNOWN answer: admission refuses every dispatch
+    // against it and the cap screen renders no agents. Caching it would spend
+    // the whole TTL refusing work the project can do.
+    //
+    // Pinned in both directions on purpose. `known` alone would also pass against
+    // a cache that served the empty list happily and let the cap screen blank out
+    // for a whole TTL; the re-ask alone would pass against a read that reported
+    // the empty list as UNKNOWN, which is the opposite error and the one that
+    // sends an operator hunting for a project that cannot delegate.
+    const mockClient = clientWith([{ name: "primary", mode: "primary" }]);
+    assert.deepStrictEqual(await dispatchableAgentNamesOrNull(mockClient, defaultConfig), [], "no subagent is a known empty list, not an unknown one");
+    assert.deepStrictEqual(await dispatchableAgentNamesOrNull(mockClient, defaultConfig), [], "and it still knows it on the second read");
+    assert.strictEqual(mockClient.agentCalls, 2, "the empty answer is re-asked rather than served from cache");
   });
 });
 

@@ -371,6 +371,22 @@ async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE
   const cacheKey: object | null = typeof client === "object" && client !== null ? client : null;
   const now = Date.now();
   const cached = cacheKey ? agentCaches.get(cacheKey) : undefined;
+  // `length > 0` is a guard against the SETUP RACE, not against caching hygiene, and
+  // it is the reason the empty answer is never served from cache.
+  //
+  // A host that answers `app.agents()` with an empty list while it is still
+  // registering its agents is a real behaviour — the same race the retry below
+  // exists for, and that retry fires on a THROW, so it does not cover an empty
+  // result. Cached, that empty list would be the answer for the whole TTL, and
+  // `[]` is not a neutral value here: `dispatchableAgentNamesOrNull` returns it
+  // as a KNOWN answer, `resolveAdmission` refuses every dispatch against it, and
+  // the cap screen renders no agents. So a momentary empty list would spend the
+  // TTL refusing work this project can do.
+  //
+  // The cost is one `app.agents()` per read in a project with no dispatchable
+  // agents at all — a narrow, bounded cost — against a stale answer that is
+  // neither bounded nor narrow. Deliberate, and now written down, because the
+  // guard reads as an oversight and gets proposed for removal as one.
   if (cached && cached.epoch === agentCacheEpoch && cached.agents.length > 0 && now - cached.at < cacheTtlMs) {
     return { agents: cached.agents, known: true };
   }

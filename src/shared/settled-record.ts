@@ -17,7 +17,7 @@ import type { TaskStore } from "./store.js";
 // the store's own vocabulary and a dozen modules import them by name; importing
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
-import type { TaskRecordBase, TaskState } from "./task-state.js";
+import type { TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
 import type { FailureClass } from "./failure-class.js";
 
 export interface RetainedTaskState extends TaskRecordBase {
@@ -115,6 +115,24 @@ export function decideRetained(
     return true;
   });
 }
+
+/**
+ * A record's failure class, or undefined when it has none.
+ *
+ * The field is settled-only, so every reader that wants it is holding a union of
+ * the two record shapes and TypeScript cannot tell it which. Narrowing that in
+ * the reader is the shape of a missing abstraction: the check gets written again
+ * at the next call site, and the day one of them forgets, a class silently reads
+ * as absent — which is the same false answer as no class at all.
+ *
+ * It lives here, beside the type that declares the field, and reaches the record
+ * union by TYPE only: the body is pure, so the two files keep their existing
+ * one-way dependency without this becoming a runtime edge.
+ */
+export const failureClassOf = (task: TaskRecord | null | undefined): FailureClass | undefined =>
+  task !== null && task !== undefined && "failureClass" in task
+    ? (task as RetainedTaskState).failureClass
+    : undefined;
 
 /**
  * Stamp a successful abort landing on a retained record (F-R4): concurrent

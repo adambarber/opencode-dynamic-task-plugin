@@ -21,7 +21,7 @@ import {
   API_UNAVAILABLE,
   type FleetRow,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks, TaskState } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, listTasks, TaskState, failureClassOf, type TaskRecord } from "../shared/task-state.js";
 import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
 import { activeByAgent } from "../shared/task-state.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
@@ -125,15 +125,20 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   const { client, store, config } = deps;
   const pruned = pruneRetainedTasks(store, config);
   const { retained } = listTasks(store);
-  // The row shape is FleetRow's, named rather than re-spelled: an inline
-  // signature here is a second declaration of the renderer's contract, and the
-  // two could disagree about which fields a row carries.
-  const toRow = (t: FleetRow): FleetRow => ({
+  // The store record in, FleetRow out: the renderer's contract is named rather
+  // than re-spelled, because an inline signature here is a second declaration of
+  // it and the two could disagree about which fields a row carries. Typed by the
+  // record it reads, which is also what lets it carry the settled-only class.
+  const toRow = (t: TaskRecord): FleetRow => ({
     childSessionId: t.childSessionId,
     agentName: t.agentName,
     description: t.description,
     state: t.state,
     startedAt: t.startedAt,
+    // Present on a settled row and absent on a running one, which is what the
+    // roll-up counts. Reading it through the store's own accessor rather than
+    // off the record keeps the "settled-only" knowledge in one place.
+    failureClass: failureClassOf(t),
   });
   // The running fleet as the tree it is: every active task, in dispatch order,
   // indented under whatever spawned it. Settled tasks that still have a running

@@ -97,6 +97,46 @@ describe("readers say WHY a child failed", () => {
   });
 });
 
+// A fleet view that says "Retained: 9" makes the parent read nine lines to learn
+// whether anything went wrong, and the answer it most needs is the one a count
+// cannot give: is this nine successes, or five successes and four failures? The
+// rollup is the shape, in the same words the class line uses, so a parent that
+// has read one notification can read the other.
+describe("the retained roll-up says the SHAPE of a fleet, not its size", () => {
+  const listOf = (rows) => formatTaskListSummary({
+    tree: [],
+    activeCount: 0,
+    retained: rows,
+    maxConcurrent: 4,
+    pruned: 0,
+  });
+
+  const retained = (state, failureClass) => ({ ...taskRecord({ state }), failureClass });
+
+  it("counts each state, and says how many failures were the network's", () => {
+    const list = listOf([
+      retained("completed"), retained("completed"), retained("completed"),
+      retained("error", "structural"), retained("error", "transient"),
+      retained("interrupted"),
+    ]);
+    assert.match(
+      list,
+      /Retained: 6 — 3 completed · 2 error \(1 transient\) · 1 interrupted/,
+      "the count alone cannot tell a parent whether to investigate",
+    );
+  });
+
+  // A state nobody has hit must not appear as a zero: "0 blocked" on every
+  // ordinary list is noise that teaches a parent to skip the line.
+  it("leaves out every state with nothing in it", () => {
+    assert.match(listOf([retained("completed")]), /Retained: 1 — 1 completed\n/);
+  });
+
+  it("keeps a bare count when there is nothing retained at all", () => {
+    assert.match(listOf([]), /Retained: 0\n/);
+  });
+});
+
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
     const result = formatTaskResultSummary(resultRecord({ status: "busy" }));

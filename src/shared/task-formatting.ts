@@ -3,7 +3,7 @@
 // truncateText and formatAge live in notify.ts / task-state.ts respectively —
 // one home each, imported here.
 import { truncateText, type NotificationRecord } from "./notify.js";
-import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
+import { TaskState, failureClassOf, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
 import { FailureClass, failureNote } from "./failure-class.js";
@@ -54,6 +54,11 @@ export function buildBackgroundPrompt(prompt: string, { canNotify = true }: { ca
 export interface FleetRow extends Pick<TaskIdentity, "childSessionId" | "agentName" | "description"> {
   state: string;
   startedAt: number;
+  /**
+   * Carried for settled rows only, so the roll-up can say how many of the
+   * failures were the network's. A running row has none, and renders nothing.
+   */
+  failureClass?: FailureClass | undefined;
 }
 
 function formatFleetRow(row: FleetRow): string {
@@ -100,6 +105,40 @@ function formatAgentRow(row: AgentOccupancy): string {
   return `- ${row.agent} ${row.active}/${row.maxConcurrent} at once${stated} · ${formatDepth(row)}`;
 }
 
+/**
+ * The shape of a settled fleet, in the words that answer the only question a
+ * count cannot: is this nine successes, or five successes and four failures?
+ *
+ * Ordered by the lifecycle — done, failed, stuck, stopped — so a reader can scan
+ * it as a sentence, with any state this build does not know about sorted on after
+ * them rather than dropped. Zeros are omitted, because "0 blocked" on every
+ * ordinary list is the line a parent learns to skip.
+ */
+function retainedRollup(rows: FleetRow[]): string {
+  if (rows.length === 0) return "";
+  const counts = new Map<string, number>();
+  for (const row of rows) counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
+  const lifecycle: string[] = [TaskState.Completed, TaskState.Error, TaskState.Blocked, TaskState.Interrupted];
+  const known = lifecycle.filter((state) => counts.has(state));
+  const unfamiliar = [...counts.keys()].filter((state) => !lifecycle.includes(state)).sort();
+  const parts = [...known, ...unfamiliar].map(
+    (state) => `${counts.get(state)} ${state}${networkCount(rows, state)}`,
+  );
+  return ` — ${parts.join(" · ")}`;
+}
+
+/**
+ * How many of these failures were the network's, said once, in parentheses.
+ *
+ * Only for `error`, and only when there is something to say: a fleet with no
+ * network failures reads "4 error", which is already true and needs no gloss.
+ */
+function networkCount(rows: FleetRow[], state: string): string {
+  if (state !== TaskState.Error) return "";
+  const blips = rows.filter((row) => row.state === state && row.failureClass === FailureClass.Transient).length;
+  return blips > 0 ? ` (${blips} transient)` : "";
+}
+
 export function formatTaskListSummary(input: {
   // The running fleet as the tree it is: every active task, plus the settled
   // ancestors that place it. `activeCount` is the number of RUNNING rows in it,
@@ -123,7 +162,7 @@ export function formatTaskListSummary(input: {
     ...(input.agents && input.agents.length > 0
       ? ["Agents (active/cap):", ...input.agents.map(formatAgentRow), ""]
       : []),
-    `Retained: ${input.retained.length}`,
+    `Retained: ${input.retained.length}${retainedRollup(input.retained)}`,
     input.retained.length > 0 ? input.retained.map(formatFleetRow) : "(none)",
     input.pruned > 0 ? `Pruned: ${input.pruned} expired retained task(s)` : undefined,
   );
@@ -279,7 +318,7 @@ function settledStatusLines(task: RetainedTaskState): string[] {
  * so a success never carries a line teaching the parent to skip it.
  */
 function failureClassLines(task: TaskRecord | null | undefined): string[] {
-  const failureClass = task && "failureClass" in task ? task.failureClass : undefined;
+  const failureClass = failureClassOf(task);
   if (failureClass === undefined || failureClass === FailureClass.None) return [];
   return [failureNote(failureClass, 0)];
 }

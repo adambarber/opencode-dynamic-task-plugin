@@ -242,7 +242,7 @@ export interface ActiveTaskState extends TaskRecordBase {
 // every reader learn a new address for it.
 import type { FailureClass } from "./failure-class.js";
 
-export { retainedFor, actOnSettled, decideRetained, settledChange, noteAbortLanded, type RetainedTaskState } from "./settled-record.js";
+export { retainedFor, actOnSettled, decideRetained, settledChange, noteAbortLanded, failureClassOf, type RetainedTaskState } from "./settled-record.js";
 import { retainedFor, actOnSettled, decideRetained, settledChange, type RetainedTaskState } from "./settled-record.js";
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;

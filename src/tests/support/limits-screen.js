@@ -82,17 +82,12 @@ export function dialogStack() {
         mounted.length = 0;
       },
       setSize: () => {},
-      get size() {
-        return "medium";
-      },
       get depth() {
         return stack.length;
       },
       get open() {
         return stack.length > 0;
       },
-      /** The notification the top entry was mounted with, for asserting on directly. */
-      onCloseOf: () => stack[0]?.onClose,
     },
     mounted,
   };
@@ -288,11 +283,8 @@ export const titlesOf = (dialog) => dialog.options.map((option) => option.title)
  * ONE place the module is booted, because booting IS a production interaction and
  * two call sites spelling it out is two places to forget the plugin's own id.
  *
- * The two layers are kept apart deliberately: the command has to be dispatchable
- * while no dialog is up, and the escape binding has to be live only while one is,
- * and the keymap's `enabled` is a LAYER field — so one layer could not be both.
- * Reading the command out of "the first layer" is therefore a claim about an
- * ordering nothing guarantees, so it is read by what the layer actually carries.
+ * The command has to be dispatchable while no dialog is up, and the host owns
+ * every key the plugin must not take.
  */
 export async function booted(directory) {
   const host = hostApi(directory);
@@ -301,10 +293,12 @@ export async function booted(directory) {
   // second place to change, and the suite already gates on exactly that.
   await tui(host.api, undefined, { id: tuiModule.id });
   const command = host.seen.layers.find((layer) => layer.commands)?.commands[0];
-  const escapeLayer = host.seen.layers.find((layer) => layer.bindings);
   assert.ok(command, "the palette command is registered");
-  assert.ok(escapeLayer, "and the escape layer that gets the operator out");
-  return { ...host, command, escape: escapeLayer.bindings[0], escapeLayer };
+  // Every binding the plugin owns, as the keymap would see them. Not a specific
+  // layer: the property under test is that NO binding of ours is on a key the host
+  // needs, which a per-layer lookup cannot express.
+  const bindings = host.seen.layers.flatMap((layer) => layer.bindings ?? []);
+  return { ...host, command, bindings };
 }
 
 /** A project directory holding the given overlay, with nothing booted and nothing pressed. */

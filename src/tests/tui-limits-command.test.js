@@ -769,55 +769,38 @@ function pressEscapeForReal(host, { selectedText = "" } = {}) {
   return { hostClosed, stillOpen: host.dialog.open, diagnostics };
 }
 
-describe("escape gets the operator out of the limits list", () => {
+describe("escape is the host's key, and this plugin does not take it", () => {
+  it("the plugin registers NO binding on any key the host needs, so interrupt cannot be ours to break", () =>
+    // The structural property, stated as a property: whatever the dialogs are doing,
+    // whatever the flag behind a gate would have said, there is nothing of ours on
+    // the key. A gate cannot offer this — a gate is only as good as the state it
+    // reads, and a desynchronised one turns "stop this request" into a swallowed
+    // keypress, whose failure is a turn that never ends rather than a lost dialog.
+    withBooted(({ bindings }) => {
+      const keys = bindings.map((binding) => String(binding.key).toLowerCase());
+      assert.deepEqual(keys, [],
+        `the plugin must register no key bindings at all; it has: ${JSON.stringify(keys)}`);
+    }));
+
   it("and the HOST's own handler is the one that acts, so the key is not taken from every other dialog", () =>
     withOpen((host) => {
       const { hostClosed, stillOpen, diagnostics } = pressEscapeForReal(host);
-      assert.equal(hostClosed, 1, "the host's dialog handler ran, not the plugin's");
+      assert.equal(hostClosed, 1, "the host's dialog handler ran, because the plugin registered nothing");
       assert.equal(stillOpen, false, "and the list is closed");
       assert.deepEqual([...diagnostics.warnings, ...diagnostics.errors], [],
         "two layers on one key must resolve without an ambiguity warning");
     }));
 
-  it("with text selected — which DISABLES the host's binding — the operator is still not stuck", () =>
-    // The defect this exists for. `DialogSelect` is the only widget of ours with a
-    // filter input that can hold a text selection, and that selection is exactly
-    // what switches the host's escape handler off, leaving the footer — which is
-    // reachable only with a mouse — as the sole way out of a keyboard-only dialog.
-    // Verified against the dispatcher alone: with the host's binding and no
-    // selection it closes, and with a selection it does not fire at all.
+  it("a text selection switches the HOST's handler off — which is why every screen carries a Back row", () =>
+    // Not a defect to be fixed here, and the reason is now visible: the host gates its
+    // own escape on there being no text selection (packages/tui/src/ui/dialog.ts:106),
+    // so a filtered dialog with a selection has no escape at all. A plugin cannot
+    // repair that by binding `escape` — that is the same key, and owning it is what
+    // breaks interrupt. The Back row is the repair, and this is the case it exists for.
     withOpen((host) => {
-      const { hostClosed, stillOpen, diagnostics } = pressEscapeForReal(host, { selectedText: "explore" });
+      const { hostClosed, stillOpen } = pressEscapeForReal(host, { selectedText: "explore" });
       assert.equal(hostClosed, 0, "the host's handler is disabled while text is selected — the trap");
-      assert.equal(stillOpen, false, "and the list is still closable, which is the whole fix");
-      assert.equal(host.renderer.selection, null, "the selection goes with it, as the host's handler would");
-      assert.deepEqual([...diagnostics.warnings, ...diagnostics.errors], []);
-    }));
-
-  it("the escape layer answers only while a dialog of OURS is up, never for another plugin's", () =>
-    // `withBooted`, not `withOpen`: the first assertion is about the gate BEFORE
-    // anything of ours is on screen, which is the state `withOpen` has already left.
-    withBooted(async (host) => {
-      assert.equal(host.escapeLayer.enabled(), false, "nothing of ours is open, so the layer is inert");
-      assert.equal(host.escape.key, "escape", "and it is the key the operator actually presses");
-
-      await openList(host);
-      assert.equal(host.escapeLayer.enabled(), true, "the list is up, so escape has to be live");
-
-      // Choosing a row mounts the picker OVER the list, and `replace` walks the
-      // outgoing entry's onClose — so the gate has to be re-armed by the mount, not
-      // left wherever the replaced dialog left it.
-      row(top(host.seen), "explore").onSelect();
-      assert.equal(host.escapeLayer.enabled(), true, "still live over the picker, not dropped by the replacement");
-    }));
-
-  it("the onClose the funnel passes RECORDS the dismissal; performing one would recurse forever", () =>
-    withOpen((host) => {
-      const notify = host.dialog.onCloseOf();
-      assert.equal(typeof notify, "function", "a notification is passed, so the host can report the dismissal");
-      notify();
-      assert.equal(host.dialog.open, true, "and it did not close the dialog: `clear` is what calls it");
-      assert.equal(host.escapeLayer.enabled(), false, "but it did record that no dialog of ours is up");
+      assert.equal(stillOpen, true, "so escape alone cannot get out, which is what the Back row is for");
     }));
 });
 

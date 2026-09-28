@@ -33,7 +33,7 @@
  * path already reads, so there is no second source of truth to reconcile and no server
  * endpoint added to read a number a file already holds.
  */
-import type { TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { TuiDialogSelectProps, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { depthLimits } from "../shared/task-policy.js";
@@ -85,15 +85,6 @@ const COMMAND = "dynamic-task.limits";
  * "unload this plugin" the same switch.
  */
 const PLUGIN_ID = "dynamic-task";
-
-/**
- * Whether a dialog of OURS is on screen. Read by the escape layer below.
- *
- * A flag rather than `api.ui.dialog.open`, which answers the same question for
- * EVERY dialog: a plugin that gated on it would answer for other plugins' dialogs too,
- * and pressing escape in someone else's dialog would close it.
- */
-let limitsDialogUp = false;
 
 /**
  * What a row in the list stands for, and what a row in a cap picker stands for.
@@ -162,82 +153,39 @@ export const tui: TuiPlugin = async (api) => {
       },
     ],
   });
-  // The escape hatch, as a LAYER of its own rather than a binding in the layer
-  // above. `enabled` is a LAYER field in the host's keymap — the keymap's addons
-  // register it on the layer and on the command, never on a binding — so a gated
-  // binding here would gate the whole layer, and the command has to stay
-  // dispatchable while the dialog is down.
-  api.keymap.registerLayer({
-    enabled: () => limitsDialogUp,
-    bindings: [
-      {
-        key: "escape",
-        desc: "Close task limits",
-        group: "Dialog",
-        cmd: () => closeLimitsDialog(api),
-      },
-    ],
-  });
-  // No `onDispose` for either layer. The host already disposes keymap registrations
-  // when a plugin deactivates, and the spec says so explicitly; wiring it a second
-  // time is not belt-and-braces, it is a second owner for one teardown.
+  // No escape binding. A plugin that registers one owns `escape` for the whole app,
+  // and escape is the operator's way to STOP AN IN-FLIGHT REQUEST — a key whose
+  // failure is not a lost dialog but a turn that will not end. The host's own
+  // handler already closes the whole dialog stack, so duplicating it bought nothing
+  // except the one case it was written for (a text selection switches the host's
+  // handler off), and it charged for that by owning a key that must never be
+  // interceptable. The Back rows are the way out of every screen.
+  //
+  // Not a gated layer either. A gate can only be as good as the flag behind it: one
+  // that desynchronises from the dialog turns an interrupt into a swallowed key, and
+  // the failure it causes is a turn that never ends rather than a dialog that does.
+  // A plugin that binds no `escape` at all cannot break interrupt, whatever the
+  // dialog is doing — a property no predicate can offer.
+  //
+  // No `onDispose` for the one layer above. The host already disposes keymap
+  // registrations when a plugin deactivates, and the spec says so explicitly;
+  // wiring it a second time is not belt-and-braces, it is a second owner for one
+  // teardown.
 };
 
 /**
- * Every dialog of ours goes through here, which is what makes the flag above true
- * for all of them rather than for whichever call site remembered to set it.
+ * Every list of ours goes through here, and there is nothing to funnel: the host
+ * takes a dialog with `replace` and takes it down itself.
  *
- * `replace` is the host's only way to put a dialog up, and it fires the outgoing
- * entry's `onClose` on every path that takes a dialog down: the escape and ctrl+c
- * handlers pop the top entry, `clear` walks the whole stack, and a second `replace`
- * walks whatever it is replacing. The flag is therefore cleared by the host rather
- * than by each of our own call sites, which is the only arrangement that cannot miss
- * one. It sets a boolean and nothing else — an `onClose` that called `clear()` would
- * recurse forever, because `clear` is itself what calls it.
- *
- * The flag is set AFTER the call, not before, and the order is load-bearing: a
- * `replace` notifies the outgoing entry's handler on its way past, so setting it
- * first would have that notification set it straight back to false and leave the
- * escape layer inert over the very dialog that was just mounted. `replace` is
- * synchronous, so afterwards is also the truth: the new entry is on the stack.
- *
- * The WIDTH lives here too, and for the same reason. `replace` resets the dialog to
- * `medium` (60 columns) on its way through, so `setSize` has to come after the mount
- * — a fact that was stated at each call site as a comment beside its own `setSize`,
- * and which the next dialog would have had to rediscover by reading the host. Every
- * dialog of ours is `large`, so it is the funnel's to set rather than a call site's: a
- * new dialog that forgot would be silently narrow, and a narrow row is clipped rather
- * than wrapped, so the symptom is a fact missing from a line that still looked fine.
- */
-function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0]): void {
-  api.ui.dialog.replace(render, () => {
-    limitsDialogUp = false;
-  });
-  limitsDialogUp = true;
-}
-
-/**
- * Every list of ours goes through here, on top of the mount funnel.
- *
- * The WIDTH is the caller's, because it is a property of the screen rather than of the
- * funnel: the list is the only one of the four whose rows carry a name and its caps on
- * one line, and only at `large` do those two share a row. A funnel that fixed one width
- * would force the pickers to be as wide as the list, which is the 28 columns of number
- * spent on nothing.
+ * The WIDTH is deliberately not set. `replace` resets the dialog to `medium` (60
+ * columns) on its way through, so a `setSize` would have to come after the mount —
+ * and every screen here wants the host's default anyway, which is what every other
+ * dialog in opencode gets. The budget that has to survive a row is enforced where
+ * the content is built (`rowWidth`), not by making this one select the odd width out
+ * in the app.
  */
 function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>): void {
-  mountLimitsDialog(api, () => api.ui.DialogSelect(build()));
-}
-
-/**
- * Closing the way the host's own escape handler closes: drop the selection, then
- * clear the stack. Mirrored rather than shortened because the selection is the reason
- * this path exists — it is what disables the host's handler — so leaving it in place
- * would hand the next dialog a selection it did not create.
- */
-function closeLimitsDialog(api: TuiApi): void {
-  if (api.renderer.getSelection()) api.renderer.clearSelection();
-  api.ui.dialog.clear();
+  api.ui.dialog.replace(() => api.ui.DialogSelect(build()));
 }
 
 /**

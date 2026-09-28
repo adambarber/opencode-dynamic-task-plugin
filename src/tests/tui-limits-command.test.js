@@ -36,9 +36,10 @@ import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../di
 import { CELL_GAP } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
+import { LEAD, plainCell, plainSummary } from "../../dist/tui/theme.js";
 import tuiModule, { BACK_LABEL, agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
 import {
-  BASE, BOUND_DEPTH, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
@@ -292,19 +293,69 @@ describe("a row fits the dialog it is drawn in", () => {
       assert.match(rowText(list, "explore"), /at once 2/, "and the caps are on screen, not clipped away");
     }));
 
-  it("for agent names far longer than any real one, because the host chooses them", () =>
+  it("counts the FOOTER's width, because the host will not shrink it and the title will", () => {
+    // Measured against the host at this tag rather than reasoned about. An option row is
+    // `<box flexDirection="row" paddingLeft={3} paddingRight={3} gap={1}>` (dialog-select
+    // .tsx:666) holding one `Option`, whose title is `<text flexGrow={1}
+    // overflow="hidden" paddingLeft={3}>` and whose footer is `<box flexShrink={0}>`
+    // (dialog-select.tsx:786). The footer therefore cannot give ground — the TITLE does,
+    // into a clip with no ellipsis. This gate measured the title alone, which is how the
+    // case below could claim a 37-character agent name fits beside its caps: 37 < 72, when
+    // the host gives the two of them 68 columns between them.
+    const caps = plainSummary(agentEntry("explore", BOUND_DEPTH));
+    assert.ok(caps.length > 20, `the footer measured is one production really builds, not a fixture: "${caps}"`);
+    assert.equal(fitsItsDialog({ title: LONG_AGENT_NAME }, caps.length), false,
+      "a long name beside its caps is over the row, and the old arithmetic called it fine");
+  });
+
+  it("and the screen asks the host for a row wide enough for the names it must draw", () => {
+    // What makes the gate above worth anything: the corrected arithmetic has to be
+    // ANSWERED by the screen rather than merely recorded, because a gate that reports
+    // clipping nobody fixes teaches the team to ignore it. The host offers `setSize` for
+    // exactly this and the mount funnel already calls it, so the claim here is only that
+    // the budget the screen asks for is real rather than asserted.
+    withList(BOUND_DEPTH, (list) => {
+      assertEveryRowFits(list);
+      assert.ok(REGISTERED.every((name) => row(list, name)), "every agent is a row, and every row was checked");
+    });
+  });
+
+  it("for every name a real project has, the whole screen fits", () =>
     // A row's length is a function of a name the plugin does not own, so the budget
-    // cannot be checked against a fixture that happens to be short. This drives the
-    // arithmetic the host's own layout uses, over the longest shapes the row can take.
+    // cannot be checked against a fixture that happens to be short. These are the names
+    // the host double publishes, over the caps footer PRODUCTION builds — the hand-typed
+    // string this case used carried was one production cannot emit (CELL_GAP is two
+    // spaces, and the lead mark belongs to the cap screen's cell, not to this row).
     withList(undefined, (list) => {
-      const footer = `· at once ${BASE.maxConcurrent} from config · depth ${BASE.maxDepth} from config`;
-      for (const name of ["x".repeat(20), "a-very-long-hyphenated-agent-name-indeed", "reviewer"]) {
-        assert.ok(fitsItsDialog({ title: name, footer }), `${name.length} chars does not fit: ${name.length + footer.length}`);
+      for (const name of REGISTERED) {
+        const caps = plainSummary(agentEntry(name));
+        assert.ok(fitsItsDialog({ title: name }, caps.length), `${name} leaves the row too little for "${caps}"`);
       }
       assertEveryRowFits(list);
     }));
 
-  it("the caps sit in the cell the host never clips, not in the sentence it does", () =>
+  it("and a name too WIDE for its caps gets them on a line of their own", () =>
+    // The consequence of measuring the footer, and the reason the fallback is `details`
+    // rather than a shorter name or a smaller font. The host clips the headline with no
+    // ellipsis, so a name that cannot share its row has two honest options: lose the
+    // agent, or lose the caps. `details` is a line the host draws for exactly this, and
+    // it truncates in the middle with an ellipsis rather than dropping the end — so the
+    // row degrades to "this is the agent, and here is roughly what it is capped at"
+    // instead of to a name cut in half.
+    withList(undefined, (list) => {
+      const wide = row(list, LONG_AGENT_NAME);
+      assert.ok(wide, "the host published it, so it is a row");
+      assert.equal(wide.footer, undefined, "and the name keeps the row to itself");
+      assert.match(wide.details.join(" "), /at once/, "with its caps on the line the host draws for them");
+      assertEveryRowFits(list);
+    }, { agentNames: [...REGISTERED, LONG_AGENT_NAME] }));
+
+  it("the caps ride in `footer`, where the host draws them, not in the clipped headline", () =>
+    // The premise this case used to carry — that the footer is never clipped — was FALSE,
+    // and measuring the host is what found it: `flexShrink={0}` does not mean the footer
+    // is safe, it means the footer is safe by taking the title's columns. The choice of
+    // field still stands, and for a better reason than the old one: a caps cell belongs
+    // where a number is drawn at full size rather than in a sentence that gets trimmed.
     withList({ agents: { explore: bothCaps(2, 3) } }, (list) => {
       const found = row(list, "explore");
       assert.ok(found.footer, "the value rides in `footer`");

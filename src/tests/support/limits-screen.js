@@ -24,10 +24,10 @@ import { withTempDir } from "./fixtures.js";
 import { renderTree } from "./render-tree.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { CAP_LABEL, agentDialogFrom } from "../../../dist/tui/agent-editor.js";
-import { screenTokens } from "../../../dist/tui/theme.js";
+import { LEAD, plainCell, plainSummary, screenTokens } from "../../../dist/tui/theme.js";
 import { darkTheme } from "./harness.js";
 import { footerText } from "./assertions.js";
-import tuiModule, { BACK_LABEL, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, DIALOG_ROW_TEXT, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -37,6 +37,15 @@ export const NO_ASKS = () => {};
 
 /** The agents this project has, as the host would report them. */
 export const REGISTERED = ["explore", "general", "review"];
+
+/**
+ * A name longer than any real one, because the HOST chooses them.
+ *
+ * Named rather than written at each site: three cases now reason about the same
+ * worst-case length, and a name retyped at each of them is free to drift — which is how
+ * a gate ends up checking a length nothing on screen ever has.
+ */
+export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
 
 /**
  * The dialog stack, modelled on the host's own `useDialog` rather than on what a
@@ -210,7 +219,24 @@ export const TOKENS = screenTokens(HOST_THEME);
  */
 export function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
-  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, false, read.problem), NO_ASKS, TOKENS);
+  const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
+  const props = limitsListProps(dialog, NO_ASKS, TOKENS);
+  // The width each row's footer takes, in the order the host draws the rows, paired from
+  // the field the screen actually chose — a wide agent's caps travel in `details` and
+  // cost the row nothing. The styled footer cannot be measured: it is a `StyledText` and
+  // the host paints it. So the gate needs the twin `plainSummary`/`plainCell` were written
+  // for, and the only place that knows which field a row used is the screen itself.
+  //
+  // Attaching it here rather than asking each case to pass it is what keeps
+  // `assertEveryRowFits` a one-argument claim: a case cannot forget the widest thing on
+  // the row, and a screen that grows a row cannot escape the check by being added where
+  // nobody remembered to measure.
+  const agentOptions = props.options.slice(1);
+  props.plainFooters = [
+    `${LEAD} ${plainCell(dialog.ceiling)}`.length,
+    ...dialog.rows.map((row, at) => (agentOptions[at].footer === undefined ? 0 : plainSummary(row).length)),
+  ];
+  return props;
 }
 
 /** The row for one agent, by its host spelling. */
@@ -287,7 +313,8 @@ export const withProject = (fn, { overlay, active = [], retained = [] } = {}) =>
   });
 
 /** …with the limits list, built from a real overlay and no host in sight. */
-export const withList = (overlay, fn, opts) => withProject((directory) => fn(listOver(directory), directory), { overlay, ...opts });
+export const withList = (overlay, fn, opts) =>
+  withProject((directory) => fn(listOver(directory, opts?.agentNames), directory), { overlay, ...opts });
 
 /**
  * …with the module booted and NOTHING pressed, which is the only state in which a
@@ -498,7 +525,11 @@ export const capText = (host, cap) => rowText(top(host.seen), CAP_LABEL[cap]);
  * being added somewhere that forgot to ask for it.
  */
 export const assertEveryRowFits = (dialog) =>
-  assertRows(dialog.options, fitsItsDialog, (option) => `"${option.title}" is clipped: ${JSON.stringify(option)}`);
+  assertRows(
+    dialog.options.map((option, at) => ({ option, footer: dialog.plainFooters?.[at] ?? 0 })),
+    ({ option, footer }) => fitsItsDialog(option, footer),
+    ({ option, footer }) => `"${option.title}" is clipped: ${option.title.length} of name + ${footer} of caps, over a row of ${DIALOG_ROW_TEXT}`,
+  );
 
 /**
  * Every one of `options` satisfies a claim the case is making about a whole screen.
@@ -513,6 +544,6 @@ export const assertEveryRowFits = (dialog) =>
 export const everyRowClaims = (options, about, why) => assertRows(options, about, () => why);
 
 /** The one loop both screen-level claims are written on. */
-function assertRows(options, about, why) {
-  for (const option of options) assert.ok(about(option), why(option));
+function assertRows(rows, about, why) {
+  for (const row of rows) assert.ok(about(row), why(row));
 }

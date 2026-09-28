@@ -64,7 +64,7 @@ import {
   type CeilingChoice,
   type EditOutcome,
 } from "./agent-editor.js";
-import { cellFooter, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
+import { cellFooter, plainSummary, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -277,19 +277,35 @@ export function limitsListProps(
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
       },
-      ...dialog.rows.map((row) => ({
-        title: row.name,
-        // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
-        // is — and what the host's TextNodeRenderable accepts as a child — is a
-        // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
-        // checked, and never by a cast: sound only because the host's own
-        // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
-        // the host's source at the tag this binary was built from. A `span` element would
-        // need an active renderer, which a props builder does not have outside a test.
-        ...({ footer: summaryFooter(row, tokens) } as Record<string, unknown>),
-        value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
-        onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
-      })),
+      ...dialog.rows.map((row) => {
+        // The field the caps ride in is CHOSEN BY MEASUREMENT, and the name is the reason
+        // the choice exists. The footer's box does not shrink, so a name long enough to
+        // crowd the caps clips its own row — silently, with no ellipsis. The host's
+        // `details` is a line of its own, truncated in the middle rather than at the end,
+        // so a name that cannot share a row still gets read: the row degrades to the
+        // agent and roughly its caps, which is a fact, rather than to half a name and no
+        // caps, which is a defect with an agent in it.
+        //
+        // `plainSummary` is the twin `summaryFooter` styles, so the two cannot disagree
+        // about how wide the row is — and the width is asked of the same function that
+        // the gate below is written against, rather than of a second arithmetic.
+        const caps = plainSummary(row);
+        return {
+          title: row.name,
+          // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
+          // is — and what the host's TextNodeRenderable accepts as a child — is a
+          // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
+          // checked, and never by a cast: sound only because the host's own
+          // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
+          // the host's source at the tag this binary was built from. A `span` element would
+          // need an active renderer, which a props builder does not have outside a test.
+          ...(fitsItsDialog({ title: row.name }, caps.length)
+            ? ({ footer: summaryFooter(row, tokens) } as Record<string, unknown>)
+            : withDetails(caps)),
+          value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
+          onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
+        };
+      }),
     ],
   };
 }
@@ -567,22 +583,52 @@ const BACK_TO_LIST = "back to the list of agents";
  * The width the host lays a row out in, and whether this one fits it.
  *
  * The host's own arithmetic, so the budget is enforced where the content is built
- * rather than discovered as a clipped sentence in a terminal. `large` is 88 columns
- * (dialog.ts:22-26), the row's text is indented 3 and its box padded 3 more, a detail
- * line is capped at 76 or the width less 12 (dialog-select.tsx:702), and a dialog can
- * never exceed the terminal less 2 (dialog.ts:59) — so an 80-column terminal is the
- * narrow case, and the one worth holding the content to.
+ * rather than discovered as a clipped sentence in a terminal. `large` is 88 columns and
+ * `medium` is 60 (dialog.ts:22-25); the plugin asks for `large` on every screen it
+ * mounts, so 88 is the figure and a dialog can never exceed the terminal less 2
+ * (dialog.ts:59), which makes an 80-column terminal the narrow case worth surviving.
+ *
+ * What the row spends before any content is the part that was wrong. The row box is
+ * `<box flexDirection="row" paddingLeft={3} paddingRight={3} gap={1}>`
+ * (dialog-select.tsx:666) and the title inside it carries `paddingLeft={3}` of its own
+ * (dialog-select.tsx:786) — six columns were counted, ten are spent, and the four in
+ * between were handed to content that could not use them.
  */
 const DIALOG_WIDTH = 88;
 const TERMINAL_FLOOR = 80;
 const ROW_INDENT = 3;
 const ROW_PADDING = 3;
+const ROW_GAP = 1;
+const TITLE_INDENT = 3;
+/** What the host subtracts from the DIALOG for a detail line, which it then caps at 76. */
+const DETAIL_MARGIN = 12;
 
-/** Whether every line of `option` fits the dialog the host will draw it in. */
-export function fitsItsDialog(option: { title: string; description?: string; details?: string[] }): boolean {
-  const width = Math.min(DIALOG_WIDTH, TERMINAL_FLOOR - 2) - ROW_INDENT - ROW_PADDING;
-  const headline = option.title.length + 1 + (option.description?.length ?? 0);
-  return headline <= width && (option.details ?? []).every((line) => line.length <= Math.min(76, width - 12));
+/** The dialog as it is actually drawn: 88, or the terminal less 2 on a narrow one. */
+const DIALOG = Math.min(DIALOG_WIDTH, TERMINAL_FLOOR - 2);
+
+/** What one option row has left for its title, its description, and its footer. */
+export const DIALOG_ROW_TEXT = DIALOG - ROW_INDENT - ROW_PADDING - ROW_GAP - TITLE_INDENT;
+
+/** What one `details` line has. The host truncates these with an ellipsis in the middle. */
+const DIALOG_DETAIL_TEXT = Math.min(76, DIALOG - DETAIL_MARGIN);
+
+/**
+ * Whether every line of `row` fits the dialog the host will draw it in.
+ *
+ * The footer is charged to the row, and that is the claim that changed. The footer sits
+ * in a `flexShrink={0}` box (dialog-select.tsx:786) while the title is `flexGrow={1}` with
+ * `overflow="hidden"` and `wrapMode="none"`: the footer cannot give ground, so the TITLE
+ * does, and it goes to a clip with no ellipsis and nothing to say it happened. A gate
+ * measuring the title alone could not see an agent's name being eaten by its own caps —
+ * which is what the hand-typed footer in the case that drove these names was hiding,
+ * being a string production cannot emit and a field this function never read.
+ *
+ * `description` shares the title's `<text>` in a nested span (dialog-select.tsx:778), so
+ * it is charged to the same line with the one space that separates them.
+ */
+export function fitsItsDialog(row: { title: string; description?: string; details?: string[] }, footerWidth = 0): boolean {
+  const headline = row.title.length + 1 + (row.description?.length ?? 0) + footerWidth;
+  return headline <= DIALOG_ROW_TEXT && (row.details ?? []).every((line) => line.length <= DIALOG_DETAIL_TEXT);
 }
 
 // ─── the flow ────────────────────────────────────────────────────────────────

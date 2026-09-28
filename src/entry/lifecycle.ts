@@ -436,10 +436,20 @@ export async function handleChildLifecycleEvent(
     const outcome = await hydrateLatestOutcome(client, childSessionId);
     const current = store.retainedTasks.get(childSessionId);
     if (!current || current.state !== TaskState.Completed) return; // lost the escalation race
-    recordSettledOutcome(store, childSessionId, TaskState.Error);
+    // WHY, on the same amendment, and ONE decision read twice. A failure that
+    // arrives after a reported success is the same failure the ordinary path
+    // classifies, and omitting it made a network blip indistinguishable from
+    // broken work on the one route where the parent has already been told
+    // otherwise: the parent investigates a socket reset as if it were its own.
+    // The transcript is in scope here — it was just read to build the notice —
+    // so this costs a classifier call, not another read, and the record and the
+    // notice below cannot disagree about what class it is.
+    const failure = classifyFailure(TaskState.Error, outcome.errorDetail);
+    recordSettledOutcome(store, childSessionId, TaskState.Error, failure);
     const errorDetail = outcome.errorDetail
       || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
-    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, errorDetail)
+    const classNote = failureNote(failure, current.transientResumes ?? 0);
+    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, `${errorDetail}${classNote ? `\n\n${classNote}` : ""}`)
       .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: NotifyKind.Error, delivered }));
   }
 }

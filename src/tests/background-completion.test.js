@@ -11,6 +11,7 @@
 import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 describe("Background Task Settlement", () => {
   let harness;
@@ -158,6 +159,39 @@ describe("Background Task Settlement", () => {
     await contradicts();
     assertNotices(2, "escalation happens once");
   });
+
+  // WHICH kind of failure it was is the fact a parent most needs, and a failure
+  // that arrives after a success is not exempt from it: without a class the
+  // escalation reads as broken work, and a parent told a socket reset was a
+  // broken child spends a turn on the network. The transcript is in scope on
+  // this path — it was just read to build the notice — so the class is a
+  // decision the code is already in a position to make.
+  //
+  // Both classes, because a stamp that is always the conservative answer is
+  // indistinguishable from no stamp at all: the one that must never be wrong is
+  // the blip read as structural, and only a case that also sees a blip read as
+  // transient can say the distinction survives here.
+  for (const [detail, className] of [
+    ["fetch failed: socket hang up", "transient"],
+    ["Provider auth failed: invalid API key", "structural"],
+  ]) {
+    it(`a late failure is recorded and announced as ${className}`, async () => {
+      const childId = await spawn(`late_${className}_parent`, `late ${className}`);
+      await harness.fireEvent(events.idle(childId));
+      assertNotices(1, "the success is notified first");
+
+      harness.client.setTranscript(childId, [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } } }]);
+      await harness.fireEvent(events.error(childId));
+
+      assert.match(
+        harness.noticeBodies()[1],
+        new RegExp(`Failure class: ${className}`),
+        "the parent is told which kind of failure it is",
+      );
+      const status = await harness.tool.task_status.execute({ session_id: childId });
+      assert.match(status, new RegExp(`Failure class: ${className}`), `the record keeps the class. Got: ${status}`);
+    });
+  }
 
   it("a working child's own events count as recent activity", async () => {
     const childId = await spawn("parent_activity", "Activity test");

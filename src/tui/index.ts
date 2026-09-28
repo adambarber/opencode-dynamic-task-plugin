@@ -103,7 +103,13 @@ let limitsDialogUp = false;
  */
 type ListChoice = { kind: ChoiceKind.Agent; agent: string } | { kind: ChoiceKind.Ceiling };
 type CapsChoice = { kind: ChoiceKind.Cap; agent: string; cap: AgentCapName } | { kind: ChoiceKind.Back };
-type PickerChoice = { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; value: number | null } | { kind: ChoiceKind.CeilingValue; value: number | null };
+type PickerChoice =
+  | { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; value: number | null }
+  | { kind: ChoiceKind.CeilingValue; value: number | null }
+  // The same shape the agent screen's own Back row carries, and deliberately not a
+  // third spelling of "go back": a kind that means one thing has one representation, so
+  // a reader asking "which rows leave this screen alone" finds one answer.
+  | { kind: ChoiceKind.Back };
 
 /**
  * The kinds of row either list can hold.
@@ -295,7 +301,26 @@ export function limitsListProps(
  * numbers for one concept is how an operator ends up able to set a total of 12 that no
  * per-agent cap can reach, and neither screen explains the asymmetry.
  */
-export function ceilingPickerProps(ceiling: CapCell, confirm: (choice: CeilingChoice) => void): TuiDialogSelectProps<PickerChoice> {
+/**
+ * The two things a picker can be asked to do, named.
+ *
+ * A pair of trailing callbacks said `confirm, back` on both picker builders, and the
+ * duplication gate called the two signatures one piece of code — correctly, because the
+ * duplication was real: two positional slots at the tail of two signatures, growing a
+ * third input in the middle. Naming them is the fix rather than a restyle, and it says
+ * the thing the pair means: one of these leaves the screen having changed the file, and
+ * one of them leaves it having changed nothing. A reader of the old signature had to
+ * check the body to learn that, and a caller could swap them by accident.
+ */
+type PickerActions<Choice> = {
+  /** A value was chosen. It writes the file, so the screen that follows is the write's. */
+  confirm: (choice: Choice) => void;
+  /** The way out was chosen. It writes nothing, so the screen that follows is a re-read. */
+  back: () => void;
+};
+
+export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>): TuiDialogSelectProps<PickerChoice> {
+  const { confirm, back } = actions;
   return {
     title: CEILING_LABEL,
     ...valuePicker(
@@ -303,6 +328,8 @@ export function ceilingPickerProps(ceiling: CapCell, confirm: (choice: CeilingCh
       ceiling.stated ? ceiling.value : null,
       (value) => ({ kind: ChoiceKind.CeilingValue, value } as const satisfies PickerChoice),
       (value) => confirm({ value }),
+      back,
+      BACK_TO_LIST,
     ),
   };
 }
@@ -368,8 +395,9 @@ export function capPickerProps(
   agent: string,
   cap: AgentCapName,
   current: number | null,
-  confirm: (choice: CapChoice) => void,
+  actions: PickerActions<CapChoice>,
 ): TuiDialogSelectProps<PickerChoice> {
+  const { confirm, back } = actions;
   const title = `${agent} — ${CAP_LABEL[cap]}`;
   return {
     title,
@@ -390,12 +418,15 @@ export function capPickerProps(
       current,
       (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
       (value) => confirm({ cap, value }),
+      back,
+      `back to ${agent}'s caps`,
     ),
   };
 }
 
 /**
- * A picker's rows: every value the cap can take, plus the way back to the config file.
+ * A picker's rows: the way back, every value the cap can take, and the way to the config
+ * file.
  *
  * The shared body of both pickers, extracted when the ceiling became editable, because
  * the two were about to become the same screen with a different title. It hands back the
@@ -403,21 +434,39 @@ export function capPickerProps(
  * genuinely differs — it names an agent and a cap, or names the total — and taking it
  * as a parameter would put the two call sites back to spelling the same four arguments.
  *
- * Three claims live here and each is a thing the operator reads. The value in force is
- * MARKED, so the change is visible without holding the previous screen in mind. The
- * fallback row appears only where it can work, because clearing a cap the overlay does
- * not state writes nothing and would leave a row that could only ever be inert. And the
- * `details` spelling of what clearing means is the one field the host budgets rather than
- * clips.
+ * FOUR claims live here and each is a thing the operator reads. The way back is FIRST,
+ * which is the only position a navigation affordance belongs in: a screen that opens
+ * with ten numbers and puts its exit at the bottom has made the operator scroll or press
+ * END to change their mind. It is a row rather than an escape-layer binding because the
+ * host's `replace` sets the dialog stack to a single entry — there is no previous dialog
+ * to pop back to, so before this row a picker's only exit was the one that closed the
+ * whole manager, and every other row on the screen wrote the file. The destination is
+ * said in `details` because it is not the same screen for both pickers, and a label that
+ * named one destination while standing on the other would be a lie in a row whose entire
+ * job is to say where it goes.
+ *
+ * The value in force is MARKED, so the change is visible without holding the previous
+ * screen in mind. The fallback row appears only where it can work, because clearing a cap
+ * the overlay does not state writes nothing and would leave a row that could only ever be
+ * inert. And the `details` spelling of what clearing means is the one field the host
+ * budgets rather than clips.
  */
 function valuePicker(
   choices: readonly number[],
   current: number | null,
   asChoice: (value: number | null) => PickerChoice,
   onPick: (value: number | null) => void,
+  back: () => void,
+  backTo: string,
 ) {
   return {
     options: [
+      {
+        title: BACK_LABEL,
+        ...withDetails(backTo),
+        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
+        onSelect: back,
+      },
       ...choices.map((value) => ({
         title: `${value}`,
         // A mark on a value the operator is not changing would be decoration.
@@ -429,7 +478,7 @@ function valuePicker(
         ? []
         : [{
             title: "Use the config default",
-            ...({ details: [FALLBACK_MEANING] } as Record<string, unknown>),
+            ...withDetails(FALLBACK_MEANING),
             value: asChoice(null),
             onSelect: () => onPick(null),
           }]),
@@ -439,6 +488,33 @@ function valuePicker(
 
 /** What the fallback row means, said on the row that does it. */
 const FALLBACK_MEANING = "clear this cap and use the number in the config file instead";
+
+/**
+ * A row's `details`, spread in.
+ *
+ * The host budgets each entry of `details` against its own width and truncates it with
+ * an ellipsis, while the headline it clips would take the whole row with it — so a row
+ * that means something beyond its title says it here. The helper exists because the
+ * field is not on the option type (the host carries it for keyboard rendering and
+ * nothing in the plugin reads it back), so both rows that wanted it spelled the same
+ * `as` object, and the duplication gate was right to call those two rows one piece of
+ * code.
+ */
+const withDetails = (...lines: string[]) => ({ details: lines } as Record<string, unknown>);
+
+/**
+ * The word on a picker's way out, and the destination the ceiling picker's names.
+ *
+ * `Back` and not the agent screen's `All agents`, and the two are not required to match
+ * because they answer a different question. That row says where a press LANDS — the list
+ * of every agent, which is what the operator would call the screen's name. A picker's
+ * destination is the screen immediately above it, which is not the list, and a label
+ * naming the list while standing on an agent's values would send the operator one level
+ * further than they asked for.
+ */
+export const BACK_LABEL = "Back";
+/** Where the total's picker goes back to. It bounds the list, so the list is the destination. */
+const BACK_TO_LIST = "back to the list of agents";
 
 /**
  * The width the host lays a row out in, and whether this one fits it.
@@ -527,7 +603,7 @@ function showLimits(api: TuiApi, view: LimitsView): void {
 function openCeiling(api: TuiApi, view: LimitsView): void {
   const confirm = (choice: CeilingChoice) =>
     applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
-  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, confirm));
+  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }));
 }
 
 /**
@@ -594,7 +670,9 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   // landing on that one shows the number the operator just replaced.
   const confirm = (choice: CapChoice) =>
     applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
-  mountLimitsSelect(api, () => capPickerProps(agent, cap, row.stated[cap] ?? null, confirm));
+  mountLimitsSelect(api, () =>
+    capPickerProps(agent, cap, row.stated[cap] ?? null, { confirm, back: () => openAgentCaps(api, view, agent) }),
+  );
 }
 
 /**

@@ -36,9 +36,9 @@ import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../di
 import { CELL_GAP } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
-import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
 import {
-  BASE, REGISTERED, assertEveryRowFits, capRow, capText, clearRow, chooseValue, dialogStack,
+  BASE, REGISTERED, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
   given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerOpen,
@@ -315,14 +315,14 @@ describe("a row fits the dialog it is drawn in", () => {
 describe("choosing a cap", () => {
   it("opens a PICKER — a list of the values one cap can take, plus the way to unset it", () =>
     withPickerOpen((host) => {
-      assert.deepEqual(titlesOf(top(host.seen)), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"],
-        "one row per legal value, so the whole range is visible rather than guessed at");
+      assert.deepEqual(titlesOf(top(host.seen)), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"],
+        "one row per legal value, so the whole range is visible rather than guessed at, and the way out is above them");
       assertEveryRowFits(top(host.seen));
     }));
 
   it("names the AGENT and the CAP, so a screen of numbers says what they mean", () => {
     for (const cap of AGENT_CAP_NAMES) {
-      const picker = capPickerProps("explore", cap, null, () => {});
+      const picker = capPickerProps("explore", cap, null, { confirm: () => {}, back: () => {} });
       assert.equal(picker.title, `explore — ${CAP_LABEL[cap]}`);
       assert.doesNotMatch(picker.title, /lane/i);
     }
@@ -350,10 +350,38 @@ describe("choosing a cap", () => {
     // Not a behavioural claim: a compile-time one, reached from JS. The prop builder
     // is exported so this can be called at all, and calling it is what a reader of the
     // production file would do.
-    const picker = capPickerProps("explore", "maxConcurrent", 2, () => {});
-    assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
+    const picker = capPickerProps("explore", "maxConcurrent", 2, { confirm: () => {}, back: () => {} });
+    assert.deepEqual(titlesOf(picker), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
     assert.ok(picker.options.every((option) => typeof option.onSelect === "function"));
   });
+
+  it("has a way back that writes nothing, because its only other exit is escape", () =>
+    // The gap this closes. Every other row on a picker either SETS THE FILE or cannot
+    // be pressed, and the host's `replace` leaves no previous dialog to pop back to — so
+    // before this row existed, a picker had no non-destructive exit at all. Changing
+    // your mind meant closing the whole manager and navigating back in, or picking a
+    // value you did not want under a success toast.
+    //
+    // The file is asserted as well as the landing screen, because "go back" that wrote
+    // would land on a screen showing a number the operator never chose.
+    withPickerOpen(async (host, directory) => {
+      assert.equal(titlesOf(top(host.seen))[0], BACK_LABEL,
+        "the way out is the FIRST row: a navigation affordance below ten numbers is a row at the bottom of the list, which is the worst place to put one");
+      backRow(host).onSelect();
+      assert.equal(top(host.seen).title, "explore", "and it lands on the agent's own two caps, one level up");
+      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 2 } } },
+        "the overlay is untouched — abandoning a picker is not an edit");
+      assert.equal(host.seen.toasts.length, 0, "and nothing is announced about a change that did not happen");
+    }));
+
+  it("and every picker row now leads somewhere, so a new row kind cannot be added without a way on", () =>
+    // The failure this shape rules out: a row whose `onSelect` is absent is a row the
+    // operator can see, focus, and do nothing with. The agent screen's own Back row
+    // already has that guarantee and the pickers did not, which is the drift.
+    withPickerOpen((host) => {
+      assert.ok(rowsOn(host).every((option) => typeof option.onSelect === "function"),
+        "a visible row that does nothing is worse than no row");
+    }));
 });
 
 describe("the flow, end to end on disk", () => {

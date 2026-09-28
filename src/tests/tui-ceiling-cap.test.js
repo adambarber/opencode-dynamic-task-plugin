@@ -16,11 +16,14 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL } from "../../dist/tui/agent-editor.js";
-import { ceilingPickerProps } from "../../dist/tui/index.js";
+import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
+import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/index.js";
 import { readAgentOverlay } from "../../dist/shared/caps.js";
 import {
-  BASE, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn, readOverlay,
+  BASE, backRow, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn, readOverlay,
   rowText, settle, titlesOf, top, withList, withOpen, row,
 } from "./support/limits-screen.js";
 
@@ -74,10 +77,24 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // Two different lists for one concept is how an operator ends up able to set a total
     // no per-agent cap can reach, with neither screen explaining the asymmetry. Stated,
     // so the way back to the config file is on the screen too.
-    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null }, () => {});
-    assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
+    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} });
+    assert.deepEqual(titlesOf(picker), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
     assert.doesNotMatch(picker.title, /lane/i);
   });
+
+  it("has a way back to the LIST, and looking at the total creates no file", () =>
+    // The total's picker had the same hole as an agent's and the same fix: `replace`
+    // leaves nothing to pop back to, so without this row the only way out of reading the
+    // total's values was to set one of them. Asserted over a project that has never
+    // written an overlay, because that is the state where a read that creates a file
+    // would be least expected.
+    withOpen(async (host, directory) => {
+      pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
+      backRow(host).onSelect();
+      assert.equal(top(host.seen).title, "Task limits", "the list, whose FIRST row is the total it bounds");
+      assert.equal(existsSync(join(directory, AGENT_OVERLAY_FILE)), false,
+        "no overlay was written, so abandoning the picker wrote nothing at all");
+    }));
 
   it("writes the total where the dispatch path reads it", () =>
     withCeilingWritten((host, directory) => {

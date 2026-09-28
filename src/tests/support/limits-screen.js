@@ -27,7 +27,7 @@ import { CAP_LABEL, agentDialogFrom } from "../../../dist/tui/agent-editor.js";
 import { screenTokens } from "../../../dist/tui/theme.js";
 import { darkTheme } from "./harness.js";
 import { footerText } from "./assertions.js";
-import tuiModule, { fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -434,6 +434,17 @@ export const rowOn = (host, title) => rowsOn(host).find((option) => option.title
 
 /** The value-list row offering `value`. */
 export const valueRow = (host, value) => rowOn(host, String(value));
+/**
+ * The way out of a picker.
+ *
+ * By the label PRODUCTION spells it, so a rewording is one test to update rather than
+ * every case in both suites — and the discovery is the invariant that would otherwise
+ * have to be enforced by reading every test. It is imported rather than restated for
+ * the reason `clearRow` finds the fallback row by shape: the finder is a collaborator
+ * with the screen, and a collaborator that also guesses the screen's wording reports a
+ * broken screen when nothing is broken.
+ */
+export const backRow = (host) => rowOn(host, BACK_LABEL);
 /** The value-list row that clears the cap back to the config file's number. */
 export const clearRow = (host) => rowsOn(host).find((option) => /config default/.test(option.title));
 /** The caps-screen row for one cap, by its label. */

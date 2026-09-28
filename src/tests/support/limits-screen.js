@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
 import { withTempDir } from "./fixtures.js";
+import { renderTree } from "./render-tree.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { CAP_LABEL, agentDialogFrom } from "../../../dist/tui/agent-editor.js";
 import { screenTokens } from "../../../dist/tui/theme.js";
@@ -89,17 +90,30 @@ export function dialogStack() {
 }
 
 /**
- * The renderer's selection, which is the whole reason escape needs a second way in.
+ * The renderer, as the plugin meets it.
  *
- * `getSelection` returning an object whose `getSelectedText` is non-empty is what
- * disables the host's own escape binding, so the tests have to be able to put that
- * state in place — and take it away again — rather than assume it.
+ * This is `api.renderer`, a `CliRenderer`, and it is handed over under THAT name, so it has
+ * to answer for the members the plugin reads off it — not just the ones an earlier suite
+ * happened to need. A double named `renderer` that is really a selection double is the
+ * worst kind of collaborator: it passes a case while leaving a real code path unrun, and
+ * when production then reads `renderer.root` the suite breaks for a reason that has nothing
+ * to do with what it claims to be testing. So it carries a `root` too, built by
+ * `renderTree`, which means the counter's real mount — the tree walk, the `TextRenderable`,
+ * the add to the host's own line — is exercised here rather than nowhere.
+ *
+ * `getSelection` returning an object whose `getSelectedText` is non-empty is what disables
+ * the host's own escape binding, so the tests can put that state in place — and take it
+ * away again — rather than assume it.
  */
-export function rendererDouble() {
+export function rendererDouble({ footer = true } = {}) {
   const state = { selection: null };
   return {
     state,
     api: {
+      // The real `CliRenderer` exposes both, and a tree the counter can walk. `footer:
+      // false` renames the hint, which is the case where the walk finds nothing and the
+      // slot has to carry the counter instead.
+      root: renderTree({ footer }).root,
       getSelection: () => state.selection,
       clearSelection: () => {
         state.selection = null;
@@ -116,10 +130,10 @@ export function rendererDouble() {
  * host's real signature with no cast anywhere. What it hands back is the host's props
  * object, unchanged, so the suite reads the same shape the host would.
  */
-export function hostApi(directory) {
+export function hostApi(directory, { withFooter = true } = {}) {
   const seen = { layers: [], toasts: [], selects: [], slots: [] };
   const dialog = dialogStack();
-  const renderer = rendererDouble();
+  const renderer = rendererDouble({ footer: withFooter });
   return {
     seen,
     mounted: dialog.mounted,

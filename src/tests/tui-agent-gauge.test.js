@@ -32,13 +32,24 @@ import { AGENT_OVERLAY_FILE, writeAgentOverlay } from "../../dist/shared/caps.js
 import { resolveTaskLedgerPath, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { foldActiveByAgent, totalActiveOf } from "../../dist/shared/occupancy.js";
 import { activeByAgent } from "../../dist/shared/task-state.js";
+import { Renderable, TextBufferRenderable } from "@opentui/core";
 import { darkTheme } from "./support/harness.js";
 import { screenTokens, widthsAgree } from "../../dist/tui/theme.js";
-import { GAUGE_SLOT, agentGaugeSlot, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
+import { GAUGE_SLOT, agentGaugeSlot, footerLineOf, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
 import { withTempDir } from "./support/fixtures.js";
+import { renderTree } from "./support/render-tree.js";
 import { runningEntry } from "./support/records.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
+
+/**
+ * A case about what the gauge reads from a directory, in a fresh one.
+ *
+ * `withTempDir` + `gaugeOver` + an `it` wrapper is four lines of ceremony repeated a dozen
+ * times, and at this file's duplication floor the repetition itself is the clone. This is
+ * the ceremony, once, so a case is one line that says only what it is about.
+ */
+const gaugeCase = (name, claim) => it(name, () => withTempDir((directory) => claim(directory)));
 
 /**
  * A project directory whose ledger holds the given running records.
@@ -68,9 +79,9 @@ const runningFor = (ids) => ids.map((id) => runningEntry(id, { agentName: "gener
 describe("the live counter counts the ledger's own running half", () => {
   it("reads nothing running on a project that has never run a task", () =>
     withTempDir((directory) => {
-      const gauge = gaugeOver(directory);
-      assert.equal(gauge.active, 0, "a first boot has no ledger and so has nothing running");
-      assert.equal(gaugeText(gauge.active, gauge.cap), `0/${BASE.maxConcurrent}`, "and the corner says so");
+          const gauge = gaugeOver(directory);
+          assert.equal(gauge.active, 0, "a first boot has no ledger and so has nothing running");
+          assert.equal(gaugeText(gauge.active, gauge.cap), `0/${BASE.maxConcurrent}`, "and the corner says so");
     }));
 
   it("counts every running record, and the number is the fold's sum", () =>
@@ -108,27 +119,27 @@ describe("the live counter counts the ledger's own running half", () => {
 
   it("reads a discarded ledger as nothing running, and does not throw", () =>
     withTempDir((directory) => {
-      writeFileSync(resolveTaskLedgerPath(directory), "{ not json");
-      assert.equal(gaugeOver(directory).active, 0, "a torn write is survivable and means nothing, not a crash");
+          writeFileSync(resolveTaskLedgerPath(directory), "{ not json");
+          assert.equal(gaugeOver(directory).active, 0, "a torn write is survivable and means nothing, not a crash");
     }));
 });
 
 describe("the counter's denominator is the cap the limits screen writes", () => {
   it("defaults to the config's own ceiling", () =>
     withTempDir((directory) => {
-      assert.equal(gaugeOver(directory).cap, BASE.maxConcurrent, "the same four the dispatch path refuses on by default");
+          assert.equal(gaugeOver(directory).cap, BASE.maxConcurrent, "the same four the dispatch path refuses on by default");
     }));
 
   it("follows a total set in the overlay, so the corner and the dialog cannot disagree", () =>
     withTempDir((directory) => {
-      writeAgentOverlay(directory, { maxConcurrent: 12 });
-      assert.equal(gaugeOver(directory).cap, 12, "the stated total, resolved through the same reader the dialog writes");
+          writeAgentOverlay(directory, { maxConcurrent: 12 });
+          assert.equal(gaugeOver(directory).cap, 12, "the stated total, resolved through the same reader the dialog writes");
     }));
 
   it("ignores an overlay it cannot read, rather than refusing to show a number", () =>
     withTempDir((directory) => {
-      writeFileSync(join(directory, AGENT_OVERLAY_FILE), "{ not json");
-      assert.equal(gaugeOver(directory).cap, BASE.maxConcurrent, "a file the reader drops leaves the config in force");
+          writeFileSync(join(directory, AGENT_OVERLAY_FILE), "{ not json");
+          assert.equal(gaugeOver(directory).cap, BASE.maxConcurrent, "a file the reader drops leaves the config in force");
     }));
 
   it("and reads BOTH halves from the one directory the host named, as a single string", () =>
@@ -209,6 +220,39 @@ describe("the counter is drawn in the host's muted grey", () => {
       assert.ok(widthsAgree(gaugeRuns(active, cap, tokens.context), gaugeText(active, cap)),
         `${active}/${cap} paints as wide as it reads`);
     }
+  });
+
+  it("reads the real classes, which is the half of this a stand-in cannot prove", () => {
+    // The contract `TreeLike` declares, checked against the shipped classes rather than
+    // against a stand-in. `getChildren` is how a tree is walked; `plainText` is how a
+    // string is read; and a renderable that is not a text has NO `plainText` at all, so
+    // the walk's `typeof === "string"` guard is a real question rather than a formality.
+    // If a future opentui moves `plainText` up onto `Renderable`, this fails, and the
+    // guard in `findFooterAnchor` has to be reconsidered on its merits.
+    const base = Renderable.prototype;
+    const textProto = TextBufferRenderable.prototype;
+    assert.equal(typeof base.getChildren, "function", "the walk reads getChildren(), which is how a tree is walked");
+    assert.equal("children" in base, false, "and there is no children property, so a stand-in must not offer one");
+    assert.equal("plainText" in base, false, "a box has no plainText, so reading one yields undefined, not ''");
+    const descriptor = Object.getOwnPropertyDescriptor(textProto, "plainText");
+    assert.equal(typeof descriptor?.get, "function", "and on a text it is an ACCESSOR, not a data property");
+  });
+
+  it("finds the host's footer line by its commands hint, not by a guess at the tree", () => {
+    // The shape the host really builds, from `packages/tui/src/component/prompt/index.tsx`:
+    // root → column → column → the footer box, whose children are the file label, the
+    // context figure, and the commands hint. Only the box may be added to — adding to a
+    // text, or to an ancestor, would put the counter inside something the host owns.
+    const { root, line } = renderTree();
+    const found = footerLineOf(root);
+    assert.equal(found, line, "the box that HOLDS the hint, which is the anchor's parent");
+    assert.equal(found.getChildren().length, 3,
+      "and it holds THREE children, where the hint itself holds none — so this is the parent, not the text");
+  });
+
+  it("returns null rather than a near miss, so a renamed hint falls back to the slot", () => {
+    const { root } = renderTree({ footer: false });
+    assert.equal(footerLineOf(root), null, "a host that renamed the hint is a host to fall back on, not to guess at");
   });
 
   it("reads as a fraction, so the eye can pass over it", () => {

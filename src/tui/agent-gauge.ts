@@ -33,7 +33,7 @@ import { basename, dirname } from "node:path";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo, createSignal, onCleanup } from "solid-js";
 import type { TuiSlotContext, TuiSlotPlugin } from "@opencode-ai/plugin/tui";
-import { fg, StyledText, type TextChunk } from "@opentui/core";
+import { BaseRenderable, CliRenderer, fg, Renderable, StyledText, TextRenderable, type TextChunk } from "@opentui/core";
 import type { RGBA } from "@opentui/core";
 import { applyAgentOverlay, readAgentOverlay, type AgentCapSource } from "../shared/caps.js";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
@@ -42,7 +42,7 @@ import { foldActiveByAgent, totalActiveOf } from "../shared/occupancy.js";
 import { screenTokens } from "./theme.js";
 
 /**
- * The host slot this counter is drawn in, and why it is the only place this can go.
+ * The FALLBACK slot — used when the host's own footer line cannot be found in the tree.
  *
  * The whole host slot vocabulary is twelve names, from `TuiHostSlotMap` in the installed
  * `@opencode-ai/plugin`:
@@ -55,30 +55,110 @@ import { screenTokens } from "./theme.js";
  * the plugin API. In `packages/tui/src/component/prompt/index.tsx` the footer is
  * hand-built JSX with no hook in it at all:
  *
- *     <box gap={2} flexDirection="row">              // :1656
- *       <Show when={editorContextLabelState() ...}>   //   the file label
- *       <text fg={theme.textMuted} wrapMode="none">  // :1667  <-- 169.6K (16%)
+ *     <box gap={2} flexDirection="row">               // :1656
+ *       <Show when={editorContextLabelState() ...}>    //   the file label
+ *       <text fg={theme.textMuted} wrapMode="none">   // :1667  <-- 169.6K (16%)
  *         {[item().context, item().cost].filter(Boolean).join(" · ")}
  *       </text>
- *       <text fg={theme.text}>                       //        ctrl+p commands
+ *       <text fg={theme.text}>                        //        ctrl+p commands
  *         {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
  *       </text>
  *     </box>
  *
- * The counter is a plain sibling `<text>` in a row of literal elements, so a plugin cannot
- * join that line — not through a slot, a prop, or a mode. `session_prompt_right` is the
- * closest region the host actually offers, and it is the one the request names: under the
- * prompt, in the host's own muted tier (`theme.textMuted`, which is the same role
- * `screenTokens().context` resolves to). What a plugin can choose is where in that row it
- * sits, and that is what `gaugeProps` below spends itself on.
+ * Every child of that box is a literal element, so no slot can place a node on that line.
+ * The route does hand the plugin a `right` region, and it is a real one
+ * (`routes/session/index.tsx:1330`), but the host renders it in its OWN row
+ * (`component/prompt/index.tsx:1479-1483` — `<box flexDirection="row" gap={1}
+ * alignItems="center">{props.right}</box>`), a row ABOVE this one. That is why the counter
+ * kept landing where the operator did not ask for it, and why it is a fallback now:
+ * `footerLineOf` reaches the real line through the renderer instead.
+ *
+ * The muted tier is the one thing this got right from the start — the host draws the
+ * context figure in `theme.textMuted`, the role `screenTokens().context` resolves to.
  */
 export const GAUGE_SLOT = "session_prompt_right";
+
+/**
+ * The host's commands hint — the anchor the footer line is found by.
+ *
+ * A user-visible string rather than an id or a class, because the host sets neither on
+ * that box and neither would survive a rename anyway. This is the wording the operator
+ * reads every session, so it is the most stable thing available, and a host that changed
+ * it would be a host whose footer a human would also notice.
+ */
+export const FOOTER_ANCHOR = "commands";
+
+/**
+ * The part of a renderable the search touches — `Pick`ed off the real class, not written
+ * out by hand.
+ *
+ * `getChildren` and `parent` are taken from `BaseRenderable` so this cannot drift from the
+ * host: a renamed member is a compile error here rather than a search that quietly finds
+ * nothing at runtime. `plainText` is the one member that is NOT on `BaseRenderable` — it
+ * lives on `TextBufferRenderable`, the subclass that carries text — so it is added as
+ * optional, which is also the honest reading of a box: a box has no text and answers
+ * `undefined` rather than `""`.
+ *
+ * Real renderables cannot be built in this repo's tests — `Renderable`'s constructor
+ * initialises the OpenTUI native FFI, which this runtime does not have, so every one of them
+ * throws before it exists. Hence a structural type rather than `Renderable` itself: it is the
+ * one thing a test can satisfy while production still passes the real `renderer.root`.
+ */
+export type TreeLike = Pick<BaseRenderable, "getChildren" | "parent"> & { plainText?: string };
+
+/**
+ * The first node whose text ends with the host's commands hint, or null.
+ *
+ * `plainText` is optional on the type because a box genuinely has none — see `TreeLike` —
+ * so the guard is a real question rather than a formality. This is the whole search: a depth
+ * -first walk, and a host with no such text is a null rather than a guess.
+ *
+ * Typed at the base class rather than the caller's, because `BaseRenderable` types both
+ * `getChildren` and `parent` at itself while a real tree is heterogeneous — boxes and texts
+ * are different subclasses. One cast at the boundary buys a plain recursion.
+ *
+ * The walk, in the type the base class actually hands out.
+ *
+ * `BaseRenderable.getChildren` and `.parent` are typed at `BaseRenderable`, while a real
+ * tree is heterogeneous — boxes and texts are different subclasses — so this cannot be
+ * generic over the caller's narrower type without a cast per step. The two exported
+ * wrappers below pay that cast ONCE each, at the boundary, and keep the recursion here
+ * plain.
+ */
+function anchorWithin(node: TreeLike, anchor: string): TreeLike | null {
+  if (typeof node.plainText === "string" && node.plainText.trimEnd().endsWith(anchor)) return node;
+  for (const child of node.getChildren()) {
+    const hit = anchorWithin(child, anchor);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * The box that holds the host's footer line, or null when it is not in this tree.
+ *
+ * The ANCHOR's parent, not an ancestor: the hint is a direct child of that box, and taking
+ * the parent rather than the nearest enclosing box is what makes the counter a SIBLING of
+ * the context figure instead of a child of whatever happens to contain it.
+ */
+export function footerLineOf<T extends TreeLike>(root: T, anchor: string = FOOTER_ANCHOR): T | null {
+  // `?.` yields `undefined` on a miss, and the contract says `null`. A caller that
+  // compared against null would silently be comparing against undefined.
+  return (anchorWithin(root, anchor)?.parent as T | undefined) ?? null;
+}
 
 /** What the counter shows: children running, and the total they are counted against. */
 export type GaugeReading = { active: number; cap: number };
 
 /** The api fields this counter needs, and no more. */
-type GaugeApi = { state: { path: { directory: string } }; theme: unknown };
+type GaugeApi = {
+  state: { path: { directory: string } };
+  theme: Parameters<typeof screenTokens>[0];
+  /** Optional because a missing renderer must cost the counter its ideal placement, not
+   * the TUI its prompt: the fallback slot is a working mount, and crashing a mount over a
+   * layout preference would be the worst possible trade. */
+  renderer?: CliRenderer;
+};
 
 
 
@@ -186,27 +266,114 @@ export function watchLedger(directory: string, onChange: () => void): FSWatcher 
 }
 
 /**
- * The counter, mounted.
+ * The counter, mounted on the host's own footer line.
  *
- * `jsx` rather than authored JSX, deliberately. A hand-built element from
- * `@opentui/solid/jsx-runtime` renders identically to `<text>` in a source file, and it
- * needs no transform step, no committed compiled artifact and no `check:` gate — so the
- * whole `tui-compiled` toolchain the reference sidebars carry does not arrive here. It
- * DOES need an active renderer, which is why the children are a FUNCTION: the host calls
- * this inside its own render, and a plain string would be read once at mount and then
- * frozen at whatever the count happened to be when the session opened.
+ * Two paths, and the order is the design. The FIRST is the real line: find the box holding
+ * the host's commands hint in the live tree and add a sibling text to it, which is what
+ * puts `N/M` on the same row as the context figure and the shortcut hints. The SECOND is
+ * the `session_prompt_right` slot, used only when the walk finds nothing — a host that
+ * renames the hint, or a screen with no prompt at all. A fallback is not a nicety here:
+ * without it a changed hint would take the counter away entirely, and a counter the
+ * operator can see in the wrong place is worth more than one they cannot see.
  *
- * A function as the child is Solid's reactive form, so the text re-derives itself when
- * the signal moves — and the signal moves when the ledger is rewritten, which the server
- * does on every task transition. Nothing polls.
+ * The renderer is public API and `Renderable.add`, `parent` and `getChildren` are public
+ * members, so this is not reaching into host internals — it is reading the same tree the
+ * host is already drawing. It IS coupled to the host's layout, which is the real cost, and
+ * the fallback is what makes that cost survivable rather than silent.
  *
- * The colour is a MEMO over `ctx.theme` for the same reason: a theme switched mid-session
- * must not leave a number in the old palette beside everything else in the new one. The
- * role is `context`, the tier the limits screen already uses for a label, and the host
- * draws its own context counter in the same muted grey this asks for.
+ * Liveness is the ledger watch, and the node is re-read and re-set rather than rebuilt: a
+ * new `TextRenderable` per tick would churn the host's layout on every task transition.
+ * The re-add check is for the same reason the fallback exists — the host owns that box and
+ * its reconciler may drop a node it did not create, so a node that finds itself detached is
+ * put back rather than left silently invisible.
  */
+export function mountGauge(api: GaugeApi): TuiSlotPlugin | null {
+  const directory = api.state.path.directory;
+  const base = readDynamicTaskPolicy(directory, null);
+  // Read `root` off the renderer rather than assuming it: `api.renderer` is a host object
+  // read across a process boundary, and the one thing a mount must never do is take the
+  // prompt down over a layout preference. A renderer that does not offer a tree costs the
+  // counter its ideal placement and nothing else, because the slot below is a working mount.
+  //
+  // No cast in the success path: the search is generic in what it is given, so a `Renderable`
+  // root yields a `Renderable` line and `line.add` is the host's own method on the host's object.
+  const line = api.renderer?.root ? footerLineOf(api.renderer.root) : null;
+  if (api.renderer && line && attachToFooterLine(api.renderer, line, screenTokens(api.theme).context, directory, base))
+    return null;
+  return agentGaugeSlot(api);
+}
+
+/**
+ * The node this counter owns, and the two things that can happen to it.
+ *
+ * Returned rather than closed over so the mount has a handle it can detach, and so a test
+ * can hold one without a renderer.
+ */
+export interface GaugeHandle {
+  /** Re-read the ledger and move the text, if the pair moved. */
+  refresh(): void;
+  /** Stop watching and take the node out of the host's line. */
+  dispose(): void;
+}
+
+/**
+ * Add the counter to the host's footer line, as a sibling of its own text.
+ *
+ * Returns null — never throws — when the line will not take a node, so a caller that also
+ * has a slot to fall back on always has somewhere to go.
+ */
+export function attachToFooterLine(
+  renderer: CliRenderer,
+  line: Renderable,
+  muted: RGBA,
+  directory: string,
+  base: DynamicTaskConfig,
+): GaugeHandle | null {
+  let reading = readGauge(directory, base);
+  let node: TextRenderable;
+  try {
+    node = new TextRenderable(renderer, { fg: muted, content: gaugeText(reading.active, reading.cap) });
+    line.add(node);
+  } catch {
+    return null;
+  }
+  /**
+   * Re-read, and touch the node only if the PAIR moved.
+   *
+   * One function for both callers — the ledger watcher and the returned handle — because
+   * two copies of this is two places for a re-attach check to be forgotten in.
+   */
+  const refresh = () => {
+    const next = readGauge(directory, base);
+    if (next.active === reading.active && next.cap === reading.cap) return;
+    reading = next;
+    try {
+      node.content = gaugeText(reading.active, reading.cap);
+      // The host owns this box. If its reconciler dropped a node it did not create, the
+      // counter would go invisible with no error anywhere, so a detached node goes back.
+      if (node.parent !== line) line.add(node);
+    } catch {
+      return;
+    }
+  };
+  const watcher = watchLedger(directory, refresh);
+  return {
+    refresh,
+    dispose: () => {
+      watcher?.close();
+      try {
+        line.remove(node);
+      } catch {
+        return;
+      }
+    },
+  };
+}
+
+/** The FALLBACK mount: the counter in the host's `right` region, via the slot API. */
 export function agentGaugeSlot(api: GaugeApi): TuiSlotPlugin {
-  return { slots: { [GAUGE_SLOT]: gaugeSlotBody(api.state.path.directory, readDynamicTaskPolicy(api.state.path.directory, null)) } };
+  const directory = api.state.path.directory;
+  return { slots: { [GAUGE_SLOT]: gaugeSlotBody(directory, readDynamicTaskPolicy(directory, null)) } };
 }
 
 /**

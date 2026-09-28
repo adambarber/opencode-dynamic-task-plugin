@@ -34,14 +34,32 @@
  *      tokens because the two doc comments were not worded identically. The
  *      declaration was the duplicate; only the prose about it differed.
  *
- * WHAT IS SAFE, measured rather than argued: jscpd's own match contains no
- * comments and no line breaks, so it sits contiguously in this stream and the run
- * measured here is at least as long. Every clone jscpd reports at or above the
- * bar therefore reproduces here — the gate cannot be made to miss one by
- * changing the filter policy, because the policy only decides what it catches
- * EXTRA. And the policy lives in `measure.mjs`, not here, so
- * `gate-invariants.test.js` can ask this script's real question without starting
- * a process scan — which is the whole reason it can now pin anything at all.
+ * WHAT IS SAFE, measured rather than argued, and NOT by the argument this header
+ * used to give. That argument was containment — jscpd's own match contains no
+ * comments and no line breaks, so it sits contiguously in the stream and the run
+ * measured here is at least as long as the one jscpd reported, and therefore
+ * "the gate cannot be made to miss one by changing the filter policy, because
+ * the policy only decides what it catches EXTRA". Every clause of that is wrong,
+ * and the tree falsified it 11 times out of 11: every reported finding measures
+ * 2 to 11 tokens BELOW the count jscpd reported for it. It is also
+ * self-contradictory — the same header argues the reported ranges are bounding
+ * boxes, and a run measured over two boxes that each contain an N-token match
+ * cannot come out shorter than N. The pin that claimed to check this compared a
+ * block to ITSELF, so it was green for any tokenizer whatsoever.
+ *
+ * What holds is arithmetic, and it is in `measure.mjs` because it is that
+ * module's measurement. On a byte-identical pair this gate reads jscpd's count
+ * plus one token per line, across 44 reported findings, and jscpd reports
+ * nothing below 4 lines and 17 tokens on this config — so the smallest thing that
+ * can reach this measurement reads 21 against a bar of 14. A seven-token margin
+ * means a real clone is caught, and it also means a fixture that asserts one
+ * cannot be made to fail: dropping `new_line` and shifting the range by a line
+ * both leave such a fixture green, and both were tried. So the coarse property
+ * is settled by the margin and the fine one is a pin: `gate-invariants.test.js`
+ * asks the exact boundary question, in both directions and with no slack.
+ * Agreement with jscpd's count is neither guaranteed nor wanted — the 11 findings
+ * discarded here are near-matches whose reported count is looser than any
+ * contiguous run, which is the discrimination the gate exists to make.
  *
  * Two properties make the gate safe in the direction that matters. A real clone
  * still fails: shared code at the reported coordinates is the definition of a clone.
@@ -54,22 +72,23 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { longestSharedRun, readMinTokens, stream } from "./measure.mjs";
+import { longestSharedRun, readMinTokens, stream, tokensInRange } from "./measure.mjs";
 
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";
 
 const minTokens = readMinTokens(join(REPO, ".jscpd.json"));
 
-// One policy, and it is not this file's: `stream` and `longestSharedRun` come
-// from measure.mjs, which is also what the test suite measures with. There is
-// deliberately no filter line below — a second `.filter` here is a second
-// measurement, and the pin that forbids one exists because the two decisions
-// this file used to own privately are how it was wrong twice.
+// One policy, and it is not this file's: `stream`, `tokensInRange` and
+// `longestSharedRun` come from measure.mjs, which is also what the test suite
+// measures with. There is deliberately no filter line below and no private
+// reading of a reported range — a second measurement here is a second answer to
+// the same question, and the pin that forbids one exists because the two
+// decisions this file used to own privately are how it was wrong twice.
 const streams = new Map();
 const tokensIn = (repoPath, from, to) => {
   if (!streams.has(repoPath)) streams.set(repoPath, stream(readFileSync(join(REPO, "src", repoPath), "utf8")));
-  return streams.get(repoPath).filter((t) => t.line >= from && t.line <= to).map((t) => t.key);
+  return tokensInRange(streams.get(repoPath), from, to);
 };
 
 /**

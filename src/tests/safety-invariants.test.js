@@ -18,8 +18,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   TESTS_DIR,

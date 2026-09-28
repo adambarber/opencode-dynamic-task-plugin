@@ -9,10 +9,12 @@
 // from support/corpus.js rather than repeated.
 
 import { describe, it, assert } from "./support/runner.js";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { REPO_ROOT, listSourceFiles, lineCount } from "./support/corpus.js";
-import { readMinTokens, sharedRunBetween } from "../../scripts/measure.mjs";
+import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
 
 // --- the duplicate-detection gate ------------------------------------------------
 // The thresholds are not taste. 3 lines / 16 tokens is the strictest level this
@@ -168,27 +170,135 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
   // taste and the arithmetic above is not the argument: dropping a token from
   // both sides shortens a run whenever that token sat inside the match, so
   // "removing non-matching elements can only lengthen a run" is false and was
-  // what this gate's own header used to claim. What is true, and what the gate
-  // actually rests on, is containment — jscpd's match holds no comments and no
-  // line breaks, so it sits contiguously in this stream and a run measured here is
-  // at least as long. That is why a real clone cannot be discarded, and it is
-  // checked here as a property rather than asserted as a reason.
-  it("measures at least as long a run as jscpd reported for the same code", () => {
-    // A block jscpd reports as 28 tokens: five identical code lines. The gate's
-    // stream adds line breaks, which jscpd does not count, so the gate's own
-    // count is higher — the two numbers are not compared anywhere in the gate, so
-    // the gap between them is information, not a disagreement.
-    const fiveLines = `function one(alpha: number) {
-  const out = [];
-  out.push(alpha);
-  return out.length;
-}`;
-    const gate_ = sharedRunBetween(fiveLines, fiveLines);
-    assert.ok(gate_ > 28,
-      `the gate measures ${gate_} shared tokens for a block jscpd reports as 28, so the stream no\n` +
-        "longer contains the line breaks jscpd's does not — which is fine and must not change,\n" +
-        "because the gate judges against minTokens and never against jscpd's count. If this\n" +
-        "starts failing, the finding is that the two are being compared somewhere.");
+  // what this gate's own header used to claim.
+  //
+  // The pin below is the gate's real safety property, asked end to end: a clone
+  // jscpd REPORTS must also be found by the gate's own measurement at the
+  // coordinates jscpd gave for it. The one it replaced could not ask that
+  // question, because it measured a block against ITSELF — the single case where
+  // a range covers a maximal run, and the single case where the coordinate
+  // mapping is invisible.
+  //
+  // It is also a COARSE net, and the slack is structural rather than accidental.
+  // Measured on this config: jscpd will not report a clone smaller than 4 lines
+  // and 17 tokens, and this stream adds a token per line on top, so anything
+  // byte-identical that jscpd reports measures at least 21 against a bar of 14.
+  // A seven-token margin means this test cannot be made to fail by narrowing the
+  // stream — verified, not assumed: dropping `new_line` and shifting the range
+  // by a line both leave it green. The fine net for the mapping is the case
+  // below, which has no slack; this one earns its keep by being the only place
+  // the real chain — jscpd's coordinates through the real policy — is walked at
+  // all, and it is what would catch the coordinate mapping losing a match
+  // outright rather than by a token.
+  it("catches a byte-identical block at the coordinates jscpd actually reports", () => {
+    // Real by construction, so the outcome is not a matter of taste about what
+    // counts as a clone: the two files are the same bytes, which is the one
+    // answer to that question nobody can argue with.
+    const CLONE = `function gatePlantProbe(alpha, beta) {
+  const rows = [alpha, beta].filter((value) => typeof value === "string" && value.length > 0);
+  return rows.reduce((total, value) => total + value.length, 0) + rows.indexOf(beta);
+}
+`;
+    const dir = mkdtempSync(path.join(tmpdir(), "dt-gate-pin-"));
+    try {
+      writeFileSync(path.join(dir, "plant_a.ts"), CLONE);
+      writeFileSync(path.join(dir, "plant_b.ts"), CLONE);
+      const out = path.join(dir, "report");
+      // The repo's own config, because the coordinates jscpd reports are a
+      // function of it — minLines and minTokens decide what is reported at all,
+      // and a fixture scanned under different settings reports a different box.
+      const run = spawnSync("npx", ["jscpd", dir, "--config", path.join(REPO_ROOT, ".jscpd.json"), "--reporters", "json", "--output", out], {
+        encoding: "utf8",
+      });
+      // jscpd exits non-zero whenever it reports anything, so its status is not
+      // the verdict — its coordinates are the input, and they are the thing that
+      // must arrive.
+      // Interpolated, not retyped: naming a fallback string here is how a test
+      // ends up restating a production constant's VALUE, which the Tenet 12
+      // scan rightly refuses and which would be a lie anyway — the error is the
+      // only thing that should be in this message.
+      assert.ok(!run.error, `jscpd could not be run, and a pin that skips its own subject is worse than no pin: ${run.error}`);
+      const report = JSON.parse(readFileSync(path.join(out, "jscpd-report.json"), "utf8"));
+      const found = report.duplicates ?? [];
+      assert.ok(found.length > 0, "jscpd did not report a byte-identical pair, so there are no coordinates to ask the gate about");
+
+      // The gate's own question, at the coordinates jscpd chose — which is the
+      // whole claim, because a clone is only ever caught if the reported box
+      // still contains it once the stream policy has had its say.
+      const read = (file) => stream(readFileSync(path.join(dir, path.basename(file.name)), "utf8"));
+      const missed = found
+        .map((d) => ({
+          at: `${d.firstFile.name}:${d.firstFile.start}-${d.firstFile.end} vs ${d.secondFile.name}:${d.secondFile.start}-${d.secondFile.end}`,
+          shared: longestSharedRun(
+            tokensInRange(read(d.firstFile), d.firstFile.start, d.firstFile.end),
+            tokensInRange(read(d.secondFile), d.secondFile.start, d.secondFile.end),
+          ),
+        }))
+        .filter(({ shared }) => shared < minTokens)
+        .map(({ at, shared }) => `${at} measures ${shared}, below ${minTokens}`);
+
+      assert.deepStrictEqual(
+        missed,
+        [],
+        `a byte-identical block was reported by jscpd and then DISCARDED by the gate's own\n` +
+          `measurement, at the coordinates jscpd gave for it. That is the gate silently\n` +
+          `passing a real clone — the failure both regressions above were the same shape as,\n` +
+          `and the reason this is measured end to end rather than on a fixture. Discarded:\n  - ${missed.join("\n  - ")}`,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The fine net, in both directions, with no slack in either.
+  //
+  // Safety here is not a matter of judgement about what a clone is, so the two
+  // cases are chosen to be DECISIVE rather than near the bar. `MARK` is one
+  // identifier: a mapping that reads the wrong lines, or a range that is
+  // exclusive at either end, changes these answers and cannot leave them equal.
+  // And a near-miss is discarded decisively, which is the direction a gate that
+  // had stopped discriminating would fail — a gate that reported everything
+  // would pass a "catches a clone" test forever.
+  it("reads a reported range as exactly the lines it names", () => {
+    const SOURCE = "const MARK = 1;\nconst OTHER = 2;\nconst THIRD = 3;\nconst FOURTH = 4;\n";
+    // Keyed on the token's VALUE, not its type: the tokenizer calls a plain
+    // const binding `constant` and an arrow binding `function-variable`, so a
+    // test that named a type would be asserting a tokenizer implementation
+    // detail and would go red on a jscpd upgrade for a reason that has nothing
+    // to do with the gate. Each name occurs on exactly one line, which is what
+    // makes a boundary error visible instead of merely different.
+    const NAMES = ["MARK", "OTHER", "THIRD", "FOURTH"];
+    const namesIn = (keys) =>
+      keys
+        .filter((k) => NAMES.some((name) => k.endsWith(`:${name}`)))
+        .map((k) => k.slice(k.lastIndexOf(":") + 1))
+        .join(",");
+
+    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 1, 1)), "MARK", "one line is that line and no other");
+    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 2, 3)), "OTHER,THIRD", "a closed range includes both ends");
+    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 3, 4)), "THIRD,FOURTH", "and the last line named is included");
+
+    // The off-by-one a range is actually prone to, in both directions. A gate
+    // that shifted its window by one would silently drop a match's leading
+    // tokens, and the coarse case above has too much slack to notice.
+    const all = namesIn(tokensInRange(stream(SOURCE), 1, 4));
+    assert.strictEqual(all, "MARK,OTHER,THIRD,FOURTH", `the whole range, all four: got ${all}`);
+    assert.notStrictEqual(namesIn(tokensInRange(stream(SOURCE), 2, 4)), all, "an exclusive start drops a name, and must be visible");
+    assert.notStrictEqual(namesIn(tokensInRange(stream(SOURCE), 1, 3)), all, "an exclusive end drops a name, and must be visible");
+  });
+
+  it("discards a near-miss decisively rather than reporting everything", () => {
+    // Two helpers of the same shape that share an opening and then diverge. This
+    // is the class both recorded regressions actually hid, and the class the 11
+    // real discards on this tree are: code that shares a prefix with itself.
+    const NEAR_ONE = "const nearOne = (alpha, beta) => {\n  return alpha + beta;\n};\n";
+    const NEAR_TWO = "const nearTwo = (alpha, gamma) => {\n  return alpha * gamma;\n};\n";
+    const shared = sharedRunBetween(NEAR_ONE, NEAR_TWO);
+    assert.ok(shared < minTokens,
+      `the near-miss now measures ${shared} shared tokens, at or above the bar of ${minTokens}, so it is no\n` +
+        "longer the discriminating fixture this case needs: a gate that reported everything would\n" +
+        "pass it. Make the two helpers diverge sooner, or the assertion above has stopped proving\n" +
+        "that the gate can still tell a clone from a coincidence.");
   });
 
   it("keeps its threshold in the config and its tokenizer policy in one module", () => {

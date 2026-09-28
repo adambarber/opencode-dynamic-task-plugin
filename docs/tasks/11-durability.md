@@ -15,13 +15,15 @@
 - **A restored task settles `completed` when the host says the turn is `idle`, and `error` only when the host does not list it at all.** The design said "no turn running → settle error", which is right for a vanished child and wrong for a child that *finished* while the parent was down: settling that one `error` would report a failure nobody saw, and the transcript it does still have would prove the work landed. The two cases are different facts, the host's own status words tell them apart, and the whole point of the pass is that it reports what it observed.
 - **A liveness read tolerates an unreadable transcript; `task_result` does not.** A vanished child's transcript fetch throws. Letting that escape would abandon the rest of the pass — one lost child stranding every task listed after it, which is the very hole the pass closes. So `readLiveness` answers "no messages" (it was asked "is a turn running, and when did it last write?"), while `task_result` keeps its strict fetch and its "the failed read says so" voice. The reconcile loop is also per-child guarded: a status channel that is down leaves tasks active (the safe reading) instead of settling them blind.
 - **`pending` entries carry `parentSessionId`.** The design's `{ childSessionId, kind, text, attempts }` has no routing target, so a boot could not deliver the entry without looking the parent up out of the retained record — and a debt whose record was pruned would become undeliverable. The target belongs to the write, so the write carries it.
-- **A held redelivery escalates by count instead of being capped.** A refused redelivery is dropped, as designed. A redelivery the host *holds* re-arms its own entry with `attempts` carried forward, so the next boot tries again with a visibly higher count. A hard cap would silently drop an undelivered notice — the exact deafness this epic exists to remove — so the count is the signal and the operator is the decider.
+- **A held redelivery escalates by count, up to a budget, and is then WRITTEN OFF — replacing the uncapped ruling below.** A refused redelivery is dropped, as designed. A redelivery the host *holds* re-arms its own entry with `attempts` carried forward, so the next boot tries again with a visibly higher count. The cap was declined here on the grounds that a hard cap would *silently* drop an undelivered notice — the exact deafness this epic exists to remove — leaving the count as the signal and the operator the decider. Two things changed that, and only one of them is a bug. The uncapped loop was not the epic's stated intent: the Decisions entry below already required that "a second boot must not retry forever", and the HELD branch was the one that never implemented it. And redelivery is `client.session.prompt`, so an attempt is not a free retry — it is a real user turn in the parent's session. An unbounded redelivery is therefore not a late notice, it is a parent that can never be idle. **Field evidence (project `~/Projects/coda`, six boots, `attempts` 6→7, six byte-identical `[dynamic-task-notify]` user turns injected at 10:58:48, 12:02:47, 12:21:59, 12:45:27, 12:59:17, 13:09:36):** opencode became unusable in that one project and typed prompts did nothing, because each boot injected a synthetic user turn and left a held write against the session. The protected property survives intact — nothing is dropped SILENTLY. The debt retires as `delivered: false` with a distinct `expired` fact, the record renders EXPIRED rather than FAILED (a failure says "try again", and there is no again), the host log warns with the parent and child named, and `pendingMaxAttempts` / `DYNAMIC_TASK_PENDING_MAX_ATTEMPTS` (default 3) sets the bound. The operator is no longer the decider, and that is the part that changed: the decider is the plugin, because the operator could not see the loop without reading a counter, and the counter's whole meaning was that nothing acted on it.
 
 ## Decisions (binding on the implementation)
 
 - **Ledger v3, one migration.** `{ version: 3, tasks: {...retained}, active: {...}, pending: [...] }`. The v2 reader keeps discarding non-v3 wholesale (same policy as v1→v2: a partial past is worse than a clean one). `active` entries carry the full `ActiveTaskState` minus advisory fields (`lastNotice` never persists — a fresh boot owns no in-flight claims). `pending` entries are `{ childSessionId, kind, text, attempts }` written *before* the first delivery attempt and deleted on success — the only new write site, beside the retained observer.
 - **Boot reconciliation is a one-shot pass, not a timer.** For each restored active: one live liveness read (the same one the read tools make — `session.status` for the server's turn status, the child's transcript for its own last message; `session.get` is not a source, its `Session` type carries no status field). Turn running → re-armed as active (its natural terminal event settles it; the generation it belonged to died with the process, so settle-dedup starts empty — safe because no delivery could have happened for it). Turn over (`idle`) → settled from its transcript, exactly as its own event would have. Not listed at all → settle `error` with a cause naming the loss of contact across the restart, and queue its notice in `pending`. No polling, no clocks — Task 09 stands.
 - **Redelivery is at-least-once across restart, exactly-once within a boot.** A crash between attempts leaves ambiguity (did attempt 1 land?). The Tenet-11 direction: a duplicate notice after restart is observable and harmless; a missing notice is silent deafness. Prefer the duplicate. `pending` entries redeliver once at boot, oldest first, then delete — even on failure (a second boot must not retry forever; the record shows the attempts).
+- **The redelivery budget is checked in the gate, and the queue has exactly one re-offer.** `notifyParent` is the only parent-write path, so it is the only place a debt is ever offered, and a budget checked at the boot loop instead would be a policy decision at one call site with the in-process re-offer left unchecked. The check sits AFTER the claim on purpose: a debt whose write is still in flight is claimed, so it is SUPPRESSED rather than expired, and a slow parent is never written off underneath a request it may still answer. The re-offer is now `redeliverOwedNotifications` rather than a loop at the boot site, because a loop there can be re-read to be trusted and a new `notifyParent` option can be forgotten by the caller that owns the debt — which the cross-boundary gate proved, by catching a test that had re-implemented the loop to stand in for a boot. The retirement marker is keyed to the DEBT and stamped with the generation it was retired at, not to the claim: a revival (`forgetChild`) frees the in-flight claim, so a second entry can spend the budget while the first request is still on the wire, and a `commit` is a statement about a debt, which once retired is void however late its answer arrives. A claim at or before the retirement is dead; a later generation is a new subject with a new obligation. **Detection gap closed:** `withHeldWrites` released in a `finally`, so a write that neither resolved nor rejected was structurally unrepresentable, which is how an unbounded loop shipped green — every held-write test proved recovery once the host ANSWERED and none could ask what happens when it never does. The harness now has a never-released transport, and the boot loop in those tests is the real `redeliverOwedNotifications` rather than a copy, so a change to the production path breaks the test that names it.
+- **The child-facing undelivered voice derives its count from the record.** `NOTICE_PARENT_UNREACHABLE` was a sentence with the literal `2` in it, and a redelivery carrying five earlier attempts produces a record that says 7 — so the child was told a number the gate had not written down, and that number is the one it repeats to its parent as an explanation. It is now `parentUndelivered(record)`, which also answers `expired` with words that do not tell a child to retry a notice the plugin has given up on. This is not a second budget competing with the gate's: the two-attempt figure was never a rule, it was a description of the in-process retry, restated by hand.
 - **No cross-instance locking (M8 stands).** One directory, one instance remains the contract. v3 does not add lockfiles; concurrent writers stay last-writer-wins by documented misconfiguration.
 - **A child occupies exactly ONE half, and a self-contradicting file is resolved at load.** Both halves of the v3 file were readable independently, and the boot pass restored from the settled half, so a key present in both came back `completed` — a running child durably reported as a finished one, which is the one failure this file cannot be allowed to have. The writer now removes the settled half on a `Running` change, and `loadTaskLedger` resolves any remaining overlap itself: the active half wins, because it was written by a process that believed the child alive and the settled half is the older fact a reclaim failed to remove. The losing entry counts as dropped, so the operator is told the file contradicted itself and not merely what survived. The reader is the only place in the plugin that cannot regress, because it is where the question is asked.
 - **Non-goals:** JSON output mode (declined — the voice stays markdown), discovery tools, auto-revive policy changes, retry budgets for failed turns.
@@ -29,7 +31,7 @@
 ## Choke points (all four components each)
 
 - **Primitive «durable active set»:** funnel `setActive`/`removeActive` + `onActiveChange` in `task-state.ts`, durable shape at the boundary (`durableActiveTask` in `session-lifecycle.ts`); enforcement: the existing store-mutation invariant already bans `activeTasks.set|delete` outside the state machine — no new literal, no new rule; contract tests: kill-and-restore with live, idle and vanished sessions, plus a spawn that is on disk while running and gone once settled.
-- **Primitive «pending delivery»:** funnel `queuePending`/`dropPending` in `notify.ts` beside the gate; enforcement: no `pending` writes outside the gate; contract tests: crash between transition and delivery redelivers exactly once at boot; double-crash deletes without looping.
+- **Primitive «pending delivery»:** funnel `queuePending`/`dropPending` in `notify.ts` beside the gate, and the queue is re-offered through exactly one function (`redeliverOwedNotifications`); enforcement: no `pending` writes outside the gate, and the budget is spent in the gate so no caller can dial a debt without passing it; contract tests: crash between transition and delivery redelivers exactly once at boot; double-crash deletes without looping; a write the host never answers reaches the budget and is written off, leaves nothing owed on the next boot, and a late answer to it neither resurrects the debt nor reports delivery.
 - **Primitive «boot reconciliation»:** one function in `entry/state.ts` (`reconcileRestored`), called once from `initPluginState`; contract tests pin re-arm vs settle-error vs pending-redelivery per matrix.
 - **Primitive «settled record»:** the read, the amendment and the change that carries it live in `src/shared/settled-record.ts` — a settled record is the one thing in the store that is both live state and durable fact, so keeping those three together is what makes "read here, changed there, published once" checkable by reading one screen. `decideRetained` is the only amendment for ledger truth, and an amendment OWES the change it owes, so a site cannot mutate a durable field and forget the publish without that showing in its own return value. The two amendments that are not ledger truth (`lastAbortAt`, a claim withdrawal) are deliberately off it: a promise the writer drops is worse than no promise. Enforcement: the mutation scanner sanctions the two files that own the funnel rather than one path; contract tests read a real temp ledger file back, raw and the way a restart reads it.
 
@@ -65,3 +67,58 @@ Two things the case that boots a both-halves ledger had to be taught, both worth
 Suite: 727 passing, 0 clones, coverage gate green.
 
 **M5/M10 ride along, M7/M13/lockfile stay declined.**
+
+**Cycle 5 (the two directions a lost write can go, 2026-09-28).** The writer had one
+failure channel and two failure directions, and neither was guarded.
+
+- **A ledger that cannot be READ is not written.** `persistLedger` did
+  read→apply→write unconditionally, so an unparseable or wrong-version file — the
+  exact file `loadTaskLedger`'s refusal exists for, and the exact one the host log
+  had just told the operator to go and look at — was replaced by a fresh v3 slate
+  on the next change. The refusal now reads the loader's own `unreadable` and
+  `discarded` verdict rather than re-deciding it, so the two halves cannot
+  disagree: the file this build never saw is the only file it may not write. The
+  cost is that a project loses its durable task state until an operator acts, which
+  is loud, bounded and reversible; the alternative destroys the evidence and is
+  neither.
+- **A lost WRITE is on the channel that needs no environment variable.** The catch
+  logged a debug line, which is off unless `DYNAMIC_TASK_DEBUG=1`. So the one loss
+  that leaves a child active forever with no notice owed to anyone was the
+  *quietest* of all, while the loss the host log reports is one an operator has
+  already had to notice. Both directions now report on both channels. The
+  asymmetry is the point and it is now written down, because the comment above the
+  read-failure branch claimed a symmetry that was half true.
+- **The retained cap evicts by AGE, not by arrival.** `pruneIfBounded` could only
+  drop the oldest record held or keep the one arriving, which is the right decision
+  only while the file's key order is its age order. A file this plugin wrote is;
+  a merged ledger, a formatted one, a hand-edited one, or two records straddling a
+  clock change is not — it arrives with its oldest record **last**, and the
+  function then evicted a record newer than the one it kept. The eviction is
+  published as `Forgotten` and written back, so that was not a transient slip: the
+  file agreed with the wrong answer and the next boot restored what this one
+  refused. The test states the rule as **convergence** — the same two records in
+  either order leave the same one standing and name the same one forgotten — because
+  a single outcome asserted once is satisfied by an implementation that happens to
+  be right about one order, which is the whole failure.
+- **The durable write order is a test, not a comment.** `notifyParent` writes the
+  debt, dials, then writes the receipt: two whole-file read-modify-writes per
+  settlement, four for a retried one, and each re-reads because *not* re-reading is
+  how a process deletes another process's running task. That makes these writes the
+  obvious target of a debounce, so the order is pinned through
+  `configurePendingPersistence` as `["owed", "dial", "delivered"]`.
+  Falsified by deleting the `Owed` write — and the in-memory pin beside it ("the
+  write is already on the queue at the moment it dials") stayed **green**, because
+  it reads the queue rather than the file. That is the detection gap, and it is why
+  the order needed its own case. `configurePendingPersistence` accepts `null` now:
+  a setter that cannot be undone makes every case after the installing one depend
+  on it.
+- **One durable field was not durable at all.** Found by the rule above rather than
+  by inspection: reading `failureClass` back off the file, the way this document
+  says to, showed a field the settlement writes and `loadTaskLedger` never read —
+  so every record a restart hydrated carried a bare `error`.
+  `17-transient-failure-handling` owns the fix; it is listed here because it is a
+  fourth case of the same shape, and this is the third time the pair of suites has
+  each been right about half of the join. The subject comment at the top of
+  `ledger-durability.test.js` predicted it from the second defect's fix, and that
+  prediction is the strongest argument in this file for reading at the level of
+  the file.

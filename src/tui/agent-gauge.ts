@@ -31,7 +31,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { jsx } from "@opentui/solid/jsx-runtime";
-import { createMemo, createSignal, onCleanup } from "solid-js";
+import { createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import type { TuiSlotContext, TuiSlotPlugin } from "@opencode-ai/plugin/tui";
 import { BaseRenderable, CliRenderer, fg, Renderable, StyledText, TextRenderable, type TextChunk } from "@opentui/core";
 import type { RGBA } from "@opentui/core";
@@ -287,20 +287,90 @@ export function watchLedger(directory: string, onChange: () => void): FSWatcher 
  * its reconciler may drop a node it did not create, so a node that finds itself detached is
  * put back rather than left silently invisible.
  */
-export function mountGauge(api: GaugeApi): TuiSlotPlugin | null {
+export function mountGauge(api: GaugeApi): TuiSlotPlugin {
+  return { slots: { [GAUGE_SLOT]: deferredCounter(api) } };
+}
+
+/**
+ * The counter, mounted on the host's own line when there is one, and in the slot when not.
+ *
+ * The WALK IS DEFERRED INTO THIS FUNCTION, and that is the whole trick of the mount. This
+ * plugin loads at startup, before any session is open, so a walk at mount time would find
+ * an empty tree and — having found nothing — never look again. There is no lifecycle hook
+ * for "first paint" (`TuiLifecycle` carries an `AbortSignal` and `onDispose`, and nothing
+ * else), but there IS a reliable signal that the prompt exists: the host CALLS this, because
+ * it calls a slot's renderer when it draws that slot's region, and the region is inside the
+ * prompt. So the one moment the tree is known to be walkable is the one moment the host
+ * hands us.
+ *
+ * Which also settles the fallback. An empty return is invisible: the host's row at
+ * `component/prompt/index.tsx:1479-1483` is gated on `hasRightContent()`, which is a memo
+ * over the `right` PROP and therefore true whether or not this function has anything to
+ * say — the row was empty before this plugin existed and nobody saw it. So attaching to the
+ * real line and returning nothing leaves no trace in the slot, and returning the counter here
+ * is the fallback the operator sees rather than no counter at all.
+ *
+ * The attach is attempted once and remembered. This runs on every re-render of the region,
+ * and a second `add` would stack a second `N/M` on the host's line.
+ */
+export function deferredCounter(api: GaugeApi): (ctx: TuiSlotContext) => JSX.Element | null {
   const directory = api.state.path.directory;
   const base = readDynamicTaskPolicy(directory, null);
-  // Read `root` off the renderer rather than assuming it: `api.renderer` is a host object
-  // read across a process boundary, and the one thing a mount must never do is take the
-  // prompt down over a layout preference. A renderer that does not offer a tree costs the
-  // counter its ideal placement and nothing else, because the slot below is a working mount.
-  //
-  // No cast in the success path: the search is generic in what it is given, so a `Renderable`
-  // root yields a `Renderable` line and `line.add` is the host's own method on the host's object.
-  const line = api.renderer?.root ? footerLineOf(api.renderer.root) : null;
-  if (api.renderer && line && attachToFooterLine(api.renderer, line, screenTokens(api.theme).context, directory, base))
-    return null;
-  return agentGaugeSlot(api);
+  const muted = createMemo(() => screenTokens(api.theme).context);
+  let attached = false;
+  return (ctx) => {
+    if (!attached) {
+      const join = footerLineToJoin(api);
+      attached = join !== null && attachToFooterLine(join.renderer, join.line, muted(), directory, base) !== null;
+    }
+    if (attached) return null;
+    return jsx("text", gaugeProps(screenTokens(ctx.theme).context, readingSignal(directory, base)) as Record<string, unknown>);
+  };
+}
+
+/**
+ * The host's own footer line, or null when this host has not got one to join.
+ *
+ * The DECISION, split from the construction beside it, because only the decision is
+ * testable. Two things stop the rest: a real `TextRenderable` needs the OpenTUI native FFI,
+ * and `jsx` from `@opentui/solid/jsx-runtime` is EAGER — it calls `createElement` on the
+ * spot and throws "No renderer found" without one. Folding the two together would mean the
+ * walk had no case of its own and the only thing under test was a refusal.
+ *
+ * The renderer is read rather than assumed, because `api.renderer` is a host object crossing
+ * a process boundary and the one thing a mount must never do is take the prompt down over a
+ * layout preference. A renderer with no tree, or a tree with no commands hint in it, costs
+ * the counter its ideal placement and nothing else.
+ */
+export function footerLineToJoin(api: GaugeApi): { renderer: CliRenderer; line: Renderable } | null {
+  const renderer = api.renderer;
+  const root = renderer?.root;
+  if (!renderer || !root) return null;
+  const line = footerLineOf(root);
+  return line ? { renderer, line } : null;
+}
+
+/**
+ * The reading as a SIGNAL, for the slot's Solid child to close over.
+ *
+ * `gaugeProps` takes a function precisely so a caller can hand it a signal, and a signal is
+ * what a Solid child re-derives from. The setter compares the PAIR first, because a
+ * directory watch reports every file in the project — and where the platform cannot name the
+ * one that changed, it reports nothing at all, so an unrelated save arrives here too. A
+ * signal set to a freshly-read but identical pair re-renders the corner for a number that
+ * did not move, and over a session of ordinary editing that is most of the events this
+ * counter will ever see.
+ */
+function readingSignal(directory: string, base: DynamicTaskConfig): () => GaugeReading {
+  const [reading, setReading] = createSignal(readGauge(directory, base));
+  const refresh = () => {
+    const next = readGauge(directory, base);
+    if (next.active === reading().active && next.cap === reading().cap) return;
+    setReading(next);
+  };
+  const watcher = watchLedger(directory, refresh);
+  onCleanup(() => watcher?.close());
+  return reading;
 }
 
 /**
@@ -370,12 +440,6 @@ export function attachToFooterLine(
   };
 }
 
-/** The FALLBACK mount: the counter in the host's `right` region, via the slot API. */
-export function agentGaugeSlot(api: GaugeApi): TuiSlotPlugin {
-  const directory = api.state.path.directory;
-  return { slots: { [GAUGE_SLOT]: gaugeSlotBody(directory, readDynamicTaskPolicy(directory, null)) } };
-}
-
 /**
  * The element's props, as a value the host will spread onto a `text`.
  *
@@ -408,28 +472,3 @@ export function gaugeProps(muted: RGBA, reading: () => GaugeReading): Record<str
   };
 }
 
-/** The counter's slot body. */
-function gaugeSlotBody(directory: string, base: DynamicTaskConfig): NonNullable<TuiSlotPlugin<{}>["slots"][typeof GAUGE_SLOT]> {
-  return (ctx: TuiSlotContext) => {
-    const muted = createMemo(() => screenTokens(ctx.theme).context);
-    const [reading, setReading] = createSignal(readGauge(directory, base));
-    /**
-     * Re-read, and move the signal only if the PAIR moved.
-     *
-     * The comparison is the point. A directory watch reports every file in the project,
-     * and where the platform cannot name the one that changed it reports nothing at all
-     * — so an unrelated save arrives here as a spurious event. A signal set to a
-     * freshly-read but identical pair is a re-render of the corner for a number that did
-     * not move, and over a session of ordinary editing that is most of the events this
-     * counter will ever see.
-     */
-    const refresh = () => {
-      const next = readGauge(directory, base);
-      if (next.active === reading().active && next.cap === reading().cap) return;
-      setReading(next);
-    };
-    const watcher = watchLedger(directory, refresh);
-    onCleanup(() => watcher?.close());
-    return jsx("text", gaugeProps(muted(), reading) as Record<string, unknown>);
-  };
-}

@@ -35,9 +35,14 @@ import { activeByAgent } from "../../dist/shared/task-state.js";
 import { Renderable, TextBufferRenderable } from "@opentui/core";
 import { darkTheme } from "./support/harness.js";
 import { screenTokens, widthsAgree } from "../../dist/tui/theme.js";
-import { GAUGE_SLOT, agentGaugeSlot, footerLineOf, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
+import { GAUGE_SLOT, deferredCounter, footerLineOf, footerLineToJoin, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
 import { withTempDir } from "./support/fixtures.js";
 import { renderTree } from "./support/render-tree.js";
+// ONE host double for the whole suite, not a second one here. It is the one that carries a
+// real `root`, so the counter's tree walk is exercised here against the same object the
+// limits screen meets — and a second double, private to this file, is one more thing that
+// can drift from the host without anything failing.
+import { hostApi, HOST_THEME } from "./support/limits-screen.js";
 import { runningEntry } from "./support/records.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
@@ -294,14 +299,34 @@ describe("the counter is drawn in the host's muted grey", () => {
 });
 
 describe("the module mounts the counter where the host draws the prompt's right", () => {
-  it("registers exactly one slot, under the name it claims", () =>
-    // Nothing in this repo can check that the host DRAWS a slot, so this is the closest
-    // thing to a check that exists: the registration happens, once, under a name.
+  it("joins the host's footer line when the host has one, and nothing else will do", () => {
+    // The DECISION, and the only part of the mount that is testable here. Two things stop
+    // the rest: a real `TextRenderable` needs the OpenTUI native FFI, and `jsx` from
+    // `@opentui/solid/jsx-runtime` is EAGER — it calls `createElement` on the spot and
+    // throws "No renderer found" with none. So the walk is split out to be checked on its
+    // own, rather than left to fail silently inside the function that builds the node, and
+    // rather than pinned with a stand-in for a renderer this repo cannot construct.
+    //
+    // The consequence is worth stating: what is covered is the CHOICE of line and the
+    // decline. That the node lands on it is the one claim only a real TUI can settle.
     withTempDir((directory) => {
-      const plugin = agentGaugeSlot({ state: { path: { directory } }, theme: darkTheme() });
-      assert.deepEqual(Object.keys(plugin.slots), [GAUGE_SLOT],
-        "one slot, named in one place, so moving it is a one-word edit");
-    }));
+      const join = footerLineToJoin(hostApi(directory).api);
+      // Compared by WHAT it holds, not by identity: the double builds its own tree, so an
+      // identity check against a second `renderTree()` would be comparing two different
+      // objects and would pass or fail for reasons that have nothing to do with the walk.
+      assert.deepEqual(join.line.getChildren().map((child) => child.plainText),
+        ["/src/project", "109.7K (10%)", "ctrl+p commands"],
+        "the box holding the host's three footer children, which is where the counter belongs");
+      assert.ok(join.renderer, "and the renderer to build the node with, so no caller needs a bang");
+    });
+  });
+
+  it("and declines when the host's line is not there, rather than adding to something else", () => {
+    withTempDir((directory) => {
+      assert.equal(footerLineToJoin(hostApi(directory, { withFooter: false }).api), null,
+        "a host that renamed the hint has no line to join, and no near miss is good enough");
+    });
+  });
 
   it("and a store's own fold is the function the corner reads, not a second one beside it", () => {
     // `activeByAgent` is the tool-side caller. The claim is that it DELEGATES: a second

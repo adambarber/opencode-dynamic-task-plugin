@@ -16,9 +16,8 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { TextAttributes } from "@opentui/core";
-import { cellFooter, plainCell, plainSummary, screenTokens, summaryFooter, summaryRuns, widthsAgree } from "../../dist/tui/theme.js";
+import { flagWidthsAgree, inForceFlag, plainCell, plainSummary, screenTokens, widthsAgree } from "../../dist/tui/theme.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
-import { footerText } from "./support/assertions.js";
 import { bareTheme, capCell, darkTheme, lightTheme, themeRoles } from "./support/harness.js";
 
 const THEME = darkTheme();
@@ -37,7 +36,6 @@ const row = (resolved, stated, depth = unbound(resolved.maxDepth)) => ({ name: "
 const bound = (configured, effective) => ({ configured, effective, boundBy: "agent-set" });
 
 /** The runs of a footer, by their text, so a case can name one without its index. */
-const runOf = (footer, text) => footer.chunks.find((run) => run.text === text);
 
 describe("the design tokens are roles, not colours", () => {
   it("resolves every role from the theme in force, so a light theme is not painted dark", () => {
@@ -74,59 +72,22 @@ describe("the design tokens are roles, not colours", () => {
   });
 });
 
-describe("a cell separates the value from what qualifies it", () => {
-  // One bounded depth, built once: the two cases below ask different questions about the
-  // SAME figure, and a pair that each rebuilt it could disagree about it without either
-  // of them failing — which is how a cell ends up painted one way and asserted another.
-  const BOUNDED = cellFooter(capCell(4, false, 3), TOKENS);
-
-  it("paints the number in the value role, in BOLD, because colour is the theme's to change and weight is not", () => {
-    const footer = cellFooter(capCell(4, true), TOKENS);
-    const value = runOf(footer, "4");
-    assert.deepEqual(value.fg, TOKENS.value, "the number wears the value role");
-    assert.equal(value.attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and is bold");
-  });
-
-  it("paints the note a TIER below the label, because muting it is not the same as setting it apart", () => {
-    // The operator read `4 from config` as a two-word value twice, and muting the note to
-    // the label's own colour is what had already been tried. What makes a note a note is
-    // being quieter than the LABEL, not quieter than the number — one step below the
-    // label, so the row reads `at once` (label) `4` (value) `from config` (a note ABOUT
-    // the 4) as three kinds of thing rather than five words with two of them bright.
-    const footer = cellFooter(capCell(4, false), TOKENS);
-    const note = runOf(footer, " from config");
-    assert.deepEqual(note.fg, TOKENS.aside, "the note wears the aside tier");
-    assert.notDeepEqual(note.fg, TOKENS.context, "which is not the label's tier — that is the whole point of it");
-    assert.equal(note.attributes & TextAttributes.BOLD, 0, "and carries no weight the value has");
-  });
-
-  it("draws a note in the label's tier when the theme declares no aside, rather than leaving it invisible", () => {
-    // `syntaxComment` is optional in a theme's JSON even though the host's type declares
-    // it, so the fallback is load-bearing: a note painted in an inherited colour would
-    // take the host's muted wrapper, and the operator would be back to reading it as a
-    // value. Degrading to the two-tier screen is the honest outcome here.
-    const bare = screenTokens(bareTheme());
-    assert.deepEqual(bare.aside, bare.context, "a theme with no aside role falls back to the label's");
-    assert.deepEqual(bare.value, darkTheme().current.text, "and the value is unaffected by the missing role");
-  });
-
+describe("a cell says the value, then whatever qualifies it", () => {
+  // The TEXT is the contract that survived. The styled form is gone: a frame showed a
+  // footer's value stranded 60 columns from its label, so the caps moved into `details`,
+  // which the host runs through `Locale.truncateMiddle` and so cannot carry a
+  // `StyledText`. The cells are plain text now, and the width the layout gate measures
+  // is measured against exactly what is written here — which is why these claims are
+  // about the string and not about a colour.
   it("states a number with no qualifier at all, rather than an empty one", () => {
-    const footer = cellFooter(capCell(4, true), TOKENS);
-    assert.equal(footerText(footer), "· 4", "a stated cap is the number and its mark, full stop");
+    assert.equal(plainCell(capCell(4, true)), "4", "a stated cap is the number, full stop");
   });
 
   it("prints BOTH numbers when the agent set holds the depth below the cap", () => {
     // The cap is what the operator typed and the reachable depth is what a dispatch is
     // judged against, so printing only one of them is printing a number that is not in
     // force — on the very screen the cap is set on.
-    assert.equal(footerText(BOUNDED), "· 3/4 agent set binds", "the reachable depth first, the cap beside it");
-  });
-
-  it("puts the reachable depth in the loud role and the cap it is held below in the ASIDE tier", () => {
-    assert.deepEqual(runOf(BOUNDED, "3").fg, TOKENS.value, "the depth that binds dispatches is the figure");
-    assert.deepEqual(runOf(BOUNDED, "/4").fg, TOKENS.aside, "the cap beside it is a note about that figure, not a label beside it");
-    assert.deepEqual(runOf(BOUNDED, " agent set binds").fg, TOKENS.aside, "and so is the reason it is held down");
-    assert.equal(runOf(BOUNDED, "3").attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and the pair reads as one figure");
+    assert.equal(plainCell(capCell(4, false, 3)), "3/4 agent set binds", "the reachable depth first, the cap beside it");
   });
 
   it("prints one number when the bound is at or above the cap, because 4/4 says nothing new", () => {
@@ -138,7 +99,7 @@ describe("a cell separates the value from what qualifies it", () => {
     const aboveCap = row({ maxConcurrent: 4, maxDepth: 4 }, {}, { configured: 4, effective: 9, boundBy: "agent-set" });
     const unknown = row({ maxConcurrent: 4, maxDepth: 4 }, {}, { configured: 4, effective: null, boundBy: "agent-set" });
     for (const entry of [atCap, aboveCap, unknown]) {
-      assert.equal(footerText(cellFooter(capCellOf(entry, "maxDepth"), TOKENS)), "· 4 from config", "one number, and no ceiling that is not holding it down");
+      assert.equal(plainCell(capCellOf(entry, "maxDepth")), "4 from config", "one number, and no ceiling that is not holding it down");
     }
   });
 
@@ -146,57 +107,36 @@ describe("a cell separates the value from what qualifies it", () => {
     const entry = row({ maxConcurrent: 4, maxDepth: 4 }, {}, bound(4, 2));
     // `2/4` here would be the depth's ceiling bleeding into a number it has nothing to do
     // with — the one place a per-row field could be read as a per-screen one.
-    assert.equal(footerText(cellFooter(capCellOf(entry, "maxConcurrent"), TOKENS)), "· 4 from config", "the agent set bounds depth, not concurrency");
+    assert.equal(plainCell(capCellOf(entry, "maxConcurrent")), "4 from config", "the agent set bounds depth, not concurrency");
   });
 
-  it("keeps the width contract on a bounded depth, which is the longest cell there is", () => {
-    const bounded = row({ maxConcurrent: 6, maxDepth: 4 }, { maxDepth: 4 }, bound(4, 2));
-    assert.ok(
-      widthsAgree(summaryRuns(bounded, TOKENS), plainSummary(bounded)),
-      "a row carrying both numbers is the one most likely to be clipped, so the budget must measure it",
-    );
-  });
-
-  it("marks a whole cell off from the row's title, because the host draws the two hard against each other", () => {
-    const footer = cellFooter(capCell(4, true), TOKENS);
-    assert.deepEqual(runOf(footer, "· ").fg, TOKENS.context, "the mark is punctuation, so it is context");
+  it("draws a note in the label's tier when the theme declares no aside, rather than leaving it invisible", () => {
+    // `syntaxComment` is optional in a theme's JSON even though the host's type declares
+    // it, so the fallback is load-bearing: a note with no tier of its own would take the
+    // host's muted wrapper and read as a value. Degrading to the two-tier screen is the
+    // honest outcome here.
+    const bare = screenTokens(bareTheme());
+    assert.deepEqual(bare.aside, bare.context, "a theme with no aside role falls back to the label's");
+    assert.deepEqual(bare.value, darkTheme().current.text, "and the value is unaffected by the missing role");
   });
 });
 
-describe("an agent's row reads label then value, twice", () => {
-  it("paints both LABELS in the context role, so the eye lands on the figures", () => {
-    const footer = summaryFooter(row({ maxConcurrent: 1, maxDepth: 1 }, { maxConcurrent: 1 }), TOKENS);
-    assert.deepEqual(runOf(footer, "at once ").fg, TOKENS.context, "the label is context, not content");
-    assert.deepEqual(runOf(footer, "depth ").fg, TOKENS.context, "both of them");
+describe("the in-force flag and its plain twin are the same words", () => {
+  // The one styled thing a row still draws, and so the one place the two forms can drift.
+  // A flag that added a character in paint but not in the budget would be clipped by
+  // exactly what the width arithmetic said it was not.
+  it("agrees", () => {
+    assert.ok(flagWidthsAgree(inForceFlag(TOKENS)), "the painted flag is the flag the gate measures");
   });
 
-  it("paints each number in the value role, so the two are comparable at a glance", () => {
-    const footer = summaryFooter(row({ maxConcurrent: 1, maxDepth: 1 }, { maxConcurrent: 1, maxDepth: 1 }), TOKENS);
-    for (const text of ["1"]) {
-      const value = footer.chunks.filter((run) => run.text === text);
-      assert.equal(value.length, 2, "both caps' numbers are their own runs");
-      for (const run of value) {
-        assert.deepEqual(run.fg, TOKENS.value, `a number wears the value role`);
-        assert.equal(run.attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and is bold");
-      }
-    }
-  });
-});
-
-describe("the painted row and the plain row are the same row", () => {
-  it("agrees on a cell that is stated, and on one that is inherited", () => {
-    const stated = capCell(4, true);
-    const inherited = capCell(4, false);
-    assert.ok(widthsAgree(cellFooter(stated, TOKENS).chunks, `· ${plainCell(stated)}`), "stated");
-    assert.ok(widthsAgree(cellFooter(inherited, TOKENS).chunks, `· ${plainCell(inherited)}`), "inherited");
-  });
-
-  it("agrees on a whole row, which is the width the layout budget is measured in", () => {
-    const entry = row({ maxConcurrent: 2, maxDepth: 3 }, { maxConcurrent: 2 });
-    assert.ok(
-      widthsAgree(summaryRuns(entry, TOKENS), plainSummary(entry)),
-      "a run that added or dropped a character would be clipped by exactly what the budget said it was not",
-    );
+  it("wears the value tier and BOLD, because the host paints this gutter in muted", () => {
+    // The host draws its own `current()` indicator in the same gutter, in `muted`. A flag
+    // there in `muted` is the gutter — and "which value am I changing FROM" is the one
+    // piece of state a picker must not make invisible. Proved against a real frame by
+    // `scripts/render-proof.js`; this is the same claim in the unit suite.
+    const flag = inForceFlag(TOKENS);
+    assert.deepEqual(flag.chunks[0].fg, TOKENS.value, "the flag survives the host's muted wrapper");
+    assert.equal(flag.chunks[0].attributes & TextAttributes.BOLD, TextAttributes.BOLD, "and is bold");
   });
 });
 

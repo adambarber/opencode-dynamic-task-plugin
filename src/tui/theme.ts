@@ -128,8 +128,20 @@ export const LEAD = "·";
 
 /** The note a cell carries when the number is the config file's rather than the operator's. */
 const INHERITED = "from config";
+/** The flag a picker's value-in-force row carries. The ONLY footer a screen uses. */
+export const IN_FORCE = "in force";
 /** The note for a depth the agent set holds below the cap. */
 const CEILING = "agent set binds";
+
+/**
+ * The title clause that says what holds a cap down, in one piece.
+ *
+ * The SENTENCE is production vocabulary, and it is composed here rather than at each
+ * site that says it: a case that retyped the words would be pinned to a spelling the
+ * screen does not use, and would keep passing after the screen changed its mind. The
+ * number is the caller's, because only the caller knows it.
+ */
+export const boundClause = (at: number): string => `agent set binds at ${at}`;
 
 /**
  * What a cell says, unstyled: the width contract.
@@ -149,56 +161,6 @@ export function plainCell(cell: CapCell): string {
 /** What one agent's row says, unstyled: the width contract for a whole row. */
 export function plainSummary(row: AgentEntry): string {
   return AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`).join(CELL_GAP);
-}
-
-/**
- * A cell's painted runs.
- *
- * CHUNKS rather than an element, and one span per cell in the callers, because the
- * number and its note have to be the SAME run sequence for a row — a cell that
- * opened its own span would break the row's single line. `bold(fg(…))` nests into one
- * chunk carrying both, rather than two adjacent runs that could be split by a
- * reflow.
- *
- * The note is drawn in the ASIDE tier, a step below the label, because that step is the
- * whole difference between a note and a value. In the label's own tier `4 from config`
- * was read as a two-word figure — the operator called it a broken input, twice, and
- * muting it is what had already been tried. A note that is a tier quieter is a note.
- */
-export function cellRuns(cell: CapCell, tokens: ScreenTokens): TextChunk[] {
-  // The reachable number is the loud one even in `3/4`, because it is the one a
-  // dispatch is judged against; the cap beside it is a NOTE about it, so it takes the
-  // aside tier rather than the label's. Both in bold: the pair is one reading, and
-  // splitting it across weights would ask the eye to hold `3` and then re-read `4` as
-  // a separate value.
-  if (cell.bounded !== null) {
-    return [
-      bold(fg(tokens.value)(String(cell.bounded))),
-      bold(fg(tokens.aside)(`/${cell.value}`)),
-      fg(tokens.aside)(" " + CEILING),
-    ];
-  }
-  return [
-    bold(fg(tokens.value)(String(cell.value))),
-    ...(cell.stated ? [] : [fg(tokens.aside)(" " + INHERITED)]),
-  ];
-}
-
-/**
- * One agent's row value, painted: both caps in reading order.
- *
- * The LABELS are context and the numbers are value, so the eye lands on the figures and
- * reads the words beside them on a second pass — the reverse of the arrangement where
- * everything shares one weight and nothing leads. The marks are context for the same
- * reason: a `·` is punctuation, and punctuation that competes with a numeral reads as
- * content.
- */
-export function summaryRuns(row: AgentEntry, tokens: ScreenTokens): TextChunk[] {
-  return AGENT_CAP_NAMES.flatMap((cap, index) => [
-    ...(index === 0 ? [] : [fg(tokens.context)(CELL_GAP)]),
-    fg(tokens.context)(`${CAP_LABEL[cap]} `),
-    ...cellRuns(capCellOf(row, cap), tokens),
-  ]);
 }
 
 /**
@@ -236,20 +198,40 @@ export function widthsAgree(runs: TextChunk[], plain: string): boolean {
 }
 
 /**
- * One cell, as the value a row's `footer` carries.
+ * The flag as plain text, the twin `inForceFlag` styles.
  *
- * The leading mark, and only here. On the AGENT screen the cell IS the whole footer, and
- * the host draws a footer hard against the row's title with no column to align the two
- * — so without a mark the label and the number read as one run of text and the number
- * looks like the tail of the word. On the LIST screen each cell already follows its own
- * label inside the same footer, so a mark there would be a second separator between the
- * same two things.
+ * `StyledText` is what the host's `TextNodeRenderable` takes as a child, but it is not
+ * something a case can compare, and a case that cannot compare it is a case that stops
+ * asserting. The twin is the same two-way contract `plainCell` and `plainSummary` keep
+ * with their styled forms, and `widthsAgree` is the gate that holds them together.
  */
-export function cellFooter(cell: CapCell, tokens: ScreenTokens): StyledText {
-  return new StyledText([fg(tokens.context)(`${LEAD} `), ...cellRuns(cell, tokens)]);
+export const plainInForce = (): string => IN_FORCE;
+
+/** Whether the painted flag is as wide as the plain one. */
+export function flagWidthsAgree(flag: StyledText): boolean {
+  return flag.chunks.map((run) => run.text).join("") === plainInForce();
 }
 
-/** One agent's row value, as the value a row's `footer` carries. */
-export function summaryFooter(row: AgentEntry, tokens: ScreenTokens): StyledText {
-  return new StyledText(summaryRuns(row, tokens));
+/**
+ * The flag that marks the value already in force.
+ *
+ * A `StyledText` and not a string, and the reason is the host's row markup: it wraps a
+ * row's `footer` in `<text fg={muted}>` (dialog-select.tsx:781), so a STRING footer
+ * arrives greyed in its entirety and nothing in the pipeline can address part of it.
+ * The VALUE tier and bold, not the muted one the host would have given it: the host
+ * paints its own `current()` indicator in that same gutter in `muted`, so a flag there
+ * in `muted` is indistinguishable from the gutter itself — and "which value am I
+ * changing FROM" is the one piece of state a cap picker must never make invisible.
+ * `fg` cascades to descendants that set no colour of their own, so these runs win over
+ * the host's muted wrapper.
+ *
+ * Not a `<span>` element: that renders identically but needs an ACTIVE RENDERER, and
+ * `jsx` throws "No renderer found" outside one — which would make the props builder
+ * impure and take the suite's basis for asserting on props with it. A `StyledText` is
+ * plain data; `TextNodeRenderable.add` names it as an accepted child. Read back off a
+ * real frame by `scripts/render-proof.js`.
+ */
+export function inForceFlag(tokens: ScreenTokens): StyledText {
+  return new StyledText([bold(fg(tokens.value)(IN_FORCE))]);
 }
+

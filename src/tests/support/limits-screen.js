@@ -221,11 +221,15 @@ export function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
   const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
   const props = limitsListProps(dialog, NO_ASKS, TOKENS);
-  // The width each row's footer takes, in the order the host draws the rows, paired from
-  // the field the screen actually chose — a wide agent's caps travel in `details` and
-  // cost the row nothing. The styled footer cannot be measured: it is a `StyledText` and
-  // the host paints it. So the gate needs the twin `plainSummary`/`plainCell` were written
-  // for, and the only place that knows which field a row used is the screen itself.
+  // Each row's footer in PLAIN TEXT, in draw order, paired from the field the screen
+  // actually chose — a wide agent's caps travel in `details` and have no footer. The
+  // styled footer cannot be measured: it is a `StyledText` and the host paints it. So
+  // this is the twin `plainSummary`/`plainCell` were written for, and the only place
+  // that knows which field a row used is the screen itself.
+  //
+  // TEXT rather than a measured width, because the width gate needs the length and the
+  // preview needs the characters, and a second array to keep in step with this one is a
+  // second thing that can be wrong.
   //
   // Attaching it here rather than asking each case to pass it is what keeps
   // `assertEveryRowFits` a one-argument claim: a case cannot forget the widest thing on
@@ -233,8 +237,8 @@ export function listOver(directory, agentNames = REGISTERED) {
   // nobody remembered to measure.
   const agentOptions = props.options.slice(1);
   props.plainFooters = [
-    `${LEAD} ${plainCell(dialog.ceiling)}`.length,
-    ...dialog.rows.map((row, at) => (agentOptions[at].footer === undefined ? 0 : plainSummary(row).length)),
+    `${LEAD} ${plainCell(dialog.ceiling)}`,
+    ...dialog.rows.map((row, at) => (agentOptions[at].footer === undefined ? "" : plainSummary(row))),
   ];
   return props;
 }
@@ -451,7 +455,11 @@ export const pressRowOn = async (host, title) => {
 /** …with the value list open on ONE named cap of `explore`. */
 export const withPickerOpen = (fn, cap = "maxConcurrent", overlay = { agents: { explore: { maxConcurrent: 2 } } }) =>
   withCapsOpen(given((host) => {
-    const opened = row(top(host.seen), CAP_LABEL[cap]);
+    // By the cap's label, which is the row's FIRST WORD rather than its whole title: the
+    // caps screen carries the value in the title now (`at once 2`), so matching the whole
+    // string would re-report this screen as broken every time a cap changed shape. The
+    // label is the part that says WHICH cap, and it is the part worth pinning.
+    const opened = rowsOn(host).find((option) => option.title === CAP_LABEL[cap] || option.title.startsWith(`${CAP_LABEL[cap]} `));
     assert.ok(opened, `${cap} is one of the two rows, so the cap is reachable at all`);
     opened.onSelect();
   }, fn), overlay);
@@ -519,9 +527,21 @@ export const backRow = (host, label = BACK_LABEL) => rowOn(host, label);
 /** The value-list row that clears the cap back to the config file's number. */
 export const clearRow = (host) => rowsOn(host).find((option) => /config default/.test(option.title));
 /** The caps-screen row for one cap, by its label. */
-export const capRow = (host, cap) => rowOn(host, CAP_LABEL[cap]);
+/**
+ * A cap's row on the agent's screen, by the cap's LABEL.
+ *
+ * The label is the row's first word rather than its whole title, because the caps screen
+ * carries each figure in the title now (`at once 2`). Matching the whole string would
+ * re-report this screen as broken every time a cap changed shape; the label is the part
+ * that says WHICH cap, and that is the part worth pinning.
+ */
+export const capRow = (host, cap) => rowsOn(host).find((option) => option.title === CAP_LABEL[cap] || option.title.startsWith(`${CAP_LABEL[cap]} `));
 /** The caps-screen row's text, for the cell assertions. */
-export const capText = (host, cap) => rowText(top(host.seen), CAP_LABEL[cap]);
+export const capText = (host, cap) => {
+  const found = capRow(host, cap);
+  assert.ok(found, `${cap} is a row on the screen underfoot`);
+  return rowText(top(host.seen), found.title);
+};
 
 /**
  * Every row on a drawn screen fits it.
@@ -534,9 +554,9 @@ export const capText = (host, cap) => rowText(top(host.seen), CAP_LABEL[cap]);
  */
 export const assertEveryRowFits = (dialog) =>
   assertRows(
-    dialog.options.map((option, at) => ({ option, footer: dialog.plainFooters?.[at] ?? 0 })),
-    ({ option, footer }) => fitsItsDialog(option, footer),
-    ({ option, footer }) => `"${option.title}" is clipped: ${option.title.length} of name + ${footer} of caps, over a row of ${DIALOG_ROW_TEXT}`,
+    dialog.options.map((option, at) => ({ option, footer: dialog.plainFooters?.[at] ?? "" })),
+    ({ option, footer }) => fitsItsDialog(option, footer.length),
+    ({ option, footer }) => `"${option.title}" is clipped: ${option.title.length} of name + ${footer.length} of caps, over a row of ${DIALOG_ROW_TEXT}`,
   );
 
 /**

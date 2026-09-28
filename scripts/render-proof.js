@@ -18,8 +18,7 @@
 import { RGBA, StyledText, TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
-import { screenTokens, summaryRuns } from "../dist/tui/theme.js";
-import { capCellOf } from "../dist/tui/agent-editor.js";
+import { inForceFlag, screenTokens } from "../dist/tui/theme.js";
 
 /** The colours a dark terminal hands the host, which is where `theme.text` comes from. */
 const value = RGBA.fromInts(0xd0, 0xd0, 0xd0);
@@ -37,30 +36,102 @@ const aside = RGBA.fromInts(0x50, 0x50, 0x50);
  */
 const TOKEN_THEME = { current: { text: value, textMuted: context, accent: RGBA.fromInts(0x88, 0x88, 0xff), syntaxComment: aside }, mode: () => "dark" };
 const tokens = screenTokens(TOKEN_THEME);
-const row = (entry) => ({ name: entry.name, resolved: entry.resolved, stated: entry.stated, depth: entry.depth });
-const runs = () => summaryRuns(row(entry()), tokens);
 
 /**
- * The row this proof renders: two DIFFERENT numbers, over a bounded depth.
+ * What this renders, and why it is what the screen actually draws.
  *
- * Distinct on purpose. With `maxConcurrent: 2` and an effective depth of 2 the two
- * figures rendered the same text, so the depth claim was satisfied by the CONCURRENCY
- * span — and the proof went green with the depth painted in the wrong colour, which is
- * the one thing it exists to catch. Two claims that name different things have to be
- * told apart by their evidence, or neither is a claim.
+ * It USED to be the cap cells, and that is the whole reason this file changed shape. A
+ * frame showed a footer's value stranded 60 columns from its label, so the caps moved
+ * into `details` — which the host runs through `Locale.truncateMiddle`, i.e. `str.length`
+ * and `str.slice`, so it cannot carry a `StyledText` and the caps lost their colour tiers.
+ * `in force` is the one styled thing left on a row: a status flag, two words, sitting in
+ * the gutter the host paints its own `current()` indicator in, where being muted is what
+ * makes it a flag rather than a value.
  */
-const entry = () => ({
-  name: "explore",
-  resolved: { maxConcurrent: 2, maxDepth: 4 },
-  stated: {},
-  depth: { configured: 4, effective: 3, boundBy: "agent-set" },
-});
+const runs = () => inForceFlag(tokens).chunks;
 
-/** The host's row: a muted `<text>` wrapping whatever we set as the footer. */
+/**
+ * The host's row: a muted `<text>` wrapping whatever we set as the footer.
+ *
+ * A STRING footer is wrapped in exactly this `<text fg={muted}>` too, and a string
+ * arrives already greyed, so the host's wrapper is a no-op on it. That is the reason the
+ * flag is a `StyledText` rather than a literal, and it is a fact about the host rather
+ * than about us — so it is proved here, against the real thing.
+ */
 const host = () => {
   const footer = jsx("span", { children: new StyledText(runs()) });
   return jsx("box", { children: jsx("text", { fg: context, children: footer }) });
 };
+
+/**
+ * The whole SCREEN, drawn by the host's own row markup, read back as text.
+ *
+ * `testRender` takes the COMPONENT, not its result, and calls it inside the renderer
+ * context — so a `jsx` call outside one throws "No renderer found", which is why this
+ * is a thunk per screen rather than a tree built up front.
+ *
+ * The proof below checks COLOUR, and colour is the smaller half of whether a screen
+ * reads. The larger half is where things SIT: the title is a `<text flexGrow={1}>` and
+ * the footer a `<box flexShrink={0}>` inside a `flexDirection="row"`, so a footer is
+ * pushed to the far edge of the dialog with the title's space absorbing the distance —
+ * an agent's name in column 3 and its caps in column 35, on a row that reads as two
+ * unrelated statements. Reading the host's flexbox did not surface that. A frame did,
+ * immediately, and the layout was wrong in a way no assertion had been asking about.
+ *
+ * So this prints the screens the plugin actually builds. Not a claim — an artifact.
+ * Whatever it prints is what the terminal will show, which is the only answer to "does
+ * it look right" that has ever been worth anything.
+ *
+ * Run: bun scripts/render-proof.js --screen
+ */
+if (process.argv.includes("--screen")) {
+  const { agentDialogFrom } = await import("../dist/tui/agent-editor.js");
+  const { agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps } = await import("../dist/tui/index.js");
+
+  const OVERLAY = { agents: { explore: { maxConcurrent: 2, maxDepth: 4 } } };
+  const dialog = agentDialogFrom(OVERLAY, { maxConcurrent: 4, maxDepth: 2, allowSameAgentRecursion: false }, ["explore", "general", "review"], false, null);
+  const explore = dialog.rows.find((r) => r.name === "explore");
+  const actions = { confirm: () => {}, back: () => {} };
+  const t = screenTokens(TOKEN_THEME);
+  const screens = [
+    ["the list - the total above every agent", limitsListProps(dialog, () => {})],
+    ["the depth picker, where the agent set binds it at 3", capPickerProps("explore", "maxDepth", explore, actions, t)],
+    ["the concurrency picker, where nothing binds it", capPickerProps("explore", "maxConcurrent", explore, actions, t)],
+    ["the total's picker", ceilingPickerProps(dialog.ceiling, actions, t)],
+  ];
+
+  /** The host's own Option body (dialog-select.tsx:660-690), verbatim in geometry. */
+  const option = (o) => {
+    const head = o.title + (o.description ? ` ${o.description}` : "");
+    return jsx("box", {
+      flexDirection: "column",
+      children: [
+        jsx("box", {
+          flexDirection: "row", paddingLeft: 3, paddingRight: 3, gap: 1,
+          children: [
+            jsx("text", { flexGrow: 1, overflow: "hidden", wrapMode: "none", paddingLeft: 3, children: head }),
+            ...(o.footer === undefined ? [] : [jsx("box", { flexShrink: 0, children: jsx("text", { children: o.footer }) })]),
+          ],
+        }),
+        ...(o.details ?? []).map((d) => jsx("box", { paddingLeft: 3, paddingRight: 3, children: jsx("text", { fg: context, wrapMode: "none", children: d }) })),
+      ],
+    });
+  };
+
+  for (const [heading, d] of screens) {
+    const shot = await testRender(
+      () => jsx("box", { flexDirection: "column", children: [jsx("text", { children: d.title }), ...d.options.map(option)] }),
+      { width: 80, height: 40 },
+    );
+    await shot.renderOnce();
+    console.log(`\n--- ${heading}`);
+    console.log(shot.captureSpans().lines
+      .map((line) => line.spans.map((s) => s.text).join("").replace(/\s+$/, ""))
+      .filter((line) => line !== "")
+      .join("\n"));
+  }
+  process.exit(0);
+}
 
 const setup = await testRender(host, { width: 60, height: 3 });
 await setup.renderOnce();
@@ -97,13 +168,8 @@ const spansOf = (text) => {
   return found.length === 0 ? null : found;
 };
 const claims = [
-  ["the concurrency number is the value colour, not the host's muted wrapper", "2", (s) => hexOf(s) === asHex(value)],
-  ["the concurrency number is bold", "2", (s) => (s.attributes & TextAttributes.BOLD) === TextAttributes.BOLD],
-  ["the REACHABLE depth is the value colour, which a same-text trap once hid", "3", (s) => hexOf(s) === asHex(value)],
-  ["the reachable depth is bold, so the pair reads as one figure", "3", (s) => (s.attributes & TextAttributes.BOLD) === TextAttributes.BOLD],
-  ["the cap it is held below is the ASIDE tier, not the label's", "/4", (s) => hexOf(s) === asHex(aside)],
-  ["the reason it is held down is in the aside tier too", "agent set binds", (s) => hexOf(s) === asHex(aside)],
-  ["the label stays muted, so the eye lands on the figures", "at once", (s) => hexOf(s) === asHex(context)],
+  ["the flag survives the host's muted wrapper, in the VALUE tier", "in force", (s) => hexOf(s) === asHex(value)],
+  ["and is bold, so it is a flag rather than a stray word", "in force", (s) => (s.attributes & TextAttributes.BOLD) === TextAttributes.BOLD],
 ];
 
 let broken = 0;

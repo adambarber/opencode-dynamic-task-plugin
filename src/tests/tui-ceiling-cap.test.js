@@ -22,6 +22,10 @@ import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL } from "../../dist/tui/agent-edit
 import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/index.js";
 import { readAgentOverlay } from "../../dist/shared/caps.js";
+import { screenTokens } from "../../dist/tui/theme.js";
+import { capRow } from "./support/limits-screen.js";
+
+const THEME = { current: { text: "#fff", textMuted: "#888", accent: "#88f", syntaxComment: "#666" }, mode: () => "dark" };
 import {
   BASE, backRow, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn, readOverlay,
   rowText, settle, titlesOf, top, withList, withOpen, row,
@@ -77,8 +81,8 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // Two different lists for one concept is how an operator ends up able to set a total
     // no per-agent cap can reach, with neither screen explaining the asymmetry. Stated,
     // so the way back to the config file is on the screen too.
-    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} });
-    assert.deepEqual(titlesOf(picker), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
+    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} }, screenTokens(THEME));
+    assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default", BACK_LABEL]);
     assert.doesNotMatch(picker.title, /lane/i);
   });
 
@@ -122,7 +126,9 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // not two that happen to share a path.
     withCeilingWritten(async (host, directory) => {
       await pressRowOn(host, "explore");
-      await pressRowOn(host, CAP_LABEL.maxConcurrent);
+      // By the cap's LABEL, which is the row's first word: the caps screen carries each
+      // figure in the title now (`at once 2`), so the whole title is not what to press.
+      await pressRowOn(host, capRow(host, "maxConcurrent").title);
       await chooseValue(host, 2);
       const written = readAgentOverlay(directory).raw;
       assert.equal(written.maxConcurrent, 12, "the total survives an edit to an agent");

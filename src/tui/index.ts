@@ -64,7 +64,7 @@ import {
   type CeilingChoice,
   type EditOutcome,
 } from "./agent-editor.js";
-import { cellFooter, plainSummary, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
+import { boundClause, inForceFlag, plainCell, plainSummary, screenTokens, type ScreenTokens } from "./theme.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -261,7 +261,6 @@ export default plugin;
 export function limitsListProps(
   dialog: AgentDialog,
   ask: (choice: ListChoice) => void,
-  tokens: ScreenTokens,
 ): TuiDialogSelectProps<ListChoice> {
   return {
     title: "Task limits",
@@ -273,39 +272,32 @@ export function limitsListProps(
       // an agent cannot be drawn by the per-agent mapper below.
       {
         title: CEILING_LABEL,
-        ...({ footer: cellFooter(dialog.ceiling, tokens) } as Record<string, unknown>),
+        // A `footer` is pushed to the far edge of the row, so it is for a STATUS and not
+        // for content: `in force` on the total was both stranded 60 columns from the
+        // label it belonged to and a lie, since a total is the number in the file rather
+        // than a number anyone chose. The figure rides under the label, with everything
+        // else's.
+        ...withDetails(plainCell(dialog.ceiling)),
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
       },
-      ...dialog.rows.map((row) => {
-        // The field the caps ride in is CHOSEN BY MEASUREMENT, and the name is the reason
-        // the choice exists. The footer's box does not shrink, so a name long enough to
-        // crowd the caps clips its own row — silently, with no ellipsis. The host's
-        // `details` is a line of its own, truncated in the middle rather than at the end,
-        // so a name that cannot share a row still gets read: the row degrades to the
-        // agent and roughly its caps, which is a fact, rather than to half a name and no
-        // caps, which is a defect with an agent in it.
+      ...dialog.rows.map((row) => ({
+        title: row.name,
+        // The caps go UNDER the name, not in a footer beside it. The title is
+        // flexGrow={1} and the footer flexShrink={0} in a flexDirection="row", so a
+        // footer lands at the far edge of the dialog and the title's space absorbs the
+        // distance between them — `explore` in column 3, its caps in column 35.
+        // Rendering the screen is what found this; reading the host's flexbox had not.
         //
-        // `plainSummary` is the twin `summaryFooter` styles, so the two cannot disagree
-        // about how wide the row is — and the width is asked of the same function that
-        // the gate below is written against, rather than of a second arithmetic.
-        const caps = plainSummary(row);
-        return {
-          title: row.name,
-          // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
-          // is — and what the host's TextNodeRenderable accepts as a child — is a
-          // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
-          // checked, and never by a cast: sound only because the host's own
-          // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
-          // the host's source at the tag this binary was built from. A `span` element would
-          // need an active renderer, which a props builder does not have outside a test.
-          ...(fitsItsDialog({ title: row.name }, caps.length)
-            ? ({ footer: summaryFooter(row, tokens) } as Record<string, unknown>)
-            : withDetails(caps)),
-          value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
-          onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
-        };
-      }),
+        // `details` is a column child at paddingLeft={3}: left-aligned, full width,
+        // immediately under the name. It must be a STRING — the host runs it through
+        // `Locale.truncateMiddle`, which is `str.length` and `str.slice`, and a
+        // `StyledText` has neither. So the caps lose their colour tiers here, which is
+        // the price of a screen that can be read at all.
+        ...withDetails(plainSummary(row)),
+        value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
+        onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
+      })),
     ],
   };
 }
@@ -336,7 +328,7 @@ type PickerActions<Choice> = {
   back: () => void;
 };
 
-export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>): TuiDialogSelectProps<PickerChoice> {
+export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>, tokens: ScreenTokens): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
   return {
     title: CEILING_LABEL,
@@ -347,7 +339,7 @@ export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<Ceil
       (value) => confirm({ value }),
       back,
       BACK_TO_LIST,
-      NOTHING_HOLDS,
+      tokens,
     ),
   };
 }
@@ -376,28 +368,30 @@ export function agentCapsProps(
   row: AgentEntry,
   ask: (cap: AgentCapName) => void,
   back: () => void,
-  tokens: ScreenTokens,
 ): TuiDialogSelectProps<CapsChoice> {
   return {
     title: agent,
     options: [
-      // The way out FIRST, above the two caps, because every other screen of this
-      // drill-down does and a row's position is where the eye arrives. It was last, which
-      // made leaving something to scroll for — and the host replaces the screen under a
-      // press, so a mistimed press on a VALUE commits a cap to the overlay rather than
-      // going back.
+      ...AGENT_CAP_NAMES.map((cap) => ({
+        // LABEL AND VALUE IN ONE TITLE, because a footer's value is stranded at the far
+        // edge of the row and this screen is two rows long — `at once` in column 3 and `2`
+        // in column 72, on a screen whose whole subject is the pairing. The title takes
+        // the whole row when nothing competes for it, and nothing does here.
+        title: `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`,
+        value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
+        onSelect: () => ask(cap),
+      })),
+      // The way out LAST, below both caps. A list of things to act on is read top-down
+      // and an exit belongs after what it exits: a `Back` row sitting above the two caps
+      // reads as a third cap. And the host replaces the screen under a press, so a
+      // mistimed press on an exit above the settings would throw away the place the
+      // operator was standing — the one thing an exit must never cost.
       {
         title: ALL_AGENTS_LABEL,
         ...withDetails(`back to every agent's caps`),
         value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
         onSelect: back,
       },
-      ...AGENT_CAP_NAMES.map((cap) => ({
-        title: CAP_LABEL[cap],
-        ...({ footer: cellFooter(capCellOf(row, cap), tokens) } as Record<string, unknown>),
-        value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
-        onSelect: () => ask(cap),
-      })),
     ],
   };
 }
@@ -420,10 +414,16 @@ export function capPickerProps(
   cap: AgentCapName,
   row: AgentEntry,
   actions: PickerActions<CapChoice>,
+  tokens: ScreenTokens,
 ): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
   const cell = capCellOf(row, cap);
-  const title = `${agent} — ${CAP_LABEL[cap]}`;
+  // The bound stated ONCE, in the title, rather than on every value it rules out. Five
+  // rows reading `unreachable - agent set binds at 3` say one fact five times, and a fact
+  // repeated until it is wallpaper is a fact nobody reads. The title is where the eye
+  // already is, and it is the one part of the screen not competing for a row's width.
+  const bound = ceilingOf(row.depth, cap, cell.value);
+  const title = bound === null ? `${agent} — ${CAP_LABEL[cap]}` : `${agent} — ${CAP_LABEL[cap]} (${boundClause(bound)})`;
   return {
     title,
     // `details` is the one field the host budgets rather than clips: it draws the
@@ -445,7 +445,7 @@ export function capPickerProps(
       (value) => confirm({ cap, value }),
       back,
       `back to ${agent}'s caps`,
-      (value) => ceilingOf(row.depth, cap, value),
+      tokens,
     ),
   };
 }
@@ -484,25 +484,19 @@ function valuePicker(
   onPick: (value: number | null) => void,
   back: () => void,
   backTo: string,
-  heldBy: (value: number) => number | null,
+  tokens: ScreenTokens,
 ) {
   return {
     options: [
-      {
-        title: BACK_LABEL,
-        ...withDetails(backTo),
-        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
-        onSelect: back,
-      },
       ...choices.map((value) => ({
         title: `${value}`,
-        // A mark on a value the operator is not changing would be decoration.
-        footer: value === current ? "in force" : undefined,
-        // The depth the agent set will not let this cap reach. `description` rather than
-        // a third colour tier, because it is a sentence and the host clips a suffix off
-        // the headline rather than giving it a line of its own — and it shares that line
-        // with a title of one or two characters, so there is room for it there.
-        ...described(heldNote(heldBy, value)),
+        // The one field the right edge is FOR. `in force` is a status flag about the
+        // value it sits beside, two words long, and the host's own `current()` indicator
+        // lives in the same gutter — so a short mark there reads as a flag rather than as
+        // content that lost its way. A StyledText, because the host wraps a string footer
+        // in `<text fg={muted}>` (dialog-select.tsx:781) and a plain one arrives greyed
+        // whole, with nothing able to address part of it.
+        ...(value === current ? ({ footer: inForceFlag(tokens) } as Record<string, unknown>) : {}),
         value: asChoice(value),
         onSelect: () => onPick(value),
       })),
@@ -514,40 +508,40 @@ function valuePicker(
             value: asChoice(null),
             onSelect: () => onPick(null),
           }]),
+      // The way out LAST, below the values and below the fallback. A list of things to
+      // act on is read top-down and the exit belongs after what it exits; a `Back` row
+      // above the numbers reads as one of the numbers. And the host replaces the screen
+      // under a press, so an exit sitting among the values is one mis-aimed press away
+      // from throwing away the place the operator was standing.
+      {
+        title: BACK_LABEL,
+        ...withDetails(backTo),
+        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
+        onSelect: back,
+      },
     ],
   };
 }
-
-/**
- * Why this value cannot take effect, said on the value, or undefined when it can.
- *
- * The word "unreachable" and not a removed row, because the value is legal: `maxDepth`
- * stops offering values past 8 on the grounds that depth is a small number, and an
- * operator who registers a ninth agent tomorrow has a legal cap this list cannot hold.
- * Marking the ones the agent set holds down is the version of that care which survives
- * the agent set changing, and naming the number that binds makes the row a decision
- * rather than a refusal.
- */
-const heldNote = (heldBy: (value: number) => number | null, value: number): string | undefined => {
-  const effective = heldBy(value);
-  return effective === null ? undefined : `unreachable — agent set binds at ${effective}`;
-};
-
-/**
- * Nothing holds a total down but the total.
- *
- * A function rather than a flag, so the picker's rows come out of ONE body and the
- * ceiling's row is not a special case with a branch in it. The claim is a real one and
- * belongs where it is made: `AgentDialog.ceiling` records that its `bounded` is always
- * null for the same reason.
- */
-const NOTHING_HOLDS = () => null;
 
 /** What the fallback row means, said on the row that does it. */
 const FALLBACK_MEANING = "clear this cap and use the number in the config file instead";
 
 /**
  * A row's `details`, spread in.
+ *
+ * A `details` entry is drawn at `paddingLeft={3}` while the row's own title text carries
+ * its `paddingLeft={3}` INSIDE the row box's — so a detail line starts THREE columns to
+ * the LEFT of the title it belongs to. Flush text reads as a peer, and an agent's caps
+ * printed level with its own name read as a fact about the screen rather than about the
+ * row above it. `INDENT` puts the annotation under its name, in the only place the
+ * plugin can put it: the string itself.
+ *
+ * It costs three of the 66 columns `details` gets, which is why the budget in
+ * `fitsItsDialog` counts the indent rather than the bare text.
+ */
+const INDENT = "   ";
+
+/** A row's `details`, spread in.
  *
  * The host budgets each entry of `details` against its own width and truncates it with
  * an ellipsis, while the headline it clips would take the whole row with it — so a row
@@ -557,19 +551,7 @@ const FALLBACK_MEANING = "clear this cap and use the number in the config file i
  * `as` object, and the duplication gate was right to call those two rows one piece of
  * code.
  */
-const withDetails = (...lines: string[]) => ({ details: lines } as Record<string, unknown>);
-
-/**
- * A row's `description`, spread in — and ABSENT when there is nothing to say.
- *
- * The opposite problem from `withDetails`, and the reason it is not the same helper. The
- * host declares `description?: string` without a `| undefined`, so under this repo's
- * `exactOptionalPropertyTypes` a key carrying `undefined` is a type error rather than
- * an absent key. A row that has no note therefore cannot say so by passing `undefined`;
- * the field has to be left out, and this is the one place that decides to leave it.
- */
-const described = (description: string | undefined) =>
-  (description === undefined ? {} : { description }) as Record<string, unknown>;
+const withDetails = (...lines: string[]) => ({ details: lines.map((line) => INDENT + line) } as Record<string, unknown>);
 
 /**
  * The word on a picker's way out, and the destination the ceiling picker's names.
@@ -700,8 +682,7 @@ function askListChoice(api: TuiApi, view: LimitsView, choice: ListChoice): void 
 
 /** The list, over a view already read. The re-open path, so a second read is not paid for. */
 function showLimits(api: TuiApi, view: LimitsView): void {
-  const tokens = screenTokens(api.theme);
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice), tokens));
+  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)));
 }
 
 /**
@@ -714,7 +695,7 @@ function showLimits(api: TuiApi, view: LimitsView): void {
 function openCeiling(api: TuiApi, view: LimitsView): void {
   const confirm = (choice: CeilingChoice) =>
     applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
-  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }));
+  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }, screenTokens(api.theme)));
 }
 
 /**
@@ -727,9 +708,8 @@ function openCeiling(api: TuiApi, view: LimitsView): void {
  */
 function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
   const row = rowOf(view, agent);
-  const tokens = screenTokens(api.theme);
   mountLimitsSelect(api, () =>
-    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view), tokens),
+    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)),
   );
 }
 
@@ -782,7 +762,7 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   const confirm = (choice: CapChoice) =>
     applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
   mountLimitsSelect(api, () =>
-    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }),
+    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }, screenTokens(api.theme)),
   );
 }
 

@@ -173,16 +173,22 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // the pay below, wrote no trace to any log — and its ledger was
   // indistinguishable from a healthy queue, because a debt that is still owed
   // and a debt that is owed to a session that will never take it look the same
-  // on disk. The write-off warning could not cover it either, since a debt whose
-  // attempts keep getting deferred never reaches its budget. So the debt is named
-  // at the moment it is found, with the count it has and the count it may reach:
-  // a number that climbs across restarts is the signature of this failure.
+  // on disk. So the debt is named at the moment it is found, with the count it
+  // has and the count it may reach.
+  //
+  // That pairing is diagnostic, not decoration, and it is only diagnostic because
+  // the deferral now spends: this line was originally justified by the fact that a
+  // deferred debt could NOT reach its budget, which made the count a dead number
+  // and this report useless for the failure it was written for. Now a count that
+  // climbs across restarts means the parent is still mid-turn, and a count that
+  // reaches the end retires the debt as undelivered — so the log is the place
+  // where either is visible instead of inferred.
   const owedDebts = getPendingDeliveries();
   if (owedDebts.length > 0) {
     const each = owedDebts
       .map((debt) => `${debt.kind} for task ${debt.childSessionId} to parent ${debt.parentSessionId} (attempt ${debt.attempts + 1} of ${config.pendingMaxAttempts})`)
       .join("; ");
-    void safeLog(client, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice without spending an attempt.`);
+    void safeLog(client, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
   }
 
   // The running set is restored BEFORE the pending notices are paid, and

@@ -678,7 +678,7 @@ export async function notifyParent(
     // session that had already refused one — a boot-time write compounding a
     // wedge on every restart, which is why it read as a bug that kept coming
     // back. A held write is not evidence a notice is undeliverable, so the debt
-    // keeps the count it had and the next boot offers it again.
+    // is kept and offered again.
     //
     // Gated on `carried > 0` on purpose, and that asymmetry is the whole design:
     // 46 notices in that same session each drew a completed turn, most written
@@ -687,12 +687,24 @@ export async function notifyParent(
     // making itself, or every settlement that lands during a parent's own turn
     // would wait for a restart to be heard. Only a debt the parent has already
     // refused is evidence it cannot take one.
+    //
+    // The attempt is SPENT, and that is the second half of the decision. A
+    // deferral is a boot that offered the debt and did not deliver it, so it
+    // costs the debt the same as a held write did; a deferral that cost it
+    // nothing was a debt the bound could never reach, because `carried` was
+    // carried into itself and the write-off above stayed forever out of range.
+    // That is not hypothetical: it re-armed at its own count in a live project
+    // whose debt re-injected a synthetic user turn at every boot forever
+    // (attempts 6→7 across six boots) and made it un-typeable. The bound is the
+    // only thing standing between one wedged parent and an infinite retry, so
+    // every path that does not deliver spends toward it — including this one.
     if (carried > 0 && (await hostTurnInFlight(client, parentSessionId))) {
       // Still queued, because the debt must outlive this process either way: the
       // window where a notification exists in memory and on no disk is the crash
-      // the queue exists for, and deferring is not a reason to lose it.
-      queuePending({ ...owed, attempts: carried });
-      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried, pending: true });
+      // the queue exists for, and deferring is not a reason to lose it. The
+      // re-armed count is the one this boot spent.
+      queuePending({ ...owed, attempts: carried + 1 });
+      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
       return false;
     }
     // The request is made ONCE and kept, because "slow" and "never" are the

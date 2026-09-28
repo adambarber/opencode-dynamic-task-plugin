@@ -554,36 +554,65 @@ describe("notify: the redelivery budget", () => {
       return body(held);
     });
 
-  it("a debt the host never answers is retired at the budget, and is NOT dialed again", async () => {
-    // The defect: a redelivery the host HOLDS re-arms its own entry with the
-    // count carried forward, and nothing anywhere consulted that count. The debt
-    // was re-offered at every boot forever, and because redelivery IS
-    // `session.prompt`, each boot also started a real parent turn — so the retry
-    // mechanism was itself what wedged the project.
-    await givenAnUnansweredDebt(async (held) => {
-      // Boot 1 is behind us: the original settlement, held forever, owed at 1.
-      assert.deepStrictEqual(owedAt(), [1], "a held write leaves the debt owed");
-
-      // Boots 2 and 3: each re-offers and is held again, so the count climbs and
-      // nothing ever commits. This is the loop the report found in the field.
-      for (const expected of [2, 3]) {
-        await boot(held.client, 3);
-        assert.deepStrictEqual(owedAt(), [expected], `boot ${expected}: the count is carried forward`);
-      }
-
-      // Boot 4: the budget is spent. The write is NOT dialed — the point of the
-      // bound is that a notice nobody can take is not worth a fourth parent turn
-      // — and the debt retires, honestly, as undelivered.
+  /**
+   * Boot a debt forward across real process boundaries, one per owed count.
+   *
+   * Every case in this describe is this shape — a debt owed at 1, boots that each
+   * spend an attempt, and a final boot that crosses the bound — and they differ
+   * only in what the parent does WHILE a boot happens, which is the thing each
+   * one actually asserts. Stated once because a walk spelled out per case is what
+   * jscpd reads as a clone, and because it is the walk that stops being tested
+   * when it is spelled twice.
+   */
+  const bootForward = async (held, owedThrough, why) => {
+    for (const expected of owedThrough) {
       await boot(held.client, 3);
+      assert.deepStrictEqual(owedAt(), [expected], `${why} (boot ${expected})`);
+    }
+  };
 
-      assert.strictEqual(writesTo(held.calls, "owed").length, 3, "three writes dialed for this debt, and no fourth");
-      assert.deepStrictEqual(queuedFor(CHILD), [], "an expired debt is not owed any more");
-
-      const record = getLatestNotification(CHILD);
-      assert.strictEqual(record.delivered, false, "it is recorded as undelivered");
-      assert.strictEqual(record.expired, true, "and as EXPIRED, which is not the same as failed");
-      assert.strictEqual(record.attempts, 3, "with the count that was actually spent");
+  /**
+   * A debt owed at 1, then booted forward to its bound, with the parent doing
+   * `behaviour` at every boot. Answers with the held transport and the record the
+   * final boot left, because both cases need to ask what the retirement said and
+   * how many writes the whole life of the debt cost.
+   *
+   * The fixture, the walk and the retirement are the SAME WORLD, and the only
+   * thing that differs between the two cases that use this is what the parent
+   * does during a boot — which is precisely what each one is about. So the
+   * scaffolding is named once, and a case can only differ in the behaviour it
+   * tests.
+   *
+   * Both cases exist because the bound is the only thing standing between one
+   * wedged parent and an infinite retry, and the bound is UNREACHABLE on any path
+   * that does not deliver but does not spend. That is the whole defect class, and
+   * it shipped twice: first for a HELD write, which re-armed its own count, and
+   * then for a DEFERRED one, which re-armed at the same count it was offered. In
+   * a live project the second one re-injected a synthetic user turn at every boot
+   * forever (attempts 6→7 across six boots) and made the project un-typeable —
+   * because redelivery IS `session.prompt`, so the retry mechanism was itself
+   * what wedged it. A case per non-delivering path is what keeps the third one
+   * from arriving.
+   */
+  const aDebtWalkedToItsBound = async (behaviour, why) =>
+    givenAnUnansweredDebt(async (held) => {
+      assert.deepStrictEqual(owedAt(), [1], "boot 1 is behind us: a held write leaves the debt owed at 1");
+      behaviour(held);
+      await bootForward(held, [2, 3], why);
+      await boot(held.client, 3);
+      return { held, record: getLatestNotification(CHILD) };
     });
+
+  it("a debt the host never answers is retired at the budget, and is NOT dialed again", async () => {
+    // The defect as first shipped: a redelivery the host HOLDS re-armed its own
+    // count, and nothing anywhere consulted it.
+    const { held, record } = await aDebtWalkedToItsBound(() => {}, "the count is carried forward");
+
+    assert.strictEqual(writesTo(held.calls, "owed").length, 3, "three writes dialed for this debt, and no fourth");
+    assert.deepStrictEqual(queuedFor(CHILD), [], "an expired debt is not owed any more");
+    assert.strictEqual(record.delivered, false, "it is recorded as undelivered");
+    assert.strictEqual(record.expired, true, "and as EXPIRED, which is not the same as failed");
+    assert.strictEqual(record.attempts, 3, "with the count that was actually spent");
   });
 
   it("an expired debt leaves nothing for the NEXT boot to re-offer", async () => {
@@ -651,6 +680,12 @@ describe("notify: the redelivery budget", () => {
   // that is built once here, because a four-line client literal copied per case
   // is what jscpd reads as a clone, and the worse cost is that two cases can
   // quietly stop testing the same world while still looking like they do.
+  //
+  // The world is measured: 2026-09-28, a coda parent was admitted a turn at
+  // 19:35:02 and at 19:55:19 that never reached the model and never exited, so
+  // the host held every prompt after it and the project became un-typeable. Both
+  // of those turns were this gate re-offering one owed debt into a session that
+  // had already refused one.
   const toBusyParent = async (text, opts) => {
     const { client, calls, setStatus } = answeredClient([]);
     setStatus("parent_1", "busy");
@@ -658,18 +693,38 @@ describe("notify: the redelivery budget", () => {
     return { writes: calls.length, owed: queuedFor(CHILD).map((entry) => entry.attempts) };
   };
 
-  it("a REDELIVERY into a parent that is mid-turn is DEFERRED, and spends no attempt", async () => {
-    // Measured, 2026-09-28: a coda parent was admitted a turn at 19:35:02 and at
-    // 19:55:19 that never reached the model and never exited, so the host held
-    // every prompt after it and the project became un-typeable. Both turns were
-    // this gate re-offering one owed debt into a session that had already refused
-    // one. A held write is not evidence a notice is undeliverable, so the debt
-    // keeps the count it had and the next boot offers it again.
+  it("a REDELIVERY into a mid-turn parent is DEFERRED — no write, and the debt still counts", async () => {
+    // So the write is not attempted — a redelivery IS `session.prompt`, and
+    // attempting it is the wounding — but the debt is not exempt from the budget
+    // either. Deferring is a boot that offered the debt and did not deliver it, so
+    // it spends an attempt exactly as a held write does. A deferral that spends
+    // NOTHING is not a deferral, it is a debt the bound can never reach: this
+    // re-armed at `carried` forever and re-injected a synthetic user turn into a
+    // wedged parent at every boot.
     const sent = await toBusyParent("owed", { carriedAttempts: 1, maxAttempts: 3 });
 
     assert.strictEqual(sent.writes, 0, "the write is not attempted at all, because a held write is what wedged the session");
-    assert.deepStrictEqual(sent.owed, [1], "and the debt is still owed, at the count it already had");
+    assert.deepStrictEqual(sent.owed, [2], "and the debt is still owed, one attempt closer to its bound");
     assert.strictEqual(getLatestNotification(CHILD).pending, true, "and the record says pending rather than delivered");
+  });
+
+  it("a parent that is mid-turn at EVERY boot still reaches the bound and retires", async () => {
+    // The same bound, reached on the deferral path. Driven across real boot
+    // boundaries (`boot` clears the in-memory gate, which a process boundary
+    // takes with it) because re-offering in this process would be SUPPRESSED by
+    // the claim the first offer still holds, and would prove nothing.
+    const { held, record } = await aDebtWalkedToItsBound(
+      (transport) => transport.setStatus("parent_1", "busy"),
+      "a deferral spends an attempt",
+    );
+
+    assert.deepStrictEqual(queuedFor(CHILD), [], "the boot that crosses the bound retires the debt");
+    assert.strictEqual(record.expired, true, "honestly, as EXPIRED — not delivered, not failed");
+    assert.strictEqual(
+      writesTo(held.calls, "owed").length,
+      1,
+      "exactly one write for the whole life of this debt: a deferral never dials",
+    );
   });
 
   it("a FRESH notice to a busy parent is still written — the host holds it, and that has always worked", async () => {

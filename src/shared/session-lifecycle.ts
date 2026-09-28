@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { OpenCodeClient } from "./client.js";
+import { isFailureClass } from './failure-class.js';
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { TaskState } from "./task-state.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
@@ -186,6 +187,7 @@ interface ValidLedgerEntry extends TaskIdentity {
   dependsOnSettled?: unknown;
   requestedModel?: unknown;
   abortError?: unknown;
+  failureClass?: unknown;
 }
 
 function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
@@ -257,9 +259,21 @@ export interface TaskLedgerFile {
  * It is a fact about the READ and not a field of the file, which is why it is
  * not on `TaskLedgerFile`: nothing writes a reason for discarding into the
  * document it is describing.
+ *
+ * `unreadable` is the sharper of the two, and it is a separate field because
+ * `discarded` conflates two worlds that must be treated oppositely. A file whose
+ * RECORDS were dropped was read: the survivors are in hand, so writing onto it
+ * merges onto a known document and is the ordinary case. A file that could not be
+ * read at all was not, and writing onto it is not a merge — it is a replacement
+ * of whatever the operator (or another process) had, by a view of the world this
+ * process built without ever having seen the file. The writer needs that
+ * distinction, and reading it out of `discarded`'s prose would make the two
+ * wordings load-bearing.
  */
 export interface LoadedTaskLedger extends TaskLedgerFile {
   discarded: string | null;
+  /** True only when NOTHING was parsed: a torn write, a foreign version, a non-object. */
+  unreadable: boolean;
 }
 
 const FALLBACK_LEDGER_ROOT = join(homedir(), ".local", "share", "opencode-dynamic-task");
@@ -340,6 +354,7 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
   // three places to add a field, and the one somebody forgets is a silent
   // discard — which is the failure this whole shape exists to remove.
   let discarded: string | null = null;
+  let unreadable = false;
   let dropped = 0;
   if (filePath && existsSync(filePath)) {
     try {
@@ -347,6 +362,7 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
       if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
         const version = isEventRecord(parsed) ? JSON.stringify(parsed["version"]) : "not an object";
         discarded = `unreadable as a v${TASK_LEDGER_VERSION} ledger file (version field: ${version})`;
+        unreadable = true;
       } else {
         if (Array.isArray(parsed["pending"])) {
           for (const entry of parsed["pending"]) {
@@ -368,11 +384,20 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
           // is corrupt, not merely mislabeled.
           if (isValidRetainedEntry(entry) && key.startsWith("ses_") && entry.childSessionId === key) {
             const abortError = entry["abortError"];
+            const failureClass = entry["failureClass"];
             retained.set(key, {
               ...hydratedBase(entry),
               state: entry.state,
               retainedAt: entry.retainedAt,
               ...(typeof abortError === "string" ? { abortError } : {}),
+              // A class the file does not carry, or carries as a word this build
+              // does not speak, is DROPPED rather than guessed — the same rule the
+              // `lane` field below follows, for the same reason: a structural
+              // failure read as transient is worse than an unclassified one,
+              // because it tells a person the work is fine. A file written before
+              // classes existed lands here with no field and reads as unclassified,
+              // which is the honest reading of a record that never said.
+              ...(isFailureClass(failureClass) ? { failureClass } : {}),
             });
           } else {
             dropped++;
@@ -388,9 +413,10 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
       // it is survivable: the file is all the plugin has, and a partial parse is
       // still a record of what the last boot knew.
       discarded = `unparseable (${errorMessage(error)})`;
+      unreadable = true;
     }
   }
-  return { retained, active, pending, discarded };
+  return { retained, active, pending, discarded, unreadable };
 }
 
 /**

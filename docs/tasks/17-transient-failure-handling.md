@@ -218,6 +218,48 @@ anything is recorded. Classifying the host's original `idle` describes a state t
 record is no longer in, which is how a structural failure ends up labelled "no
 failure class" — and the first version of this code did exactly that.
 
+### One caller was not sending it
+
+`recordSettledOutcome`'s fourth argument is optional, and the late-error
+escalation — the `completed`→`error` rewrite, the edge above, the one this whole
+section is about — called it with three arguments. The child therefore took the
+*only* rewrite edge in the state machine and arrived with no class, so
+`failureClassLines` printed nothing and `task_result` reported a structural failure
+in the same shape as a clean one. The paragraph above describes the failure this
+was supposed to prevent, and the caller that produced it was the one carrying the
+class a few lines away.
+
+The argument is now sent. Nothing about the signature changed, and that is the
+point worth keeping: an optional argument on a settle path is only safe while
+every caller is audited, and nothing audited it.
+
+### The class was on disk and not in the record
+
+The first case for this fixed the call site and read the class back off
+`task_status` — which proved only that *this* process held it. Reading it off the
+**file** instead, the way `11-durability` reads everything, found the second
+defect underneath: `loadTaskLedger` rebuilt a settled record from
+`hydratedBase` + `state` + `retainedAt` + `abortError` and never read
+`failureClass` at all. So the field was written to the ledger by the settlement
+and dropped by the loader, and every record a restart hydrated carried a bare
+`error`.
+
+That is the exact deafness this epic exists to remove, one field over, and it is
+the failure mode with the worst direction: a structural failure restored without
+its class prints no reason, and a parent told only that it failed is the parent
+this whole section was written to stop being. The window was the whole history of
+the feature — from the cycle that introduced the class to the one that noticed —
+because the suite that exercised the class read the store and the suite that
+exercised the loader read ledgers composed by hand, and neither read a store
+whose record had been through a restart.
+
+`isFailureClass` is the guard that closes it, and it DROPS a word this build does
+not speak rather than defaulting: guessing wrong here means announcing a broken
+child as a blip, and a default of `Structural` would have converted every
+hand-edited or future-vocabulary file into a confident wrong answer. The drop is
+pinned in the other direction too, written by hand, because no writer in this
+plugin produces it.
+
 ## Readers
 
 `task_result` and `task_status` render the class through one

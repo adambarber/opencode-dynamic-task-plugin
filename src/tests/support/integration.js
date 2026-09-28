@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { setupHarness, sleep, tmpProjectDir, withTempFile, tmpFilePath } from "./harness.js";
 import { events } from "./mock-host.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
@@ -144,3 +144,13 @@ export async function waitFor(predicate, what) {
 
 /** A scratch file in the OS temp dir, cleaned up including the `.tmp` sidecar. */
 export const inTempFile = (fn) => withTempFile(tmpFilePath("dt-integration"), fn);
+
+/**
+ * The ledger as it is ON DISK, parsed raw.
+ *
+ * Not through `loadTaskLedger`: a case about what the file says must not be
+ * answered by the reader under test, because the reader is the component that
+ * discards. Two suites had each spelled this line, and the gate was right to
+ * call it a clone.
+ */
+export const fileSays = (file) => JSON.parse(readFileSync(file, "utf8"));

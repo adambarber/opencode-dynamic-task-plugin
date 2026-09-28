@@ -21,15 +21,14 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { createTaskStore, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
+import { FailureClass } from "../../dist/shared/failure-class.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { childParams, defaultConfig } from "./support/fixtures.js";
 import { tmpLedgerPath, withTempFile } from "./support/harness.js";
 import { assertAbsent, assertIs } from "./support/assertions.js";
-
-/** The on-disk shape, read raw — what a restart's first read would parse. */
-const fileSays = (file) => JSON.parse(readFileSync(file, "utf8"));
+import { fileSays } from "./support/integration.js";
 
 /**
  * A store whose change sinks write a real ledger file, wired the way
@@ -85,6 +84,63 @@ describe("durable ledger — what a restart would believe", () => {
       // file, must not learn that a failed child succeeded.
       assertIs(loadTaskLedger(file).retained.get("ses_c1")?.state, "error", "and a restart reads the failure, not the success");
     }));
+
+  // All three class cases are the same ARRANGEMENT — settle to `error` carrying a
+  // class, then ask what the next process would believe — and differ only in the
+  // class, an optional hand-edit, and what the reader is therefore owed. One
+  // builder, so a case states its difference: written out, the `withSettledChild`
+  // + `recordSettledOutcome` preamble repeats in every case and the duplication
+  // gate is right to call that a clone.
+  const restartAfterSettling = (failureClass, tamper) => {
+    let believed;
+    withSettledChild((file, store) => {
+      recordSettledOutcome(store, "ses_c1", "error", failureClass);
+      if (tamper) tamper(file);
+      believed = { onDisk: fileSays(file).tasks["ses_c1"].failureClass, restart: loadTaskLedger(file).retained.get("ses_c1") };
+    });
+    return believed;
+  };
+
+  it("the failure class rides the SAME publish as the correction, and survives a restart", () => {
+    // The class is a durable field on the same record as the state, and it is the
+    // fact a parent most needs — so a test that reads it off `task_status` proves
+    // only that this process held it. The reader that matters is the next one: a
+    // restart that reads `error` with no class believes a structural failure and
+    // prints no reason, which is the deafness this file exists to prevent, one
+    // field over.
+    const read = restartAfterSettling(FailureClass.Transient);
+
+    assertIs(read.onDisk, "transient", "the class is in the same write as the correction");
+    assertIs(read.restart?.failureClass, "transient", "and a restart reads WHICH failure it was, not only that it failed");
+  });
+
+  // A class this build does not speak is DROPPED, and one it does is RESTORED —
+  // table-driven off the enum itself, so adding a fourth class is a red build
+  // rather than a field that quietly stops surviving. The alternative is a case
+  // written per class, which is a case that has to be remembered to be extended.
+  for (const failureClass of Object.values(FailureClass)) {
+    it(`a file carrying "${failureClass}" restores that class, not a neighbour`, () => {
+      const read = restartAfterSettling(failureClass);
+
+      assertIs(read.restart?.failureClass, failureClass, `a ${failureClass} child stays a ${failureClass} child across a restart`);
+    });
+  }
+
+  it("a class word this build does not speak is DROPPED, not guessed", () => {
+    // Falsification for the two above, in the direction that matters: an
+    // unrecognised word must not survive as a class, because the failure mode of
+    // guessing wrong is a structural failure announced as a blip — a person told
+    // the work is fine when it is not. Written by hand, because no writer in this
+    // plugin produces it; a merge or a future build's vocabulary does.
+    const read = restartAfterSettling(FailureClass.Structural, (file) => {
+      const edited = fileSays(file);
+      edited.tasks["ses_c1"].failureClass = "flaky";
+      writeFileSync(file, JSON.stringify(edited));
+    });
+
+    assertIs(read.onDisk, "flaky", "the word is in the file, or the case proves nothing");
+    assertAbsent(read.restart?.failureClass, "a word this build does not speak is not a class");
+  });
 
   it("never reads a child as settled while the file also says it is running", () =>
     withRevivedChild((file) => {

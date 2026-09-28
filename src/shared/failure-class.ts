@@ -110,6 +110,19 @@ export function classifyFailure(verdict: TaskState, detail: unknown): FailureCla
 }
 
 /**
+ * Whether a value read off disk is one of the three classes.
+ *
+ * The durable read is untrusted, so this is a guard and not a cast. It is also the
+ * chokepoint the class needed and did not have: `failureClass` was written to the
+ * ledger by the settlement and never read back out of it, so the field was durable
+ * on disk and absent from every record a restart hydrated — the one field whose
+ * whole job is to survive until someone looks at it, and which did not.
+ */
+export function isFailureClass(value: unknown): value is FailureClass {
+  return value === FailureClass.None || value === FailureClass.Transient || value === FailureClass.Structural;
+}
+
+/**
  * The parent-facing sentence for a class. Owned HERE, beside the classifier that
  * decides it, so the wording and the decision cannot drift into disagreeing —
  * the previous arrangement put the two in different modules, which is how a hint

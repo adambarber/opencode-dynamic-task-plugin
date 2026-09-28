@@ -381,17 +381,23 @@ export function agentCapsProps(
   return {
     title: agent,
     options: [
+      // The way out FIRST, above the two caps, because every other screen of this
+      // drill-down does and a row's position is where the eye arrives. It was last, which
+      // made leaving something to scroll for — and the host replaces the screen under a
+      // press, so a mistimed press on a VALUE commits a cap to the overlay rather than
+      // going back.
+      {
+        title: ALL_AGENTS_LABEL,
+        ...withDetails(`back to every agent's caps`),
+        value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
+        onSelect: back,
+      },
       ...AGENT_CAP_NAMES.map((cap) => ({
         title: CAP_LABEL[cap],
         ...({ footer: cellFooter(capCellOf(row, cap), tokens) } as Record<string, unknown>),
         value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
         onSelect: () => ask(cap),
       })),
-      {
-        title: "All agents",
-        value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
-        onSelect: back,
-      },
     ],
   };
 }
@@ -576,6 +582,18 @@ const described = (description: string | undefined) =>
  * further than they asked for.
  */
 export const BACK_LABEL = "Back";
+
+/**
+ * The caps screen's way out, which is the same KIND of row under a different name.
+ *
+ * `Back` names the action and this names the destination, and neither is wrong: the
+ * press lands on the list of every agent, which is what an operator would call this
+ * screen's home, and a row saying `All agents` tells them where they will be in a way
+ * that `Back` cannot. Two labels for one `ChoiceKind.Back` is the honest reading — the
+ * two screens answer different questions — so both are named constants rather than one
+ * of them being a literal, which is how the distinction would have been lost.
+ */
+export const ALL_AGENTS_LABEL = "All agents";
 /** Where the total's picker goes back to. It bounds the list, so the list is the destination. */
 const BACK_TO_LIST = "back to the list of agents";
 

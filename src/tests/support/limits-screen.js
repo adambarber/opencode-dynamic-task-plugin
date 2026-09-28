@@ -507,7 +507,15 @@ export const valueRow = (host, value) => rowOn(host, String(value));
  * with the screen, and a collaborator that also guesses the screen's wording reports a
  * broken screen when nothing is broken.
  */
-export const backRow = (host) => rowOn(host, BACK_LABEL);
+/**
+ * The row that leaves the screen underfoot, by its label.
+ *
+ * The label is a parameter because there are two of them and neither is a mistake: a
+ * picker says `Back` (the action) and the caps screen says `All agents` (where the press
+ * lands). A finder that guessed the wording would report a broken screen the moment one
+ * of them was reworded, so the caller says which screen it is standing on.
+ */
+export const backRow = (host, label = BACK_LABEL) => rowOn(host, label);
 /** The value-list row that clears the cap back to the config file's number. */
 export const clearRow = (host) => rowsOn(host).find((option) => /config default/.test(option.title));
 /** The caps-screen row for one cap, by its label. */

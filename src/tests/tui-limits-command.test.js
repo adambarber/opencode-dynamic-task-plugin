@@ -37,7 +37,7 @@ import { CELL_GAP } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
 import { LEAD, plainCell, plainSummary } from "../../dist/tui/theme.js";
-import tuiModule, { BACK_LABEL, agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
 import {
   BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
@@ -364,6 +364,18 @@ describe("a row fits the dialog it is drawn in", () => {
 });
 
 describe("choosing a cap", () => {
+  it("leads the caps screen with the way back, like every other screen of the drill-down", () =>
+    // Both pickers put their exit first, and this screen did not. A row's position is
+    // where the eye arrives, so an exit on the last row is an exit that has to be
+    // scrolled to — and the stack is replace-on-press, so a mistaken press on a VALUE
+    // replaces the screen underneath with a written file rather than going back at all.
+    withCapsOpen((host) => {
+      assert.equal(titlesOf(top(host.seen))[0], ALL_AGENTS_LABEL, "the exit is the first row, not the last one past both caps");
+      assert.equal(rowsOn(host).length, 3, "and it costs the screen nothing: two caps and a way back");
+      backRow(host, ALL_AGENTS_LABEL).onSelect();
+      assert.equal(top(host.seen).title, "Task limits", "which lands on the list, not on a value");
+    }));
+
   it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>
     // The cap is what the operator SET; the depth they can reach is bounded by the
     // agent set whatever the cap says, so over a three-agent set a cap of four permits
@@ -526,7 +538,7 @@ describe("the flow, end to end on disk", () => {
     // way in at all. The pair was VISIBLE and half of it was editable, which is worse
     // than showing one, because the screen had said both were settings.
     withCapsOpen((host) => {
-      assert.deepEqual(titlesOf(top(host.seen)).slice(0, AGENT_CAP_NAMES.length), AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap]),
+      assert.deepEqual(titlesOf(top(host.seen)).filter((title) => title !== ALL_AGENTS_LABEL), AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap]),
         "both caps are rows of the agent's own screen, in the vocabulary of the list row");
       for (const cap of AGENT_CAP_NAMES) assert.equal(typeof capRow(host, cap).onSelect, "function", `${cap} can be opened`);
     }));

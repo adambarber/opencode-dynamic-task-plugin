@@ -38,10 +38,10 @@ import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
 import tuiModule, { BACK_LABEL, agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
 import {
-  BASE, REGISTERED, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
-  given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
+  BASE, BOUND_DEPTH, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
+  everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
-  withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerOpen,
+  withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
   withProject, booted,
 } from "./support/limits-screen.js";
 
@@ -313,6 +313,50 @@ describe("a row fits the dialog it is drawn in", () => {
 });
 
 describe("choosing a cap", () => {
+  it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>
+    // The cap is what the operator SET; the depth they can reach is bounded by the
+    // agent set whatever the cap says, so over a three-agent set a cap of four permits
+    // three. The picker listed all eight values with nothing distinguishing them, so
+    // setting one the set held down produced a success toast and a depth that never
+    // arrived — and the operator's only way to find out was to dispatch and read
+    // `task_list`.
+    //
+    // MARKED and not omitted, which is the half that is easy to get wrong. Dropping the
+    // unreachable values would make a legal cap unsettable: an operator who registers a
+    // fourth agent afterwards would find the cap they set gone, with nothing saying a
+    // screen took it away. The note says what binds, so the value is a decision the
+    // operator can make with the number in front of them.
+    withPickerOpen((host) => {
+      const entry = agentEntry("explore", BOUND_DEPTH);
+      const held = entry.depth.effective;
+      assert.ok(held !== null && held < entry.resolved.maxDepth,
+        "the agent set binds below the stated cap, or this case proves nothing about a bound");
+      assert.match(rowOn(host, String(held + 1)).description, new RegExp(`agent set binds at ${held}`),
+        "the value above the set's depth says what holds it there");
+      assert.equal(rowOn(host, String(held)).description, undefined,
+        "and the value the set reaches carries no note, so a note means something");
+      assert.equal(rowOn(host, String(held)).footer, undefined,
+        "which is not in force either — nothing else in this row claims to be");
+    }, "maxDepth", BOUND_DEPTH));
+
+  it("keeps every marked value pressable, because a note is not a removal", () =>
+    // The pin against the tempting half of the fix. Omitting an unreachable value makes
+    // the screen shorter and the defect invisible, and costs an operator a cap they set
+    // legitimately the moment a fourth agent exists.
+    withPickerOpen((host) => {
+      const unreachable = rowsOn(host).filter((option) => option.description);
+      assert.ok(unreachable.length > 0, "this agent's depth picker has unreachable values");
+      everyRowClaims(unreachable, (option) => typeof option.onSelect === "function",
+        "a value the operator set with their eyes open is still settable");
+    }, "maxDepth", BOUND_DEPTH));
+
+  it("puts no such note on a CONCURRENCY cap, because nothing holds one but itself", () =>
+    // The note is derived from the cap's own kind, not from the value. A concurrency cap
+    // has no ceiling that is not its own value, so a note on it would be a claim about
+    // nothing — and a screen that annotates one column and not the other teaches the
+    // operator that the marks are decoration.
+    withPickerClaimed((option) => option.description === undefined, "no value under a concurrency cap is out of reach"));
+
   it("opens a PICKER — a list of the values one cap can take, plus the way to unset it", () =>
     withPickerOpen((host) => {
       assert.deepEqual(titlesOf(top(host.seen)), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"],
@@ -322,7 +366,7 @@ describe("choosing a cap", () => {
 
   it("names the AGENT and the CAP, so a screen of numbers says what they mean", () => {
     for (const cap of AGENT_CAP_NAMES) {
-      const picker = capPickerProps("explore", cap, null, { confirm: () => {}, back: () => {} });
+      const picker = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} });
       assert.equal(picker.title, `explore — ${CAP_LABEL[cap]}`);
       assert.doesNotMatch(picker.title, /lane/i);
     }
@@ -350,7 +394,7 @@ describe("choosing a cap", () => {
     // Not a behavioural claim: a compile-time one, reached from JS. The prop builder
     // is exported so this can be called at all, and calling it is what a reader of the
     // production file would do.
-    const picker = capPickerProps("explore", "maxConcurrent", 2, { confirm: () => {}, back: () => {} });
+    const picker = capPickerProps("explore", "maxConcurrent", agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } }), { confirm: () => {}, back: () => {} });
     assert.deepEqual(titlesOf(picker), [BACK_LABEL, ...CAP_CHOICES.maxConcurrent.map(String), "Use the config default"]);
     assert.ok(picker.options.every((option) => typeof option.onSelect === "function"));
   });
@@ -378,10 +422,7 @@ describe("choosing a cap", () => {
     // The failure this shape rules out: a row whose `onSelect` is absent is a row the
     // operator can see, focus, and do nothing with. The agent screen's own Back row
     // already has that guarantee and the pickers did not, which is the drift.
-    withPickerOpen((host) => {
-      assert.ok(rowsOn(host).every((option) => typeof option.onSelect === "function"),
-        "a visible row that does nothing is worse than no row");
-    }));
+    withPickerClaimed((option) => typeof option.onSelect === "function", "a visible row that does nothing is worse than no row"));
 });
 
 describe("the flow, end to end on disk", () => {

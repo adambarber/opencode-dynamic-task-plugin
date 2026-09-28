@@ -159,6 +159,40 @@ export interface DepthLimits {
 }
 
 /**
+ * The part of a depth binding that decides whether a value is reachable.
+ *
+ * Structural and not `DepthLimits`, because the two callers hold DIFFERENT widths of
+ * the same thing and a parameter typed as the resolver's return would refuse the one
+ * that has to carry "unknown": the dispatch path always knows its agent set, while a
+ * TUI process that could not ask the host knows nothing and must say so rather than
+ * claim a depth. Naming the two fields keeps the predicate honest about being the only
+ * place that asks.
+ */
+type DepthFacts = { effective: number | null; boundBy: DepthBound | null };
+
+/**
+ * The depth in force when the agent set holds `depth` below it, else null.
+ *
+ * One predicate for one fact, and it is why the two screens that show a depth cap agree
+ * with each other and with the dispatch path. It answers per CANDIDATE value on
+ * purpose: the caps screen asks about the value in force, the picker asks about each
+ * value it offers, and a caller that needed a second value used to re-derive the
+ * binding itself — which is how a screen ends up offering a depth the resolver would
+ * refuse.
+ *
+ * Three conditions, and each refuses a different claim: a cap the operator set is not
+ * held down by anything, a binding whose agent set could not be read must not claim a
+ * depth it could not compute, and a ceiling at or above the value changes nothing — so
+ * `4/4` would be a second number to read for no information.
+ */
+export function depthHeldBy(facts: DepthFacts, depth: number): number | null {
+  if (facts.boundBy !== DepthBound.AgentSet) return null;
+  const effective = facts.effective;
+  if (effective === null || !isFinite(effective) || effective >= depth) return null;
+  return effective;
+}
+
+/**
  * The reachable depth, and the constraint that binds it.
  *
  * `agentNames` is the dispatchable set, not every agent the host publishes: an

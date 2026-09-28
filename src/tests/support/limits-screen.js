@@ -217,6 +217,19 @@ export function listOver(directory, agentNames = REGISTERED) {
 export const row = (list, title) => list.options.find((candidate) => candidate.title === title);
 
 /**
+ * One agent's entry, as the screen holds it, from the production reader.
+ *
+ * `capPickerProps` takes an `AgentEntry` and not a number, because the picker needs the
+ * entry's depth BINDING as well as the value in force — it has to answer "is this value
+ * reachable" about values the cap is not set to. A test that handed it a bare number
+ * would be exercising a builder the screen never calls, and the note would never have
+ * been proved against the data it claims to read.
+ */
+export function agentEntry(agent, raw = {}, agentNames = REGISTERED) {
+  return agentDialogFrom(raw, BASE, agentNames, false, null).rows.find((candidate) => candidate.name === agent);
+}
+
+/**
  * Every word a row puts on screen, as the host lays them out.
  *
  * `title` and `description` SHARE the first line — the host renders them into one
@@ -355,7 +368,18 @@ export const given = (step, fn) => async (host, directory) => {
 };
 
 /** …with one agent's two caps on screen. */
-export const withCapsOpen = (fn) => withExploreOpen(given((host) => row(top(host.seen), "explore").onSelect(), fn));
+export const withCapsOpen = (fn, overlay = { agents: { explore: { maxConcurrent: 2 } } }) =>
+  withOpen(given(pressRow("explore"), fn), { overlay });
+
+/**
+ * A depth cap stated ABOVE the agent set, which is the only state in which the set binds
+ * and the cap becomes a number the operator can type that will not take effect.
+ *
+ * A constant rather than a scenario, because only the file differs and the reaching is
+ * `withPickerOpen`'s: a scenario of its own would re-spell the two row presses and be a
+ * second path to the same screen, free to drift from the first.
+ */
+export const BOUND_DEPTH = { agents: { explore: { maxConcurrent: 2, maxDepth: 4 } } };
 
 /**
  * …with a value already chosen and the screen landed where the write sent it.
@@ -398,12 +422,24 @@ export const pressRowOn = async (host, title) => {
 };
 
 /** …with the value list open on ONE named cap of `explore`. */
-export const withPickerOpen = (fn, cap = "maxConcurrent") =>
+export const withPickerOpen = (fn, cap = "maxConcurrent", overlay = { agents: { explore: { maxConcurrent: 2 } } }) =>
   withCapsOpen(given((host) => {
     const opened = row(top(host.seen), CAP_LABEL[cap]);
     assert.ok(opened, `${cap} is one of the two rows, so the cap is reachable at all`);
     opened.onSelect();
-  }, fn));
+  }, fn), overlay);
+
+/**
+ * …with the value picker open and a claim made about EVERY row on it.
+ *
+ * The shape of a screen-level claim, which is the third time two cases have opened the
+ * same picker only to say something about all its rows. It is a scenario rather than
+ * two call sites because those two differ only in their predicate and their message —
+ * one sentence with a different verb in it, which the gate reads as shared code and
+ * which a reader has to diff to see is not.
+ */
+export const withPickerClaimed = (about, why, cap = "maxConcurrent") =>
+  withPickerOpen((host) => everyRowClaims(rowsOn(host), about, why), cap);
 
 /**
  * Choose a value and let the screen land where the write sends it.
@@ -461,8 +497,22 @@ export const capText = (host, cap) => rowText(top(host.seen), CAP_LABEL[cap]);
  * "check this whole screen", so a dialog that grows a row cannot escape the check by
  * being added somewhere that forgot to ask for it.
  */
-export const assertEveryRowFits = (dialog) => {
-  for (const option of dialog.options) {
-    assert.ok(fitsItsDialog(option), `"${option.title}" is clipped: ${JSON.stringify(option)}`);
-  }
-};
+export const assertEveryRowFits = (dialog) =>
+  assertRows(dialog.options, fitsItsDialog, (option) => `"${option.title}" is clipped: ${JSON.stringify(option)}`);
+
+/**
+ * Every one of `options` satisfies a claim the case is making about a whole screen.
+ *
+ * The other half of `assertEveryRowFits`, for a claim that is not about width. Three
+ * cases were each writing `rowsOn(host).every(...)` over a different predicate, which is
+ * one sentence with a different verb in it — the gate reads that as shared code and so
+ * does a reader, and both are right. Naming the row that fails is the part worth having:
+ * "no value is out of reach" is a claim about a list, and a list that breaks it is best
+ * reported by the element that does.
+ */
+export const everyRowClaims = (options, about, why) => assertRows(options, about, () => why);
+
+/** The one loop both screen-level claims are written on. */
+function assertRows(options, about, why) {
+  for (const option of options) assert.ok(about(option), why(option));
+}

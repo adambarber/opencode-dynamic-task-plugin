@@ -55,6 +55,7 @@ import {
   applyCapEdit,
   applyCeilingEdit,
   capCellOf,
+  ceilingOf,
   overlayFrom,
   type AgentDialog,
   type AgentEntry,
@@ -330,6 +331,7 @@ export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<Ceil
       (value) => confirm({ value }),
       back,
       BACK_TO_LIST,
+      NOTHING_HOLDS,
     ),
   };
 }
@@ -394,10 +396,11 @@ export function agentCapsProps(
 export function capPickerProps(
   agent: string,
   cap: AgentCapName,
-  current: number | null,
+  row: AgentEntry,
   actions: PickerActions<CapChoice>,
 ): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
+  const cell = capCellOf(row, cap);
   const title = `${agent} — ${CAP_LABEL[cap]}`;
   return {
     title,
@@ -415,11 +418,12 @@ export function capPickerProps(
     // content stops fitting it.
     ...valuePicker(
       CAP_CHOICES[cap],
-      current,
+      cell.stated ? cell.value : null,
       (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
       (value) => confirm({ cap, value }),
       back,
       `back to ${agent}'s caps`,
+      (value) => ceilingOf(row.depth, cap, value),
     ),
   };
 }
@@ -458,6 +462,7 @@ function valuePicker(
   onPick: (value: number | null) => void,
   back: () => void,
   backTo: string,
+  heldBy: (value: number) => number | null,
 ) {
   return {
     options: [
@@ -471,6 +476,11 @@ function valuePicker(
         title: `${value}`,
         // A mark on a value the operator is not changing would be decoration.
         footer: value === current ? "in force" : undefined,
+        // The depth the agent set will not let this cap reach. `description` rather than
+        // a third colour tier, because it is a sentence and the host clips a suffix off
+        // the headline rather than giving it a line of its own — and it shares that line
+        // with a title of one or two characters, so there is room for it there.
+        ...described(heldNote(heldBy, value)),
         value: asChoice(value),
         onSelect: () => onPick(value),
       })),
@@ -485,6 +495,31 @@ function valuePicker(
     ],
   };
 }
+
+/**
+ * Why this value cannot take effect, said on the value, or undefined when it can.
+ *
+ * The word "unreachable" and not a removed row, because the value is legal: `maxDepth`
+ * stops offering values past 8 on the grounds that depth is a small number, and an
+ * operator who registers a ninth agent tomorrow has a legal cap this list cannot hold.
+ * Marking the ones the agent set holds down is the version of that care which survives
+ * the agent set changing, and naming the number that binds makes the row a decision
+ * rather than a refusal.
+ */
+const heldNote = (heldBy: (value: number) => number | null, value: number): string | undefined => {
+  const effective = heldBy(value);
+  return effective === null ? undefined : `unreachable — agent set binds at ${effective}`;
+};
+
+/**
+ * Nothing holds a total down but the total.
+ *
+ * A function rather than a flag, so the picker's rows come out of ONE body and the
+ * ceiling's row is not a special case with a branch in it. The claim is a real one and
+ * belongs where it is made: `AgentDialog.ceiling` records that its `bounded` is always
+ * null for the same reason.
+ */
+const NOTHING_HOLDS = () => null;
 
 /** What the fallback row means, said on the row that does it. */
 const FALLBACK_MEANING = "clear this cap and use the number in the config file instead";
@@ -501,6 +536,18 @@ const FALLBACK_MEANING = "clear this cap and use the number in the config file i
  * code.
  */
 const withDetails = (...lines: string[]) => ({ details: lines } as Record<string, unknown>);
+
+/**
+ * A row's `description`, spread in — and ABSENT when there is nothing to say.
+ *
+ * The opposite problem from `withDetails`, and the reason it is not the same helper. The
+ * host declares `description?: string` without a `| undefined`, so under this repo's
+ * `exactOptionalPropertyTypes` a key carrying `undefined` is a type error rather than
+ * an absent key. A row that has no note therefore cannot say so by passing `undefined`;
+ * the field has to be left out, and this is the one place that decides to leave it.
+ */
+const described = (description: string | undefined) =>
+  (description === undefined ? {} : { description }) as Record<string, unknown>;
 
 /**
  * The word on a picker's way out, and the destination the ceiling picker's names.
@@ -671,7 +718,7 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   const confirm = (choice: CapChoice) =>
     applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
   mountLimitsSelect(api, () =>
-    capPickerProps(agent, cap, row.stated[cap] ?? null, { confirm, back: () => openAgentCaps(api, view, agent) }),
+    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }),
   );
 }
 

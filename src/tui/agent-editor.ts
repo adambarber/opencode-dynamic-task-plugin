@@ -28,7 +28,7 @@ import {
   type AgentOverlay,
   type OverlayAgents,
 } from "../shared/caps.js";
-import { DepthBound, depthLimits } from "../shared/task-policy.js";
+import { DepthBound, depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
 /**
  * How each cap reads in a cell.
@@ -248,16 +248,13 @@ export function capCellOf(row: AgentEntry, cap: AgentCapName): CapCell {
 /**
  * The reachable depth when the agent set holds it below the cap, else null.
  *
- * Three conditions, and each is a different claim: a concurrency cell has no ceiling
- * that is not its own value; a depth cell whose effective depth is UNKNOWN must not
- * claim a ceiling it could not compute; and a ceiling at or above the cap changes
- * nothing, so `4/4` would be a second number to read for no information.
+ * The cap-shaped half of `depthHeldBy`, which is where the three conditions and the
+ * reasoning live. It stays here because the CAP is this module's vocabulary — a
+ * concurrency cell has no ceiling that is not its own value — and it is exported
+ * because the picker needs the same answer for a value it has not chosen yet.
  */
-function ceilingOf(depth: DepthBinding, cap: AgentCapName, value: number): number | null {
-  if (cap !== "maxDepth" || depth.boundBy !== DepthBound.AgentSet) return null;
-  const effective = depth.effective;
-  if (effective === null || !isFinite(effective) || effective >= value) return null;
-  return effective;
+export function ceilingOf(depth: DepthBinding, cap: AgentCapName, value: number): number | null {
+  return cap === "maxDepth" ? depthHeldBy(depth, value) : null;
 }
 
 /** The resolved pair, without the agent name the row already carries. */

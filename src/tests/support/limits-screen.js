@@ -117,7 +117,7 @@ export function rendererDouble() {
  * object, unchanged, so the suite reads the same shape the host would.
  */
 export function hostApi(directory) {
-  const seen = { layers: [], toasts: [], selects: [] };
+  const seen = { layers: [], toasts: [], selects: [], slots: [] };
   const dialog = dialogStack();
   const renderer = rendererDouble();
   return {
@@ -148,6 +148,18 @@ export function hostApi(directory) {
         app: {
           agents: async () => ({ data: REGISTERED.map((name) => ({ name })) }),
           log: async () => undefined,
+        },
+      },
+      // Slots are where the LIVE counter is mounted, so the double has to accept a
+      // registration and keep it. It does not call the slot's function: doing so needs
+      // an active renderer, which is the same absence that keeps the gauge's element
+      // construction out of every case here. What a case CAN check is that the module
+      // registers exactly one, under the name it claims — a counter mounted in a slot
+      // the host never draws is not a failing test, it is a number that never appears.
+      slots: {
+        register: (plugin) => {
+          seen.slots.push(plugin);
+          return "dynamic-task";
         },
       },
       ui: {

@@ -26,6 +26,7 @@ import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
 import { agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps, type AgentCapSource } from "./caps.js";
+import { foldActiveByAgent } from "./occupancy.js";
 // The store is its own subject: it owns the SET and the only way to change it,
 // while this module owns what a set MEANS. Re-exported here because task-state is
 // where the state machine reads and writes it, and eight modules already reach the
@@ -367,30 +368,22 @@ function reclaimAsActive(
  * both sides, is the whole fix.
  */
 export function agentActiveCount(store: TaskStore, agent: string): number {
-  const key = agentKey(agent);
-  let count = 0;
-  for (const record of store.activeTasks.values()) {
-    if (agentKey(record.agentName) === key) count++;
-  }
-  return count;
+  return foldActiveByAgent(store.activeTasks.values()).get(agentKey(agent)) ?? 0;
 }
 
 /**
  * Running tasks per agent, for `agentOccupancy`, in the same folded form.
  *
- * Built here rather than in the caps module because the caps module must not know what
- * a task is: `task-state` needs `checkAgentCapacity` to judge a claim, so the
- * dependency runs inward and the count crosses as DATA. Handing `agentOccupancy` the
- * store instead would have been a cycle wearing a parameter.
+ * A view of the store's running half onto `foldActiveByAgent`, which lives in
+ * `occupancy.ts` because a TUI that has only the ledger needs the same rule and cannot
+ * bring a store to it. It is kept here rather than moved there because this one is about
+ * a STORE: handing `agentOccupancy` the store's own set is the point, and the module
+ * that owns the store is where that reading belongs.
  */
 export function activeByAgent(store: TaskStore): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const record of store.activeTasks.values()) {
-    const key = agentKey(record.agentName);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  return counts;
+  return foldActiveByAgent(store.activeTasks.values());
 }
+
 
 /**
  * The store's ONE capacity judgment: the refusal text for admitting an agent, or null

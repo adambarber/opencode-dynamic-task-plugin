@@ -7,6 +7,7 @@ import { TaskState, failureClassOf, formatAge, turnReplacementPending, type Task
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
 import { FailureClass, failureNote } from "./failure-class.js";
+import type { FileTouch } from "./prompt.js";
 import { textBlock, present } from "./text-block.js";
 import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
@@ -324,6 +325,24 @@ function failureClassLines(task: TaskRecord | null | undefined): string[] {
 }
 
 /**
+ * What the child changed, in one line, for the parent deciding what to do about a
+ * dead child.
+ *
+ * Bounded rather than complete: a child that rewrote twenty files needs the first
+ * few and the count, not twenty paths, and a line long enough to wrap stops being
+ * a line. Omitted entirely when nothing changed, because a child that only read is
+ * the common case and "Changed: none" is a line the parent learns to skip.
+ */
+const CHANGED_LISTED = 6;
+
+function changedLines(files: FileTouch[] | undefined): string[] {
+  if (!files || files.length === 0) return [];
+  const listed = files.slice(0, CHANGED_LISTED).map((f) => `${f.verb} ${f.path}${f.incomplete ? " (incomplete)" : ""}`);
+  const rest = files.length - listed.length;
+  return [`Changed: ${listed.join(", ")}${rest > 0 ? `, +${rest} more` : ""}`];
+}
+
+/**
  * The record every read path renders from.
  *
  * This shape was being spelled out by hand at four call sites (three in read.ts,
@@ -346,6 +365,12 @@ export interface TaskResultRecord {
   latestText: string;
   tracked: boolean;
   notification?: NotificationRecord | null | undefined;
+  /**
+   * The files this child changed, from its own transcript. Read only by the
+   * paths that HAVE the transcript in hand; a reader that does not leaves it
+   * absent, which renders as silence rather than as an empty claim.
+   */
+  touchedFiles?: FileTouch[] | undefined;
   // Transport/read failures render through this same funnel (never raw
   // JSON): one voice for every read path, the error rides as data.
   error?: string | undefined;
@@ -411,6 +436,7 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   }
 
   lines.push(...failureClassLines(input.task));
+  lines.push(...changedLines(input.touchedFiles));
 
   if (input.task) {
     lines.push(...formatLivenessLines(input.task, input.liveness ?? null));

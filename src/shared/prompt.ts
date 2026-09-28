@@ -195,6 +195,109 @@ export function extractTextFromParts(parts: unknown): string {
   return out.join("\n");
 }
 
+/**
+ * A tool call as the host's transcript carries it: `state.input` is untyped by
+ * the SDK, so every field is read through a guard and the shape is never cast.
+ */
+export interface ToolPart {
+  tool: string;
+  input: Record<string, unknown>;
+  incomplete: boolean;
+}
+
+/**
+ * A tool call, projected out of the host's part shape, or null when the part is
+ * not one.
+ *
+ * A PROJECTOR and not a type predicate, because the fields the reader needs —
+ * `state.input` and `state.status` — are not on the part itself. A guard would
+ * answer "is this a tool call" and leave the reader to reach back through the raw
+ * record, and a predicate that returns true has already promised a shape whose
+ * `status` is `undefined`: the first version of this did exactly that, and the
+ * test that asked whether a rejected write was marked failed is what caught it.
+ *
+ * The status is normalized to a question rather than carried out, for two reasons
+ * that are really one. A comparison against the host's raw `"error"` is a tag
+ * compared as a string, which the strong-types gate exists to stop; and there is
+ * a second answer the raw string cannot give honestly — a call still `running`
+ * when its child died has ALSO not landed, and reporting it as anything but
+ * incomplete would tell a resuming parent that a half-applied edit was a
+ * finished one.
+ */
+export function toolCallOf(value: unknown): ToolPart | null {
+  if (!isEventRecord(value) || value.type !== "tool" || typeof value.tool !== "string") return null;
+  if (!isEventRecord(value.state) || !isEventRecord(value.state.input)) return null;
+  const status = value.state.status;
+  return {
+    tool: value.tool,
+    input: value.state.input,
+    incomplete: typeof status !== "string" || !LANDED_CALLS.has(status),
+  };
+}
+
+/**
+ * The statuses that mean the change is on disk. The host's `ToolState` is a
+ * closed union whose settled member is this one; everything else — pending,
+ * running, error, or a word from a future host — is not on disk, which is the
+ * only question this reader asks.
+ */
+const LANDED_CALLS: ReadonlySet<string> = new Set(["completed"]);
+
+/**
+ * The verbs that CHANGE a file.
+ *
+ * An allowlist, deliberately, and the reason is the corpus rather than taste:
+ * queried against the host's own store, every tool that carries a `filePath` in
+ * its input includes `read` — 36,951 of them — and also `glob`, `bash` and
+ * `aft_search`, which name a path for their own reasons. A tool missing from this
+ * set is simply not reported, so a new tool is a missing line and never a wrong
+ * one. `read` is the trap that makes the set necessary: it shares the exact key
+ * the mutators use.
+ */
+const MUTATING_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
+
+/** One file the child changed, or tried to. */
+export interface FileTouch {
+  verb: string;
+  path: string;
+  /**
+   * The call never reported completion, so the file is probably NOT what the
+   * child intended. That distinction is the point of keeping the verb: a
+   * half-applied edit and a finished one look identical in a file listing and
+   * are not the same amount of work to redo.
+   */
+  incomplete: boolean;
+}
+
+/**
+ * The files a child changed, oldest first, deduplicated, from its own transcript.
+ *
+ * From the TRANSCRIPT rather than the working tree, and that is the whole design:
+ * a project's dirty files belong to every child running against it at once, so
+ * "what did this child change" cannot be answered by asking git — it can only be
+ * answered by what this child actually called. It is also free: `task_result`
+ * already reads this transcript to count messages, so the brief costs no host call
+ * and nothing is added to the settlement's event head.
+ */
+export function touchedFiles(messages: unknown): FileTouch[] {
+  if (!Array.isArray(messages)) return [];
+  const seen = new Set<string>();
+  const touches: FileTouch[] = [];
+  for (const message of messages) {
+    if (!isMessage(message)) continue;
+    for (const part of message.parts ?? []) {
+      const call = toolCallOf(part);
+      if (call === null || !MUTATING_TOOLS.has(call.tool)) continue;
+      const filePath = call.input.filePath;
+      if (typeof filePath !== "string" || !filePath) continue;
+      if (seen.has(filePath)) continue;
+      seen.add(filePath);
+      touches.push({ verb: call.tool, path: filePath, incomplete: call.incomplete });
+    }
+  }
+  return touches;
+}
+
 // ─── extractMessages ───────────────────────────────────────────────
 // (Moved verbatim from index.ts — message-shape handling belongs here.)
 

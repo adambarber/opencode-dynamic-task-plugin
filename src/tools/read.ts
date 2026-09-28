@@ -3,7 +3,7 @@
 // nothing except read-path TTL pruning.
 import { errorMessage } from "../shared/host-shape.js";
 import { eventField } from "../shared/host-shape.js";
-import { getLatestAssistantText } from "../shared/prompt.js";
+import { getLatestAssistantText, touchedFiles } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
   readLiveness,
@@ -52,6 +52,9 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
         status: task ? task.state : statusFromHostState(liveness?.hostState ?? null),
         messageCount: messages.length,
         latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
+        // Free: the transcript this already read for the count and the latest text
+        // is the only place "what did this child change" can be answered honestly.
+        touchedFiles: touchedFiles(messages),
         tracked: task !== undefined,
         notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
         task: task ?? null,

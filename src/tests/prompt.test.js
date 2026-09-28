@@ -8,7 +8,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride } from "../../dist/shared/prompt.js";
+import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride, touchedFiles } from "../../dist/shared/prompt.js";
 import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.js";
 
 // The smallest shapes the reader tests are about, stated once: a text part, and
@@ -70,6 +70,54 @@ describe("extractTextFromParts", () => {
 // The envelope the reader must dig. A failed turn still has role
 // "assistant", and the human detail is one level down inside info.error — no
 // part carries it. Stated once so two cases cannot pass for different reasons.
+// The tools that change a file, in the shape the host's own store carries them:
+// `state.input.filePath` under a `state.status`. Every fixture here is transcribed
+// from that corpus rather than invented, because a `filePath` at the top level
+// would pass a reader built against a shape the host never sends.
+const toolCall = (tool, filePath, status = "completed") => ({
+  type: "tool",
+  tool,
+  state: { status, input: filePath === undefined ? {} : { filePath } },
+});
+
+describe("touchedFiles: the files a child actually changed", () => {
+  const touchedIn = (parts) => touchedFiles([{ role: ASSISTANT_ROLE, parts }]);
+
+  it("names what it wrote and edited, with the verb", () => {
+    const files = touchedIn([toolCall("edit", "/p/a.ts"), toolCall("write", "/p/b.ts")]);
+    assert.deepEqual(files, [
+      { verb: "edit", path: "/p/a.ts", incomplete: false },
+      { verb: "write", path: "/p/b.ts", incomplete: false },
+    ]);
+  });
+
+  // The reason the mutators are an allowlist: `read` names its file in exactly
+  // the same key, and there are ten times as many of them in the corpus as edits.
+  it("does not report a file the child only read", () => {
+    assert.deepEqual(touchedIn([toolCall("read", "/p/a.ts")]), []);
+  });
+
+  // Two ways a call is not on disk, and they are the same fact to a parent: a
+  // write the host rejected, and an edit still running when the child died. Both
+  // are work to redo, and reporting the second as finished is the lie.
+  it("marks a change that never completed, whether rejected or still running", () => {
+    const files = touchedIn([toolCall("write", "/p/b.ts", "error"), toolCall("edit", "/p/c.ts", "running")]);
+    assert.deepEqual(files, [
+      { verb: "write", path: "/p/b.ts", incomplete: true },
+      { verb: "edit", path: "/p/c.ts", incomplete: true },
+    ]);
+  });
+
+  it("counts a file once, however many times it was edited", () => {
+    assert.equal(touchedIn([toolCall("edit", "/p/a.ts"), toolCall("edit", "/p/a.ts")]).length, 1);
+  });
+
+  it("reads no messages, or none with parts, as no changes", () => {
+    assert.deepEqual(touchedFiles(undefined), []);
+    assert.deepEqual(touchedFiles([{ role: ASSISTANT_ROLE }]), []);
+  });
+});
+
 describe("messageErrorDetail", () => {
   const assistantTurn = (error, parts = []) => ({
     info: error === undefined ? { role: ASSISTANT_ROLE } : { role: ASSISTANT_ROLE, error },

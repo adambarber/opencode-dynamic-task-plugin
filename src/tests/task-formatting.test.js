@@ -137,6 +137,33 @@ describe("the retained roll-up says the SHAPE of a fleet, not its size", () => {
   });
 });
 
+// When a child dies, the parent has to reconstruct what it was in the middle of,
+// and the one fact it cannot get any other way is which files that child changed.
+// A dirty working tree will not answer it: those files belong to every child
+// running against the project at once. The child's own transcript can, and
+// task_result already reads it to count messages, so the brief is free.
+describe("task_result briefs the parent on what the child touched", () => {
+  const summaryOf = (touchedFiles) => formatTaskResultSummary(resultRecord({ touchedFiles }));
+
+  it("names each change with its verb, so a read is not mistaken for one", () => {
+    const summary = summaryOf([{ verb: "edit", path: "/p/a.ts", incomplete: false }]);
+    assert.match(summary, /Changed: edit \/p\/a\.ts/);
+  });
+
+  // A change that never completed is not the same amount of work to redo as one
+  // that landed, and a file listing cannot tell them apart.
+  it("says which of them did not finish", () => {
+    const summary = summaryOf([{ verb: "write", path: "/p/b.ts", incomplete: true }]);
+    assert.match(summary, /write \/p\/b\.ts \(incomplete\)/);
+  });
+
+  // A child that read forty files and changed nothing has said something true and
+  // useful by saying this, and a line of forty reads would bury it.
+  it("stays silent for a child that changed nothing", () => {
+    assert.strictEqual(summaryOf([]).includes("Changed:"), false);
+  });
+});
+
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
     const result = formatTaskResultSummary(resultRecord({ status: "busy" }));

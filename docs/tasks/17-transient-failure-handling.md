@@ -126,6 +126,45 @@ across the restart, and reviving its record would send a prompt to a session the
 host no longer has. It always reports, and the reason it can is the one that
 belongs: the parent is told its child is missing.
 
+## The recovery brief, and what it is not
+
+A dead child leaves the parent reconstructing what it was in the middle of. The
+brief is the one fact it cannot get any other way — **which files that child
+changed** — taken from the child's own transcript, and rendered by `task_result` as
+`Changed: edit src/a.ts, write src/b.ts (incomplete)`.
+
+It is emphatically **not** the working tree. Dirty files belong to every child
+running against the project at once, so "what did this child change" cannot be
+answered by asking git; it can only be answered by what this child actually called.
+It is also free: `task_result` already reads that transcript to count messages, and
+nothing was added to the settlement's event head.
+
+Two shape decisions came from the host's own store rather than from taste, queried
+rather than assumed (`ToolState.input` is `{[key: string]: unknown}` in the SDK, so
+neither `filePath` nor the status vocabulary is discoverable from types):
+
+- **The mutators are an allowlist** (`edit`, `write`). Every tool carrying a
+  `filePath` includes `read` — 36,951 of them against 25,211 edits — and also
+  `glob`, `bash` and `aft_search`, which name a path for their own reasons. A tool
+  absent from the set is *not reported*, so a future mutator is a missing line and
+  never a wrong one.
+- **`incomplete`, not `failed`.** The first version compared the raw status to
+  `"error"`, which the strong-types gate correctly refused as a tag compared as a
+  string — and fixing it properly found a better fact. A call still `running` when
+  its child died has also not landed, and it is half-applied work that a resuming
+  parent must know about. So the projector answers "is this on disk" once, against
+  the host's one settled status, and the reader never sees a status string at all.
+
+`toolCallOf` is a **projector, not a type predicate**, because the fields the reader
+needs are not on the part itself. The first version was a guard, and a predicate
+that returns `true` has already promised a shape whose `status` is `undefined` — the
+test asking whether a rejected write was marked incomplete is what caught it.
+
+Bounded at six with `+N more`: a child that rewrote twenty files needs the first few
+and the count, and a line long enough to wrap stops being a line. Omitted entirely
+when nothing changed, because a read-only child is the common case and
+`Changed: none` is a line a parent learns to skip.
+
 ## Degradation direction
 
 Every way this can be wrong fails toward **reporting**, never toward silence: a
@@ -211,7 +250,13 @@ fully green suite shipped a 12% false-success rate on aborted children.
 `task-formatting.test.js` — `readers say WHY a child failed`: the class line from
 `task_result`, from `task_status`, and **absent** on a success. The last is the one
 that matters: a renderer that printed the line unconditionally would teach the
-parent to ignore it.
+parent to ignore it. And `task_result briefs the parent on what the child touched`:
+the verb, the incomplete marker, and silence for a child that changed nothing.
+
+`prompt.test.js` — `touchedFiles`, on part fixtures transcribed from the host's own
+store: the mutators with their verbs, a `read` correctly ignored, a rejected write
+and a still-running edit both marked incomplete, one file counted once, and no
+messages reading as no changes.
 
 Harness: `childFailingWith(detail)` in `support/integration.js`, one arrangement
 that was being built inline in seven places. The harness also gained
@@ -222,7 +267,7 @@ second harness and a second child.
 ## Proof
 
 `npx tsc --noEmit` exit 0; `npm run test:duplication` → `Found 0 clones`;
-`node --test src/tests/*.test.js` → 712 passing, 0 failing; `npm run test:coverage`
+`node --test src/tests/*.test.js` → 723 passing, 0 failing; `npm run test:coverage`
 exit 0 (90 lines / 80 branches / 90 functions).
 
 ## Status

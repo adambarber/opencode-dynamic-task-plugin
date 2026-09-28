@@ -118,11 +118,22 @@ export function classifyFailure(verdict: TaskState, detail: unknown): FailureCla
  * The `Failure class: <word>` label is the part that is a contract. The rest is
  * for the human and may be reworded. Returns "" for None: a child that finished
  * owes its parent no apology, and a trailing blank section reads as a fault.
+ *
+ * `resumesSpent` is what makes a transient failure HONEST rather than merely
+ * quiet. A transient failure is normally resumed and never mentioned, so the one
+ * time a parent hears about one is the time the retries ran out — and "this
+ * failed" then understates what happened, because the network tried again and
+ * tried again first. A parent who knows the blips are exhausted can decide the
+ * outage is not going to clear; a parent told only that it failed will read the
+ * message as one unlucky attempt.
  */
-export function failureNote(failureClass: FailureClass): string {
+export function failureNote(failureClass: FailureClass, resumesSpent = 0): string {
   if (failureClass === FailureClass.Transient) {
+    const spent = resumesSpent > 0
+      ? ` It had already been resumed ${resumesSpent} time(s) without getting through, so this is a lasting outage rather than one unlucky turn.`
+      : "";
     return "Failure class: transient — a network or provider blip, not the work. "
-      + "Nothing here to investigate; the child resumes from where it stopped.";
+      + "Nothing here to investigate; the child resumes from where it stopped." + spent;
   }
   if (failureClass === FailureClass.Structural) {
     return "Failure class: structural — the work failed, not the connection. "

@@ -13,7 +13,7 @@ import assert from "node:assert";
 import { bounded, dialCount, promptsSaying, promptsTo, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
 import { deferred, events, promptText } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusOmits, statusSays } from "./support/assertions.js";
-import { bootOn, eventHarness } from "./support/integration.js";
+import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
 import { retainedEntry } from "./support/records.js";
 import { ENV } from "../../dist/shared/config.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
@@ -360,27 +360,22 @@ describe("task_continue branches", () => {
 });
 
 describe("error settlement guidance", () => {
-  async function settleWithMessageError(detail) {
-    const h = await setupHarness({
-      hooks: { messages: () => [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } }, parts: [] }] },
-      });
-    const { id } = await h.spawn();
+  // A transient failure no longer produces a notice at all: it is resumed in
+  // silence under a budget, and the parent hears about it only once that budget
+  // is spent. That contract, and the guidance a spent budget carries, live in
+  // transient-resume.test.js — where the feature is now tested rather than here,
+  // because it is no longer about task_continue.
+  //
+  // What is left in this file is the half that is true of every REPORTED
+  // failure: a fatal cause keeps its own words, and is never dressed up as a blip.
+  it("fatal error settlements carry no resume hint", async () => {
+    const { h, id } = await childFailingWith("permission denied for model");
     await h.fireEvent(events.error(id));
     assertNoticeCount(h, 1, "error settles exactly once");
-    return h.noticeBodies()[0];
-    }
-
-  it("transient error settlements name task_continue as the resume path", async () => {
-    const note = await settleWithMessageError("429 rate limit exceeded, retry shortly");
-    answerSays(note, "transient", "names the failure class");
-    answerSays(note, "task_continue", "points at resume");
-    });
-
-  it("fatal error settlements carry no resume hint", async () => {
-    const note = await settleWithMessageError("permission denied for model");
+    const note = h.noticeBodies()[0];
     answerSays(note, "permission denied", "keeps the cause");
     answerOmits(note, "transient", "no resume hint for fatal");
-    });
+  });
 });
 
 // ─── Outcome correctness (field repro 2026-09-11T19:30:00.485Z) ─────

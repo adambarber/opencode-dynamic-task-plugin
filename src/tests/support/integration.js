@@ -15,7 +15,29 @@ import assert from "node:assert";
 import { writeFileSync } from "node:fs";
 import { setupHarness, sleep, tmpProjectDir, withTempFile, tmpFilePath } from "./harness.js";
 import { events } from "./mock-host.js";
+import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { resolveTaskLedgerPath } from "../../../dist/shared/session-lifecycle.js";
+
+/**
+ * A harness whose children fail every turn with `detail`, and one such child.
+ *
+ * This arrangement was being built inline in seven cases, and each build was a
+ * chance for the transcript shape to drift from the one the host actually sends.
+ * The failed turn here carries an `error` and NO `parts` key, because that is
+ * what a turn that produced no output looks like — and a fixture that added
+ * `parts: []` would pass the reader's guard for the wrong reason, which is how a
+ * green suite shipped a 12% false-success rate on aborted children.
+ *
+ * How the turn is ENDED stays with the case: a settlement test fires the host's
+ * error event, a recovery test ends the turn the ordinary way and settles again.
+ */
+export async function childFailingWith(detail) {
+  const h = await setupHarness({
+    hooks: { messages: () => [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } } }] },
+  });
+  const { id } = await h.spawn({ description: `child that dies of: ${detail}` });
+  return { h, id };
+}
 
 /**
  * The durable reader's input, written as given. The file name and the version

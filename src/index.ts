@@ -97,7 +97,7 @@ export default async function dynamicTaskPlugin(
       // --- Session lifecycle event handler ---
       if (!terminal) return;
       try {
-        await handleChildLifecycleEvent(client, store, event);
+        await handleChildLifecycleEvent(client, store, event, config);
       } catch (error: unknown) {
         await containFailure(client, "event handler error", error);
         debugLog("event-handler", "event-handler", "event-handler-error", {

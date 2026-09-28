@@ -26,6 +26,7 @@ import {
   recordNotification,
   NotifyKind,
   settlementKind,
+  gateLedger,
 } from "../shared/notify.js";
 import {
   transitionState,
@@ -34,15 +35,22 @@ import {
   terminalEventIsAttributable,
   isRunning,
   findTask,
+  reviveRetainedTask,
   type TaskStore,
   type TaskIdentity,
   type TaskRecordBase,
+  type ActiveTaskState,
   type SettlementVerdict,
   TaskState,
 } from "../shared/task-state.js";
 import { releaseWaitsFor, type DependencyWait } from "../shared/dispatch-wait.js";
 import { resolveDependencies } from "../shared/admission.js";
 import { settlementFallback, waitsReleasedBody } from "../shared/voice.js";
+import { transientResumeAvailable } from "../shared/transient-resume.js";
+import { textBlock } from "../shared/text-block.js";
+import { errorMessage } from "../shared/host-shape.js";
+import type { AgentCapSource } from "../shared/caps.js";
+import type { ModelOverride } from "../shared/prompt.js";
 
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
@@ -119,6 +127,77 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
   }
 }
 
+/**
+ * The ONE way a settled child is brought back to life, for both callers that do
+ * it: a parent following up with `task_continue`, and a settlement that decides a
+ * network blip is not worth telling the parent about.
+ *
+ * Three steps in a fixed order, and the order is the whole content:
+ *
+ *   1. `reviveRetainedTask` — the single move from settled back to running. It
+ *      re-claims the child's concurrency slot (so a revival cannot exceed a cap,
+ *      and cannot skip the check by coming from the automatic path), spends one
+ *      unit of the child's resume budget, and publishes the new running record.
+ *   2. `gateLedger.forgetChild` — a revived task is a FRESH settlement subject.
+ *      Without this the child's next real outcome is deduplicated against the
+ *      turn that already settled, and a child that recovers from a blip and then
+ *      genuinely fails reports nothing, forever. That is the one failure this
+ *      feature must be structurally unable to cause.
+ *   3. `fireChildPrompt` — the child's new turn, carrying whatever asked for it.
+ *
+ * Written once because these three steps had two homes: the settlement path would
+ * otherwise have been a second revival, and a second revival is a second place for
+ * the dedup to be forgotten and a second place for the cap check to be skipped.
+ *
+ * Throws when the revival is refused (an unknown child, or one an operator
+ * interrupted — which is never revived) and when no slot is free. Each caller
+ * answers that in its own voice: a tool returns a sentence to the parent, and a
+ * settlement falls back to REPORTING, which is the only safe direction to fail in.
+ */
+export function reviveWithPrompt(
+  client: OpenCodeClient,
+  store: TaskStore,
+  childSessionId: string,
+  prompt: string,
+  capSource: AgentCapSource | undefined,
+  model?: ModelOverride | undefined,
+): ActiveTaskState {
+  const revived = reviveRetainedTask(store, childSessionId, capSource, model);
+  gateLedger.forgetChild(childSessionId);
+  fireChildPrompt(client, store, revived, prompt);
+  return revived;
+}
+
+/**
+ * Resume a child that died of a network blip. Answers WHETHER it happened, so
+ * the settlement can fall through to reporting when it did not — a refused
+ * revival (no slot free, the record gone, an operator's interrupt) must end in a
+ * message to the parent, never in a task that is neither running nor reported.
+ *
+ * The child is told what happened and that nothing it was asked to do has
+ * changed, because the alternative — a resumed child that assumes it was wrong
+ * and starts redoing finished work — costs more than the blip did.
+ */
+function resumeAfterBlip(
+  client: OpenCodeClient,
+  store: TaskStore,
+  childSessionId: string,
+  capSource: AgentCapSource | undefined,
+): boolean {
+  const text = textBlock(
+    "[Resumed — your previous turn was cut off by a network or provider error, not by anything you did.]",
+    "No work is lost and nothing you were asked to do has changed. Read back over your last few messages, work out what you had already finished, and continue from there.",
+    "Do not start over. If you were mid-way through a tool call, check whether it actually took effect before repeating it.",
+  );
+  try {
+    reviveWithPrompt(client, store, childSessionId, text, capSource);
+    return true;
+  } catch (error: unknown) {
+    void safeLog(client, "info", `Transient resume refused for ${childSessionId}: ${errorMessage(error)} — reporting the failure instead`);
+    return false;
+  }
+}
+
 // The single settlement implementation for a RUNNING task, whatever told us it
 // is over: the host's terminal event, or the boot pass that found no turn
 // running for a task the last process left running. Both bring the host's own
@@ -164,6 +243,7 @@ export async function settleRunningChild(
   store: TaskStore,
   childSessionId: string,
   signal: SettlementSignal,
+  capSource?: AgentCapSource | undefined,
 ): Promise<boolean> {
   const { status, cause } = signal;
   // Turn attribution first, and the reason for it lives on the gate itself. It is
@@ -217,6 +297,28 @@ export async function settleRunningChild(
     }
   }
   const latestText = outcome.text || settlementFallback(verdict, outcome.errorDetail);
+
+  // The settlement has claimed the child, so the record is settled and the parent
+  // is owed an answer. Before spending that answer: was this failure the
+  // network's, and is there budget left to try again without asking? A child that
+  // dies of a socket reset has not done anything wrong, and a parent told about
+  // it spends a turn investigating a network problem as if it were its own.
+  //
+  // So it is resumed instead, and nothing is sent. Every way this can be wrong
+  // fails toward REPORTING rather than toward silence: a structural failure is
+  // never resumed, a spent budget is never resumed, an unknown cap is never
+  // resumed, and a refused revival falls through to the notice below. The child
+  // that recovers tells the parent its real outcome, because the revival cleared
+  // the settle-dedup (reviveWithPrompt) — a resume that left it in place would
+  // swallow the next outcome too.
+  if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource)) {
+    const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
+    if (resumeAfterBlip(client, store, childSessionId, capSource)) {
+      void safeLog(client, "info", `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
+      return true;
+    }
+  }
+
   // The outcome is the point of this message, so a read that could not be
   // made says so instead of letting "(completed)" stand in for a quote the
   // parent never received. The record is settled either way; task_result
@@ -232,7 +334,8 @@ export async function settleRunningChild(
   // the two used to be separate (a boolean here appending a sentence about a
   // classification that did not exist), which is how the sentence stopped
   // describing the decision.
-  const classNote = failureNote(classifyFailure(verdict, outcome.errorDetail));
+  const failure = classifyFailure(verdict, outcome.errorDetail);
+  const classNote = failureNote(failure, findTask(store, childSessionId)?.transientResumes ?? 0);
   // Detached: the synchronous claim above is the settlement guarantee;
   // delivery transport must never hold the event pump head-of-line.
   // Observability survives via the ledger record, logged on completion.
@@ -290,6 +393,7 @@ export async function handleChildLifecycleEvent(
   client: OpenCodeClient,
   store: TaskStore,
   event: unknown,
+  capSource?: AgentCapSource | undefined,
 ): Promise<void> {
   const childSessionId = getSessionIdFromEvent(event);
   if (!childSessionId) return;
@@ -298,7 +402,7 @@ export async function handleChildLifecycleEvent(
     await settleRunningChild(client, store, childSessionId, {
       status: getEventLifecycleStatus(event),
       event,
-    });
+    }, capSource);
     return;
   }
 

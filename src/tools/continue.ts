@@ -5,16 +5,15 @@ import { abortSession } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
-import { gateLedger, NotifyKind } from "../shared/notify.js";
+import { NotifyKind } from "../shared/notify.js";
 import { textBlock } from "../shared/text-block.js";
 import {
   TaskState,
   transitionState,
   markTurnReplacement,
   clearTurnReplacement,
-  reviveRetainedTask,
 } from "../shared/task-state.js";
-import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
+import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { type ResolvedSessionScope } from "./context.js";
 import {
   PROMPT_REQUIRED,
@@ -129,13 +128,13 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   }
 
   // The one revival path: a settled task followed up with a message, and the
-  // M9 auto-revive above, differ only in the sentence that announces them.
+  // M9 auto-revive above, differ only in the sentence that announces them. So
+  // does the settlement that resumes a child after a network blip — all three
+  // go through `reviveWithPrompt`, which owns the three steps that must not be
+  // spelled twice (revive, clear the settle-dedup, prompt).
   let task;
   try {
-    task = reviveRetainedTask(store, sessionId, config, admitted.modelOverride);
-    // A revived task is a fresh settlement subject: clear its
-    // settle-dedup so the next completion can be delivered.
-    gateLedger.forgetChild(sessionId);
+    task = reviveWithPrompt(client, store, sessionId, admitted.prompt, config, admitted.modelOverride);
   } catch (error: unknown) {
     if (!store.retainedTasks.has(sessionId)) {
       return untrackedSession(sessionId);
@@ -143,7 +142,6 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     return `ERROR: ${errorMessage(error)}`;
   }
 
-  fireChildPrompt(client, store, task, admitted.prompt);
   return autoRevivedFrom
     ? steerAutoRevived(sessionId, task.agentName, autoRevivedFrom)
     : followupSent(task.childSessionId, task.agentName);

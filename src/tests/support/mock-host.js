@@ -344,6 +344,10 @@ export function createMockClient(hooks = {}) {
     notifyCalls: [],
     // Sessions whose transcript refuses to be read.
     unreadable: new Set(),
+    // Per-session transcript overrides — see `setTranscript` below. A Map, not a
+    // field on the setup hook, because a case needs to change what ONE child
+    // says between two settlements of that same child.
+    transcripts: new Map(),
     logs: [],
     aborted: [],
     questionCalls: [],
@@ -518,6 +522,9 @@ export function createMockClient(hooks = {}) {
           error.status = 500;
           throw error;
         }
+        if (state.transcripts.has(path.id)) {
+          return SDK_ENVELOPE(state.transcripts.get(path.id));
+        }
         if (hooks.messages) return SDK_ENVELOPE(hooks.messages({ path }));
         if (!state.sessions.has(path.id)) {
           const error = new Error(`Session "${path.id}" not found.`);
@@ -582,6 +589,17 @@ export function createMockClient(hooks = {}) {
     // fails. A settlement that could not quote the child must say so.
     makeUnreadable(sessionId) {
       state.unreadable.add(sessionId);
+    },
+    /**
+     * What a session's transcript reads as, replaceable while the harness is
+     * live. Consulted BEFORE the setup-time `messages` hook, because the case
+     * that needs it is always the same shape: one child, two settlements, two
+     * fates — it was dying of a network blip, and now it has a real answer. A
+     * setup hook is a constant, so a case that needed a second fate had to
+     * build a second harness and a second child, which tests something else.
+     */
+    setTranscript(sessionId, messages) {
+      state.transcripts.set(sessionId, messages);
     },
   };
 }

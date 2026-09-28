@@ -200,6 +200,14 @@ async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Prom
         );
         continue;
       }
+      // No cap source, and deliberately so: a boot-reconciled child is not a
+      // candidate for the silent transient resume. Most of what this pass settles
+      // is a child that VANISHED across the restart, and reviving its record
+      // would send a prompt to a session the host no longer has. The idle case
+      // could be resumed, but a resume that mostly fires against children that
+      // are gone is a worse trade than a message. So this pass always reports,
+      // and the reason it can is the one that belongs: the parent was told its
+      // child is missing.
       await settleRunningChild(client, store, childSessionId, {
         status: vanished ? "error" : "idle",
         ...(vanished

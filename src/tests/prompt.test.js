@@ -9,7 +9,7 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride } from "../../dist/shared/prompt.js";
-import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
+import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.js";
 
 // The smallest shapes the reader tests are about, stated once: a text part, and
 // a message carrying one. A case should be able to say what it means ("an

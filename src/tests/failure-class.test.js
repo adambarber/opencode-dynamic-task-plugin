@@ -120,6 +120,14 @@ describe("failureNote: the parent is told which kind it is, in the same words", 
     assert.match(failureNote(FailureClass.Transient), /not the work/i);
   });
 
+  // A transient failure is normally resumed and never mentioned, so the one time
+  // a parent hears one is the time the retries ran out. "This failed" then
+  // understates what happened: the network was tried again, twice, and again.
+  it("says the retries were spent, so it reads as an outage not one bad turn", () => {
+    assert.match(failureNote(FailureClass.Transient, 2), /already been resumed 2 time/);
+    assert.doesNotMatch(failureNote(FailureClass.Transient, 0), /already been resumed/);
+  });
+
   it("tells the parent a structural failure needs them", () => {
     assert.match(failureNote(FailureClass.Structural), /investigate|decision/i);
   });

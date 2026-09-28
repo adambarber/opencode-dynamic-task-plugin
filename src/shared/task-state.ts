@@ -138,6 +138,20 @@ export interface TaskRecordBase extends TaskIdentity {
   // Admission-time only: ids that needed settlement, not success, before this
   // task spawned. Persisted so status renders the full dependency picture.
   dependsOnSettled?: string[] | undefined;
+  /**
+   * How many times this child has been brought back to life.
+   *
+   * A count of REVIVALS, not of automatic ones. A revival is a revival whoever
+   * asked for it, and treating a parent's `task_continue` as free would let a
+   * child that has been revived three times quietly resume itself forever.
+   *
+   * Optional, and `?? 0` is the whole meaning of its absence at every reader: a
+   * fresh spawn has spent nothing, and a ledger written before this field
+   * existed has nothing to report. It is deliberately NOT one of the advisory
+   * fields — it must survive a restart, because a budget that resets on boot is
+   * no budget at all during the outage it exists for.
+   */
+  transientResumes?: number | undefined;
 }
 
 // What admission registers: the record minus the clock the store owns. The
@@ -541,6 +555,11 @@ export function reviveRetainedTask(
     // Stamped here, in the one place a revival happens, so that copy cannot
     // settle the revival and report it completed before it has begun.
     replacedAt: Date.now(),
+    // Bringing a child back spends the automatic-retry budget, whoever asked
+    // for the revival. It rides on THIS record rather than on a second write so
+    // it is published by the same `Running` change that publishes the revival —
+    // a counter kept anywhere else would be a second thing to forget to persist.
+    transientResumes: (retained.transientResumes ?? 0) + 1,
     ...(model !== undefined ? { requestedModel: model } : {}),
   });
   // No publish here. The reclaim above emitted the `Running` change, and that

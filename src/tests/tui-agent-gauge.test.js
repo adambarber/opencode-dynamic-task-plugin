@@ -34,7 +34,7 @@ import { foldActiveByAgent, totalActiveOf } from "../../dist/shared/occupancy.js
 import { activeByAgent } from "../../dist/shared/task-state.js";
 import { darkTheme } from "./support/harness.js";
 import { screenTokens, widthsAgree } from "../../dist/tui/theme.js";
-import { GAUGE_SLOT, agentGaugeSlot, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
+import { GAUGE_SLOT, agentGaugeSlot, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
 import { withTempDir } from "./support/fixtures.js";
 import { runningEntry } from "./support/records.js";
 
@@ -214,6 +214,28 @@ describe("the counter is drawn in the host's muted grey", () => {
   it("reads as a fraction, so the eye can pass over it", () => {
     assert.equal(gaugeText(0, 4), "0/4", "an idle project");
     assert.equal(gaugeText(3, 4), "3/4", "three of four");
+  });
+
+  it("sits at the RIGHT margin, because the host's slot container is a column", () => {
+    // The reported defect: the fraction rendered on its own line, at the left, and read
+    // as a stray thing rather than as part of the host's own footer furniture. The host
+    // gives a plugin a column and no inline mode — `SlotMode` is only `append`, `replace`
+    // and `single_winner` — so a contribution always owns its row, and the only choice
+    // left is where in it. `flex-end` on the cross axis of a column is the right margin.
+    const props = gaugeProps(screenTokens(darkTheme()).context, () => ({ active: 2, cap: 4 }));
+    assert.equal(props.alignSelf, "flex-end", "right margin, directly above the context figure");
+  });
+
+  it("and the text is a FUNCTION, because that is what makes the counter live", () => {
+    // `content` takes a value and would freeze the counter at whatever it said when the
+    // session opened. A function child is Solid's reactive form: it is re-invoked when
+    // the signal it closes over moves, and the signal moves on the ledger's next write.
+    let reading = { active: 0, cap: 4 };
+    const props = gaugeProps(screenTokens(darkTheme()).context, () => reading);
+    assert.equal(typeof props.children, "function", "a reader, not a snapshot");
+    assert.equal(props.children(), "0/4", "which reads the CURRENT pair");
+    reading = { active: 3, cap: 12 };
+    assert.equal(props.children(), "3/12", "and the next pair, without the element being rebuilt");
   });
 
   it("is a StyledText, which is what keeps every number above readable with no host at all", () => {

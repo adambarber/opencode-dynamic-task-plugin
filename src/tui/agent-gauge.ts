@@ -42,15 +42,38 @@ import { foldActiveByAgent, totalActiveOf } from "../shared/occupancy.js";
 import { screenTokens } from "./theme.js";
 
 /**
- * The host slot this counter is drawn in.
+ * The host slot this counter is drawn in — and the whole host slot vocabulary, such as it
+ * is. Read out of the installed `TuiHostSlotMap` in `@opencode-ai/plugin`:
  *
- * Named in ONE place because it is the one fact about this feature that nothing in the
- * repo can check: a slot the host does not draw is not a failing test, it is a number
- * that never appears. `session_prompt_right` is the host's own right-hand region of the
- * session prompt, which is where the context counter this one sits beside is drawn.
- * Changing it is a one-word edit here and nowhere else.
+ *     app · app_bottom · home_logo · home_prompt · home_prompt_right
+ *     session_prompt · session_prompt_right
+ *     home_bottom · home_footer · sidebar_title · sidebar_content · sidebar_footer
+ *
+ * That list is why this constant is right and why the request it was built for cannot be
+ * met exactly. There is no region for the row the host draws the CONTEXT figure in: the
+ * two session-prompt slots are `session_prompt`, which is the prompt itself and hands out
+ * a `ref` and an `on_submit` rather than a place to put text, and `session_prompt_right`.
+ * So "beside the context counter" is not a placement this host offers, and the earlier
+ * reading — that the counter had landed in the wrong row — was really the host putting a
+ * slot on its own line.
+ *
+ * `session_prompt_right` is still the correct answer, and it is the one the request names:
+ * under the prompt, in the host's own muted tier. `SlotRenderable` mounts a plugin's nodes
+ * into a COLUMN, and `SlotMode` is only `append | replace | single_winner` — there is no
+ * inline mode, so a contribution always owns its row. What a plugin can choose is where
+ * in that row it sits, which is why the body below carries `alignSelf: "flex-end"`: the
+ * fraction sits at the right margin, directly above the context figure, instead of
+ * stranded at the left of a row nobody asked to read.
  */
 export const GAUGE_SLOT = "session_prompt_right";
+
+/** What the counter shows: children running, and the total they are counted against. */
+export type GaugeReading = { active: number; cap: number };
+
+/** The api fields this counter needs, and no more. */
+type GaugeApi = { state: { path: { directory: string } }; theme: unknown };
+
+
 
 /**
  * What the counter shows, and the mark that carries it.
@@ -97,7 +120,7 @@ export function gaugeStyledText(active: number, cap: number, muted: RGBA): Style
  * discarded ledger leaves an empty store, and a counter reading `3/4` beside a server
  * that believes nothing is running is a number the operator cannot act on.
  */
-export function readGauge(directory: string, base: DynamicTaskConfig): { active: number; cap: number } {
+export function readGauge(directory: string, base: DynamicTaskConfig): GaugeReading {
   const ledger = loadTaskLedger(resolveTaskLedgerPath(directory));
   const overlay = readAgentOverlay(directory);
   // `applyAgentOverlay` returns null for a file that said nothing usable, in which case
@@ -175,36 +198,56 @@ export function watchLedger(directory: string, onChange: () => void): FSWatcher 
  * role is `context`, the tier the limits screen already uses for a label, and the host
  * draws its own context counter in the same muted grey this asks for.
  */
-export function agentGaugeSlot(api: { state: { path: { directory: string } }; theme: unknown }): TuiSlotPlugin {
-  const directory = api.state.path.directory;
-  const base = readDynamicTaskPolicy(directory, null);
+export function agentGaugeSlot(api: GaugeApi): TuiSlotPlugin {
+  return { slots: { [GAUGE_SLOT]: gaugeSlotBody(api.state.path.directory, readDynamicTaskPolicy(api.state.path.directory, null)) } };
+}
+
+/**
+ * The element's props, as a value the host will spread onto a `text`.
+ *
+ * Split out because these props ARE the design, and a design that can only be seen by
+ * restarting a TUI is a design nobody can review. A case can read this object; it cannot
+ * read the element `jsx` makes from it, which needs a renderer. So the part that decides
+ * where the counter sits and what colour it is lives here, and the one line that turns it
+ * into an element lives in the slot body.
+ */
+export function gaugeProps(muted: RGBA, reading: () => GaugeReading): Record<string, unknown> {
   return {
-    slots: {
-      [GAUGE_SLOT]: (ctx: TuiSlotContext) => {
-        const muted = createMemo(() => screenTokens(ctx.theme).context);
-        const [reading, setReading] = createSignal(readGauge(directory, base));
-        /**
-         * Re-read, and move the signal only if the PAIR moved.
-         *
-         * The comparison is the point. A directory watch reports every file in the
-         * project, and where the platform cannot name the one that changed it reports
-         * nothing at all — so an unrelated save arrives here as a spurious event. A
-         * signal set to a freshly-read but identical pair is a re-render of the corner
-         * for a number that did not move, and over a session of ordinary editing that
-         * is most of the events this counter will ever see.
-         */
-        const refresh = () => {
-          const next = readGauge(directory, base);
-          if (next.active === reading().active && next.cap === reading().cap) return;
-          setReading(next);
-        };
-        const watcher = watchLedger(directory, refresh);
-        onCleanup(() => watcher?.close());
-        return jsx("text", {
-          fg: muted(),
-          children: () => gaugeText(reading().active, reading().cap),
-        });
-      },
-    },
+    fg: muted,
+    // The host's slot container is a COLUMN, so this owns its row whatever it does; the
+    // one thing a contribution chooses is where in that row it sits. `flex-end` on the
+    // cross axis of a column is the right margin, which puts the fraction directly above
+    // the context figure it belongs with instead of at the left of a wide screen.
+    alignSelf: "flex-end",
+    // A FUNCTION, not a string. `content` takes a value and this is what makes the
+    // counter live: Solid re-invokes the child when the signal it closes over moves, and
+    // the signal moves on the ledger's next write.
+    children: () => gaugeText(reading().active, reading().cap),
+  };
+}
+
+/** The counter's slot body. */
+function gaugeSlotBody(directory: string, base: DynamicTaskConfig): NonNullable<TuiSlotPlugin<{}>["slots"][typeof GAUGE_SLOT]> {
+  return (ctx: TuiSlotContext) => {
+    const muted = createMemo(() => screenTokens(ctx.theme).context);
+    const [reading, setReading] = createSignal(readGauge(directory, base));
+    /**
+     * Re-read, and move the signal only if the PAIR moved.
+     *
+     * The comparison is the point. A directory watch reports every file in the project,
+     * and where the platform cannot name the one that changed it reports nothing at all
+     * — so an unrelated save arrives here as a spurious event. A signal set to a
+     * freshly-read but identical pair is a re-render of the corner for a number that did
+     * not move, and over a session of ordinary editing that is most of the events this
+     * counter will ever see.
+     */
+    const refresh = () => {
+      const next = readGauge(directory, base);
+      if (next.active === reading().active && next.cap === reading().cap) return;
+      setReading(next);
+    };
+    const watcher = watchLedger(directory, refresh);
+    onCleanup(() => watcher?.close());
+    return jsx("text", gaugeProps(muted(), reading) as Record<string, unknown>);
   };
 }

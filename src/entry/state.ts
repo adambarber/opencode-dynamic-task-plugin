@@ -14,6 +14,7 @@ import { settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
   containFailure,
+  getPendingDeliveries,
   redeliverOwedNotifications,
   restorePendingDeliveries,
   safeLog,
@@ -165,6 +166,25 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   restoreRetained(store, ledger.retained, config.retainedTaskMaxEntries);
   pruneRetainedTasks(store, config);
   restorePendingDeliveries(ledger.pending);
+
+  // The boot pass is the one moment every debt from the last run is visible at
+  // once, and until this line existed it was the one moment nothing was. Measured
+  // 2026-09-28: a parent left wedged mid-turn, re-injected on every restart by
+  // the pay below, wrote no trace to any log — and its ledger was
+  // indistinguishable from a healthy queue, because a debt that is still owed
+  // and a debt that is owed to a session that will never take it look the same
+  // on disk. The write-off warning could not cover it either, since a debt whose
+  // attempts keep getting deferred never reaches its budget. So the debt is named
+  // at the moment it is found, with the count it has and the count it may reach:
+  // a number that climbs across restarts is the signature of this failure.
+  const owedDebts = getPendingDeliveries();
+  if (owedDebts.length > 0) {
+    const each = owedDebts
+      .map((debt) => `${debt.kind} for task ${debt.childSessionId} to parent ${debt.parentSessionId} (attempt ${debt.attempts + 1} of ${config.pendingMaxAttempts})`)
+      .join("; ");
+    void safeLog(client, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice without spending an attempt.`);
+  }
+
   // The running set is restored BEFORE the pending notices are paid, and
   // reconciliation is detached (below), so an owed notice and a vanished
   // child's notice can neither mask nor reorder each other.

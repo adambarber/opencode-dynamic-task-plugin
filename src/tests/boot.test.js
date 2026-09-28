@@ -336,6 +336,28 @@ describe("boot redelivers what the last boot owed", () => {
   // Boot does not block on redelivery (a held parent must not delay every tool
   // by the write bound), so the observable is waited on — never a sleep standing
   // in for a contract.
+  it("a boot with an owed debt SAYS SO on the host log, where an operator will look", async () => {
+    // The detection gap, measured 2026-09-28: the plugin had written zero lines
+    // to the host log in this project's entire history, so a parent that was
+    // wedged mid-turn and re-injected on every restart left no trace anywhere —
+    // not in the log, and not in the ledger, which looks identical to a healthy
+    // queue. The write-off path had a careful warning that never fired, because
+    // the debt never reached its budget. The boot pass is the one moment every
+    // debt is visible at once, so it is the one moment that has to say so.
+    const h = await bootWithOwed([owedDebt()]);
+    const said = JSON.stringify(h.logs());
+
+    answerMatches(said, /owed|outstanding|unpaid/i, "the boot says it is carrying a debt from the last run");
+    answerMatches(said, /ses_owed/, "and names the child it is owed for");
+    answerMatches(said, /ses_parent/, "and the parent it has to reach");
+  });
+
+  it("a healthy boot still says nothing about debts — silence must keep meaning healthy", async () => {
+    const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
+    const aboutDebts = h.logs().filter((entry) => /owed|outstanding|unpaid/i.test(JSON.stringify(entry)));
+    assert.deepStrictEqual(aboutDebts, [], `a boot with nothing owed reports no debt. got: ${JSON.stringify(aboutDebts)}`);
+  });
+
   it("an owed notice is delivered once at boot and retired from disk", async () => {
     const { directory, notices } = await bootWithOwed([owedDebt()]);
 

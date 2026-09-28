@@ -172,19 +172,30 @@ export function formatTaskListSummary(input: {
   retained: FleetRow[];
   maxConcurrent: number;
   pruned: number;
-  // Omitted entirely when the agent set is empty, so a project with no
-  // dispatchable agents reads exactly as it did before the feature.
+  // The per-agent occupancy block, placed above the tree and omitted when empty.
+  // Optional for the reason it is rendered conditionally at all: with no agent set
+  // there is no breakdown to show, and rendering an empty one would put a heading on
+  // screen with nothing under it.
   agents?: AgentOccupancy[] | undefined;
 }): string {
   return textBlock(
     "## Task List",
     "",
     `Active: ${input.activeCount}/${input.maxConcurrent}`,
+    // Total, then the breakdown of that total, then the detail behind it. The agent rows
+    // carry the caps each agent will be judged on, so they are the context the tree is
+    // read IN: "3/4 at once" beside an agent is what tells a reader whether its rows are
+    // at the limit or merely near it. Rendered after the tree they read as an appendix
+    // about the detail rather than the parent of it.
+    //
+    // Blank lines on BOTH sides, and the section omitted entirely — separator included —
+    // when the agent set is empty, so a project with no dispatchable agents reads
+    // exactly as it did before the feature and the tree still follows the total directly.
+    ...(input.agents && input.agents.length > 0
+      ? ["", "Agents (active/cap):", ...input.agents.map(formatAgentRow), ""]
+      : []),
     input.tree.length > 0 ? input.tree.map(formatTreeRow) : "(none)",
     "",
-    ...(input.agents && input.agents.length > 0
-      ? ["Agents (active/cap):", ...input.agents.map(formatAgentRow), ""]
-      : []),
     `Retained: ${input.retained.length}${retainedRollup(input.retained)}`,
     input.retained.length > 0 ? input.retained.map(formatFleetRow) : "(none)",
     input.pruned > 0 ? `Pruned: ${input.pruned} expired retained task(s)` : undefined,

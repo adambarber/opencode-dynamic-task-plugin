@@ -277,6 +277,17 @@ describe("task formatting: fleet views", () => {
   const renders = (text, words) => {
     for (const word of words) assert.ok(text.includes(word), `${word} must be rendered. got: ${text}`);
   };
+  /** One agent's occupancy, in the shape the reader hands the formatter. */
+  const occupancy = (agent, over = {}) => ({
+    agent, active: 0, maxConcurrent: 4, stated: {}, depthConfigured: 2,
+    depthEffective: 2, depthBoundBy: null, ...over,
+  });
+  /** A rendered list as its LINES, for the two cases that are about where blocks sit. */
+  const linesOf = (over = {}) => listOf(over).split("\n");
+  /** Where a block starts, in lines. -1 when the block was not rendered at all. */
+  const blockAt = (lines, at) => lines.findIndex((line) => line.startsWith(at));
+  /** The smallest fleet there is: one running task, nothing retained, no agent set. */
+  const ONE_TASK = { tree: [treeRow()], activeCount: 1 };
 
   // One seam for the two cases below, so each names the STATE it is about rather
   // than re-spelling the record and the render chain — which jscpd reads as a
@@ -338,6 +349,33 @@ describe("task formatting: fleet views", () => {
 
   it("formatTaskListSummary names empty states", () => {
     assert.ok(listOf().includes("(none)"));
+  });
+
+  // Two cases, one claim: the per-agent block belongs BETWEEN the fleet total and the
+  // tree, and when there is nothing to break down it leaves nothing behind.
+  //
+  // The placement is a claim about what the block IS. `Active: 2/4` is the total, the
+  // agent rows are that total broken down against the caps it will be judged on, and the
+  // tree is the itemised detail behind them. Rendered after the tree, the block read as
+  // an appendix to the detail — a thing you scroll to for bookkeeping — when it is the
+  // context the detail has to be read in: the cap beside an agent is what tells a reader
+  // whether its rows are at the limit or merely near it. And the absence matters because
+  // projects with no dispatchable agents never see this feature, so a separator left
+  // behind where the section would have been is a hole in a list read in one pass.
+  it("reads top-down: the total, then the breakdown, then the tree", () => {
+    const lines = linesOf({ ...ONE_TASK, agents: [occupancy("explore", { active: 1, maxConcurrent: 2, stated: { maxConcurrent: 2 } })] });
+    const total = blockAt(lines, "Active:");
+    const agents = blockAt(lines, "Agents");
+    const tree = lines.findIndex((line) => line.includes("ses_a"));
+    assert.ok(total >= 0 && agents > total && tree > agents,
+      `the breakdown belongs between the total and the detail. got: ${lines.join("\n")}`);
+  });
+
+  it("leaves no section and no gap when there is no agent set", () => {
+    const lines = linesOf(ONE_TASK);
+    assert.equal(blockAt(lines, "Agents"), -1, "no section for an empty agent set");
+    assert.equal(lines[blockAt(lines, "Active:") + 1], lines.find((line) => line.includes("ses_a")),
+      "so the tree still follows the total on the very next line");
   });
 
   it("formatTaskStatusDetail warns on a stalled active turn, stays factual on fresh ones", () => {

@@ -264,6 +264,7 @@ export function limitsListProps(
 ): TuiDialogSelectProps<ListChoice> {
   return {
     title: "Task limits",
+    ...NO_FILTER,
     options: [
       // The cross-agent total FIRST, above the agents it bounds, because it is the cap
       // a dispatch is refused on before any agent's own cap is consulted — so it is the
@@ -332,6 +333,7 @@ export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<Ceil
   const { confirm, back } = actions;
   return {
     title: CEILING_LABEL,
+    ...NO_FILTER,
     ...valuePicker(
       CAP_CHOICES.maxConcurrent,
       ceiling.stated ? ceiling.value : null,
@@ -371,6 +373,7 @@ export function agentCapsProps(
 ): TuiDialogSelectProps<CapsChoice> {
   return {
     title: agent,
+    ...NO_FILTER,
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
         // LABEL AND VALUE IN ONE TITLE, because a footer's value is stranded at the far
@@ -426,6 +429,7 @@ export function capPickerProps(
   const title = bound === null ? `${agent} — ${CAP_LABEL[cap]}` : `${agent} — ${CAP_LABEL[cap]} (${boundClause(bound)})`;
   return {
     title,
+    ...NO_FILTER,
     // `details` is the one field the host budgets rather than clips: it draws the
     // string as its own row below, capped at `min(76, width - 12)`. A row's title and
     // description share ONE clipped line instead, so the sentence under a row cannot
@@ -554,6 +558,25 @@ const INDENT = "   ";
 const withDetails = (...lines: string[]) => ({ details: lines.map((line) => INDENT + line) } as Record<string, unknown>);
 
 /**
+ * No `Search` box, on every one of these screens.
+ *
+ * The host draws a filter input above the rows unless this is false (dialog-select.tsx:
+ * the `<Show when={props.renderFilter !== false}>` around it), and the default is to draw
+ * it. It was on all four screens of this drill-down, above a picker whose entire option
+ * set is `1 2 3 4 6 8 12 16 24 32` — an input filtering ten numbers, occupying a third of
+ * a screen whose problem is that too much is on it. On the agent list it filters twenty
+ * alphabetical names, which is a lookup rather than a search, and the rows already sit in
+ * one scrollable column.
+ *
+ * The field is absent from the published `TuiDialogSelectProps` although the host reads
+ * it, exactly as `details` is, so it is set by SPREAD — not excess-property checked,
+ * which is the only reason it can be set at all. One constant rather than four literals,
+ * because a screen that grows a fifth and forgets would be a different screen for no
+ * reason anyone could name.
+ */
+const NO_FILTER = { renderFilter: false } as Record<string, unknown>;
+
+/**
  * The word on a picker's way out, and the destination the ceiling picker's names.
  *
  * `Back` and not the agent screen's `All agents`, and the two are not required to match
@@ -588,29 +611,39 @@ const BACK_TO_LIST = "back to the list of agents";
  * mounts, so 88 is the figure and a dialog can never exceed the terminal less 2
  * (dialog.ts:59), which makes an 80-column terminal the narrow case worth surviving.
  *
- * What the row spends before any content is the part that was wrong. The row box is
- * `<box flexDirection="row" paddingLeft={3} paddingRight={3} gap={1}>`
- * (dialog-select.tsx:666) and the title inside it carries `paddingLeft={3}` of its own
- * (dialog-select.tsx:786) — six columns were counted, ten are spent, and the four in
- * between were handed to content that could not use them.
+ * What the row spends before any content is the part that was wrong, twice over. The row
+ * box is `<box flexDirection="row" paddingLeft={3} paddingRight={3} gap={1}>`
+ * (dialog-select.tsx) inside a `scrollbox` at `paddingLeft={1} paddingRight={1}`, so
+ * EIGHT columns go before the first character — and the `<text paddingLeft={3}>` that
+ * looked like a ninth and tenth is not applied by opentui at all, which only a rendered
+ * frame shows. `ROW_GAP` is charged per-footer rather than up front: it exists only
+ * between a title and a footer, and a row with no footer pays none of it.
  */
 const DIALOG_WIDTH = 88;
 const TERMINAL_FLOOR = 80;
-const ROW_INDENT = 3;
-const ROW_PADDING = 3;
+/** The `scrollbox` the rows sit in, at `paddingLeft={1} paddingRight={1}`. */
+const SCROLLBOX_INDENT = 1;
+/** The row box's own `paddingLeft={3} paddingRight={3}`. */
+const ROW_PADDING_TOTAL = 6;
+/** Between a title and a footer. A row with no footer pays none of it. */
 const ROW_GAP = 1;
-const TITLE_INDENT = 3;
-/** What the host subtracts from the DIALOG for a detail line, which it then caps at 76. */
-const DETAIL_MARGIN = 12;
+/** The host subtracts its own 3+3 and the scrollbox's 1+1 from the dialog for a detail line. */
+const DETAIL_MARGIN = SCROLLBOX_INDENT * 2 + ROW_PADDING_TOTAL;
+/** The host's own cap on a detail line. */
+const DETAIL_CAP = 76;
 
 /** The dialog as it is actually drawn: 88, or the terminal less 2 on a narrow one. */
 const DIALOG = Math.min(DIALOG_WIDTH, TERMINAL_FLOOR - 2);
 
-/** What one option row has left for its title, its description, and its footer. */
-export const DIALOG_ROW_TEXT = DIALOG - ROW_INDENT - ROW_PADDING - ROW_GAP - TITLE_INDENT;
+/**
+ * What one option row has left for its title, its description, and its footer: 70 at an
+ * 80-column terminal, measured. The `scrollbox`'s one pixel a side is counted here, and
+ * that is the whole correction over the arithmetic that preceded it.
+ */
+export const DIALOG_ROW_TEXT = DIALOG - SCROLLBOX_INDENT * 2 - ROW_PADDING_TOTAL;
 
-/** What one `details` line has. The host truncates these with an ellipsis in the middle. */
-const DIALOG_DETAIL_TEXT = Math.min(76, DIALOG - DETAIL_MARGIN);
+/** What one `details` line has: 70 at an 80-column terminal, also measured. */
+const DIALOG_DETAIL_TEXT = Math.min(DETAIL_CAP, DIALOG - DETAIL_MARGIN);
 
 /**
  * Whether every line of `row` fits the dialog the host will draw it in.
@@ -625,9 +658,21 @@ const DIALOG_DETAIL_TEXT = Math.min(76, DIALOG - DETAIL_MARGIN);
  *
  * `description` shares the title's `<text>` in a nested span (dialog-select.tsx:778), so
  * it is charged to the same line with the one space that separates them.
+ *
+ * The numbers are measured rather than derived — see `DETAIL_MARGIN` — and the 70 this
+ * charges against is what `bun scripts/render-proof.js --screen` reports for a title at an
+ * 80-column terminal. A gate that is tighter than the screen passes everything and tells
+ * the operator nothing, which is the failure a derivation invites and a measurement
+ * forecloses.
  */
 export function fitsItsDialog(row: { title: string; description?: string; details?: string[] }, footerWidth = 0): boolean {
-  const headline = row.title.length + 1 + (row.description?.length ?? 0) + footerWidth;
+  // Each separator is charged only when the thing it separates is there. A `+ 1` for the
+  // space before a description a row does not have, and a gap for a footer it does not
+  // have, are the same class of error as a padding the renderer never applies: a gate
+  // that quietly charges for what is absent is tighter than the screen and says nothing
+  // about why.
+  const description = row.description ? 1 + row.description.length : 0;
+  const headline = row.title.length + description + footerWidth + (footerWidth > 0 ? ROW_GAP : 0);
   return headline <= DIALOG_ROW_TEXT && (row.details ?? []).every((line) => line.length <= DIALOG_DETAIL_TEXT);
 }
 

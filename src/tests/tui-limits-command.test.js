@@ -38,12 +38,11 @@ import { CELL_GAP } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
 import { LEAD, plainCell, plainSummary } from "../../dist/tui/theme.js";
-import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
-import { boundClause, plainInForce, screenTokens } from "../../dist/tui/theme.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_ROW_TEXT, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
+import { boundClause, plainInForce } from "../../dist/tui/theme.js";
 
-const TOKENS = screenTokens({ current: { text: "#fff", textMuted: "#888", accent: "#88f", syntaxComment: "#666" }, mode: () => "dark" });
 import {
-  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, TOKENS, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
@@ -288,6 +287,56 @@ describe("the limits list is the question the operator came with", () => {
       assert.equal(host.seen.selects.length, 1, "and the list is not empty — there has to be a way to fix it");
       assert.deepEqual(titlesOf(top(host.seen)), WHOLE_SCREEN, "and it still draws the total and the host's agents, not nothing");
     }));
+});
+
+describe("the host's own layout, as measured rather than modelled", () => {
+  // Every DERIVED version of these three numbers has been wrong, and each was confident.
+  // The first counted six columns of indent and missed the one-pixel gap; the next missed
+  // the `scrollbox` at `paddingLeft={1} paddingRight={1}` that the rows live in. Both were
+  // out by the same two columns and in the SAFE direction, which is the worst way to be
+  // wrong: the gate was quietly tighter than the screen, so every row passed and the
+  // operator learned nothing until a real one clipped.
+  //
+  // The figures come off a real frame — `bun scripts/render-proof.js --screen` — because a
+  // measurement cannot be out by a layer nobody thought of. This case pins what that
+  // command measured, so a change to the arithmetic has to be made against the frame and
+  // not around it.
+  it("a title has 70 columns at an 80-column terminal, and a details line 70", () => {
+    assert.equal(DIALOG_ROW_TEXT, 70, "a title's own text, measured");
+    assert.ok(fitsItsDialog({ title: "M".repeat(70) }), "70 fits, because 70 is what fits");
+    assert.ok(!fitsItsDialog({ title: "M".repeat(71) }), "and 71 is clipped by the host, silently, with no ellipsis");
+    assert.ok(fitsItsDialog({ title: "x", details: ["|".repeat(70)] }), "a full-width detail line fits too");
+    assert.ok(!fitsItsDialog({ title: "x", details: ["|".repeat(71)] }), "and one more is truncated in the middle");
+  });
+
+  it("a footer takes its columns out of the title's, which is the claim that changed the design", () => {
+    // `flexShrink={0}` on the footer and `flexGrow={1} overflow="hidden"` on the title:
+    // the footer cannot give ground, so the title does. Measured: a title sharing an
+    // `in force` gets 61, so the flag's eight characters and the one-pixel gap come
+    // straight off the headline.
+    assert.ok(fitsItsDialog({ title: "M".repeat(61) }, plainInForce().length), "61 fits beside the flag");
+    assert.ok(!fitsItsDialog({ title: "M".repeat(62) }, plainInForce().length), "62 does not, and no case could see the clip");
+  });
+});
+
+describe("no screen offers a Search box", () => {
+  // The host draws a filter input above the rows unless `renderFilter` is false, and the
+  // default is to draw it. It was on all four screens, above a picker whose entire option
+  // set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent on an input filtering
+  // ten numbers. Found by RENDERING the whole dialog rather than its rows: rendered as a
+  // bare column of options the screens read fine and the real thing still had a search
+  // box, because the input is drawn by a layer the row-level proof never drew.
+  it("on the list, and on all three screens below it, which is every screen there is", () => {
+    const screens = [
+      limitsListProps(agentDialogFrom({ agents: {} }, BASE, ["explore"], false, null), () => {}),
+      agentCapsProps("explore", agentEntry("explore"), () => {}, () => {}),
+      capPickerProps("explore", "maxConcurrent", agentEntry("explore"), { confirm: () => {}, back: () => {} }, TOKENS),
+      ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} }, TOKENS),
+    ];
+    for (const screen of screens) {
+      assert.equal(screen.renderFilter, false, `${screen.title} offers no Search box`);
+    }
+  });
 });
 
 describe("a row fits the dialog it is drawn in", () => {

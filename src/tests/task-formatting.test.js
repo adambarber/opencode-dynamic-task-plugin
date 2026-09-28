@@ -347,6 +347,39 @@ describe("task formatting: fleet views", () => {
     assert.match(rowFor(summary, "ses_a"), /spawned by ses_gone, not tracked/, `got: ${summary}`);
   });
 
+  it("the tree ages a row from its LAST EVENT, not from its spawn", () => {
+    // The two views disagreed about the same fact. `formatTaskStatusDetail` reads the
+    // newest of three clocks — the event heartbeat, an explicit notice, the spawn as the
+    // floor — and the tree read `startedAt` alone, so a child spawned twenty minutes ago
+    // that emitted an event two seconds ago rendered `20m` beside a wedged one rendering
+    // `20m`, and the only way to tell them apart was to ask about each one separately.
+    //
+    // The fix is not a second rule: it is the SAME reading, asked once. A view that
+    // computed its own version of "when did this child last move" would be free to drift
+    // from the diagnosis it is meant to corroborate, and drift here is invisible.
+    const long = listOf({ tree: [treeRow({ startedAt: Date.now() - 20 * 60_000, lastActivityAt: Date.now() - 2_000 })], activeCount: 1 });
+    assert.match(rowFor(long, "ses_a"), /\(2s ago\)/, "the row reports the event, so a working child does not look stale");
+    assert.doesNotMatch(rowFor(long, "ses_a"), /20m/, "and not the age of its spawn, which is a different fact");
+  });
+
+  it("and marks a row the plugin has heard NOTHING from, without diagnosing it", () => {
+    // Over the same threshold the detail view warns at, so the list and the diagnosis
+    // cannot disagree about which rows are quiet. The words are deliberately OBSERVED
+    // MOTION and not a stall: the detail view's own warning has to say "one long tool
+    // call is silent too", so a row claiming a stall would be asserting something the
+    // plugin cannot support. It can support "I have not heard from this child".
+    const silent = listOf({ tree: [treeRow({ startedAt: Date.now() - 25 * 60_000 })], activeCount: 1 });
+    assert.match(rowFor(silent, "ses_a"), /\(no events for 25m\)/, "the row says what is knowable, and stops there");
+  });
+
+  it("and leaves a row that is merely YOUNG unremarked", () => {
+    // The falsifier. A marker on every row teaches the reader that the marker means
+    // nothing, which is the same failure as marking nothing at all — the reader stops
+    // looking either way.
+    const fresh = listOf({ tree: [treeRow()], activeCount: 1 });
+    assert.doesNotMatch(rowFor(fresh, "ses_a"), /no events/, "a child heard from seconds ago needs no note");
+  });
+
   it("formatTaskListSummary names empty states", () => {
     assert.ok(listOf().includes("(none)"));
   });

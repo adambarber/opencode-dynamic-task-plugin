@@ -95,12 +95,60 @@ export interface TreeRow extends FleetRow {
   depth: number;
   parentSessionId: string;
   parentTracked: boolean;
+  /**
+   * The other two clocks, so the row's age means the same thing here as it does in
+   * `formatTaskStatusDetail`.
+   *
+   * On the row rather than on `FleetRow` because a settled row has no turn to be quiet
+   * about: the Retained block lists what happened, not how long ago the plugin was last
+   * heard, and carrying the fields there would invite a second rendering nobody asked
+   * for. Absent rather than null, so a record that never recorded one needs no
+   * fabrication at the call site — `observedMotion` treats undefined as unheard.
+   */
+  lastActivityAt?: number | undefined;
+  lastNoticeAt?: number | undefined;
+}
+
+/**
+ * The last moment any of this plugin's three clocks saw motion.
+ *
+ * The event heartbeat and an explicit notice are observations; the spawn is the FLOOR,
+ * for a child registered before this process booted and that has been silent ever since.
+ * One function for both views that render an age, because the alternative was a tree
+ * reading `startedAt` while the detail view read all three — and the two then reported
+ * different ages for one child, which is the defect this replaces.
+ *
+ * Newest wins rather than first-found, so a notice that arrived before the last event
+ * does not hide it.
+ */
+export function observedMotion(startedAt: number, lastNoticeAt?: number, lastActivityAt?: number): number {
+  return Math.max(startedAt, lastNoticeAt ?? 0, lastActivityAt ?? 0);
+}
+
+/**
+ * The age on a tree row: how long since the plugin last heard anything, and said so
+ * when that is long enough to be worth a reader's attention.
+ *
+ * The threshold is the one `formatTaskStatusDetail` warns at, so the list and the
+ * diagnosis cannot drift into warning about different rows. The words stop at
+ * observation on purpose — "no events for 25m", not "stalled": the detail view's own
+ * warning has to concede that one long tool call is also silent, so a row that declared
+ * a stall would be claiming what the plugin cannot know. A row the plugin has heard from
+ * recently reads `2s ago` with no note, which is the whole reason the age is measured
+ * from the event rather than the spawn — before this, a working child and a wedged one
+ * twenty minutes into the same run rendered the same age and the list could not tell
+ * them apart.
+ */
+function treeAge(row: TreeRow): string {
+  const motion = observedMotion(row.startedAt, row.lastNoticeAt, row.lastActivityAt);
+  const age = formatAge(motion);
+  return Date.now() - motion > STALE_TURN_AFTER_MS ? `no events for ${age}` : `${age} ago`;
 }
 
 function formatTreeRow(row: TreeRow): string {
   const indent = "  ".repeat(row.depth);
   const link = row.parentTracked ? "" : ` — spawned by ${row.parentSessionId}, not tracked`;
-  return `${indent}- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})${link}`;
+  return `${indent}- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${treeAge(row)})${link}`;
 }
 
 /**
@@ -275,7 +323,7 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
   // Observed motion, newest of three clocks: the event heartbeat (any host
   // event for this child's session), an explicit notice, and the spawn as
   // the floor for a child that has gone unheard since it was registered.
-  const observed = Math.max(task.startedAt, task.lastNotice?.at ?? 0, task.lastActivityAt ?? 0);
+  const observed = observedMotion(task.startedAt, task.lastNotice?.at, task.lastActivityAt);
   // The three states an active task can be in, each its own failure with its
   // own action — so they read as distinct, and none of them reads as
   // patience. Without a server reading only the silence is knowable, and

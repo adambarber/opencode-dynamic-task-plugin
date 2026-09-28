@@ -21,7 +21,7 @@ import {
   API_UNAVAILABLE,
   type FleetRow,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks, TaskState, failureClassOf, type TaskRecord } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, listTasks, TaskState, failureClassOf, motionClocksOf, type TaskRecord } from "../shared/task-state.js";
 import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
 import { activeByAgent } from "../shared/task-state.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
@@ -171,6 +171,12 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
       depth: node.depth,
       parentSessionId: node.task.parentSessionId,
       parentTracked: node.parentTracked,
+      // The two clocks the row's age is read from, off the record the store holds. Read
+      // through the settled-safe accessor rather than off `node.task` directly, because a
+      // tree row is a running task OR a settled one kept to place a running descendant —
+      // and only the running shape carries them. They are passed here rather than folded
+      // into `toRow` because only a row with a live turn has an age to be wrong about.
+      ...motionClocksOf(node.task),
     })),
     activeCount: branch.filter((node) => node.task.state === TaskState.Active).length,
     retained: retained.map(toRow),

@@ -33,8 +33,7 @@ import { basename, dirname } from "node:path";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo, createSignal, onCleanup, type JSX } from "solid-js";
 import type { TuiSlotContext, TuiSlotPlugin } from "@opencode-ai/plugin/tui";
-import { BaseRenderable, CliRenderer, fg, Renderable, StyledText, TextRenderable, type TextChunk } from "@opentui/core";
-import type { RGBA } from "@opentui/core";
+import { BaseRenderable, CliRenderer, fg, Renderable, StyledText, TextRenderable, type RGBA, type TextChunk } from "@opentui/core";
 import { applyAgentOverlay, readAgentOverlay, type AgentCapSource } from "../shared/caps.js";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
@@ -158,7 +157,33 @@ type GaugeApi = {
    * the TUI its prompt: the fallback slot is a working mount, and crashing a mount over a
    * layout preference would be the worst possible trade. */
   renderer?: CliRenderer;
+  /** Told WHERE the counter landed, once. Not a logger: the mount reports a fact and the
+   * composition root decides what to do with it, so this module neither knows the host's
+   * log call nor formats an error. */
+  onPlacement?: (placement: GaugePlacement) => void;
 };
+
+/**
+ * Where the counter ended up, as a fact rather than a sentence.
+ *
+ * A placement that is invisible cannot be debugged from the inside, and this one is decided
+ * by facts no test here can see: whether the host handed over a renderer, whether its tree
+ * held the commands hint, and whether a node could be built at all. The last is the one
+ * that matters — the plugin bundles its OWN `@opentui/core`, separate from the copy
+ * compiled into the host, and a renderable built across that boundary is not obviously one
+ * the host's render loop will draw. Guessing at that is how two restarts get spent.
+ *
+ * `refusal` is the raw thrown value, not a string, so the one place that formats unknown
+ * throwables stays the place that formats unknown throwables.
+ */
+export type GaugePlacement =
+  | { readonly at: "footer" }
+  | { readonly at: "slot"; readonly because: "no-renderer" | "no-footer-line"; readonly refusal?: unknown };
+
+/** Say where the counter landed, if anyone is listening, and only ever once. */
+function report(api: GaugeApi, placement: GaugePlacement): void {
+  api.onPlacement?.(placement);
+}
 
 
 
@@ -321,7 +346,13 @@ export function deferredCounter(api: GaugeApi): (ctx: TuiSlotContext) => JSX.Ele
   return (ctx) => {
     if (!attached) {
       const join = footerLineToJoin(api);
-      attached = join !== null && attachToFooterLine(join.renderer, join.line, muted(), directory, base) !== null;
+      if (!join) {
+        report(api, { at: "slot", because: api.renderer?.root ? "no-footer-line" : "no-renderer" });
+      } else {
+        const attempt = attachToFooterLine(join.renderer, join.line, muted(), directory, base);
+        attached = attempt.handle !== null;
+        report(api, attached ? { at: "footer" } : { at: "slot", because: "no-footer-line", refusal: attempt.refusal });
+      }
     }
     if (attached) return null;
     return jsx("text", gaugeProps(screenTokens(ctx.theme).context, readingSignal(directory, base)) as Record<string, unknown>);
@@ -398,14 +429,14 @@ export function attachToFooterLine(
   muted: RGBA,
   directory: string,
   base: DynamicTaskConfig,
-): GaugeHandle | null {
+): { handle: GaugeHandle | null; refusal?: unknown } {
   let reading = readGauge(directory, base);
   let node: TextRenderable;
   try {
     node = new TextRenderable(renderer, { fg: muted, content: gaugeText(reading.active, reading.cap) });
     line.add(node);
-  } catch {
-    return null;
+  } catch (error) {
+    return { handle: null, refusal: error };
   }
   /**
    * Re-read, and touch the node only if the PAIR moved.
@@ -428,14 +459,16 @@ export function attachToFooterLine(
   };
   const watcher = watchLedger(directory, refresh);
   return {
-    refresh,
-    dispose: () => {
-      watcher?.close();
-      try {
-        line.remove(node);
-      } catch {
-        return;
-      }
+    handle: {
+      refresh,
+      dispose: () => {
+        watcher?.close();
+        try {
+          line.remove(node);
+        } catch {
+          return;
+        }
+      },
     },
   };
 }

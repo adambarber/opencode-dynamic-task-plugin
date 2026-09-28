@@ -514,6 +514,39 @@ describe("boot reconciles what the last boot was still running", () => {
     answerMatches(notice, /completed successfully/, "its genuine terminal event settles it, once");
   });
 
+  // The status channel is DOWN, which is a different thing from a channel that
+  // says nothing about a session: this is a read that throws, and it is the one
+  // input `readLiveness` does not absorb — it guards its transcript read and not
+  // this one, so the throw reaches the per-child catch for real.
+  //
+  // PER CHILD, not per pass. A failed read must not decide the fate of every task
+  // listed after it, and the two-child shape is the only way to see that: a catch
+  // wrapped around the LOOP instead of the body would pass a single-child case
+  // and silently strand the second. So what is asserted is that both children
+  // were still attempted — their names are in the log because the failure is
+  // reported per child — and that both were left running, since a child's own
+  // terminal event is what settles it and nothing else may.
+  it("a status channel that is down leaves every restored child active, and attempts each one", async () => {
+    const { directory, notices, logs } = await bootWithLedger(
+      { active: { ses_first: runningEntry("ses_first"), ses_second: runningEntry("ses_second") } },
+      { hooks: { statusThrows: true } },
+    );
+    await sleep(150);
+
+    assert.deepStrictEqual(
+      Object.keys(ledgerActive(directory)).sort(),
+      ["ses_first", "ses_second"],
+      "not knowing leaves a child ACTIVE — inventing a settlement is the expensive error here",
+    );
+    assert.deepStrictEqual(notices(), [], "and nothing is notified that was not observed");
+
+    const said = JSON.stringify(logs());
+    for (const id of ["ses_first", "ses_second"]) {
+      assert.ok(said.includes(id), `${id} was attempted: the failure is reported per child, so a catch around the loop would leave this name out`);
+    }
+    assert.match(said, /Could not reconcile restored task/, "and the failure says what could not be done");
+  });
+
   /**
    * Wait for a notice to land, because boot deliberately does not block on
    * redelivery and the arrival is the observable.

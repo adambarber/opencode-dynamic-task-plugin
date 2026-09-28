@@ -30,6 +30,15 @@ import type { ActiveTaskState } from "./task-state.js";
  * fold is what keeps an agent the host names `Explore` from reading as idle while its cap
  * is written under `explore` — undercounting a busy agent being the one direction of error
  * that never announces itself. One normalizer, on both sides, is the whole fix.
+ *
+ * THE FOLD IS ALSO WHY A TOTAL CAN BE TRUSTED. The cross-agent ceiling is judged against
+ * `store.activeTasks.size` while its per-agent row is judged against this fold, and those
+ * are two readings of one set — which holds because the fold has NO filter: every record
+ * lands in exactly one bucket, so summing the buckets equals the size. It is worth saying
+ * where it lives, because it used to be documented beside a `totalActiveOf` that summed
+ * these buckets, had no callers, and claimed `checkAgentCapacity` read its number. That
+ * function is pure and reads whatever it is handed. The guarantee is real; it was
+ * undocumented where it is produced and attributed to a function that was not on the path.
  */
 export function foldActiveByAgent(records: Iterable<ActiveTaskState>): Map<string, number> {
   const counts = new Map<string, number>();
@@ -38,19 +47,4 @@ export function foldActiveByAgent(records: Iterable<ActiveTaskState>): Map<strin
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   return counts;
-}
-
-/**
- * Running tasks across EVERY agent — the number the cross-agent ceiling is judged against,
- * and the numerator of the TUI's counter.
- *
- * Summed from the fold rather than from the size of whatever set was handed over, so the
- * total and the per-agent rows on `task_list` cannot be two different counts of the same
- * set. `checkAgentCapacity` reads `totalActive` off the same pair, which is what makes a
- * ceiling refusal and a gauge reading the same measurement.
- */
-export function totalActiveOf(counts: ReadonlyMap<string, number>): number {
-  let total = 0;
-  for (const count of counts.values()) total += count;
-  return total;
 }

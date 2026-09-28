@@ -411,6 +411,9 @@ export function agentCapacityRefusal(
 ): string | null {
   if (!config) return null;
   const policy = liveAgentCaps(config);
+  // One reading of ONE set, so a refusal and a gauge are the same measurement. That the
+  // size and the folded per-agent row agree is `foldActiveByAgent`'s doing — see the note
+  // there — and not a coincidence of this call.
   return checkAgentCapacity(
     { agentActive: agentActiveCount(store, agent), totalActive: store.activeTasks.size },
     resolveAgentCaps(policy, agent),

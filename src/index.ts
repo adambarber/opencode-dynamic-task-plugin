@@ -17,7 +17,7 @@ import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
 import type { OpenCodeClient } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
 import { errorMessage } from "./shared/host-shape.js";
-import { isEventRecord, eventString } from "./shared/host-shape.js";
+import { eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
 import { safeLog, containFailure } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
@@ -63,13 +63,21 @@ export default async function dynamicTaskPlugin(
       const eventType = eventString(event, "type") ?? "(none)";
       const eventName = eventString(event, "name") ?? "(none)";
       const evtSessionId = getSessionIdFromEvent(event);
-      const topKeys = isEventRecord(event) ? Object.keys(event).slice(0, 8).join(",") : "(null)";
 
-      // The head never blocks the gate: observability is detached (void) —
-      // safeLog and debugLog can neither throw nor delay question and
-      // lifecycle handling, so every event reaches the settlement path even
-      // when the host log hangs.
-      void safeLog(client, "info", `event: type=${eventType} name=${eventName} sid=${evtSessionId ?? "(none)"} keys=[${topKeys}]`);
+      // NO host log on this path, and the absence is the design. This head is
+      // the only code in the plugin that sees every event, and the host emits one
+      // per message AND per part — so a session with 5,399 parts pays this line
+      // 5,399 times inside a single turn. At `info` that is a round trip to the
+      // host per part, detached and unbounded, and the host log contains ZERO of
+      // them: the whole cost bought no observability at all. It was also the most
+      // likely thing in the plugin to make the host's own event pump the busiest
+      // writer in the process, on the one path a turn cannot afford to be slow.
+      //
+      // `debugLog` below is where per-event observability belongs: it returns
+      // before allocating anything unless DYNAMIC_TASK_DEBUG=1, so it costs
+      // nothing when nobody is watching and writes everything when someone is.
+      // The distinction is the point — a diagnostic that is always on is not a
+      // diagnostic, it is a tax.
       debugLog("event-handler", "event-handler", "event-received", {
         type: eventType,
         name: eventName,

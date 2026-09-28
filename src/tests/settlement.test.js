@@ -10,11 +10,27 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
-import { deferred } from "./support/mock-host.js";
+import { deferred, events } from "./support/mock-host.js";
 import { answerMatches, answerSays, assertNoticeCount } from "./support/assertions.js";
-import { dispatchArgs, harnessRejectingPrompt, hostStatus, withSingleSlot } from "./support/integration.js";
+import { dispatchArgs, eventHarness, harnessRejectingPrompt, hostStatus, withSingleSlot } from "./support/integration.js";
 
 describe("settlement: the notification layer owns outcomes", () => {
+  // The head that sees EVERY event is the most-executed code in the plugin, so
+  // what it charges the host is a design claim and not a detail. A single turn
+  // in a large session delivers one event per part — coda's 5,399-part session
+  // pays it thousands of times in one turn — and a per-event host log call is
+  // that many round trips for a line nobody reads: the host log contains zero of
+  // them, so the whole cost is waste with no observability bought in exchange.
+  // Measured on coda 2026-09-28, where a restored 1,318-message session admitted a
+  // turn and never dispatched it to the model while three other projects
+  // streamed normally on the same host.
+  it("the event head charges the host nothing per event", async () => {
+    const h = await eventHarness();
+    const before = h.logs().length;
+    for (let i = 0; i < 50; i += 1) await h.fireEvent(events.working("ses_hot"));
+    assert.deepStrictEqual(h.logs().slice(before), [],
+      "delivering 50 events wrote host log lines: the per-event head is paid once per part, and one turn in a large session has thousands of parts");
+  });
   it("parentless settlements leave a visible non-delivery record", async () => {
     const { h, c, id, out } = await withChild({
       spawn: { description: "orphan task", prompt: "hi" },

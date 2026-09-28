@@ -281,3 +281,18 @@ it. A harness that can silently drop a case body is not a harness, and the only
 evidence either way is a case that goes red if it breaks.
 
 Not shipped, deliberately: a host slot occupancy gauge, and per-key bindings.
+
+The ambient gauge was built and then removed, and the reason is a host limit
+rather than a judgement about the number. The line the operator asked for is
+drawn at `packages/tui/src/component/prompt/index.tsx:1656-1687` beside the
+context figure, and every child of that box is a literal element, so no slot can
+place a node on it. OpenCode 2 mounts it by name
+(`context.ui.slot({ replace: "prompt.footer.status" })`, as
+`ndom91/opencode-hud` does); 1.x has no such API — `@opencode-ai/plugin` at both
+1.18.30 and 1.18.33 declares the same twelve host slots and no `ui.slot`, and
+`sst/opencode` at HEAD has zero hits for either. The other twelve seats are real
+and none of them is that line: `session_prompt_right` renders in its own row
+well above the footer, and `app_bottom` is the terminal's bottom edge. So a
+counter on this host is either in the wrong place or nowhere, and nowhere is the
+honest answer. `task_list` remains where the running set is, and the caps remain
+editable here — the capability is the dialog, not the corner.

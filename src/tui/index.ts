@@ -64,7 +64,6 @@ import {
   type EditOutcome,
 } from "./agent-editor.js";
 import { cellFooter, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
-import { mountGauge } from "./agent-gauge.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -170,17 +169,6 @@ export const tui: TuiPlugin = async (api) => {
       },
     ],
   });
-  // The live agent counter, mounted in a host slot rather than in a dialog.
-  //
-  // It is the only part of this plugin that is AMBIENT — on screen always, rather than
-  // when the operator opened something — so it is registered where the host offers
-  // persistent surfaces and not in the command's own flow. It reads the ledger file, so
-  // it needs no server endpoint: the same number `task_list` prints, from the same
-  // durable projection, in a different process.
-  // The host's own footer line when the tree walk finds it, the `right` region when it
-  // does not. `mountGauge` returns the fallback to register, or null when the real line
-  // took the counter and registering the slot too would draw it twice.
-  api.slots.register(mountGauge(api));
   // No `onDispose` for either layer. The host already disposes keymap registrations
   // when a plugin deactivates, and the spec says so explicitly; wiring it a second
   // time is not belt-and-braces, it is a second owner for one teardown.

@@ -111,7 +111,7 @@ describe("a depth the agent set holds below the cap", () => {
   it("prints the reachable depth of TWO, with a cap of four, as 2/4", () => {
     const { rows } = agentDialogFrom({}, { ...BASE, maxDepth: 4 }, TWO_AGENTS, false, null);
     const explore = rows.find((row) => row.name === "explore");
-    assert.equal(plainCell(capCellOf(explore, "maxDepth")), "2/4 agent set binds", "both numbers, reachable first");
+    assert.equal(plainCell(capCellOf(explore, "maxDepth")), "2/4 agent set", "both numbers, reachable first");
   });
 
   it("lets the cap bind when the same agent may recur, because then the set is not the wall", () => {

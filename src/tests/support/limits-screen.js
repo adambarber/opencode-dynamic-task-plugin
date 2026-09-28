@@ -24,10 +24,10 @@ import { withTempDir } from "./fixtures.js";
 import { renderTree } from "./render-tree.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { CAP_LABEL, agentDialogFrom } from "../../../dist/tui/agent-editor.js";
-import { LEAD, plainCell, plainSummary, screenTokens } from "../../../dist/tui/theme.js";
+import { plainCell, plainSummary } from "../../../dist/tui/theme.js";
 import { darkTheme } from "./harness.js";
 import { footerText } from "./assertions.js";
-import tuiModule, { BACK_LABEL, DIALOG_ROW_TEXT, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, LIST_DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -202,12 +202,14 @@ export function readOverlay(directory) {
 }
 
 /**
- * The host's theme, once. Both the api double and the token resolution read this, so a
- * case cannot pass a hand-made token object and prove something the screen would never
- * paint — the tokens below are the production `screenTokens` over this theme.
+ * The host's theme, once, because the api double reads it.
+ *
+ * It used to also resolve a `ScreenTokens` for the prop builders, and a case could not
+ * then pass a hand-made token object and prove something the screen would never paint.
+ * There are no tokens to resolve: no screen of ours paints a figure, so the prop builders
+ * take no theme and a case cannot hand one to them even by accident.
  */
 export const HOST_THEME = darkTheme();
-export const TOKENS = screenTokens(HOST_THEME);
 
 
 /**
@@ -220,28 +222,23 @@ export const TOKENS = screenTokens(HOST_THEME);
 export function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
   const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
-  const props = limitsListProps(dialog, NO_ASKS, TOKENS);
-  // Each row's footer in PLAIN TEXT, in draw order, paired from the field the screen
-  // actually chose — a wide agent's caps travel in `details` and have no footer. The
-  // styled footer cannot be measured: it is a `StyledText` and the host paints it. So
-  // this is the twin `plainSummary`/`plainCell` were written for, and the only place
-  // that knows which field a row used is the screen itself.
-  //
-  // TEXT rather than a measured width, because the width gate needs the length and the
-  // preview needs the characters, and a second array to keep in step with this one is a
-  // second thing that can be wrong.
+  const props = limitsListProps(dialog, NO_ASKS);
+  // Each row's second line in PLAIN TEXT, in draw order, read from the field the screen
+  // chose — `description`, which the host paints muted beside the title. So this is the
+  // twin `plainSummary`/`plainCell` exist for, and the only place that knows which field
+  // a row used is the screen itself.
   //
   // Attaching it here rather than asking each case to pass it is what keeps
   // `assertEveryRowFits` a one-argument claim: a case cannot forget the widest thing on
   // the row, and a screen that grows a row cannot escape the check by being added where
   // nobody remembered to measure.
-  const agentOptions = props.options.slice(1);
-  props.plainFooters = [
-    `${LEAD} ${plainCell(dialog.ceiling)}`,
-    ...dialog.rows.map((row, at) => (agentOptions[at].footer === undefined ? "" : plainSummary(row))),
-  ];
+  props.plainLines = [plainCell(dialog.ceiling), ...dialog.rows.map((row) => plainSummary(row))];
   return props;
 }
+
+export { dialogRowText };
+
+/** The row for one agent, by its host spelling. */
 
 /** The row for one agent, by its host spelling. */
 export const row = (list, title) => list.options.find((candidate) => candidate.title === title);
@@ -262,15 +259,15 @@ export function agentEntry(agent, raw = {}, agentNames = REGISTERED) {
 /**
  * Every word a row puts on screen, as the host lays them out.
  *
- * `title` and `description` SHARE the first line — the host renders them into one
- * clipping `<text>` — while `footer` is drawn in a box of its own that never shrinks,
- * and each entry of `details` is a line of its own below. So a fact that is in the
- * dialog somewhere is in one of these, and a fact missing from all of them is
- * genuinely gone from the operator's view.
+ * `title` and `description` SHARE the one line — the host renders them into a single
+ * clipping `<text>`, a `flexGrow={1}` box with `overflow="hidden"` and `wrapMode="none"`
+ * — so a row is one string and that string is what the terminal shows or clips. A fact
+ * that is in the dialog somewhere is in that string; a fact missing from it is genuinely
+ * gone from the operator's view.
  */
 export const rowText = (list, title) => {
   const found = row(list, title);
-  return [[found.title, footerText(found.footer), found.description ?? ""].join(" ").trim(), ...(found.details ?? [])].join("\n");
+  return [[found.title, found.description ?? ""].join(" ").trim()].join("\n");
 };
 
 /** The dialog the operator is looking at: the most recent one mounted. */
@@ -500,6 +497,16 @@ export const chooseValue = async (host, value) => {
  */
 export const rowsOn = (host) => top(host.seen).options;
 
+/**
+ * Every row of a drawn screen as the TERMINAL will show it: the title and its description
+ * on one line, the way the host renders them into a single clipping `<text>`.
+ *
+ * The pairs that have to be read together. A screen whose figures sit in `description`
+ * and whose assertions read `option.title` see only the label, so a case can pass while
+ * the row says nothing at all — which is what happened to the caps screen for a round.
+ */
+export const rowsText = (dialog) => dialog.options.map((option) => rowText(dialog, option.title));
+
 /** The row with a given title, or undefined. */
 export const rowOn = (host, title) => rowsOn(host).find((option) => option.title === title);
 
@@ -552,11 +559,11 @@ export const capText = (host, cap) => {
  * "check this whole screen", so a dialog that grows a row cannot escape the check by
  * being added somewhere that forgot to ask for it.
  */
-export const assertEveryRowFits = (dialog) =>
+export const assertEveryRowFits = (dialog, width = LIST_DIALOG_WIDTH) =>
   assertRows(
-    dialog.options.map((option, at) => ({ option, footer: dialog.plainFooters?.[at] ?? "" })),
-    ({ option, footer }) => fitsItsDialog(option, footer.length),
-    ({ option, footer }) => `"${option.title}" is clipped: ${option.title.length} of name + ${footer.length} of caps, over a row of ${DIALOG_ROW_TEXT}`,
+    dialog.options.map((option) => ({ option })),
+    ({ option }) => fitsItsDialog(option, width),
+    ({ option }) => `"${option.title}" is clipped: ${option.title.length} of title + ${(option.description ?? "").length} of description, over a row of ${dialogRowText(width)}`,
   );
 
 /**

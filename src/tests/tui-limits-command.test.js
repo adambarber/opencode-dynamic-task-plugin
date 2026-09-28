@@ -31,18 +31,17 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../dist/shared/caps.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
-import { bothCaps } from "./support/fixtures.js";
+import { bothCaps, withTempDir } from "./support/fixtures.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
-import { CELL_GAP } from "../../dist/tui/theme.js";
+import { CELL_GAP, boundClause } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
-import { LEAD, plainCell, plainSummary } from "../../dist/tui/theme.js";
-import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_ROW_TEXT, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
-import { boundClause, plainInForce } from "../../dist/tui/theme.js";
+import { plainCell, plainSummary } from "../../dist/tui/theme.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, LIST_DIALOG_WIDTH, PICKER_DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
 
 import {
-  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, TOKENS, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack, dialogRowText, rowsText,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
@@ -290,48 +289,56 @@ describe("the limits list is the question the operator came with", () => {
 });
 
 describe("the host's own layout, as measured rather than modelled", () => {
-  // Every DERIVED version of these three numbers has been wrong, and each was confident.
-  // The first counted six columns of indent and missed the one-pixel gap; the next missed
-  // the `scrollbox` at `paddingLeft={1} paddingRight={1}` that the rows live in. Both were
-  // out by the same two columns and in the SAFE direction, which is the worst way to be
-  // wrong: the gate was quietly tighter than the screen, so every row passed and the
-  // operator learned nothing until a real one clipped.
+  // Every DERIVED version of these numbers has been wrong, and each was confident. The
+  // first counted six columns of indent and missed a one-pixel gap; the second missed the
+  // `scrollbox` at `paddingLeft={1} paddingRight={1}` the rows live in; the third measured
+  // a `large` dialog the plugin no longer mounts. All were out in the safe direction,
+  // which is the worst way to be wrong — the gate was quietly tighter than the screen, so
+  // every row passed and the operator learned nothing until a real one clipped.
   //
-  // The figures come off a real frame — `bun scripts/render-proof.js --screen` — because a
+  // The figures come off a real frame (`bun scripts/render-proof.js --screen`), because a
   // measurement cannot be out by a layer nobody thought of. This case pins what that
-  // command measured, so a change to the arithmetic has to be made against the frame and
-  // not around it.
-  it("a title has 70 columns at an 80-column terminal, and a details line 70", () => {
-    assert.equal(DIALOG_ROW_TEXT, 70, "a title's own text, measured");
-    assert.ok(fitsItsDialog({ title: "M".repeat(70) }), "70 fits, because 70 is what fits");
-    assert.ok(!fitsItsDialog({ title: "M".repeat(71) }), "and 71 is clipped by the host, silently, with no ellipsis");
-    assert.ok(fitsItsDialog({ title: "x", details: ["|".repeat(70)] }), "a full-width detail line fits too");
-    assert.ok(!fitsItsDialog({ title: "x", details: ["|".repeat(71)] }), "and one more is truncated in the middle");
+  // command measured, so a change to the arithmetic has to be made against the frame.
+  it("a row gets 52 columns under a medium dialog and 70 under a large one", () => {
+    assert.equal(PICKER_DIALOG_WIDTH, 60, "the host's own default, which is why a picker sets no size of its own");
+    assert.equal(LIST_DIALOG_WIDTH, 88, "the one screen that needs it, because its rows carry a name and its caps together");
+    assert.equal(dialogRowText(PICKER_DIALOG_WIDTH), 52, "60 less the scrollbox's 1+1 and the row's 3+3");
+    assert.equal(dialogRowText(LIST_DIALOG_WIDTH), 70, "88 is capped to the terminal less 2, so less 8 of layout at 80 columns");
   });
 
-  it("a footer takes its columns out of the title's, which is the claim that changed the design", () => {
-    // `flexShrink={0}` on the footer and `flexGrow={1} overflow="hidden"` on the title:
-    // the footer cannot give ground, so the title does. Measured: a title sharing an
-    // `in force` gets 61, so the flag's eight characters and the one-pixel gap come
-    // straight off the headline.
-    assert.ok(fitsItsDialog({ title: "M".repeat(61) }, plainInForce().length), "61 fits beside the flag");
-    assert.ok(!fitsItsDialog({ title: "M".repeat(62) }, plainInForce().length), "62 does not, and no case could see the clip");
+  it("a title is truncated by the host at 61, which only a large dialog can reach", () => {
+    // `titleWidth ?? 61` in dialog-select.tsx, and it is 61 whatever the dialog's width —
+    // so on a `medium` dialog the row's own 52 always binds first and the truncate is
+    // unreachable. A check that cannot fail on the screen it guards is a claim that is not
+    // making a claim, so the case lives on the width where it does.
+    assert.ok(fitsItsDialog({ title: "M".repeat(61) }, LIST_DIALOG_WIDTH), "61 is at the truncate and under 70");
+    assert.ok(!fitsItsDialog({ title: "M".repeat(62) }, LIST_DIALOG_WIDTH), "and 62 is over it");
+  });
+
+  it("a description shares the title's line, so a long name eats it", () => {
+    assert.ok(!fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }, PICKER_DIALOG_WIDTH), "40 + 1 + 20 is 61, over a medium row's 52");
+    assert.ok(fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }, LIST_DIALOG_WIDTH), "and 61 is under a large row's 70");
   });
 });
 
-describe("no screen offers a Search box", () => {
+describe("the filter box", () => {
   // The host draws a filter input above the rows unless `renderFilter` is false, and the
   // default is to draw it. It was on all four screens, above a picker whose entire option
-  // set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent on an input filtering
-  // ten numbers. Found by RENDERING the whole dialog rather than its rows: rendered as a
-  // bare column of options the screens read fine and the real thing still had a search
-  // box, because the input is drawn by a layer the row-level proof never drew.
-  it("on the list, and on all three screens below it, which is every screen there is", () => {
+  // set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent typing to narrow ten
+  // numbers. Found by RENDERING the whole dialog rather than its rows: rendered as a bare
+  // column of options the screens read fine, and the real thing still had a search box on
+  // it, because the input is drawn by a layer the row-level proof never drew.
+  it("is on the agent list, where a long list is worth typing into", () =>
+    withTempDir((dir) => {
+      const listed = listOver(dir);
+      assert.equal(listed.renderFilter, undefined, "left to the host, which draws it");
+    }));
+
+  it("and off on the three screens below it, which is every screen there is", () => {
     const screens = [
-      limitsListProps(agentDialogFrom({ agents: {} }, BASE, ["explore"], false, null), () => {}),
       agentCapsProps("explore", agentEntry("explore"), () => {}, () => {}),
-      capPickerProps("explore", "maxConcurrent", agentEntry("explore"), { confirm: () => {}, back: () => {} }, TOKENS),
-      ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} }, TOKENS),
+      capPickerProps("explore", "maxConcurrent", agentEntry("explore"), { confirm: () => {}, back: () => {} }),
+      ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} }),
     ];
     for (const screen of screens) {
       assert.equal(screen.renderFilter, false, `${screen.title} offers no Search box`);
@@ -361,84 +368,86 @@ describe("a row fits the dialog it is drawn in", () => {
       "a long name beside its caps is over the row, and the old arithmetic called it fine");
   });
 
-  it("puts the caps UNDER the agent they belong to, and keeps the right edge clear", () =>
+  it("rides each agent's caps beside its name, and keeps the right edge clear", () =>
     // Rendered, this is the screen's actual failure, and no styling fixes it. The title is
     // a <text flexGrow={1}> and the footer a <box flexShrink={0}> inside a flexDirection
     // "row" (dialog-select.tsx:666,786), so a footer is pushed to the FAR edge and the
     // title's space absorbs the distance: `explore` in column 3, `at once 2` in column 35.
     // The eye travels the whole row to relate them.
     //
-    // `details` is the other lever, and it is the right one: a column child at
-    // paddingLeft={3}, left-aligned, the full width, immediately under the name. So the
-    // caps ride there as one plain line and the row's right edge says nothing at all.
-    //
-    // The cost, stated rather than buried: `details` is a string, because the host runs
-    // it through `Locale.truncateMiddle` (dialog-select.tsx:702) — `str.length` and
-    // `str.slice` — and a `StyledText` has neither, so this is where the caps lose their
-    // colour tiers. A screen that is unreadable is worse than one that is plain, and the
-    // colour that matters most (which value is in force) stays a footer, where a short
-    // status token belongs.
+    // `description` is the field the host itself puts the muted text in, rendered inside
+    // the title's own `<text>`, so the two are one line and one span. Every other select
+    // in this host uses it for exactly this and the host picks its colour at paint time
+    // from the row's state, which is what a hand-built `fg()` chunk could not do.
     withList(BOUND_DEPTH, (list) => {
       const explore = row(list, "explore");
       assert.equal(explore.footer, undefined, "no footer, so nothing is stranded at the right edge");
-      assert.match(explore.details.join(" "), /at once 2\s+depth 3\/4 agent set binds/,
-        "both caps, in the list row's own vocabulary, on the line under the name");
-      const stated = row(list, "general").details[0];
-      assert.equal(stated.trim(), plainSummary(agentEntry("general")),
-        "an agent with nothing stated reads the same way as one with something");
-      assert.equal(stated.length - stated.trimStart().length, 3,
-        "the only difference being the three columns of indent, which is what puts the caps under their name rather than level with them");
-    }));
-
-  it("for every name a real project has, the whole screen fits", () =>
-    // A row's length is a function of a name the plugin does not own, so the budget
-    // cannot be checked against a fixture that happens to be short. These are the names
-    // the host double publishes, over the caps footer PRODUCTION builds — the hand-typed
-    // string this case used carried was one production cannot emit (CELL_GAP is two
-    // spaces, and the lead mark belongs to the cap screen's cell, not to this row).
-    withList(undefined, (list) => {
-      for (const name of REGISTERED) {
-        const caps = plainSummary(agentEntry(name));
-        assert.ok(fitsItsDialog({ title: name }, caps.length), `${name} leaves the row too little for "${caps}"`);
-      }
+      assert.match(explore.description, /at once 2 {2}depth 3\/4 agent set/,
+        "both caps, in the list row's own vocabulary, on the name's own line");
+      assert.equal(rowText(list, "explore"), "explore at once 2  depth 3/4 agent set", "and the terminal shows that whole line");
+      assert.match(row(list, "general").description, /depth 2 from config/, "a row says which of its figures came from the config file");
       assertEveryRowFits(list);
     }));
 
-  it("and a name too WIDE for its caps gets them on a line of their own", () =>
-    // The consequence of measuring the footer, and the reason the fallback is `details`
-    // rather than a shorter name or a smaller font. The host clips the headline with no
-    // ellipsis, so a name that cannot share its row has two honest options: lose the
-    // agent, or lose the caps. `details` is a line the host draws for exactly this, and
-    // it truncates in the middle with an ellipsis rather than dropping the end — so the
-    // row degrades to "this is the agent, and here is roughly what it is capped at"
-    // instead of to a name cut in half.
+  it("and a name too WIDE for its caps drops the caps whole, rather than clipping them", () =>
+    // The host clips the line with no ellipsis, so a name that cannot share its row has
+    // two honest choices: lose the agent, or lose the caps. And it has to lose them
+    // WHOLE. A row ending `depth 3` looks like a bound and is a truncation, and nothing
+    // on the screen distinguishes the two — which is the failure a silent clip always is.
+    //
+    // So the screen asks the width gate, and the gate's verdict is acted on here rather
+    // than reported and ignored. It is the gate's one caller that consumes its answer,
+    // which is the only arrangement in which it can be one.
     withList(undefined, (list) => {
       const wide = row(list, LONG_AGENT_NAME);
       assert.ok(wide, "the host published it, so it is a row");
-      assert.equal(wide.footer, undefined, "and the name keeps the row to itself");
-      assert.match(wide.details.join(" "), /at once/, "with its caps on the line the host draws for them");
+      assert.equal(wide.description, undefined, "and the caps went with it, whole — a clipped figure is a lie about a bound");
+      assert.equal(wide.title, LONG_AGENT_NAME, "the name itself is never cut");
+      assert.equal(typeof wide.onSelect, "function", "and the row still opens, which is where the caps are in full");
       assertEveryRowFits(list);
     }, { agentNames: [...REGISTERED, LONG_AGENT_NAME] }));
 
-  it("the caps ride in `details`, under the name, where the host draws a whole line", () =>
-    // The premise this case carried for two rounds — that the caps belong in `footer`,
-    // where the host draws a cell "at full size" — was false in a way no assertion was
-    // asking about, and a FRAME found it. The title is a `<text flexGrow={1}>` and the
-    // footer a `<box flexShrink={0}>` inside a `flexDirection="row"`, so a footer is
-    // pushed to the far edge of the dialog: `explore` in column 3, `at once 2` in column
-    // 35, on a row that reads as two unrelated statements. `details` is a column child at
-    // paddingLeft={3} — left-aligned, full width, immediately under the name.
+  it("the caps ride in `description`, on the title's own line, and the right edge stays clear", () =>
+    // This row has been three fields in two rounds and every one of them was wrong for a
+    // reason no assertion was asking about, and two frames found it.
     //
-    // The price is stated in `withDetails`: `details` is a string, because the host runs
-    // it through `Locale.truncateMiddle` and a `StyledText` has no `.slice`, so the caps
-    // lose their colour tiers. A screen that cannot be read is worse than a plain one.
+    // `footer` is where a cell is "at full size" — the premise for two rounds, and false:
+    // the title is a `<text flexGrow={1}>` and the footer a `<box flexShrink={0}>` in a
+    // `flexDirection="row"`, so a footer is pushed to the far edge of the dialog, a name
+    // in column 3 and its caps in column 35, on a row that reads as two unrelated
+    // statements. `details` fixed the position by becoming a column child, and cost a
+    // field the host does not declare, an indent, and the caps' colour — a `details` line
+    // is a string, because the host runs it through `Locale.truncateMiddle` and a
+    // `StyledText` has no `.slice`.
+    //
+    // `description` is the field every native dialog in this host uses for the muted text
+    // after a title, and the host draws it in the title's own `<text>`, so it follows the
+    // selection bar and costs nothing to declare.
     withList({ agents: { explore: bothCaps(2, 3) } }, (list) => {
       const found = row(list, "explore");
       assert.equal(found.footer, undefined, "no footer, so nothing is stranded at the right edge");
-      assert.ok(!found.description, "and not in `description`, which shares the clipped headline line");
-      assert.match(found.details.join(" "), /at once 2/, "the caps are on a line the host budgets, not one it clips");
+      assert.equal(found.description, plainSummary(agentEntry("explore", { agents: { explore: bothCaps(2, 3) } })), "the caps are the row's description, in the host's own spelling");
+      assert.equal(rowText(list, "explore"), `explore ${plainSummary(agentEntry("explore", { agents: { explore: bothCaps(2, 3) } }))}`, "one line, and the terminal shows all of it");
     }));
 });
+
+/** What the two cap rows read as the terminal will show them, for an agent at once 2. */
+const AGENT_CAP_ROWS = AGENT_CAP_NAMES.map((cap) => {
+  const entry = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
+  return CAP_LABEL[cap] + " " + plainCell(capCellOf(entry, cap));
+});
+
+/**
+ * The cap rows of a drawn screen, in draw order, minus the way out.
+ *
+ * Two cases in this file claim the same thing about the caps screen — that both caps are
+ * there, labelled, each with its figure — from two different angles: one is about the EXIT
+ * being last and needs the rows above it to be only the caps, the other is about the hole
+ * the flow found and needs both caps to be individually pressable. Spelled twice it is
+ * four lines and seventy tokens of identical shape, and the gate is right to: the two
+ * `AGENT_CAP_NAMES.map` chains are one claim written out, and the line above each says so.
+ */
+const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
 
 describe("choosing a cap", () => {
   it("puts the way out LAST, below the settings it exits", () =>
@@ -450,8 +459,11 @@ describe("choosing a cap", () => {
       const titles = titlesOf(top(host.seen));
       assert.equal(titles.at(-1), ALL_AGENTS_LABEL, "the exit is the last row, not a third cap above them");
       const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-      assert.deepEqual(titles.slice(0, -1), AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + plainCell(capCellOf(row2, cap))),
-        "and the two caps are still the whole list, each carrying its own figure beside its label");
+      assert.deepEqual(
+        rowsText(top(host.seen)).slice(0, -1),
+        AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + plainCell(capCellOf(row2, cap))),
+        "and the two caps are still the whole list, each carrying its own figure beside its label",
+      );
       backRow(host, ALL_AGENTS_LABEL).onSelect();
       assert.equal(top(host.seen).title, "Task limits", "which lands on the list, not on a value");
     }));
@@ -510,17 +522,26 @@ describe("choosing a cap", () => {
 
   it("names the AGENT and the CAP, so a screen of numbers says what they mean", () => {
     for (const cap of AGENT_CAP_NAMES) {
-      const picker = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} }, TOKENS);
+      const picker = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} });
       assert.equal(picker.title, `explore — ${CAP_LABEL[cap]}`);
       assert.doesNotMatch(picker.title, /lane/i);
     }
   });
 
   it("marks the value in force, so the operator can see what they are changing FROM", () =>
+    // The mark is the HOST's `current`, handed to it and not painted here. It draws a `●`
+    // in `theme.primary` on that row and opens the selection there — both of which a
+    // hand-built footer could not do, since a `StyledText` is fixed and a selection bar is
+    // a colour the host picks at paint time. `isDeepEqual` is how the host matches, so the
+    // `current` and the row's own `value` are the same object SHAPE; a case that reshaped
+    // one without the other would find the marker gone and this would still be green if it
+    // compared them by reference instead of by what the host compares.
     withPickerOpen((host) => {
-      const forced = valueRow(host, 2)?.footer;
-      assert.equal(forced?.chunks?.map((run) => run.text).join(""), plainInForce(), "the stated cap is the one in force");
-      assert.equal(valueRow(host, 4)?.footer, undefined, "and no other row claims to be");
+      const screen = top(host.seen);
+      const stated = valueRow(host, 2);
+      assert.deepEqual(screen.current, stated.value, "the value in force is the one the host is told is current");
+      assert.notDeepEqual(screen.current, valueRow(host, 4).value, "and no other value claims to be");
+      assert.equal(stated.footer, undefined, "with nothing painted in the right-hand gutter beside it");
     }));
 
   it("offers NO way to clear a cap the overlay does not state, because that row could only be inert", () =>
@@ -532,14 +553,14 @@ describe("choosing a cap", () => {
   it("offers to clear one it DOES state, and says what clearing means", () =>
     withPickerOpen((host) => {
       assert.ok(clearRow(host), "the inverse of setting a cap is offerable");
-      assert.match(clearRow(host).details.join(" "), /config file/, "and the row says whose numbers take over");
+      assert.match(clearRow(host).description, /config file/, "and the row says whose numbers take over");
     }));
 
   it("a picker built with no host is the host's own prop type, so a field the host never reads cannot be added here", () => {
     // Not a behavioural claim: a compile-time one, reached from JS. The prop builder
     // is exported so this can be called at all, and calling it is what a reader of the
     // production file would do.
-    const picker = capPickerProps("explore", "maxConcurrent", agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } }), { confirm: () => {}, back: () => {} }, TOKENS);
+    const picker = capPickerProps("explore", "maxConcurrent", agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } }), { confirm: () => {}, back: () => {} });
     assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default", BACK_LABEL]);
     assert.ok(picker.options.every((option) => typeof option.onSelect === "function"));
   });
@@ -620,10 +641,7 @@ describe("the flow, end to end on disk", () => {
     // way in at all. The pair was VISIBLE and half of it was editable, which is worse
     // than showing one, because the screen had said both were settings.
     withCapsOpen((host) => {
-      const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-      assert.deepEqual(titlesOf(top(host.seen)).filter((title) => title !== ALL_AGENTS_LABEL),
-        AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + plainCell(capCellOf(row2, cap))),
-        "both caps are rows of the agent's own screen, each carrying its figure beside its label");
+      assert.deepEqual(capRowsAsDrawn(top(host.seen)), AGENT_CAP_ROWS, "both caps are rows of the agent's own screen, each with its figure");
       for (const cap of AGENT_CAP_NAMES) {
         assert.equal(typeof capRow(host, cap).onSelect, "function", `${cap} can be opened`);
       }

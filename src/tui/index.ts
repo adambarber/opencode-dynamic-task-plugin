@@ -64,7 +64,7 @@ import {
   type CeilingChoice,
   type EditOutcome,
 } from "./agent-editor.js";
-import { boundClause, inForceFlag, plainCell, plainSummary, screenTokens, type ScreenTokens } from "./theme.js";
+import { boundClause, plainCell, plainSummary } from "./theme.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -207,17 +207,25 @@ export const tui: TuiPlugin = async (api) => {
  * new dialog that forgot would be silently narrow, and a narrow row is clipped rather
  * than wrapped, so the symptom is a fact missing from a line that still looked fine.
  */
-function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0]): void {
+function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0], width: number): void {
   api.ui.dialog.replace(render, () => {
     limitsDialogUp = false;
   });
   limitsDialogUp = true;
-  api.ui.dialog.setSize("large");
+  api.ui.dialog.setSize(width >= 88 ? "large" : "medium");
 }
 
-/** Every list of ours goes through here, on top of the mount funnel. */
-function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>): void {
-  mountLimitsDialog(api, () => api.ui.DialogSelect(build()));
+/**
+ * Every list of ours goes through here, on top of the mount funnel.
+ *
+ * The WIDTH is the caller's, because it is a property of the screen rather than of the
+ * funnel: the list is the only one of the four whose rows carry a name and its caps on
+ * one line, and only at `large` do those two share a row. A funnel that fixed one width
+ * would force the pickers to be as wide as the list, which is the 28 columns of number
+ * spent on nothing.
+ */
+function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>, width: number): void {
+  mountLimitsDialog(api, () => api.ui.DialogSelect(build()), width);
 }
 
 /**
@@ -264,38 +272,43 @@ export function limitsListProps(
 ): TuiDialogSelectProps<ListChoice> {
   return {
     title: "Task limits",
-    ...NO_FILTER,
+    // The filter stays ON here, and this is the one screen of the four that keeps it. A
+    // long agent list is the one thing here worth typing into, and every other select in
+    // this host has the box, so its absence would be the thing that looked wrong.
     options: [
-      // The cross-agent total FIRST, above the agents it bounds, because it is the cap
-      // a dispatch is refused on before any agent's own cap is consulted — so it is the
-      // row that explains a refusal the per-agent rows do not. It is a row rather than a
-      // cell in a row for the same reason: it has no agent, and a row that is not about
-      // an agent cannot be drawn by the per-agent mapper below.
       {
         title: CEILING_LABEL,
-        // A `footer` is pushed to the far edge of the row, so it is for a STATUS and not
-        // for content: `in force` on the total was both stranded 60 columns from the
-        // label it belonged to and a lie, since a total is the number in the file rather
-        // than a number anyone chose. The figure rides under the label, with everything
-        // else's.
-        ...withDetails(plainCell(dialog.ceiling)),
+        // THE CATEGORY IS THE HOST'S, not a row that happens to be first. The total used
+        // to sit above the agents because it was first in the array, and every reader and
+        // every case carried "first row is special" as a rule. `category` makes it a
+        // heading, which is what it always was — and the host draws the heading in its
+        // own accent, so it cannot drift from the palette's.
+        category: "Total",
+        description: plainCell(dialog.ceiling),
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
       },
       ...dialog.rows.map((row) => ({
         title: row.name,
-        // The caps go UNDER the name, not in a footer beside it. The title is
-        // flexGrow={1} and the footer flexShrink={0} in a flexDirection="row", so a
-        // footer lands at the far edge of the dialog and the title's space absorbs the
-        // distance between them — `explore` in column 3, its caps in column 35.
-        // Rendering the screen is what found this; reading the host's flexbox had not.
+        category: "Agents",
+        // The caps go in `description` — the field every native dialog in this host uses
+        // for the muted text after a title, on the title's own line. This is where a
+        // frame sent them back to, after `footer` proved to strand a value 60 columns
+        // from the name it described and `details` proved to be an undocumented field
+        // costing an indent and a cast. The host draws it, so it follows the selection
+        // bar instead of fighting it.
+        // The caps ride beside the name ONLY when both fit. A name long enough to crowd
+        // them out — and 40 characters of hyphenated agent name is a real thing, since
+        // agents are named for what they are — takes the caps with it, whole, rather
+        // than having them clipped to a fragment ending mid-figure. A half-line reading
+        // `depth 3` is worse than no line: it looks like a bound and is a truncation, and
+        // nothing on screen says so. The row still opens the agent's own screen, which is
+        // where the caps are in full.
         //
-        // `details` is a column child at paddingLeft={3}: left-aligned, full width,
-        // immediately under the name. It must be a STRING — the host runs it through
-        // `Locale.truncateMiddle`, which is `str.length` and `str.slice`, and a
-        // `StyledText` has neither. So the caps lose their colour tiers here, which is
-        // the price of a screen that can be read at all.
-        ...withDetails(plainSummary(row)),
+        // This is the width gate's one caller acting on its own verdict, which is the only
+        // arrangement in which it can: a gate that reports a clip the screen then ignores
+        // has found out that the screen does not care.
+        ...(fitsItsDialog({ title: row.name, description: plainSummary(row) }, LIST_DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
         value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
       })),
@@ -329,7 +342,7 @@ type PickerActions<Choice> = {
   back: () => void;
 };
 
-export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>, tokens: ScreenTokens): TuiDialogSelectProps<PickerChoice> {
+export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
   return {
     title: CEILING_LABEL,
@@ -341,7 +354,6 @@ export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<Ceil
       (value) => confirm({ value }),
       back,
       BACK_TO_LIST,
-      tokens,
     ),
   };
 }
@@ -376,22 +388,22 @@ export function agentCapsProps(
     ...NO_FILTER,
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
-        // LABEL AND VALUE IN ONE TITLE, because a footer's value is stranded at the far
-        // edge of the row and this screen is two rows long — `at once` in column 3 and `2`
-        // in column 72, on a screen whose whole subject is the pairing. The title takes
-        // the whole row when nothing competes for it, and nothing does here.
-        title: `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`,
+        title: CAP_LABEL[cap],
+        description: plainCell(capCellOf(row, cap)),
         value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
         onSelect: () => ask(cap),
       })),
-      // The way out LAST, below both caps. A list of things to act on is read top-down
-      // and an exit belongs after what it exits: a `Back` row sitting above the two caps
-      // reads as a third cap. And the host replaces the screen under a press, so a
-      // mistimed press on an exit above the settings would throw away the place the
-      // operator was standing — the one thing an exit must never cost.
+      // The way out LAST, below both caps — and it stays a ROW. Escape cannot do this
+      // job and the reason is structural rather than a matter of trying harder: the
+      // host's own Dialog binds `escape`, `replace` keeps exactly one stack entry, and
+      // the stack has no push, so escape closes the whole drill-down. A plugin binding
+      // that intercepted it either loses the key outright or — with the host's marked
+      // `fallthrough` — fires first and lets the host's close what it had just opened.
+      // Both halves are proved in `tui-limits-command.test.js` with the keymap's own
+      // harness, and this row is what is left over.
       {
         title: ALL_AGENTS_LABEL,
-        ...withDetails(`back to every agent's caps`),
+        description: "back to every agent's caps",
         value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
         onSelect: back,
       },
@@ -399,57 +411,33 @@ export function agentCapsProps(
   };
 }
 
-/**
- * The cap picker, as the host's own prop type: a list of the values one cap can take.
- *
- * The host has no form widget — `Dialog`, `DialogAlert`, `DialogConfirm`,
- * `DialogPrompt` and `DialogSelect` are the whole vocabulary, and only one of them
- * takes a list — so "set this number" is a list of numbers. Which is the better answer
- * anyway: the operator sees the whole legal range at once, which a text box never
- * could, and cannot type a value the reader will refuse.
- *
- * The title names the agent AND the cap, because the two questions a row asks are
- * "how many of this" and "how deep", and a picker that said only "at once" would be a
- * screen of numbers with no way to tell what any of them meant.
- */
 export function capPickerProps(
   agent: string,
   cap: AgentCapName,
   row: AgentEntry,
   actions: PickerActions<CapChoice>,
-  tokens: ScreenTokens,
 ): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
   const cell = capCellOf(row, cap);
-  // The bound stated ONCE, in the title, rather than on every value it rules out. Five
-  // rows reading `unreachable - agent set binds at 3` say one fact five times, and a fact
-  // repeated until it is wallpaper is a fact nobody reads. The title is where the eye
-  // already is, and it is the one part of the screen not competing for a row's width.
+  const stated = cell.stated ? cell.value : null;
   const bound = ceilingOf(row.depth, cap, cell.value);
+  // The bound stated ONCE, in the title, after a frame showed it six times over.
   const title = bound === null ? `${agent} — ${CAP_LABEL[cap]}` : `${agent} — ${CAP_LABEL[cap]} (${boundClause(bound)})`;
   return {
     title,
     ...NO_FILTER,
-    // `details` is the one field the host budgets rather than clips: it draws the
-    // string as its own row below, capped at `min(76, width - 12)`. A row's title and
-    // description share ONE clipped line instead, so the sentence under a row cannot
-    // be a suffix that runs off the end.
-    //
-    // `details` is absent from the published `TuiDialogSelectOption` although the host
-    // reads it. The prop is returned by SPREAD rather than spelled out, because a
-    // spread is not excess-property-checked and a cast is not permitted here — an
-    // escape hatch, sound only because the field was read in the host's own source at
-    // the tag this binary was built from. That is a fact about a file we do not own,
-    // so `fitsItsDialog` below re-derives the host's layout and fails the build if the
-    // content stops fitting it.
+    // The value in force, handed to the HOST rather than painted beside the number. The
+    // host matches `current` to a row with `isDeepEqual` (dialog-select.tsx), so this is
+    // the same object shape every row below carries — structural identity, not reference
+    // identity, and a case that reshaped one without the other would find the marker gone.
+    current: { kind: ChoiceKind.Value, agent, cap, value: stated } as const satisfies PickerChoice,
     ...valuePicker(
       CAP_CHOICES[cap],
-      cell.stated ? cell.value : null,
+      stated,
       (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
       (value) => confirm({ cap, value }),
       back,
       `back to ${agent}'s caps`,
-      tokens,
     ),
   };
 }
@@ -464,22 +452,19 @@ export function capPickerProps(
  * genuinely differs — it names an agent and a cap, or names the total — and taking it
  * as a parameter would put the two call sites back to spelling the same four arguments.
  *
- * FOUR claims live here and each is a thing the operator reads. The way back is FIRST,
- * which is the only position a navigation affordance belongs in: a screen that opens
- * with ten numbers and puts its exit at the bottom has made the operator scroll or press
- * END to change their mind. It is a row rather than an escape-layer binding because the
- * host's `replace` sets the dialog stack to a single entry — there is no previous dialog
- * to pop back to, so before this row a picker's only exit was the one that closed the
- * whole manager, and every other row on the screen wrote the file. The destination is
- * said in `details` because it is not the same screen for both pickers, and a label that
- * named one destination while standing on the other would be a lie in a row whose entire
- * job is to say where it goes.
+ * THREE claims live here, and each is a thing the operator reads.
  *
- * The value in force is MARKED, so the change is visible without holding the previous
- * screen in mind. The fallback row appears only where it can work, because clearing a cap
- * the overlay does not state writes nothing and would leave a row that could only ever be
- * inert. And the `details` spelling of what clearing means is the one field the host
- * budgets rather than clips.
+ * The way out is LAST, below the values: a list of things to act on is read top-down and
+ * the exit belongs after what it exits. It is a row rather than an escape binding for a
+ * structural reason — the host's own Dialog binds `escape`, `replace` keeps exactly one
+ * stack entry, and the stack has no push, so escape can only close the whole drill-down.
+ * Both halves of that are proved in the suite with the keymap's own harness.
+ *
+ * Which value is in force is the host's question, asked through the host's `current`
+ * field: it draws the `●` and moves the selection there, in colours chosen at paint time
+ * from the row's own state. The fallback row appears only where it can work, because
+ * clearing a cap the overlay does not state writes nothing and would leave a row that
+ * could only ever be inert.
  */
 function valuePicker(
   choices: readonly number[],
@@ -488,19 +473,16 @@ function valuePicker(
   onPick: (value: number | null) => void,
   back: () => void,
   backTo: string,
-  tokens: ScreenTokens,
 ) {
   return {
     options: [
       ...choices.map((value) => ({
         title: `${value}`,
-        // The one field the right edge is FOR. `in force` is a status flag about the
-        // value it sits beside, two words long, and the host's own `current()` indicator
-        // lives in the same gutter — so a short mark there reads as a flag rather than as
-        // content that lost its way. A StyledText, because the host wraps a string footer
-        // in `<text fg={muted}>` (dialog-select.tsx:781) and a plain one arrives greyed
-        // whole, with nothing able to address part of it.
-        ...(value === current ? ({ footer: inForceFlag(tokens) } as Record<string, unknown>) : {}),
+        // WHICH value is in force is the HOST's question, asked through the HOST's
+        // field. `current` on the dialog draws a `●` in `theme.primary` against that
+        // row and opens the selection on it; it was a `StyledText` flag in the footer
+        // before, hand-painted in a fixed tier that could not follow the selection bar
+        // and sat 60 columns from the number it described. The host already had it.
         value: asChoice(value),
         onSelect: () => onPick(value),
       })),
@@ -508,7 +490,11 @@ function valuePicker(
         ? []
         : [{
             title: "Use the config default",
-            ...withDetails(FALLBACK_MEANING),
+            // The one sentence too long for a `description` beside a number, so it is
+            // what the row says rather than what the number says. Without it a press
+            // here looks identical to pressing the number, and the two write opposite
+            // files.
+            description: "clear this cap and use the config file's number",
             value: asChoice(null),
             onSelect: () => onPick(null),
           }]),
@@ -519,7 +505,7 @@ function valuePicker(
       // from throwing away the place the operator was standing.
       {
         title: BACK_LABEL,
-        ...withDetails(backTo),
+        description: backTo,
         value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
         onSelect: back,
       },
@@ -527,46 +513,20 @@ function valuePicker(
   };
 }
 
-/** What the fallback row means, said on the row that does it. */
-const FALLBACK_MEANING = "clear this cap and use the number in the config file instead";
-
-/**
- * A row's `details`, spread in.
- *
- * A `details` entry is drawn at `paddingLeft={3}` while the row's own title text carries
- * its `paddingLeft={3}` INSIDE the row box's — so a detail line starts THREE columns to
- * the LEFT of the title it belongs to. Flush text reads as a peer, and an agent's caps
- * printed level with its own name read as a fact about the screen rather than about the
- * row above it. `INDENT` puts the annotation under its name, in the only place the
- * plugin can put it: the string itself.
- *
- * It costs three of the 66 columns `details` gets, which is why the budget in
- * `fitsItsDialog` counts the indent rather than the bare text.
- */
-const INDENT = "   ";
-
-/** A row's `details`, spread in.
- *
- * The host budgets each entry of `details` against its own width and truncates it with
- * an ellipsis, while the headline it clips would take the whole row with it — so a row
- * that means something beyond its title says it here. The helper exists because the
- * field is not on the option type (the host carries it for keyboard rendering and
- * nothing in the plugin reads it back), so both rows that wanted it spelled the same
- * `as` object, and the duplication gate was right to call those two rows one piece of
- * code.
- */
-const withDetails = (...lines: string[]) => ({ details: lines.map((line) => INDENT + line) } as Record<string, unknown>);
 
 /**
  * No `Search` box, on every one of these screens.
  *
  * The host draws a filter input above the rows unless this is false (dialog-select.tsx:
  * the `<Show when={props.renderFilter !== false}>` around it), and the default is to draw
- * it. It was on all four screens of this drill-down, above a picker whose entire option
- * set is `1 2 3 4 6 8 12 16 24 32` — an input filtering ten numbers, occupying a third of
- * a screen whose problem is that too much is on it. On the agent list it filters twenty
- * alphabetical names, which is a lookup rather than a search, and the rows already sit in
- * one scrollable column.
+ * it. It was on every screen of this drill-down, including a picker whose entire option
+ * set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent typing to narrow ten
+ * numbers.
+ *
+ * NOT on the agent list, deliberately. Every other select in this host has the box, a
+ * long agent list is the one screen here worth typing into, and its absence would have
+ * been the thing that looked unlike the rest of opencode. It goes on the three screens
+ * below the list and not on the list.
  *
  * The field is absent from the published `TuiDialogSelectProps` although the host reads
  * it, exactly as `details` is, so it is set by SPREAD — not excess-property checked,
@@ -606,10 +566,13 @@ const BACK_TO_LIST = "back to the list of agents";
  * The width the host lays a row out in, and whether this one fits it.
  *
  * The host's own arithmetic, so the budget is enforced where the content is built
- * rather than discovered as a clipped sentence in a terminal. `large` is 88 columns and
- * `medium` is 60 (dialog.ts:22-25); the plugin asks for `large` on every screen it
- * mounts, so 88 is the figure and a dialog can never exceed the terminal less 2
- * (dialog.ts:59), which makes an 80-column terminal the narrow case worth surviving.
+ * rather than discovered as a clipped sentence in a terminal. `medium` is 60 columns and
+ * `large` is 88 (dialog.ts:22-25), and the plugin asks for neither now: a dialog that
+ * never calls `setSize` gets the host's DEFAULT, which is what every other dialog in
+ * opencode is, and being the only select in the app with a different width is the sort
+ * of thing that reads as a different program before anyone can say why. A dialog can
+ * never exceed the terminal less 2 (dialog.ts:59), which makes an 80-column terminal the
+ * narrow case worth surviving.
  *
  * What the row spends before any content is the part that was wrong, twice over. The row
  * box is `<box flexDirection="row" paddingLeft={3} paddingRight={3} gap={1}>`
@@ -619,7 +582,31 @@ const BACK_TO_LIST = "back to the list of agents";
  * frame shows. `ROW_GAP` is charged per-footer rather than up front: it exists only
  * between a title and a footer, and a row with no footer pays none of it.
  */
-const DIALOG_WIDTH = 88;
+/**
+ * The two widths these screens are drawn at, and the reason there are two.
+ *
+ * `medium` is the host's DEFAULT and what every other dialog in opencode gets, so a
+ * screen that fits in it takes it and says nothing. `large` is not a preference; it is
+ * the only width at which the list's rows survive.
+ *
+ * The list is the one screen carrying a name and its caps on one line. The width a row
+ * gets is `min(53, 78 - 1 - 8)` at a `large` dialog and `min(53, 58 - 1 - 8)` at
+ * `medium` — so an agent name of 40 characters has 11 columns left for its caps at
+ * `medium` and 39 at `large`, against a summary like `at once 2  depth 3/4 agent set`
+ * that is 30 long. A 40-character agent name is a real thing: agents are named for what
+ * they are, and hyphenated descriptive names are the house style.
+ *
+ * The pickers take `medium` and say nothing, because a row there is a number, a label, or
+ * a sentence about what clearing a cap means — none of which is 40 characters of name.
+ * One width for both would either clip the list or waste 28 columns on a picker of ten
+ * numbers, and the first is the failure the width gate exists to prevent.
+ *
+ * Exported so the render proof can draw at the width the plugin MOUNTS rather than one it
+ * invents, which is the error that made the last measurement describe a screen that does
+ * not exist.
+ */
+export const LIST_DIALOG_WIDTH = 88;
+export const PICKER_DIALOG_WIDTH = 60;
 const TERMINAL_FLOOR = 80;
 /** The `scrollbox` the rows sit in, at `paddingLeft={1} paddingRight={1}`. */
 const SCROLLBOX_INDENT = 1;
@@ -627,53 +614,63 @@ const SCROLLBOX_INDENT = 1;
 const ROW_PADDING_TOTAL = 6;
 /** Between a title and a footer. A row with no footer pays none of it. */
 const ROW_GAP = 1;
-/** The host subtracts its own 3+3 and the scrollbox's 1+1 from the dialog for a detail line. */
-const DETAIL_MARGIN = SCROLLBOX_INDENT * 2 + ROW_PADDING_TOTAL;
-/** The host's own cap on a detail line. */
-const DETAIL_CAP = 76;
-
-/** The dialog as it is actually drawn: 88, or the terminal less 2 on a narrow one. */
-const DIALOG = Math.min(DIALOG_WIDTH, TERMINAL_FLOOR - 2);
 
 /**
- * What one option row has left for its title, its description, and its footer: 70 at an
- * 80-column terminal, measured. The `scrollbox`'s one pixel a side is counted here, and
- * that is the whole correction over the arithmetic that preceded it.
+ * What one option row has left for its title, its description, and its footer at a dialog
+ * of `width`, or the terminal less 2 on a narrow one.
+ *
+ * MEASURED, not derived. `bun scripts/render-proof.js --screen` reports 52 for a title
+ * under a `medium` dialog and 80 under a `large` one at an 80-column terminal, the
+ * `scrollbox`'s one pixel a side included — and counting that is the correction over the
+ * arithmetic that preceded it, which was out by two columns in the safe direction and so
+ * silently passed everything.
  */
-export const DIALOG_ROW_TEXT = DIALOG - SCROLLBOX_INDENT * 2 - ROW_PADDING_TOTAL;
-
-/** What one `details` line has: 70 at an 80-column terminal, also measured. */
-const DIALOG_DETAIL_TEXT = Math.min(DETAIL_CAP, DIALOG - DETAIL_MARGIN);
+export const dialogRowText = (width: number) => Math.min(width, TERMINAL_FLOOR - 2) - SCROLLBOX_INDENT * 2 - ROW_PADDING_TOTAL;
 
 /**
- * Whether every line of `row` fits the dialog the host will draw it in.
+ * What the host truncates a TITLE to, on its own, before the row's clip is reached.
  *
- * The footer is charged to the row, and that is the claim that changed. The footer sits
- * in a `flexShrink={0}` box (dialog-select.tsx:786) while the title is `flexGrow={1}` with
- * `overflow="hidden"` and `wrapMode="none"`: the footer cannot give ground, so the TITLE
- * does, and it goes to a clip with no ellipsis and nothing to say it happened. A gate
- * measuring the title alone could not see an agent's name being eaten by its own caps —
- * which is what the hand-typed footer in the case that drove these names was hiding,
- * being a string production cannot emit and a field this function never read.
- *
- * `description` shares the title's `<text>` in a nested span (dialog-select.tsx:778), so
- * it is charged to the same line with the one space that separates them.
- *
- * The numbers are measured rather than derived — see `DETAIL_MARGIN` — and the 70 this
- * charges against is what `bun scripts/render-proof.js --screen` reports for a title at an
- * 80-column terminal. A gate that is tighter than the screen passes everything and tells
- * the operator nothing, which is the failure a derivation invites and a measurement
- * forecloses.
+ * `titleWidth ?? 61` in dialog-select.tsx — 61 whatever the dialog's width. It never binds
+ * on a `medium` dialog and always binds on a `large` one, which is the only place it is
+ * charged. A budget that cannot fail on the screen it guards is a claim that is not
+ * making a claim, so it is checked where it is reachable.
  */
-export function fitsItsDialog(row: { title: string; description?: string; details?: string[] }, footerWidth = 0): boolean {
+const TITLE_CAP = 61;
+
+/**
+ * Whether a row's line fits the dialog the host will draw it in.
+ *
+ * Two budgets, and they are not the same one. The host truncates the TITLE on its own —
+ * `Locale.truncate(props.title, props.titleWidth ?? 61)` — and clips the whole line, title
+ * plus the muted `description` in its nested span, at the width of the row's `flexGrow={1}
+ * overflow="hidden"` box. So a name can be cut for being long, a description can be cut
+ * for being beside a long name, and neither says so.
+ *
+ * A `footer` is charged to the row and cannot give ground: `flexShrink={0}` against the
+ * title's `flexGrow={1}`, so the title goes instead. No screen of ours sets one now — the
+ * figure that used to sit there rides in `description` — but the charge stays, because a
+ * future row that sets a footer has to be measured against the same row rather than
+ * discovered by looking at a frame.
+ *
+ * The number is MEASURED, not derived. `bun scripts/render-proof.js --screen` reports 52
+ * for a title at an 80-column terminal with the host's own `medium` dialog, and every
+ * derived version of it has been wrong by a layer: the first counted six columns of
+ * indent and missed a one-pixel gap, the next missed the `scrollbox` the rows live in, and
+ * a third measured a `large` dialog the plugin no longer mounts. A gate that is tighter
+ * than the screen passes everything and tells the operator nothing; one that is looser
+ * lets a name be eaten by its own caps. Both are silent, so the figure comes off a frame.
+ */
+export function fitsItsDialog(row: { title: string; description?: string }, width = PICKER_DIALOG_WIDTH, footerWidth = 0): boolean {
   // Each separator is charged only when the thing it separates is there. A `+ 1` for the
   // space before a description a row does not have, and a gap for a footer it does not
-  // have, are the same class of error as a padding the renderer never applies: a gate
-  // that quietly charges for what is absent is tighter than the screen and says nothing
-  // about why.
+  // have, are the same class of error as a padding the renderer never applies.
   const description = row.description ? 1 + row.description.length : 0;
-  const headline = row.title.length + description + footerWidth + (footerWidth > 0 ? ROW_GAP : 0);
-  return headline <= DIALOG_ROW_TEXT && (row.details ?? []).every((line) => line.length <= DIALOG_DETAIL_TEXT);
+  const available = dialogRowText(width);
+  // The host truncates the title alone at 61 whenever the row is wider than that, and
+  // clips the whole line at `available`. At a `medium` dialog the second is always the
+  // smaller, so the first is not charged — a check that cannot fail here is not a check.
+  const cap = Math.min(TITLE_CAP, available);
+  return row.title.length <= cap && row.title.length + description + footerWidth + (footerWidth > 0 ? ROW_GAP : 0) <= available;
 }
 
 // ─── the flow ────────────────────────────────────────────────────────────────
@@ -727,7 +724,7 @@ function askListChoice(api: TuiApi, view: LimitsView, choice: ListChoice): void 
 
 /** The list, over a view already read. The re-open path, so a second read is not paid for. */
 function showLimits(api: TuiApi, view: LimitsView): void {
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)));
+  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)), LIST_DIALOG_WIDTH);
 }
 
 /**
@@ -740,7 +737,7 @@ function showLimits(api: TuiApi, view: LimitsView): void {
 function openCeiling(api: TuiApi, view: LimitsView): void {
   const confirm = (choice: CeilingChoice) =>
     applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
-  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }, screenTokens(api.theme)));
+  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }), PICKER_DIALOG_WIDTH);
 }
 
 /**
@@ -755,6 +752,7 @@ function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
   const row = rowOf(view, agent);
   mountLimitsSelect(api, () =>
     agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)),
+    PICKER_DIALOG_WIDTH,
   );
 }
 
@@ -807,7 +805,8 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   const confirm = (choice: CapChoice) =>
     applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
   mountLimitsSelect(api, () =>
-    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }, screenTokens(api.theme)),
+    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }),
+    PICKER_DIALOG_WIDTH,
   );
 }
 

@@ -69,13 +69,25 @@ import { screenTokens } from "./theme.js";
  * (`routes/session/index.tsx:1330`), but the host renders it in its OWN row
  * (`component/prompt/index.tsx:1479-1483` — `<box flexDirection="row" gap={1}
  * alignItems="center">{props.right}</box>`), a row ABOVE this one. That is why the counter
- * kept landing where the operator did not ask for it, and why it is a fallback now:
- * `footerLineOf` reaches the real line through the renderer instead.
+ * The route hands the plugin a `right` region, and it is a real one
+ * (`routes/session/index.tsx:1330`), but the host renders it in its OWN row
+ * (`component/prompt/index.tsx:1479-1483` — `<box flexDirection="row" gap={1}
+ * alignItems="center">{props.right}</box>`), a row well ABOVE this one. `app_bottom` is the
+ * closer seat: `app.tsx:1124-1126` mounts it in a `<box flexShrink={0}>` directly beneath the
+ * `flexGrow` column that holds the route, which puts it at the terminal's bottom edge — the
+ * last thing drawn above nothing, and the closest a slot gets to this line. `app` is one row
+ * lower still and is the host's outermost, so `app_bottom` is the one that stays attached to
+ * the session above it.
+ *
+ * This is still a FALLBACK, not the line: the box that draws this footer is inside the
+ * growing column, a different subtree from every slot the host offers, and
+ * `footerLineToJoin` reaches the real line through the renderer instead. The gauge reports
+ * which of the two it managed, once, to the host log.
  *
  * The muted tier is the one thing this got right from the start — the host draws the
  * context figure in `theme.textMuted`, the role `screenTokens().context` resolves to.
  */
-export const GAUGE_SLOT = "session_prompt_right";
+export const GAUGE_SLOT = "app_bottom";
 
 /**
  * The host's commands hint — the anchor the footer line is found by.
@@ -486,18 +498,21 @@ export function gaugeProps(muted: RGBA, reading: () => GaugeReading): Record<str
   return {
     fg: muted,
     /**
-     * An auto left margin, and NOT `alignSelf`.
+     * `alignSelf`, and the OPPOSITE of the rule this prop used to carry.
      *
-     * The slot's container is a ROW — `packages/tui/src/component/prompt/index.tsx`
-     * renders it as `<box flexDirection="row" gap={1} alignItems="center">{props.right}</box>`,
-     * and the route hands the slot in as the prompt's `right` prop. In a row the main axis
-     * is horizontal, so the cross axis `alignSelf` acts on is VERTICAL: an `alignSelf` here
-     * moves the counter up and down, and `justifyContent` defaults to packing children
-     * left, which is why a bare `<text>` lands at the left margin. `marginLeft: "auto"`
-     * claims the free space on the left instead, which is the one way to sit at the right
-     * edge of a row you do not own. Yoga accepts `auto` here, and the type says so.
+     * In the `right` slot the container was a ROW — `<box flexDirection="row" gap={1}
+     * alignItems="center">{props.right}</box>` at `component/prompt/index.tsx:1479` — so the
+     * cross axis `alignSelf` acts on was VERTICAL and the horizontal lever had to be an
+     * auto left margin. `app_bottom` is a bare `<box flexShrink={0}>`
+     * (`app.tsx:1124`), no `flexDirection`, so Yoga's default column applies: the cross axis
+     * is now HORIZONTAL and `alignSelf: "flex-end"` is the lever that reaches the right
+     * edge. An auto margin would be the dead one here, because auto margins absorb free
+     * space along the MAIN axis and the main axis of a column is vertical.
+     *
+     * Worth stating because the inversion is silent: with the old prop in this container the
+     * counter renders correctly and lands on the left, and nothing looks wrong.
      */
-    marginLeft: "auto",
+    alignSelf: "flex-end",
     // A FUNCTION, not a string. `content` takes a value and this is what makes the
     // counter live: Solid re-invokes the child when the signal it closes over moves, and
     // the signal moves on the ledger's next write.

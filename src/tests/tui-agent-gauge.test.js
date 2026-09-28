@@ -265,17 +265,19 @@ describe("the counter is drawn in the host's muted grey", () => {
     assert.equal(gaugeText(3, 4), "3/4", "three of four");
   });
 
-  it("sits at the RIGHT margin, which takes an auto left margin and not alignSelf", () => {
-    // The reported defect, twice. The slot's container is a ROW
-    // (`<box flexDirection="row" gap={1} alignItems="center">{props.right}</box>` in
-    // `packages/tui/src/component/prompt/index.tsx`), so `alignSelf` acts on the VERTICAL
-    // cross axis and moves the counter up and down, never sideways — which is what the
-    // first attempt did, and why it stayed at the left. `justifyContent` defaults to
-    // packing children left, so the horizontal lever a plugin actually has is an auto
-    // margin, which claims the free space ahead of it.
+  it("sits at the RIGHT margin, which takes the cross axis in a column and an auto margin in a row", () => {
+    // The same prop was the right lever in the old seat and the wrong one in this one, and
+    // the failure is silent in both directions, so both are pinned.
+    //
+    // `app_bottom` is `<box flexShrink={0}>` with no `flexDirection` (`app.tsx:1124`), so
+    // Yoga's default COLUMN applies and the cross axis is horizontal: `alignSelf:
+    // "flex-end"` is what reaches the right edge. In the old seat the container was a ROW
+    // (`<box flexDirection="row" gap={1} alignItems="center">{props.right}</box>` at
+    // `component/prompt/index.tsx:1479`), the cross axis was vertical, and `alignSelf`
+    // moved the counter up and down while an auto left margin was the only sideways lever.
     const props = gaugeProps(screenTokens(darkTheme()).context, () => ({ active: 2, cap: 4 }));
-    assert.equal(props.marginLeft, "auto", "the free space goes to the left, so the fraction sits at the right edge");
-    assert.ok(!("alignSelf" in props), "alignSelf is the wrong axis in a row, and must not creep back");
+    assert.equal(props.alignSelf, "flex-end", "the column's cross axis is horizontal, so flex-end is what reaches the right edge");
+    assert.equal(props.marginLeft, undefined, "an auto margin absorbs the MAIN axis, which is vertical in a column, so it would do nothing");
   });
 
   it("and the text is a FUNCTION, because that is what makes the counter live", () => {

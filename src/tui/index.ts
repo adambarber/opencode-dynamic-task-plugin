@@ -36,6 +36,7 @@
 import type { TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { errorMessage } from "../shared/host-shape.js";
+import { slotProbePlugins } from "./slot-probe.js";
 import { safeLog } from "../shared/notify.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
@@ -185,6 +186,10 @@ export const tui: TuiPlugin = async (api) => {
   // value is formatted here because `errorMessage` is the one place in this repo that turns
   // an unknown throwable into words, and a second spelling of it in the gauge would be the
   // duplication that helper exists to prevent.
+  // DEBUG PROBE — one component per host slot, each printing its own slot name. See
+  // `slot-probe.ts`; removing this loop and that file removes the feature.
+  for (const probe of slotProbePlugins()) api.slots.register(probe);
+
   api.slots.register(
     mountGauge({
       ...api,

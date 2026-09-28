@@ -206,3 +206,18 @@ export function assertQuestionRejected(h) {
   assert.strictEqual(calls[0].method, "reject");
   return calls[0];
 }
+
+/**
+ * A footer's characters, whichever of the three things a footer can be.
+ *
+ * The host's row markup puts a footer in a box of its own, and a footer may arrive as a
+ * plain string OR as the `StyledText` this repo's cells are built from. Two suites were
+ * each reading it, one of them into a helper that would have thrown on the absence a
+ * row legitimately has — and the two answers were free to disagree about a footer's
+ * width, which is the number the layout budget is measured in.
+ */
+export function footerText(footer) {
+  if (footer === undefined || footer === null) return "";
+  if (typeof footer === "string") return footer;
+  return footer.chunks.map((run) => run.text).join("");
+}

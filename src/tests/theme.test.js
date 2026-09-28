@@ -18,6 +18,7 @@ import assert from "node:assert/strict";
 import { TextAttributes } from "@opentui/core";
 import { cellFooter, plainCell, plainSummary, screenTokens, summaryFooter, summaryRuns, widthsAgree } from "../../dist/tui/theme.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
+import { footerText } from "./support/assertions.js";
 import { bareTheme, capCell, darkTheme, lightTheme, themeRoles } from "./support/harness.js";
 
 const THEME = darkTheme();
@@ -229,7 +230,3 @@ describe("screenTokens", () => {
   });
 });
 
-/** A footer's characters, whichever of the two things a footer can be. */
-function footerText(footer) {
-  return typeof footer === "string" ? footer : footer.chunks.map((run) => run.text).join("");
-}

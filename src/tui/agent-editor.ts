@@ -26,6 +26,7 @@ import {
   type AgentCapSource,
   type AgentCaps,
   type AgentOverlay,
+  type OverlayAgents,
 } from "../shared/caps.js";
 import { DepthBound, depthLimits } from "../shared/task-policy.js";
 
@@ -93,6 +94,20 @@ export interface DepthBinding {
 /** What the screen shows and where it writes back. */
 export interface AgentDialog {
   rows: AgentEntry[];
+  /**
+   * The cross-agent total, as a cell.
+   *
+   * A `CapCell` and not a number, for the reason every other cell on this screen is a
+   * cell: the number in force and whether the operator wrote it are two different
+   * answers to "did I do that?", and a bare integer cannot carry both. `bounded` is
+   * always null — nothing holds a total down but the total.
+   *
+   * It is the cap the dispatch path refuses on FIRST (`checkAgentCapacity` asks the
+   * ceiling before the agent's own cap), and it is the one number an operator raising
+   * every per-agent cap to twenty will still hit, which is why it earns a row of its
+   * own rather than living in a cell somewhere it has to be looked up from.
+   */
+  ceiling: CapCell;
   /** Set when the file said something unusable, so the screen can say so too. */
   problem: string | null;
 }
@@ -121,21 +136,20 @@ export function agentDialogFrom(
   // edit written on top of them is a body the dispatch path will accept. A value that
   // arrived as `{"maxConcurrent": "four"}` is read as absent, and the edit replaces
   // the garbage rather than preserving it beside a new number.
-  const stated = statedByAgent(raw);
-  const names = agentNames ?? Object.keys(stated);
-  // The numbers in force are resolved against the base config WITH the overlay
+  const stated = readStated(raw);
+  const names = agentNames ?? Object.keys(stated.agents);  // The numbers in force are resolved against the base config WITH the overlay
   // applied — by the caps module's own function, which is the one the dispatch path
   // resolves against. Resolving against `base` alone made a stated cap render the
   // CONFIG's number marked as the operator's own, which is the one confusion the
   // stated/inherited pair exists to prevent, arriving through the pair itself.
   const inForce = applyAgentOverlay(base, raw) ?? base;
   return {
+    ceiling: { value: inForce.maxConcurrent, stated: stated.maxConcurrent !== undefined, bounded: null },
     rows: names.map((name) => {
       const policy = resolveAgentCaps(inForce, name);
       return {
         name,
-        stated: stated[agentKey(name)] ?? {},
-        resolved: capsOf(policy),
+        stated: stated.agents[agentKey(name)] ?? {},        resolved: capsOf(policy),
         depth: depthBindingFor(policy.maxDepth, allowSameAgentRecursion, agentNames),
       };
     }),
@@ -164,6 +178,25 @@ function depthBindingFor(configured: number, allowSameAgentRecursion: boolean, a
 }
 
 /**
+ * What the file STATES, read once for both the screen and the write-back.
+ *
+ * The two halves of the overlay in one read, because a caller that asked for them
+ * separately was two readers of one untrusted file — and the second reader is the one
+ * that goes stale the moment a rule changes in the first.
+ */
+interface StatedOverlay {
+  /** The stated per-agent caps, by folded agent key, minus the bodies that state none. */
+  agents: Record<string, AgentCaps>;
+  /** The stated cross-agent total, or undefined when the file states none. */
+  maxConcurrent: number | undefined;
+}
+
+function readStated(raw: unknown): StatedOverlay {
+  const overlay = readAgentOverlayCaps(raw);
+  return { agents: statedByAgent(overlay), maxConcurrent: overlay.maxConcurrent };
+}
+
+/**
  * The overlay's own agents, read with the caps module's OWN reader.
  *
  * This is the line that makes the screen and the dispatch path agree. It used to have
@@ -172,8 +205,8 @@ function depthBindingFor(configured: number, allowSameAgentRecursion: boolean, a
  * next dispatch read the file and threw the cap away. So the number came back
  * different under a success message. There is one rule now and it is not in this file.
  */
-function statedByAgent(raw: unknown): Record<string, AgentCaps> {
-  const { agents } = readAgentOverlayCaps(raw);
+function statedByAgent(overlay: OverlayAgents): Record<string, AgentCaps> {
+  const { agents } = overlay;
   // An agent whose body carried nothing usable is not an agent the operator capped,
   // and keeping it here would make `knownCappedAgents` report a cap that does not
   // exist. `readAgentOverlayCaps` keeps it so the caller can SAY it was dropped; here
@@ -237,6 +270,19 @@ function capsOf(policy: { maxConcurrent: number; maxDepth: number }): ResolvedCa
 /** What a cap choice means. `default` removes the stated cap; a number sets it. */
 export type CapChoice = { cap: AgentCapName; value: number | null };
 
+/** The cross-agent total's label, the one word the refusal and the screen share. */
+export const CEILING_LABEL = "total ceiling";
+
+/**
+ * What a ceiling choice means.
+ *
+ * No `cap` field, where `CapChoice` carries one: the total has exactly ONE setting, so
+ * naming the cap here would be a field with one legal value that a caller could fill in
+ * wrongly. The alternative — accepting a `CapChoice` and refusing the wrong cap at
+ * runtime — makes "which cap is this" a question the type system could have answered.
+ */
+export type CeilingChoice = { value: number | null };
+
 /**
  * The outcome of an edit, or a refusal.
  *
@@ -268,35 +314,112 @@ export function applyCapEdit(
 ): EditOutcome {
   const key = agentKey(agent);
   if (!key) return { kind: "invalid", problem: "That agent has no name, so there is no key to write the cap under." };
-  const before = current.agents?.[key]?.[choice.cap];
-  if (before === (choice.value ?? undefined)) return { kind: "unchanged" };
-  if (choice.value !== null && !CAP_CHOICES[choice.cap].includes(choice.value)) {
-    return { kind: "invalid", problem: `${choice.value} is not a value ${CAP_LABEL[choice.cap]} can take here: ${CAP_CHOICES[choice.cap].join(", ")}.` };
-  }
-
-  const next: AgentCaps = { ...current.agents?.[key] };
-  const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
-  if (choice.value === null) {
-    delete next[choice.cap];
-    // An agent whose last stated cap is gone leaves the overlay entirely. Leaving an
-    // empty body behind would have the screen keep showing the agent as "capped" with
-    // nothing capped, and would make the file grow one dead entry per experiment.
-    if (AGENT_CAP_NAMES.every((cap) => next[cap] === undefined)) delete agents[key];
-  } else {
-    next[choice.cap] = choice.value;
-  }
-  const overlay: AgentOverlay = { ...current, agents };
-  return {
-    kind: "written",
-    overlay,
-    summary:
-      choice.value === null
-        ? `${agent} ${CAP_LABEL[choice.cap]} now falls back to the config file`
-        : `${agent} ${CAP_LABEL[choice.cap]} set to ${choice.value}`,
-  };
+  // What the operator will be told, and therefore what a refusal names: one string
+  // that is both this cap's label and the sentence `editOutcome` builds. An agent's cap
+  // and the cross-agent total are different targets, and the only thing they do not
+  // share is the words the operator reads.
+  const label = `${agent} ${CAP_LABEL[choice.cap]}`;
+  return editOutcome({
+    before: current.agents?.[key]?.[choice.cap],
+    choice,
+    label,
+    cap: choice.cap,
+    build: (value) => {
+      const next: AgentCaps = { ...current.agents?.[key] };
+      const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
+      if (value === null) {
+        delete next[choice.cap];
+        // An agent whose last stated cap is gone leaves the overlay entirely. Leaving an
+        // empty body behind would have the screen keep showing the agent as "capped" with
+        // nothing capped, and would make the file grow one dead entry per experiment.
+        if (AGENT_CAP_NAMES.every((cap) => next[cap] === undefined)) delete agents[key];
+      } else {
+        next[choice.cap] = value;
+      }
+      return { ...current, agents };
+    },
+  });
 }
 
 /** The overlay as the screen will write it back, read with the caps module's reader. */
 export function overlayFrom(raw: unknown): AgentOverlay {
-  return { agents: statedByAgent(raw) };
+  const stated = readStated(raw);
+  // The WHOLE overlay, not just its agents. This used to build `{ agents }` and drop
+  // everything else, which was invisible until the screen could also write the
+  // cross-agent ceiling: setting a per-agent cap rewrote the file and DELETED the
+  // ceiling, with a success toast saying the other cap had been set. The file is
+  // written whole on every edit, so anything this does not carry forward is
+  // destroyed — the two halves are not independent documents that happen to share a
+  // file, they are one document.
+  const carried = Object.keys(stated.agents).length > 0 ? { agents: stated.agents } : {};
+  return stated.maxConcurrent === undefined ? carried : { ...carried, maxConcurrent: stated.maxConcurrent };
+}
+
+/**
+ * Set the cross-agent ceiling, in the overlay.
+ *
+ * The sibling of `applyCapEdit` rather than a case inside it, because the target is
+ * not an agent: there is no key to fold, no agent body to merge into, and no empty
+ * body to prune afterwards. The two share their OUTCOME vocabulary and one question —
+ * is this a value the picker may offer? — asked by `refuseValue` rather than twice.
+ */
+export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): EditOutcome {
+  return editOutcome({
+    before: current.maxConcurrent,
+    choice,
+    label: CEILING_LABEL,
+    cap: "maxConcurrent",
+    // Spread-then-delete rather than a conditional object, so clearing the ceiling
+    // leaves the agents exactly as they were. The key is absent, not `undefined`:
+    // `exactOptionalPropertyTypes` is on, and a file carrying `null` where a reader
+    // expects a number is a file this module would have to defend against on the way in.
+    build: (value) => {
+      const { maxConcurrent: _dropped, ...rest } = current;
+      return value === null ? rest : { ...rest, maxConcurrent: value };
+    },
+  });
+}
+
+/**
+ * Every edit's three questions before the file is touched, in the order both ask them.
+ *
+ * `build` is the only part that differs between the two editors, and it is a FUNCTION so
+ * that difference is visible in the signature rather than buried in a branch: what the
+ * target is called, and how a value is written under it. The label is the operator's
+ * word for that target, and it is the same word the refusal and the success sentence
+ * use — so a screen can no more call the total "at once" than the toast can.
+ */
+function editOutcome(spec: {
+  before: number | undefined;
+  choice: { value: number | null };
+  label: string;
+  cap: AgentCapName;
+  build: (value: number | null) => AgentOverlay;
+}): EditOutcome {
+  if (spec.before === (spec.choice.value ?? undefined)) return { kind: "unchanged" };
+  const problem = refuseValue(spec.label, spec.cap, spec.choice.value);
+  if (problem) return { kind: "invalid", problem };
+  return {
+    kind: "written",
+    overlay: spec.build(spec.choice.value),
+    summary:
+      spec.choice.value === null
+        ? `${spec.label} now falls back to the config file`
+        : `${spec.label} set to ${spec.choice.value}`,
+  };
+}
+
+/**
+ * Why a value the picker offers would be refused, or null when it is one of them.
+ *
+ * A list rather than "any positive integer" because the list IS the picker's content:
+ * a screen that offers eight numbers and accepts a ninth it never showed is a screen
+ * whose file can hold a value its own UI cannot reproduce. The label travels with the
+ * check so each writer's refusal names ITS OWN cap — `at once` for an agent's
+ * concurrency, `total ceiling` for the total — instead of both naming the cap the
+ * vocabulary happens to be keyed by.
+ */
+function refuseValue(label: string, cap: AgentCapName, value: number | null): string | null {
+  if (value === null || CAP_CHOICES[cap].includes(value)) return null;
+  return `${value} is not a value ${label} can take here: ${CAP_CHOICES[cap].join(", ")}.`;
 }

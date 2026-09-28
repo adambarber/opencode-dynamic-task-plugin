@@ -1,433 +1,53 @@
 /**
- * The TUI module's contract with the host.
+ * The TUI module's contract with the host: it is registered where the host looks, the
+ * command reaches the palette, the list is the question the operator came with, and
+ * every way out of the dialogs works.
  *
  * THERE IS NO INVENTED API HERE, and that is the whole design. An earlier version of
  * this file stood up a hand-written `fakeApi` and drove the dialogs through it. That
  * double was free to decide what the host does, and it decided wrong: it called
  * `onClose` the instant a dialog opened, so every dialog looked dismissible and the
  * suite "proved" a way out of each one. So the dialog's CONTENT is not a host
- * interaction at all: `limitsListProps` and `capPickerProps` are pure, and both return
- * the HOST'S OWN prop type, so the props the host would be handed are an ordinary
- * value this suite can read. Most cases below need no double whatsoever — a real
- * overlay is read by the real reader, turned into the real view, and rendered by the
- * real prop builder.
+ * interaction at all: the prop builders are pure, and they return the HOST'S OWN prop
+ * type, so the props the host would be handed are an ordinary value this suite can read.
+ * Most cases below need no double whatsoever — a real overlay is read by the real
+ * reader, turned into the real view, and rendered by the real prop builder.
  *
  * The host's contract is enforced where it is authored, in TypeScript: a field the
  * host never reads is a type error in `src/tui/index.ts` rather than a custom property
  * only a terminal would reveal.
  *
- * Where a SEQUENCE must be driven — the command pressed, a row chosen, a value chosen
- * — the double below stands in for the dialog stack and NOTHING ELSE. It does not
- * model escape, because the HOST owns escape: `replace`'s second argument is a
- * notification that it happened, not the mechanism. A double that modelled a dismiss
- * would be deciding host behaviour again, under a heading where that already cost this
- * suite one false defect and one invented fix.
+ * The harness — the host double, the overlay reader and the scenario vocabulary — is in
+ * `support/limits-screen.js`, shared with the cross-agent total's own suite. The total
+ * is a different cap on a different screen and its cases are in
+ * `tui-ceiling-cap.test.js`; the shared vocabulary is the point, not a shared accident.
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { createTestKeymap, captureKeymapDiagnostics } from "@opentui/keymap/testing";
 import { registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../dist/shared/caps.js";
-import { bothCaps, withTempDir } from "./support/fixtures.js";
-import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { bothCaps } from "./support/fixtures.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import { CAP_CHOICES, CAP_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
-import { CELL_GAP, screenTokens } from "../../dist/tui/theme.js";
-import { darkTheme } from "./support/harness.js";
+import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
+import { CELL_GAP } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
-import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
+import { footerText } from "./support/assertions.js";
+import tuiModule, { agentCapsProps, capPickerProps, fitsItsDialog, tui } from "../../dist/tui/index.js";
+import {
+  BASE, REGISTERED, assertEveryRowFits, capRow, capText, clearRow, chooseValue, dialogStack,
+  given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
+  rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
+  withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerOpen,
+  withProject, booted,
+} from "./support/limits-screen.js";
 
-/** The repo root, so the manifest is read as a file rather than assumed to be cwd. */
+/** The whole screen, in the order the host will draw it: the total, then the agents. */
+const WHOLE_SCREEN = [CEILING_LABEL, ...REGISTERED];
 
-
-/** The base config the TUI can see: defaults only, no plugin options. */
-const BASE = normalizeDynamicTaskConfig(null);
-
-/** Nothing asked, for the cases about what a row SAYS rather than what choosing it does. */
-const NO_ASKS = () => {};
-
-/** The agents this project has, as the host would report them. */
-const REGISTERED = ["explore", "general", "review"];
-
-/**
- * The dialog stack, modelled on the host's own `useDialog` rather than on what a
- * test would like it to do.
- *
- * Three properties are the host's, and each was measured against the source at the
- * tag the running binary was built from (packages/tui/src/ui/dialog.ts):
- *
- *  - `replace` SETS the stack to a single entry. There is no push, so depth never
- *    exceeds one and a second dialog cannot bury the first.
- *  - `replace` and `clear` both walk the outgoing entries calling their `onClose`.
- *    That is why an `onClose` which itself cleared would recurse forever.
- *  - the escape and ctrl+c handlers pop the top entry and call its `onClose`.
- *
- * The earlier double had none of these: it ignored `onClose` entirely, which is what
- * let a suite "prove" a way out of every dialog that the host does not offer.
- */
-function dialogStack() {
-  const mounted = [];
-  let stack = [];
-  const notifyOutgoing = () => {
-    for (const entry of stack) entry.onClose?.();
-  };
-  return {
-    stack: {
-      replace: (render, onClose) => {
-        notifyOutgoing();
-        stack = [{ render, onClose }];
-        mounted.push(render());
-      },
-      clear: () => {
-        notifyOutgoing();
-        stack = [];
-        mounted.length = 0;
-      },
-      setSize: () => {},
-      get size() {
-        return "medium";
-      },
-      get depth() {
-        return stack.length;
-      },
-      get open() {
-        return stack.length > 0;
-      },
-      /** The notification the top entry was mounted with, for asserting on directly. */
-      onCloseOf: () => stack[0]?.onClose,
-    },
-    mounted,
-  };
-}
-
-/**
- * The renderer's selection, which is the whole reason escape needs a second way in.
- *
- * `getSelection` returning an object whose `getSelectedText` is non-empty is what
- * disables the host's own escape binding, so the tests have to be able to put that
- * state in place — and take it away again — rather than assume it.
- */
-function rendererDouble() {
-  const state = { selection: null };
-  return {
-    state,
-    api: {
-      getSelection: () => state.selection,
-      clearSelection: () => {
-        state.selection = null;
-      },
-    },
-  };
-}
-
-/**
- * A host, for the cases that genuinely have to press something.
- *
- * `DialogSelect` returns nothing, and nothing IS a valid `JSX.Element`: Solid's
- * element type is a loose union, so a stand-in that renders nothing satisfies the
- * host's real signature with no cast anywhere. What it hands back is the host's props
- * object, unchanged, so the suite reads the same shape the host would.
- */
-function hostApi(directory) {
-  const seen = { layers: [], toasts: [], selects: [] };
-  const dialog = dialogStack();
-  const renderer = rendererDouble();
-  return {
-    seen,
-    mounted: dialog.mounted,
-    dialog: dialog.stack,
-    renderer: renderer.state,
-    api: {
-      state: { ready: true, config: {}, provider: [], path: { state: "", config: "", worktree: "", directory }, vcs: undefined },
-      // The host's theme, because the screen resolves its design tokens from it. The
-      // host derives `text` from the TERMINAL's own default foreground (theme.ts
-      // `generateSystem`), so a double carrying a dark terminal's foreground and a
-      // muted gray is the shape that actually occurs — not a theme the suite invented
-      // to suit the assertions.
-      theme: HOST_THEME,
-      keymap: {
-        registerLayer: (layer) => {
-          seen.layers.push(layer);
-          return () => {};
-        },
-      },
-      renderer: renderer.api,
-      // The row set is the HOST's registered agents, so the client has to answer —
-      // and `app.agents` is the one call the shared reader makes. A bare array is
-      // what `parseAgentList` reads, which is the shape the SDK returns through the
-      // envelope.
-      client: {
-        app: {
-          agents: async () => ({ data: REGISTERED.map((name) => ({ name })) }),
-          log: async () => undefined,
-        },
-      },
-      ui: {
-        dialog: dialog.stack,
-        DialogSelect: (props) => {
-          seen.selects.push(props);
-        },
-        toast: (input) => seen.toasts.push(input),
-      },
-    },
-  };
-}
-
-/** The overlay as it sits on disk, which is what the dispatch path will read. */
-function readOverlay(directory) {
-  return JSON.parse(readFileSync(join(directory, AGENT_OVERLAY_FILE), "utf8"));
-}
-
-/**
- * The host's theme, once. Both the api double and the token resolution read this, so a
- * case cannot pass a hand-made token object and prove something the screen would never
- * paint — the tokens below are the production `screenTokens` over this theme.
- */
-const HOST_THEME = darkTheme();
-const TOKENS = screenTokens(HOST_THEME);
-
-/**
- * A row's footer as TEXT, whichever of the two things a footer can be.
- *
- * A footer is a string when nothing is styled about it and a `StyledText` when the row
- * is saying two things at two weights, so a reader that only understood one of them
- * would pass on half the rows. This reads both, which is the only reason the string
- * assertions below can stay as they are.
- */
-function footerText(footer) {
-  if (footer === undefined) return "";
-  if (typeof footer === "string") return footer;
-  return footer.chunks.map((run) => run.text).join("");
-}
-
-/**
- * The dialog's content, as the host's own props, with no host in sight.
- *
- * The real reader, the real view, the real prop builders. This is what most cases
- * below use, and it is why they need no double: the props ARE the value, and nothing
- * between the disk and the assertion is a stand-in.
- */
-function listOver(directory, agentNames = REGISTERED) {
-  const read = readAgentOverlay(directory);
-  return limitsListProps(agentDialogFrom(read.raw, BASE, agentNames, false, read.problem), NO_ASKS, TOKENS);
-}
-
-/** The row for one agent, by its host spelling. */
-const row = (list, title) => list.options.find((candidate) => candidate.title === title);
-
-/**
- * Every word a row puts on screen, as the host lays them out.
- *
- * `title` and `description` SHARE the first line — the host renders them into one
- * clipping `<text>` — while `footer` is drawn in a box of its own that never shrinks,
- * and each entry of `details` is a line of its own below. So a fact that is in the
- * dialog somewhere is in one of these, and a fact missing from all of them is
- * genuinely gone from the operator's view.
- */
-const rowText = (list, title) => {
-  const found = row(list, title);
-  return [[found.title, footerText(found.footer), found.description ?? ""].join(" ").trim(), ...(found.details ?? [])].join("\n");
-};
-
-/** The dialog the operator is looking at: the most recent one mounted. */
-const top = (seen) => seen.selects[seen.selects.length - 1];
-
-/** The row titles of a dialog, in the order the host will draw them. */
-const titlesOf = (dialog) => dialog.options.map((option) => option.title);
-
-/**
- * A host with the module booted, and the command it registered.
- *
- * ONE place the module is booted, because booting IS a production interaction and
- * two call sites spelling it out is two places to forget the plugin's own id.
- *
- * The two layers are kept apart deliberately: the command has to be dispatchable
- * while no dialog is up, and the escape binding has to be live only while one is,
- * and the keymap's `enabled` is a LAYER field — so one layer could not be both.
- * Reading the command out of "the first layer" is therefore a claim about an
- * ordering nothing guarantees, so it is read by what the layer actually carries.
- */
-async function booted(directory) {
-  const host = hostApi(directory);
-  // The host hands the plugin its OWN declared id as meta, so this reads the
-  // module's id rather than repeating the string: a test that retyped it would be a
-  // second place to change, and the suite already gates on exactly that.
-  await tui(host.api, undefined, { id: tuiModule.id });
-  const command = host.seen.layers.find((layer) => layer.commands)?.commands[0];
-  const escapeLayer = host.seen.layers.find((layer) => layer.bindings);
-  assert.ok(command, "the palette command is registered");
-  assert.ok(escapeLayer, "and the escape layer that gets the operator out");
-  return { ...host, command, escape: escapeLayer.bindings[0], escapeLayer };
-}
-
-/** A project directory holding the given overlay, with nothing booted and nothing pressed. */
-const withProject = (fn, { overlay, active = [], retained = [] } = {}) =>
-  withTempDir((directory) => {
-    if (overlay !== undefined) writeAgentOverlay(directory, overlay);
-    if (active.length > 0 || retained.length > 0) {
-      // Kept so a case can prove the list does not need it: a ledger-shaped directory
-      // that the list opens over without reading is the claim.
-      writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ retained: Object.fromEntries(retained), active: Object.fromEntries(active), pending: [] }));
-    }
-    return fn(directory);
-  });
-
-/** …with the limits list, built from a real overlay and no host in sight. */
-const withList = (overlay, fn, opts) => withProject((directory) => fn(listOver(directory), directory), { overlay, ...opts });
-
-/**
- * …with the module booted and NOTHING pressed, which is the only state in which a
- * gate can be read at all: press the command and every layer this plugin owns is
- * live, so a test that wants to watch one wake up has to start before that.
- */
-const withBooted = (fn, opts) => withProject(async (directory) => fn(await booted(directory), directory), opts);
-
-/**
- * The screen the operator actually sees, with a hand-authored config file in the tree.
- *
- * Every other case in this file builds `agentDialogFrom` over a BASE it supplies, which
- * is why none of them caught this: the reader that decides which numbers are in force is
- * the TUI's, and they all bypassed it. This one writes the file, boots the real module,
- * runs the real command, and asserts on the text the host would draw — so the question
- * "does the screen show what the dispatch path enforces" is asked of the screen.
- */
-const withConfigScreen = (configBody, fn) =>
-  withProject(async (directory) => {
-    const configPath = join(directory, DYNAMIC_TASK_FILE);
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(configBody));
-    const host = await booted(directory);
-    await host.command.run();
-    await settle();
-    return fn(host.seen.selects[host.seen.selects.length - 1], directory, host);
-  });
-
-/**
- * Let the microtask queue drain.
- *
- * The command's `run` is typed `() => void` — the host does not await it — so every
- * screen this plugin mounts lands in a continuation, and the suite has to yield before
- * it can look at one. A tick COUNT would be a second claim about how many awaits the
- * production path has, and one more await upstream would leave every case here failing
- * on a number rather than on a behaviour. One named yield, everywhere, because the four
- * sites that needed it were four chances to spell it three different ways.
- */
-const settle = () => new Promise((done) => setImmediate(done));
-
-/** …after the command has been pressed and the agent list has resolved. */
-async function openList(host) {
-  host.command.run();
-  await settle();
-}
-
-/** …with the command pressed, which is the only state in which a dialog exists at all. */
-const withOpen = (fn, opts) =>
-  withBooted(async (host, directory) => {
-    await openList(host);
-    assert.equal(host.seen.selects.length, 1, "pressing the command opens the limits list");
-    return fn(host, directory);
-  }, opts);
-
-/** …over an overlay capping `explore`, which is what most of the sequences below are about. */
-const withExploreOpen = (fn) => withOpen(fn, { overlay: { agents: { explore: { maxConcurrent: 2 } } } });
-
-/**
- * One scenario step, then the case, as a single wrapper.
- *
- * Every scenario below is the same two lines — put something on screen, then hand the
- * case the same arguments — and spelling that shape at each step is duplication the
- * gate is right to refuse. So the shape has a name, and a scenario reads as what it
- * actually does: `given(openPicker, (host) => …)`.
- *
- * BOTH arguments, not curried. It was `given(step)(fn)` and every call site passed
- * only the step, so the case was dropped on the floor: `withPickerOpen(fn)` handed
- * the UNAPPLIED wrapper to `withExploreOpen` as its case, `return fn(host, directory)`
- * returned a function rather than a promise, and the body was never awaited and never
- * ran. Every scenario below it was green because it asserted nothing — including the
- * ones that had a `throw` in them, which is the only reason this was findable at all.
- * A currying helper whose unapplied form is itself a plausible case function is a
- * trap with no type to catch it, and the guard below is what closes it.
- */
-const given = (step, fn) => async (host, directory) => {
-  await step(host, directory);
-  return fn(host, directory);
-};
-
-/** …with one agent's two caps on screen. */
-const withCapsOpen = (fn) => withExploreOpen(given((host) => row(top(host.seen), "explore").onSelect(), fn));
-
-/**
- * …with a value already chosen and the screen landed where the write sent it.
- *
- * A scenario step, named because three cases below start by writing 4 and then assert
- * three different things about the result. Written out, the opening was three copies
- * of the same four lines and the duplication gate was right to call them one code.
- */
-const havingWritten = (step) => (fn) => given(async (host) => {
-  await step(host);
-}, fn);
-
-/** …with the value list open on ONE named cap of `explore`. */
-const withPickerOpen = (fn, cap = "maxConcurrent") =>
-  withCapsOpen(given((host) => {
-    const opened = row(top(host.seen), CAP_LABEL[cap]);
-    assert.ok(opened, `${cap} is one of the two rows, so the cap is reachable at all`);
-    opened.onSelect();
-  }, fn));
-
-/**
- * Choose a value and let the screen land where the write sends it.
- *
- * The two halves are one step, and they were separate at four call sites — which is
- * how a case could press a value and then assert against the screen it had not been
- * replaced on yet, reading green for a write that had not landed yet. The settle is a
- * queue drain rather than a tick count, so it does not become a second claim about how
- * many awaits the production path has.
- */
-const chooseValue = async (host, value) => {
-  valueRow(host, value).onSelect();
-  await settle();
-};
-
-/**
- * The rows on whatever screen is up.
- *
- * The ONE way a case reaches the current dialog's rows. Four finders were each
- * spelling `top(host.seen).options.find(...)`, which is four copies of the question
- * "which screen am I looking at" — and a fifth screen would have been a fifth copy,
- * each free to answer for a different dialog than the one the case meant.
- */
-const rowsOn = (host) => top(host.seen).options;
-
-/** The row with a given title, or undefined. */
-const rowOn = (host, title) => rowsOn(host).find((option) => option.title === title);
-
-/** The value-list row offering `value`. */
-const valueRow = (host, value) => rowOn(host, String(value));
-/** The value-list row that clears the cap back to the config file's number. */
-const clearRow = (host) => rowsOn(host).find((option) => /config default/.test(option.title));
-/** The caps-screen row for one cap, by its label. */
-const capRow = (host, cap) => rowOn(host, CAP_LABEL[cap]);
-/** The caps-screen row's text, for the cell assertions. */
-const capText = (host, cap) => rowText(top(host.seen), CAP_LABEL[cap]);
-
-/**
- * Every row on a drawn screen fits it.
- *
- * The host CLIPS a row's first line rather than wrapping it, so a row that does not
- * fit does not look long — it looks broken, with a fact missing and nothing saying
- * which. The arithmetic lives in `fitsItsDialog`; this is the one way a case says
- * "check this whole screen", so a dialog that grows a row cannot escape the check by
- * being added somewhere that forgot to ask for it.
- */
-const assertEveryRowFits = (dialog) => {
-  for (const option of dialog.options) {
-    assert.ok(fitsItsDialog(option), `"${option.title}" is clipped: ${JSON.stringify(option)}`);
-  }
-};
 
 /**
  * The registration, read from the repo's own `tui.json`.
@@ -546,25 +166,29 @@ describe("the limits command reaches the palette", () => {
 });
 
 describe("the limits list is the question the operator came with", () => {
-  it("draws one row per REGISTERED agent and nothing else", () =>
+  it("draws the total ceiling, then one row per REGISTERED agent and nothing else", () =>
     // The WHOLE screen, in the order the host will draw it, as one assertion. Read as
     // a list, a row added for a reason nobody recorded would satisfy any partial
     // version of it.
     //
-    // Three rows for three registered agents, with no overlay at all: the key space
+    // Four rows for three registered agents, with no overlay at all: the key space
     // is GIVEN, so the screen is populated on a project that has never touched it.
     // Under lanes this could show only the default lane and whatever the operator had
     // declared — which is why an "add a lane" affordance existed at all, and why a
     // second section had to explain itself.
+    //
+    // The total is FIRST and not merely present. It is the cap a dispatch is refused
+    // on before any agent's own cap is consulted, so an operator who raised every
+    // per-agent cap and still hit a ceiling has to meet it on the first screen.
     withList(undefined, (list) => {
-      assert.deepEqual(titlesOf(list), REGISTERED,
-        "one row per agent the host publishes, in the host's order, and no heading over any of them");
+      assert.deepEqual(titlesOf(list), WHOLE_SCREEN,
+        "the cross-agent total, then one row per agent the host publishes, in the host's order");
       assertEveryRowFits(list);
     }));
 
   it("and an agent the overlay caps is still a row, showing which caps are ITS OWN", () =>
     withList({ agents: { explore: { maxConcurrent: 2 } } }, (list) => {
-      assert.deepEqual(titlesOf(list), REGISTERED, "capping an agent does not remove it from the list");
+      assert.deepEqual(titlesOf(list), WHOLE_SCREEN, "capping an agent does not remove it from the list");
       assert.match(rowText(list, "explore"), /at once 2/, "the stated cap, with no claim about where it came from");
       assert.match(rowText(list, "explore"), new RegExp(`depth ${BASE.maxDepth} from config`),
         "and the one that is NOT stated says so — an agent at 4 by default and one deliberately set to 4 look the same otherwise");
@@ -607,8 +231,17 @@ describe("the limits list is the question the operator came with", () => {
         assert.equal(typeof option.onSelect, "function", `${option.title} has no way to be chosen`);
         assert.ok(option.value, `${option.title} carries no value, so the host cannot filter on it`);
       }
-      assert.equal(new Set(list.options.map((option) => option.value.agent)).size, REGISTERED.length,
+      // Agent rows name the AGENT they edit, and the total names no agent at all — the
+      // two are disjoint claims, and a total row that borrowed an agent's key would open
+      // that agent's screen when pressed.
+      const agents = list.options.map((option) => option.value.agent).filter((name) => name !== undefined);
+      assert.equal(new Set(agents).size, REGISTERED.length,
         "a row's value names the AGENT it edits, so two rows cannot answer for the same one");
+      const values = list.options.map((option) => JSON.stringify(option.value));
+      assert.equal(new Set(values).size, list.options.length,
+        "and no two rows are the same choice, so the host cannot filter them to one and the total is never an agent");
+      assert.equal(row(list, CEILING_LABEL).value.agent, undefined,
+        "the total's value names no agent, so pressing it cannot open an agent's caps");
     }));
 
   it("shows no occupancy, because a count read from a file is not a gauge", () =>    // The row used to say how many tasks were charged to it, read from the ledger
@@ -648,7 +281,7 @@ describe("the limits list is the question the operator came with", () => {
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "warning" && /not valid JSON/.test(toast.message)),
         "the operator is told the file is odd");
       assert.equal(host.seen.selects.length, 1, "and the list is not empty — there has to be a way to fix it");
-      assert.deepEqual(titlesOf(top(host.seen)), REGISTERED, "and it still draws the host's agents, not nothing");
+      assert.deepEqual(titlesOf(top(host.seen)), WHOLE_SCREEN, "and it still draws the total and the host's agents, not nothing");
     }));
 });
 
@@ -909,3 +542,4 @@ describe("escape gets the operator out of the limits list", () => {
       assert.equal(host.escapeLayer.enabled(), false, "but it did record that no dialog of ours is up");
     }));
 });
+

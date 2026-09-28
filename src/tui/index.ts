@@ -50,13 +50,18 @@ import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import {
   CAP_CHOICES,
   CAP_LABEL,
+  CEILING_LABEL,
   agentDialogFrom,
   applyCapEdit,
+  applyCeilingEdit,
   capCellOf,
   overlayFrom,
   type AgentDialog,
   type AgentEntry,
   type CapChoice,
+  type CapCell,
+  type CeilingChoice,
+  type EditOutcome,
 } from "./agent-editor.js";
 import { cellFooter, screenTokens, summaryFooter, type ScreenTokens } from "./theme.js";
 
@@ -96,9 +101,9 @@ let limitsDialogUp = false;
  * once per screen, which is the same claim in two places and so a claim free to
  * disagree with itself. It belongs here, where the two lists' vocabularies meet.
  */
-type ListChoice = { kind: ChoiceKind.Agent; agent: string };
+type ListChoice = { kind: ChoiceKind.Agent; agent: string } | { kind: ChoiceKind.Ceiling };
 type CapsChoice = { kind: ChoiceKind.Cap; agent: string; cap: AgentCapName } | { kind: ChoiceKind.Back };
-type PickerChoice = { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; value: number | null };
+type PickerChoice = { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; value: number | null } | { kind: ChoiceKind.CeilingValue; value: number | null };
 
 /**
  * The kinds of row either list can hold.
@@ -109,9 +114,11 @@ type PickerChoice = { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; 
  */
 enum ChoiceKind {
   Agent = "agent",
+  Ceiling = "ceiling",
   Cap = "cap",
   Back = "back",
   Value = "value",
+  CeilingValue = "ceilingValue",
 }
 
 export const tui: TuiPlugin = async (api) => {
@@ -246,24 +253,57 @@ export default plugin;
  */
 export function limitsListProps(
   dialog: AgentDialog,
-  ask: (agent: string) => void,
+  ask: (choice: ListChoice) => void,
   tokens: ScreenTokens,
 ): TuiDialogSelectProps<ListChoice> {
   return {
     title: "Task limits",
-    options: dialog.rows.map((row) => ({
-      title: row.name,
-      // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
-      // is — and what the host's TextNodeRenderable accepts as a child — is a
-      // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
-      // checked, and never by a cast: sound only because the host's own
-      // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
-      // the host's source at the tag this binary was built from. A `span` element would
-      // need an active renderer, which a props builder does not have outside a test.
-      ...({ footer: summaryFooter(row, tokens) } as Record<string, unknown>),
-      value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
-      onSelect: () => ask(row.name),
-    })),
+    options: [
+      // The cross-agent total FIRST, above the agents it bounds, because it is the cap
+      // a dispatch is refused on before any agent's own cap is consulted — so it is the
+      // row that explains a refusal the per-agent rows do not. It is a row rather than a
+      // cell in a row for the same reason: it has no agent, and a row that is not about
+      // an agent cannot be drawn by the per-agent mapper below.
+      {
+        title: CEILING_LABEL,
+        ...({ footer: cellFooter(dialog.ceiling, tokens) } as Record<string, unknown>),
+        value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
+        onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
+      },
+      ...dialog.rows.map((row) => ({
+        title: row.name,
+        // The footer's TYPE is `JSX.Element | string` while what a styled footer actually
+        // is — and what the host's TextNodeRenderable accepts as a child — is a
+        // `StyledText`. The field is therefore set by SPREAD, which is not excess-property
+        // checked, and never by a cast: sound only because the host's own
+        // `TextNodeRenderable.add` names StyledText among the child types it takes, read in
+        // the host's source at the tag this binary was built from. A `span` element would
+        // need an active renderer, which a props builder does not have outside a test.
+        ...({ footer: summaryFooter(row, tokens) } as Record<string, unknown>),
+        value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
+        onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
+      })),
+    ],
+  };
+}
+
+/**
+ * The ceiling picker: the values the cross-agent total can take.
+ *
+ * The same list the per-agent concurrency picker offers, deliberately, and by pointing
+ * at the same `CAP_CHOICES` entry rather than by restating it. Two different sets of
+ * numbers for one concept is how an operator ends up able to set a total of 12 that no
+ * per-agent cap can reach, and neither screen explains the asymmetry.
+ */
+export function ceilingPickerProps(ceiling: CapCell, confirm: (choice: CeilingChoice) => void): TuiDialogSelectProps<PickerChoice> {
+  return {
+    title: CEILING_LABEL,
+    ...valuePicker(
+      CAP_CHOICES.maxConcurrent,
+      ceiling.stated ? ceiling.value : null,
+      (value) => ({ kind: ChoiceKind.CeilingValue, value } as const satisfies PickerChoice),
+      (value) => confirm({ value }),
+    ),
   };
 }
 
@@ -345,25 +385,53 @@ export function capPickerProps(
     // the tag this binary was built from. That is a fact about a file we do not own,
     // so `fitsItsDialog` below re-derives the host's layout and fails the build if the
     // content stops fitting it.
+    ...valuePicker(
+      CAP_CHOICES[cap],
+      current,
+      (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
+      (value) => confirm({ cap, value }),
+    ),
+  };
+}
+
+/**
+ * A picker's rows: every value the cap can take, plus the way back to the config file.
+ *
+ * The shared body of both pickers, extracted when the ceiling became editable, because
+ * the two were about to become the same screen with a different title. It hands back the
+ * rows alone rather than the whole dialog, because the TITLE is the one part that
+ * genuinely differs — it names an agent and a cap, or names the total — and taking it
+ * as a parameter would put the two call sites back to spelling the same four arguments.
+ *
+ * Three claims live here and each is a thing the operator reads. The value in force is
+ * MARKED, so the change is visible without holding the previous screen in mind. The
+ * fallback row appears only where it can work, because clearing a cap the overlay does
+ * not state writes nothing and would leave a row that could only ever be inert. And the
+ * `details` spelling of what clearing means is the one field the host budgets rather than
+ * clips.
+ */
+function valuePicker(
+  choices: readonly number[],
+  current: number | null,
+  asChoice: (value: number | null) => PickerChoice,
+  onPick: (value: number | null) => void,
+) {
+  return {
     options: [
-      ...CAP_CHOICES[cap].map((value) => ({
+      ...choices.map((value) => ({
         title: `${value}`,
-        // The value in force is marked, so the operator can see what they are changing
-        // from without keeping the previous screen in their head. A mark on a value
-        // they are not changing would be decoration.
+        // A mark on a value the operator is not changing would be decoration.
         footer: value === current ? "in force" : undefined,
-        value: { kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice,
-        onSelect: () => confirm({ cap, value }),
+        value: asChoice(value),
+        onSelect: () => onPick(value),
       })),
       ...(current === null
         ? []
         : [{
-            // Only where it can work. Removing a cap the overlay does not state would
-            // write nothing, so the row would be one that can only ever be inert.
             title: "Use the config default",
             ...({ details: [FALLBACK_MEANING] } as Record<string, unknown>),
-            value: { kind: ChoiceKind.Value, agent, cap, value: null } as const satisfies PickerChoice,
-            onSelect: () => confirm({ cap, value: null }),
+            value: asChoice(null),
+            onSelect: () => onPick(null),
           }]),
     ],
   };
@@ -427,10 +495,39 @@ async function openLimits(api: TuiApi): Promise<void> {
   showLimits(api, view);
 }
 
+/**
+ * One list's press, dispatched on the row's own choice.
+ *
+ * The list takes ONE callback for every row rather than one per row KIND, and the
+ * signature is the reason: a callback per kind means a new kind is a new positional
+ * parameter, and a caller that has not been updated does not fail to compile — it
+ * passes its tokens where the new callback belongs, and the screen fails on a theme
+ * role three frames away from the mistake. A row carrying its own choice makes the
+ * row kind a property of the row, so adding one is adding a case here and nothing
+ * else.
+ */
+function askListChoice(api: TuiApi, view: LimitsView, choice: ListChoice): void {
+  if (choice.kind === ChoiceKind.Ceiling) return openCeiling(api, view);
+  openAgentCaps(api, view, choice.agent);
+}
+
 /** The list, over a view already read. The re-open path, so a second read is not paid for. */
 function showLimits(api: TuiApi, view: LimitsView): void {
   const tokens = screenTokens(api.theme);
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (agent) => openAgentCaps(api, view, agent), tokens));
+  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice), tokens));
+}
+
+/**
+ * The cross-agent total, open.
+ *
+ * Lands on the LIST rather than on a per-agent screen, because there is no per-agent
+ * screen for it: the total bounds every row above it, so the screen that follows an
+ * edit to it is the one that shows what it now bounds.
+ */
+function openCeiling(api: TuiApi, view: LimitsView): void {
+  const confirm = (choice: CeilingChoice) =>
+    applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
+  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, confirm));
 }
 
 /**
@@ -495,7 +592,8 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   // The landing screen takes the RE-READ view, which is why `confirm` ignores its own
   // `view` argument: a write makes the view the caller is holding out of date, and
   // landing on that one shows the number the operator just replaced.
-  const confirm = (choice: CapChoice) => applyEdit(api, view, agent, choice, (fresh) => openAgentCaps(api, fresh, agent));
+  const confirm = (choice: CapChoice) =>
+    applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
   mountLimitsSelect(api, () => capPickerProps(agent, cap, row.stated[cap] ?? null, confirm));
 }
 
@@ -536,17 +634,22 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
  * that wrote and then reported its own way is how a refusal comes to read as a
  * success, and neither symptom would look like a bug where it happened.
  *
+ * The edit is a THUNK rather than an outcome so the two screens cannot disagree about
+ * which overlay they are writing from: both read `view.overlay`, and the outcome is
+ * computed here, after the shared `unchanged` check, from the same object the write
+ * below uses.
+ *
  * The list is re-opened afterwards, RE-READ: a write makes the dialog the caller is
  * holding stale, and answering a second cap from that stale row would write from caps
  * the file no longer has — silently dropping the cap just set. The picker is the only
  * screen showing one cap of one agent, so it is also the only place that bug could
  * hide.
  */
-async function applyEdit(api: TuiApi, view: LimitsView, agent: string, choice: CapChoice, land: (fresh: LimitsView) => void): Promise<void> {
-  const outcome = applyCapEdit(view.overlay, agent, choice);
+async function applyEdit(api: TuiApi, view: LimitsView, title: string, edit: () => EditOutcome, land: (fresh: LimitsView) => void): Promise<void> {
+  const outcome = edit();
   if (outcome.kind === "unchanged") return land(view);
   if (outcome.kind === "invalid") {
-    api.ui.toast({ variant: "error", title: agent, message: outcome.problem });
+    api.ui.toast({ variant: "error", title, message: outcome.problem });
     return;
   }
   try {
@@ -554,7 +657,7 @@ async function applyEdit(api: TuiApi, view: LimitsView, agent: string, choice: C
   } catch (error) {
     api.ui.toast({
       variant: "error",
-      title: agent,
+      title,
       message: `could not write ${agentOverlayPath(view.directory)}: ${errorMessage(error)}`,
     });
     return;

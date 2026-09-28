@@ -247,6 +247,16 @@ export const RETIRED_LANE_FILE = ".dynamic-task-lanes.json";
 export interface OverlayAgents {
   agents: Record<string, AgentCaps>;
   dropped: Record<string, string[]>;
+  /**
+   * The cross-agent ceiling the file STATES, or undefined when it states none.
+   *
+   * Carried beside the agents so a screen can say whether the total it shows is the
+   * operator's own number or the config file's — the same stated/inherited pair the
+   * per-agent cells carry, and read by the same `cap` rule so the two cannot disagree
+   * about what counts as a number. A reader of this field anywhere else is a second
+   * rule for the same untrusted file, which is the thing this module exists to prevent.
+   */
+  maxConcurrent?: number;
 }
 
 export interface AgentOverlay {
@@ -282,7 +292,13 @@ export function readAgentOverlay(directory: string | undefined): { raw: unknown;
  * honour as though it applied.
  */
 export function readAgentOverlayCaps(raw: unknown): OverlayAgents {
-  return readOverlayAgents(raw);
+  const { agents, dropped, usable } = readOverlayAgents(raw);
+  const stated = usable ? cap(overlayBody(raw)?.["maxConcurrent"]) : undefined;
+  // `exactOptionalPropertyTypes` is on, so an absent key and a key holding
+  // `undefined` are different values. Spreading would write the latter and the
+  // dialog's `!== undefined` check would be answering a question about presence that
+  // the object no longer describes.
+  return stated === undefined ? { agents, dropped } : { agents, dropped, maxConcurrent: stated };
 }
 
 /**

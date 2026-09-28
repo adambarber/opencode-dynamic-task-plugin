@@ -11,8 +11,8 @@
 import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, recordSettledOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { retainedEntry } from "./support/records.js";
-import { assertIs, assertNothing } from "./support/assertions.js";
+import { activeEntry, retainedEntry } from "./support/records.js";
+import { assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 import { childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 
 /** A store holding one running child named ses_active — where most state cases start. */
@@ -506,14 +506,40 @@ describe("findTask — edge cases", () => {
     assertNothing(findTask(store, "nonexistent"), "an unknown session is not a task");
   });
 
-  it("finds active task before retained task", () => {
+  it("finds a settled task", () => {
     const store = createTaskStore();
-    registerActiveTask(store, childParams({ id: "ses_dup", description: "t" }), defaultConfig);
-    // Same key in both maps — should not happen in practice — and while the task
-    // runs, the running record is the truth.
-    store.markRetained("ses_dup", retainedEntry({ childSessionId: "ses_dup", description: "t" }));
+    store.markRetained("ses_done", retainedEntry({ childSessionId: "ses_done" }));
+    assert.strictEqual(findTask(store, "ses_done")?.state, "completed", "a settled task is still findable");
+  });
 
-    const result = findTask(store, "ses_dup");
-    assert.strictEqual(result?.state, "active", "Should find active before retained");
+  it("finds a running task", () => {
+    const store = createTaskStore();
+    registerActiveTask(store, childParams({ id: "ses_live", description: "t" }), defaultConfig);
+    assert.strictEqual(findTask(store, "ses_live")?.state, "active", "a running task is findable");
+  });
+});
+
+// A task is in EXACTLY ONE half of the store, and that is a fact about the store
+// rather than a convention its thirty call sites happen to keep. The old
+// arrangement let both maps hold one id, and the test above documented the
+// overlap as "should not happen in practice" — which is exactly how a false
+// `completed` got persisted over a running child: the ledger learned about both
+// halves and the boot pass reconciled the same id twice.
+describe("the two halves are exclusive, not a convention", () => {
+  const idInBothHalves = (store) =>
+    [...store.activeTasks.keys()].filter((k) => store.retainedTasks.has(k)).join(",");
+
+  it("a revival takes the task out of the settled set", () => {
+    const store = createTaskStore();
+    store.markRetained("ses_x", retainedEntry({ childSessionId: "ses_x" }));
+    store.markRunning("ses_x", activeEntry({ childSessionId: "ses_x" }));
+    assertEmpty(idInBothHalves(store), "a running task is not also a settled one");
+  });
+
+  it("a settlement takes the task out of the running set", () => {
+    const store = createTaskStore();
+    store.markRunning("ses_y", activeEntry({ childSessionId: "ses_y" }));
+    store.markRetained("ses_y", retainedEntry({ childSessionId: "ses_y" }));
+    assertEmpty(idInBothHalves(store), "a settled task is not also a running one");
   });
 });

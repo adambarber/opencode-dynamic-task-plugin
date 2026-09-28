@@ -84,8 +84,23 @@ export class TaskStore implements WaitRegistry {
   // stripped on the way to disk anyway (durableActiveTask), because a fresh
   // process cannot verify them.
 
-  /** A task begins running. */
+  /**
+   * A task begins running.
+   *
+   * Writing to one half REMOVES it from the other, which is what makes "a task is
+   * in exactly one half" a property of the store rather than a convention its
+   * thirty call sites happen to keep. It was previously representable in both at
+   * once, and one test documented the overlap as "should not happen in practice"
+   * — which is how a running child once got persisted as `completed`: the ledger
+   * heard about both halves and the boot pass reconciled one id twice.
+   *
+   * The call sites still pair this with an explicit `dropRetained`, and that is
+   * deliberate rather than redundant: the pairing is what EMITS the second ledger
+   * change, and the delete inside here is what makes the impossible unrepresentable
+   * even if a future caller forgets.
+   */
   markRunning(id: string, record: ActiveTaskState): LedgerChange {
+    this.#retained.delete(id);
     this.#active.set(id, record);
     return { kind: LedgerChangeKind.Running, id, record };
   }
@@ -102,8 +117,13 @@ export class TaskStore implements WaitRegistry {
 
   // ── the settled set ───────────────────────────────────────────────
 
-  /** A task is retained as settled. */
+  /**
+   * A task is retained as settled. Removes it from the running set, for the same
+   * reason `markRunning` empties the settled one: the two halves are exclusive, and
+   * the store — not its callers — is what makes that true.
+   */
   markRetained(id: string, record: RetainedTaskState): void {
+    this.#active.delete(id);
     this.#retained.set(id, record);
   }
 

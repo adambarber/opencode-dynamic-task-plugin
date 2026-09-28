@@ -13,7 +13,7 @@ import assert from "node:assert";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
-import { answerMatches, answerSays } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays } from "./support/assertions.js";
 import { bootOn, settledOnDisk, waitFor } from "./support/integration.js";
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 import { getDebugLogPath } from "../../dist/debug-logger.js";
@@ -112,19 +112,83 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   it("records dropped inside a readable file are counted, not lost quietly", async () => {
     const h = await bootOnCorrupt(JSON.stringify({
       version: 3,
-      tasks: { ses_real: retainedEntry("ses_real", { state: "completed" }), ses_broken: { state: "completed" } },
+      tasks: { ses_real: retainedEntry({ childSessionId: "ses_real", state: "completed" }), ses_broken: { state: "completed" } },
       active: {},
       pending: [],
     }));
-    const said = JSON.stringify(h.logs());
-    answerMatches(said, /discarded/i, "a partly-bad file is still a loss worth reporting");
-    answerMatches(said, /record/i, "and the loss is described in records, which is what was lost");
+    lossIsReported(h, "a partly-bad file is still a loss worth reporting");
   });
 
   it("a good ledger reports nothing — silence must still mean healthy", async () => {
     const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
     const aboutTheLedger = h.logs().filter((entry) => /discarded|unparseable/i.test(JSON.stringify(entry)));
     assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
+  });
+});
+
+/**
+ * A plugin booted on a ledger the case wrote.
+ *
+ * The document SHAPE is this helper's, not a case's. It was being spelled at three
+ * sites — `tasks`, `active`, `pending`, and in one of them `version` — and a case
+ * that forgot `pending` produced a document the reader treats as a different thing,
+ * silently. The shape belongs to one door; what belongs in the two halves is the
+ * case's own decision.
+ */
+const bootWithLedger = (halves, hooks) => bootOn(() => ({ tasks: {}, active: {}, pending: [], ...halves }), hooks);
+
+/**
+ * The host log's account of records a READABLE ledger could not keep.
+ *
+ * Two claims and they are one claim: a loss that is not counted is a loss nobody
+ * can act on, so saying "discarded" without a count is not half the report, it is
+ * the same defect. Asserted in two places for different reasons (a torn file, and a
+ * file that contradicts itself), which is what made it worth a name.
+ */
+const lossIsReported = (h, note) => {
+  const said = JSON.stringify(h.logs());
+  answerMatches(said, /discarded/i, note);
+  answerMatches(said, /\d+ record/i, "and how many were lost with it");
+};
+
+/**
+ * The fleet as this case must see it: the corroborated row running, and the
+ * duplicate settled on nobody. Two assertions because they are two halves of one
+ * claim — an overlap that left a settled row behind is the durable false success,
+ * and asserting only the active count would not notice it.
+ */
+const fleetShowsOnlyTheRunningRow = (list) => {
+  answerSays(list, "Active: 1/4", "the row the host can corroborate survives");
+  answerOmits(list, "Retained: 1", "and the duplicate settles nothing, so no second entry survives");
+};
+
+// A ledger listing ONE id in BOTH halves is the shape a durable false `completed`
+// takes on disk, and the suite had no case that produced one. Tracing where the
+// overlap is stopped turned up THREE mechanisms, and the only one missing was the
+// store's own write path (see `the two halves are exclusive` in
+// task-state.test.js). This case pins the read boundary, because that is where a
+// file from an older or broken build actually arrives.
+//
+// What the loader does is NOT refuse the document and pick a winner. It drops the
+// DUPLICATE and keeps the running record: one record fails validation, the count of
+// the loss is logged, and the child stays active. That is the right resolution —
+// the running row is the one the host can corroborate, and a file that says both
+// has lost the ability to make the settled claim at all.
+//
+// The `retainedEntry({ childSessionId })` call is part of the contract, not a
+// detail. That fixture takes ONE overrides object, so the two-argument form written
+// first spread a string instead and left `childSessionId` at its default — the
+// record failed validation for an unrelated reason, and the case then passed
+// through a neutered overlap skip AND a neutered exclusive delete. The harness logs
+// every dropped record precisely so a case like this can read it.
+describe("a ledger claiming one task is both running and finished", () => {
+  it("drops the settled duplicate, keeps the running row, and names the loss", async () => {
+    const h = await bootWithLedger({
+      tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
+      active: { ses_both: runningEntry("ses_both") },
+    });
+    lossIsReported(h, "a record that contradicts its own file is thrown away");
+    fleetShowsOnlyTheRunningRow(await h.tool.task_list.execute({}));
   });
 });
 
@@ -233,10 +297,7 @@ describe("boot redelivers what the last boot owed", () => {
 // happened to it. No clocks, no polling: the host's own status words are the
 // answer, and each cell below is a different set of words.
 describe("boot reconciles what the last boot was still running", () => {
-  const bootWithRunners = (actives, hostStatusSeed) => bootOn(
-    () => ({ tasks: {}, active: actives, pending: [] }),
-    { hooks: { hostStatusSeed } },
-  );
+  const bootWithRunners = (actives, hostStatusSeed) => bootWithLedger({ active: actives }, { hooks: { hostStatusSeed } });
 
   // A record file is a document a person can edit and a crash can tear, and
   // admission cannot produce a parent link that points back up the tree — but

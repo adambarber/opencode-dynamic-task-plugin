@@ -12,7 +12,7 @@
 import type { OpenCodeClient } from "./client.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { eventField } from "./host-shape.js";
-import { extractMessages } from "./prompt.js";
+import { extractMessages, isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE } from "./prompt.js";
 
 // The server's own words for a session's turn. They are the SERVER's vocabulary,
 // not this plugin's: it cannot add a member, and a test pinning one would be a
@@ -160,6 +160,52 @@ export async function hostTurnInFlight(client: OpenCodeClient, sessionId: string
   const statusMap = await client.session.status().catch(() => null);
   const state = statusMap === null ? null : hostTurnState(statusMap, sessionId);
   return state !== null && RUNNING_HOST_STATES.has(state);
+}
+
+// How much of a parent's tail to read to decide whether its last turn finished.
+// One message is the answer, and a few are read so a reordered or partially
+// returned tail cannot hide the un-terminated turn behind a later one. The
+// session may hold thousands of messages, so the read is bounded at the HOST and
+// is never the whole transcript.
+const WEDGE_TAIL_MESSAGES = 5;
+
+/**
+ * Has this parent stopped answering? A turn the host opened and never closed.
+ *
+ * Distinct from `hostTurnInFlight` because the host is honest about only one of
+ * them. A busy parent HOLDS a write and delivers it when the turn ends; a WEDGED
+ * parent holds it forever, creating no message and logging no line, so from the
+ * outside the two are indistinguishable — a prompt into one produces not even a
+ * `loop` line. The status map cannot tell them apart either, because it carries
+ * live runs only and a wedge has no run.
+ *
+ * What does distinguish them is the transcript: an assistant message whose
+ * `time.completed` is absent. Measured 2026-09-28 on coda, where 67 sessions and
+ * 82 turns were pinned this way and every one of them silently swallowed the
+ * next prompt.
+ *
+ * Two refusals to guess, both deliberate. A read that FAILS is not a wedge —
+ * reading failure as refusal would drop every debt whenever the channel is
+ * flaky, which is a silent data loss wearing a safety check's name. And neither
+ * is a session with no assistant turn at all, nor one whose turn carries no
+ * clock: those are a host that has not said the turn failed, which is not the
+ * same as saying it did.
+ *
+ * Callers must have already established the parent is not mid-turn: a live run
+ * means the turn is open on purpose, and this reads an open turn as a wedge.
+ */
+export async function parentTurnStuck(client: OpenCodeClient, sessionId: string): Promise<boolean> {
+  const list = await client.session
+    .messages({ path: { id: sessionId }, query: { limit: WEDGE_TAIL_MESSAGES } })
+    .then(extractMessages)
+    .catch(() => null);
+  if (list === null) return false;
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const message = list[i];
+    if (!isMessage(message) || messageRoleOf(message) !== ASSISTANT_ROLE) continue;
+    return messageTurnStuck(message);
+  }
+  return false;
 }
 
 // Read-only session message fetch, shared by every reader of a child. Strict by

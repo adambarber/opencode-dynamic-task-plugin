@@ -14,7 +14,7 @@ import { textBlock } from "./text-block.js";
 import { evictOldest } from "./bounded-map.js";
 import { errorMessage } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
-import { hostTurnInFlight } from "./liveness.js";
+import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -587,6 +587,26 @@ export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: 
   }
 }
 
+/**
+ * Why this parent will not take a write right now, or null when it will.
+ *
+ * Two refusals, one word, one order. Mid-turn comes first because the host HOLDS
+ * a write to a busy session and delivers it when the turn ends — a wait, and the
+ * debt is right to survive it. Wedged comes second because there is no later: a
+ * turn the host opened and never closed makes every write to that session a
+ * silent no-op, forever, and a debt offered into one dials a call that will never
+ * answer while holding the claim for it. Measured 2026-09-28 on coda, where 82
+ * turns across 67 sessions were pinned that way.
+ *
+ * A refusal is never inferred from a failed read, only from the host's own
+ * words, so a flaky channel defers nothing and loses nothing.
+ */
+async function parentRefusal(client: OpenCodeClient, sessionId: string): Promise<string | null> {
+  if (await hostTurnInFlight(client, sessionId)) return "mid-turn";
+  if (await parentTurnStuck(client, sessionId)) return "wedged — its last turn has no completion";
+  return null;
+}
+
 export async function notifyParent(
   client: OpenCodeClient,
   parentSessionId: string,
@@ -720,14 +740,22 @@ export async function notifyParent(
     // (attempts 6→7 across six boots) and made it un-typeable. The bound is the
     // only thing standing between one wedged parent and an infinite retry, so
     // every path that does not deliver spends toward it — including this one.
-    if (carried > 0 && (await hostTurnInFlight(client, parentSessionId))) {
-      // Still queued, because the debt must outlive this process either way: the
-      // window where a notification exists in memory and on no disk is the crash
-      // the queue exists for, and deferring is not a reason to lose it. The
-      // re-armed count is the one this boot spent.
-      queuePending({ ...owed, attempts: carried + 1 });
-      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
-      return false;
+    if (carried > 0) {
+      const refusal = await parentRefusal(client, parentSessionId);
+      if (refusal !== null) {
+        // Still queued, because the debt must outlive this process either way: the
+        // window where a notification exists in memory and on no disk is the crash
+        // the queue exists for, and a refusal is not a reason to lose it. The
+        // re-armed count is the one this boot spent.
+        queuePending({ ...owed, attempts: carried + 1 });
+        if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
+        void safeLog(
+          client,
+          "warn",
+          `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`,
+        );
+        return false;
+      }
     }
     // The request is made ONCE and kept, because "slow" and "never" are the
     // same call from here: its answer may arrive long after this returns, and

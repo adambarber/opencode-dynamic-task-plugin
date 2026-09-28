@@ -15,6 +15,17 @@ import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays } from "./support/assertions.js";
 import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support/integration.js";
+
+/**
+ * Wait for a notice to land, because boot deliberately does not block on
+ * redelivery and the arrival is the observable.
+ *
+ * Stated once, at module scope, because two suites below wait on it and
+ * `waitFor(() => notices().length > 0, …)` spelled out at each site is both what
+ * jscpd reads as a clone and a second place to forget that a redelivery is a
+ * fire-and-forget write.
+ */
+const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification } from "../../dist/shared/notify.js";
@@ -387,6 +398,12 @@ describe("boot redelivers what the last boot owed", () => {
   it("an owed notice is delivered once at boot and retired from disk", async () => {
     const { directory, notices } = await bootWithOwed([owedDebt()]);
 
+    // Waited on, not slept: the gate asks the host whether the parent will take
+    // this write before it makes it, and that read is one more turn of the
+    // microtask queue ahead of the dial. Boot deliberately does not block on
+    // redelivery, so the notice arriving is the observable, not a delay to be
+    // assumed.
+    await noticeArrives(notices, "the boot's redelivery write to reach the parent");
     assert.deepStrictEqual(
       notices().map((n) => [n.to, n.message.includes("owed this")]),
       [["ses_parent", true]],
@@ -497,9 +514,18 @@ describe("boot reconciles what the last boot was still running", () => {
     answerMatches(notice, /completed successfully/, "its genuine terminal event settles it, once");
   });
 
+  /**
+   * Wait for a notice to land, because boot deliberately does not block on
+   * redelivery and the arrival is the observable.
+   *
+   * Stated once, at module scope, because two suites below wait on it and
+   * `waitFor(() => notices().length > 0, …)` spelled out at each site is both what
+   * jscpd reads as a clone and a second place to forget that a redelivery is a
+   * fire-and-forget write.
+   */
   it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
     const { directory, notices } = await bootWithRunners({ ses_gone: runningEntry("ses_gone") }, {});
-    await waitFor(() => notices().length > 0, "the vanished child to settle");
+    await noticeArrives(notices, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
     answerMatches(notice.message, /ended with an error/, "an error the parent can act on");

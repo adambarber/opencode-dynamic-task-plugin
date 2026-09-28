@@ -168,6 +168,7 @@ export function isTextPart(value: unknown): value is TextPart {
 export interface Message {
   role?: unknown;
   info?: unknown;
+  time?: unknown;
   parts?: unknown[];
 }
 
@@ -180,6 +181,28 @@ export function messageRoleOf(message: Message): string {
   const info = isEventRecord(message.info) ? message.info : undefined;
   const role = info?.role ?? message.role;
   return typeof role === "string" ? role : "";
+}
+
+/**
+ * Did this message's turn open and never close?
+ *
+ * Guard-first for the same reason the rest of this family is: the raw host
+ * payload stays data, and a caller that has already established the message is
+ * an assistant turn gets one word instead of a cast.
+ *
+ * The absent clock is NOT a stuck turn, and refusing to say so is the whole
+ * point. A message carrying no `time` at all is a host that described none of
+ * it, which is a different statement from a host that reported a turn and left
+ * it open — and reading the first as the second turns every transcript the
+ * plugin cannot fully describe into a dead parent. Caught 2026-09-28 by the
+ * integration harness, whose default assistant turn has no clock.
+ */
+export function messageTurnStuck(message: Message): boolean {
+  const info = isEventRecord(message.info) ? message.info : undefined;
+  const direct = isEventRecord(message.time) ? message.time : undefined;
+  const time = isEventRecord(info?.time) ? info.time : direct;
+  if (time === undefined) return false;
+  return typeof time.completed !== "number";
 }
 
 // ─── extractTextFromParts ──────────────────────────────────────────

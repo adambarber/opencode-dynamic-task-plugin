@@ -10,6 +10,7 @@ import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js
 import { clearNotifyLedger, configurePendingPersistence, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
 import { deferred, promptText, SDK_ENVELOPE } from './support/mock-host.js';
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 const NO_SLEEP = async () => {};
 
@@ -75,12 +76,15 @@ function gatedClient(gate, options = {}) {
 function recordingClient(respond) {
   const calls = [];
   const hostStatus = new Map();
+  const transcripts = new Map();
   return {
     calls,
     setStatus: (id, type) => hostStatus.set(id, type),
+    setMessages: (id, list) => transcripts.set(id, list),
     client: {
       session: {
         status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, type]) => [id, { type }]))),
+        messages: async (args) => SDK_ENVELOPE(transcripts.get(args.path.id) ?? []),
         prompt: async (args) => {
           calls.push(args);
           return respond(args);
@@ -675,22 +679,48 @@ describe("notify: the redelivery budget", () => {
     });
   });
 
-  // The two cases below are one world — a parent the host says is mid-turn —
-  // and differ only in whether the debt has been refused before. Everything but
-  // that is built once here, because a four-line client literal copied per case
-  // is what jscpd reads as a clone, and the worse cost is that two cases can
-  // quietly stop testing the same world while still looking like they do.
+  // The cases below are one world — a parent the host will not take a write from
+  // — and differ only in WHICH word the host used. Everything but that is built
+  // once here, because a client literal copied per case is what jscpd reads as a
+  // clone, and the worse cost is that two cases can quietly stop testing the same
+  // world while still looking like they do.
   //
   // The world is measured: 2026-09-28, a coda parent was admitted a turn at
   // 19:35:02 and at 19:55:19 that never reached the model and never exited, so
   // the host held every prompt after it and the project became un-typeable. Both
   // of those turns were this gate re-offering one owed debt into a session that
-  // had already refused one.
-  const toBusyParent = async (text, opts) => {
-    const { client, calls, setStatus } = answeredClient([]);
-    setStatus("parent_1", "busy");
+  // had already refused one. The second word — WEDGED — is the same refusal with
+  // no live run behind it: 82 turns across 67 coda sessions, each swallowing the
+  // next prompt without logging a line, and invisible to the status map that
+  // reports the first.
+  const toParent = async (text, opts, world) => {
+    const { client, calls, ...transport } = answeredClient([]);
+    world(transport);
     await notifyParent(client, "parent_1", text, { ...gate(CHILD, "error"), ...opts });
     return { writes: calls.length, owed: queuedFor(CHILD).map((entry) => entry.attempts) };
+  };
+  // One transcript, three shapes, and the difference IS the check: a clock with no
+  // completion is a turn the host abandoned, while no clock at all is a host that
+  // described nothing — and reading the second as the first declares every parent
+  // the plugin cannot fully describe dead. `ASSISTANT_ROLE`, not a retyped word.
+  const stuckTurn = (at) => [{ role: ASSISTANT_ROLE, time: { created: at }, parts: [] }];
+  const BUSY = ({ setStatus }) => setStatus("parent_1", "busy");
+  const WEDGED = ({ setMessages }) => setMessages("parent_1", stuckTurn(1));
+  const CLOCKLESS = ({ setMessages }) => setMessages("parent_1", [{ role: ASSISTANT_ROLE, parts: [] }]);
+  const RE_OFFER = { carriedAttempts: 1, maxAttempts: 3 };
+  const FRESH = {};
+  /**
+   * One write into `world`, asserted on both numbers that decide anything: how
+   * many writes reached the host, and what the debt looks like afterwards.
+   *
+   * Every case below is this shape with different words, and asserting it per case
+   * is both what jscpd reads as a clone and how two of them drift into checking
+   * different things while still looking identical.
+   */
+  const expectWrite = async (world, text, opts, writes, owed, why) => {
+    const sent = await toParent(text, opts, world);
+    assert.strictEqual(sent.writes, writes, why);
+    assert.deepStrictEqual(sent.owed, owed, `${why} — and the debt is left where that puts it`);
   };
 
   it("a REDELIVERY into a mid-turn parent is DEFERRED — no write, and the debt still counts", async () => {
@@ -701,30 +731,55 @@ describe("notify: the redelivery budget", () => {
     // NOTHING is not a deferral, it is a debt the bound can never reach: this
     // re-armed at `carried` forever and re-injected a synthetic user turn into a
     // wedged parent at every boot.
-    const sent = await toBusyParent("owed", { carriedAttempts: 1, maxAttempts: 3 });
-
-    assert.strictEqual(sent.writes, 0, "the write is not attempted at all, because a held write is what wedged the session");
-    assert.deepStrictEqual(sent.owed, [2], "and the debt is still owed, one attempt closer to its bound");
+    await expectWrite(BUSY, "owed", RE_OFFER, 0, [2], "the write is not attempted at all, because a held write is what wedged the session");
     assert.strictEqual(getLatestNotification(CHILD).pending, true, "and the record says pending rather than delivered");
   });
 
-  it("a parent that is mid-turn at EVERY boot still reaches the bound and retires", async () => {
-    // The same bound, reached on the deferral path. Driven across real boot
-    // boundaries (`boot` clears the in-memory gate, which a process boundary
-    // takes with it) because re-offering in this process would be SUPPRESSED by
-    // the claim the first offer still holds, and would prove nothing.
-    const { held, record } = await aDebtWalkedToItsBound(
-      (transport) => transport.setStatus("parent_1", "busy"),
-      "a deferral spends an attempt",
-    );
+  // One claim over two refusals, because it IS one claim: every path that
+  // declines a re-offer must spend toward the bound, or the bound is unreachable
+  // on that path. Mid-turn and wedged are the same sentence with different words,
+  // and two copies of a boot walk is where one of them quietly stops being
+  // tested while still looking like it is. Driven across real boot boundaries
+  // (`boot` clears the in-memory gate, which a process boundary takes with it)
+  // because re-offering in this process would be SUPPRESSED by the claim the
+  // first offer still holds, and would prove nothing.
+  for (const [label, world] of [["mid-turn", BUSY], ["wedged", WEDGED]]) {
+    it(`a parent that is ${label} at EVERY boot still reaches the bound and retires`, async () => {
+      const { held, record } = await aDebtWalkedToItsBound(world, `a ${label} refusal spends an attempt`);
 
-    assert.deepStrictEqual(queuedFor(CHILD), [], "the boot that crosses the bound retires the debt");
-    assert.strictEqual(record.expired, true, "honestly, as EXPIRED — not delivered, not failed");
-    assert.strictEqual(
-      writesTo(held.calls, "owed").length,
-      1,
-      "exactly one write for the whole life of this debt: a deferral never dials",
-    );
+      assert.deepStrictEqual(queuedFor(CHILD), [], "the boot that crosses the bound retires the debt");
+      assert.strictEqual(record.expired, true, "honestly, as EXPIRED — not delivered, not failed");
+      assert.strictEqual(writesTo(held.calls, "owed").length, 1, "one write for the whole life of this debt: a refusal never dials");
+    });
+  }
+
+  it("a REDELIVERY into a WEDGED parent is spent, and is not dialed", async () => {
+    // The third non-delivering path, and the one that cost a day of work. A turn
+    // the host opened and never closed is not a wait, it is a stop: the host
+    // holds every write to that session forever, creating no message and logging
+    // no line — a prompt into one produced no `loop` line, so from the outside it
+    // is indistinguishable from silence. The status map cannot see it, because it
+    // carries live runs only. So without this the gate dials a call that will
+    // never answer, holds the claim while it parks, and leaves the operator with
+    // nothing naming the session that swallowed it.
+    await expectWrite(WEDGED, "owed", RE_OFFER, 0, [2], "no write is attempted into a session the host has already stopped answering");
+  });
+
+  it("a parent with NO CLOCK on its last turn is not read as wedged", async () => {
+    // The falsification against over-reach, and the defect the integration
+    // harness caught: its default assistant turn carries no `time` at all, and a
+    // guard that reads an absent clock as an absent completion declares every
+    // parent the plugin cannot fully describe dead — and then owes nothing to
+    // anyone. A host that described nothing has not said the turn failed.
+    await expectWrite(CLOCKLESS, "clockless", RE_OFFER, 1, [], "an unclocked turn is not evidence of a wedge, so the write is made");
+  });
+
+  it("a FRESH notice to a wedged parent is still written — a guess is not a refusal", async () => {
+    // The falsification in the other direction, and the reason the check is gated
+    // on `carried > 0`: a first attempt has been refused by nothing yet, and
+    // pre-judging an unreadable session is how a parent's results go missing
+    // quietly. The same asymmetry the busy-parent defer already makes.
+    await expectWrite(WEDGED, "fresh", FRESH, 1, [], "a first attempt is written rather than pre-judged");
   });
 
   it("a FRESH notice to a busy parent is still written — the host holds it, and that has always worked", async () => {
@@ -733,10 +788,7 @@ describe("notify: the redelivery budget", () => {
     // written while the parent was busy. Only a debt that has ALREADY been
     // refused once is evidence the parent cannot take a write, so a first
     // attempt must keep making it or a busy parent silently swallows results.
-    const sent = await toBusyParent("fresh", {});
-
-    assert.strictEqual(sent.writes, 1, "a first attempt is written, and the host holds it until the parent's turn is over");
-    assert.deepStrictEqual(sent.owed, [], "and settled");
+    await expectWrite(BUSY, "fresh", FRESH, 1, [], "a first attempt is written, and the host holds it until the parent's turn is over");
   });
 
   it("a debt under its budget is untouched — the bound is not a blanket give-up", async () => {

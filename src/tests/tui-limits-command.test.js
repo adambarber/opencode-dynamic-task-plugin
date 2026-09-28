@@ -34,11 +34,11 @@ import { capCellOf } from "../../dist/tui/agent-editor.js";
 import { bothCaps, withTempDir } from "./support/fixtures.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
-import { CELL_GAP, boundClause } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { footerText } from "./support/assertions.js";
-import { plainCell, plainSummary } from "../../dist/tui/theme.js";
-import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, LIST_DIALOG_WIDTH, PICKER_DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
+import { BETWEEN, FROM_CONFIG, boundClause, namedCell, plainSummary } from "../../dist/tui/theme.js";
+import { displayName } from "../../dist/tui/agent-editor.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
 
 import {
   BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack, dialogRowText, rowsText,
@@ -49,7 +49,16 @@ import {
 } from "./support/limits-screen.js";
 
 /** The whole screen, in the order the host will draw it: the total, then the agents. */
-const WHOLE_SCREEN = [CEILING_LABEL, ...REGISTERED];
+/**
+ * Every row the list draws, in order, as the SCREEN prints it.
+ *
+ * Built from the same `displayName` the screen builds from, rather than written out. A
+ * case that retyped `['total ceiling', 'explore', ...]` would be pinned to a spelling the
+ * screen does not use, and would go on passing after the screen capitalised its names and
+ * added its colons — which is what this file's expectations did for a round, failing
+ * thirty-odd cases for one uninteresting change.
+ */
+const WHOLE_SCREEN = [`${displayName(CEILING_LABEL)}:`, ...REGISTERED.map((name) => `${displayName(name)}:`)];
 
 
 /**
@@ -192,10 +201,29 @@ describe("the limits list is the question the operator came with", () => {
   it("and an agent the overlay caps is still a row, showing which caps are ITS OWN", () =>
     withList({ agents: { explore: { maxConcurrent: 2 } } }, (list) => {
       assert.deepEqual(titlesOf(list), WHOLE_SCREEN, "capping an agent does not remove it from the list");
-      assert.match(rowText(list, "explore"), /at once 2/, "the stated cap, with no claim about where it came from");
-      assert.match(rowText(list, "explore"), new RegExp(`depth ${BASE.maxDepth} from config`),
-        "and the one that is NOT stated says so — an agent at 4 by default and one deliberately set to 4 look the same otherwise");
-      assert.match(rowText(list, "general"), new RegExp(`at once ${BASE.maxConcurrent} from config`));
+      assert.match(rowText(list, "explore"), /2 concurrency/, "the stated cap, with no claim about where it came from");
+      assert.doesNotMatch(rowText(list, "explore"), /config/,
+        "and the one that is NOT stated does NOT say so HERE. It used to, and the information is real: an agent left at 4 by default and one deliberately set to 4 read the same on this row, and the operator could not tell a cap they had chosen from one they had inherited.");
+    }));
+
+  it("and the list's silence about provenance is the caps screen's answer, one level down", () =>
+    // The cost of the terse list, stated and bounded rather than absorbed. `from config`
+    // appeared on BOTH figures of EVERY row, so a list of twenty agents said it forty
+    // times in a column, and a column of repeated annotations is what made the screen
+    // read as broken strings rather than as a menu.
+    //
+    // The information did not go; it MOVED, and this is the case that proves it is
+    // reachable — a list that is quiet about a fact is only defensible while the place
+    // the operator goes to DECIDE still says it. Delete this case and the quiet would be
+    // free: nothing would be left claiming the distinction survives.
+    withCapsOpen((host) => {
+      assert.match(capText(host, "maxDepth"), /from config/, "a cap the overlay never stated says whose number it is, where the operator sets it");
+      assert.doesNotMatch(capText(host, "maxConcurrent"), /from config/, "and a cap the overlay DID state claims nothing");
+    }));
+
+  it("so a cap from the config file is still a figure on the list, with no adjective", () =>
+    withList(undefined, (list) => {
+      assert.match(rowText(list, "general"), new RegExp(`${BASE.maxConcurrent} concurrency`), "the config file's own cap, as a figure and nothing else");
     }));
 
   it("puts both caps of an agent on its ONE row, so the pair is read together", () =>
@@ -203,10 +231,10 @@ describe("the limits list is the question the operator came with", () => {
       // The gap comes from the module, not from a retyped run of spaces: a test that
       // spelled it would be a second place to change, and would keep passing after the
       // cells were separated by something the operator could read as a word.
-      const adjacency = `at once 2${CELL_GAP}depth 1`;
+      const adjacency = `2 concurrency${BETWEEN}1 depth`;
       assert.ok(rowText(list, "explore").includes(adjacency),
         `concurrency and depth adjacent as ${JSON.stringify(adjacency)}, which is the ask the row exists for`);
-      assert.equal(titlesOf(list).filter((title) => title === "explore").length, 1,
+      assert.equal(titlesOf(list).filter((title) => title === `${displayName("explore")}:`).length, 1,
         "two rows of one agent would print the name twice and split the pair apart");
     }));
 
@@ -262,8 +290,8 @@ describe("the limits list is the question the operator came with", () => {
     // path, so the screen was a false witness about its own subject.
     withConfigScreen({ agents: { explore: { maxConcurrent: 9, maxDepth: 5 } } }, (list) => {
       const text = rowText(list, "explore");
-      assert.match(text, /at once 9/, "the file's own cap, not the default four");
-      assert.doesNotMatch(text, /at once 4/, "and not the default it used to print and call config");
+      assert.match(text, /9 concurrency/, "the file's own cap, not the default four");
+      assert.doesNotMatch(text, /4 concurrency/, "and not the default it used to print and call config");
     }));
 
   it("reads a TOP-LEVEL cap out of the same file, for an agent the file does not name", () =>
@@ -272,8 +300,8 @@ describe("the limits list is the question the operator came with", () => {
     // make a file that states a global cap look as if it stated nothing at all.
     withConfigScreen({ maxConcurrent: 3, maxDepth: 1 }, (list) => {
       const text = rowText(list, "explore");
-      assert.match(text, /at once 3/, "the file's top level is in force for an agent it does not name");
-      assert.match(text, /depth 1\b/, "and so is its depth");
+      assert.match(text, /3 concurrency/, "the file's top level is in force for an agent it does not name");
+      assert.match(text, /1 depth/, "and so is its depth");
     }));
 
   it("an overlay it cannot read is said out loud AND the list still opens, because repair is why it was opened", () =>
@@ -291,33 +319,37 @@ describe("the limits list is the question the operator came with", () => {
 describe("the host's own layout, as measured rather than modelled", () => {
   // Every DERIVED version of these numbers has been wrong, and each was confident. The
   // first counted six columns of indent and missed a one-pixel gap; the second missed the
-  // `scrollbox` at `paddingLeft={1} paddingRight={1}` the rows live in; the third measured
-  // a `large` dialog the plugin no longer mounts. All were out in the safe direction,
-  // which is the worst way to be wrong — the gate was quietly tighter than the screen, so
-  // every row passed and the operator learned nothing until a real one clipped.
+  // `scrollbox` at `paddingLeft={1} paddingRight={1}` the rows live in; a third measured
+  // a `large` dialog for a screen whose rows turned out not to need one. All were out in
+  // the safe direction, which is the worst way to be wrong — the gate was quietly tighter
+  // than the screen, so every row passed and the operator learned nothing until a real one
+  // clipped.
   //
   // The figures come off a real frame (`bun scripts/render-proof.js --screen`), because a
   // measurement cannot be out by a layer nobody thought of. This case pins what that
   // command measured, so a change to the arithmetic has to be made against the frame.
-  it("a row gets 52 columns under a medium dialog and 70 under a large one", () => {
-    assert.equal(PICKER_DIALOG_WIDTH, 60, "the host's own default, which is why a picker sets no size of its own");
-    assert.equal(LIST_DIALOG_WIDTH, 88, "the one screen that needs it, because its rows carry a name and its caps together");
-    assert.equal(dialogRowText(PICKER_DIALOG_WIDTH), 52, "60 less the scrollbox's 1+1 and the row's 3+3");
-    assert.equal(dialogRowText(LIST_DIALOG_WIDTH), 70, "88 is capped to the terminal less 2, so less 8 of layout at 80 columns");
+  it("a row gets 52 columns, at the host's own default dialog", () => {
+    assert.equal(DIALOG_WIDTH, 60, "medium — the host's default, which is why no screen of ours calls setSize at all");
+    assert.equal(dialogRowText(DIALOG_WIDTH), 52, "60 less the scrollbox's 1+1 and the row's 3+3");
+    assert.ok(fitsItsDialog({ title: "M".repeat(52) }), "52 fits, because 52 is what fits");
+    assert.ok(!fitsItsDialog({ title: "M".repeat(53) }), "and 53 is clipped by the host, silently, with no ellipsis");
   });
 
-  it("a title is truncated by the host at 61, which only a large dialog can reach", () => {
-    // `titleWidth ?? 61` in dialog-select.tsx, and it is 61 whatever the dialog's width —
-    // so on a `medium` dialog the row's own 52 always binds first and the truncate is
-    // unreachable. A check that cannot fail on the screen it guards is a claim that is not
-    // making a claim, so the case lives on the width where it does.
-    assert.ok(fitsItsDialog({ title: "M".repeat(61) }, LIST_DIALOG_WIDTH), "61 is at the truncate and under 70");
-    assert.ok(!fitsItsDialog({ title: "M".repeat(62) }, LIST_DIALOG_WIDTH), "and 62 is over it");
+  it("and every screen of ours fits in it, which is why there is one width and not two", () => {
+    // The list was `large` for a round, because a 40-character agent name and a 30-character
+    // summary shared a row. The row is 34 characters now — `2 concurrency * 3/4 depth` —
+    // because the figures lost their labels' preamble and their provenance, so the widest
+    // realistic name that fits is 17 characters and the host's default holds every screen.
+    // A width is a fact about the content; a content change that makes a width unnecessary
+    // should be allowed to delete the width, or it will outlive its reason.
+    for (const name of REGISTERED) {
+      assert.ok(fitsItsDialog({ title: `${name}:`, description: "4 concurrency * 3/4 depth" }), `${name} and both of its figures fit one row`);
+    }
   });
 
   it("a description shares the title's line, so a long name eats it", () => {
-    assert.ok(!fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }, PICKER_DIALOG_WIDTH), "40 + 1 + 20 is 61, over a medium row's 52");
-    assert.ok(fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }, LIST_DIALOG_WIDTH), "and 61 is under a large row's 70");
+    assert.ok(!fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }), "40 + 1 + 20 is 61, over a row of 52");
+    assert.ok(fitsItsDialog({ title: "M".repeat(30), description: "x".repeat(20) }), "30 + 1 + 20 is 51, and fits");
   });
 });
 
@@ -350,7 +382,7 @@ describe("a row fits the dialog it is drawn in", () => {
   it("for an agent carrying both caps, stated and inherited", () =>
     withList({ agents: { explore: bothCaps(2, 3) } }, (list) => {
       assertEveryRowFits(list);
-      assert.match(rowText(list, "explore"), /at once 2/, "and the caps are on screen, not clipped away");
+      assert.match(rowText(list, "explore"), /2 concurrency/, "and the caps are on screen, not clipped away");
     }));
 
   it("counts the FOOTER's width, because the host will not shrink it and the title will", () => {
@@ -382,10 +414,13 @@ describe("a row fits the dialog it is drawn in", () => {
     withList(BOUND_DEPTH, (list) => {
       const explore = row(list, "explore");
       assert.equal(explore.footer, undefined, "no footer, so nothing is stranded at the right edge");
-      assert.match(explore.description, /at once 2 {2}depth 3\/4 agent set/,
-        "both caps, in the list row's own vocabulary, on the name's own line");
-      assert.equal(rowText(list, "explore"), "explore at once 2  depth 3/4 agent set", "and the terminal shows that whole line");
-      assert.match(row(list, "general").description, /depth 2 from config/, "a row says which of its figures came from the config file");
+      // An EQUALITY, not a `match`: `BETWEEN` is `" * "`, and inside a RegExp that is a
+      // quantifier — `concurrency *` means zero or more `y` — so the pattern quietly
+      // described something else and the case was testing the regex.
+      assert.equal(explore.description, `2 concurrency${BETWEEN}3/4 depth`, "both caps, figure before noun, on the name's own line");
+      assert.equal(rowText(list, "explore"), `Explore: 2 concurrency${BETWEEN}3/4 depth`, "and the terminal shows that whole line");
+      assert.doesNotMatch(row(list, "general").description, /config/,
+        "and the LIST says nothing about where a figure came from: `from config` appeared on both figures of all twenty rows, forty times in a column, and that is what made the list read as broken strings. Where the operator is deciding rather than scanning — the agent's own caps screen — the annotation is still there, because there it answers a question instead of repeating one.");
       assertEveryRowFits(list);
     }));
 
@@ -402,7 +437,7 @@ describe("a row fits the dialog it is drawn in", () => {
       const wide = row(list, LONG_AGENT_NAME);
       assert.ok(wide, "the host published it, so it is a row");
       assert.equal(wide.description, undefined, "and the caps went with it, whole — a clipped figure is a lie about a bound");
-      assert.equal(wide.title, LONG_AGENT_NAME, "the name itself is never cut");
+      assert.equal(wide.title, `${displayName(LONG_AGENT_NAME)}:`, "the name itself is never cut");
       assert.equal(typeof wide.onSelect, "function", "and the row still opens, which is where the caps are in full");
       assertEveryRowFits(list);
     }, { agentNames: [...REGISTERED, LONG_AGENT_NAME] }));
@@ -427,14 +462,14 @@ describe("a row fits the dialog it is drawn in", () => {
       const found = row(list, "explore");
       assert.equal(found.footer, undefined, "no footer, so nothing is stranded at the right edge");
       assert.equal(found.description, plainSummary(agentEntry("explore", { agents: { explore: bothCaps(2, 3) } })), "the caps are the row's description, in the host's own spelling");
-      assert.equal(rowText(list, "explore"), `explore ${plainSummary(agentEntry("explore", { agents: { explore: bothCaps(2, 3) } }))}`, "one line, and the terminal shows all of it");
+      assert.equal(rowText(list, "explore"), `${displayName("explore")}: ${plainSummary(agentEntry("explore", { agents: { explore: bothCaps(2, 3) } }))}`, "one line, and the terminal shows all of it");
     }));
 });
 
-/** What the two cap rows read as the terminal will show them, for an agent at once 2. */
+/** What the two cap rows read as the terminal will show them, for an agent capped at 2. */
 const AGENT_CAP_ROWS = AGENT_CAP_NAMES.map((cap) => {
   const entry = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-  return CAP_LABEL[cap] + " " + plainCell(capCellOf(entry, cap));
+  return CAP_LABEL[cap] + " " + namedCell(capCellOf(entry, cap));
 });
 
 /**
@@ -461,7 +496,7 @@ describe("choosing a cap", () => {
       const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
       assert.deepEqual(
         rowsText(top(host.seen)).slice(0, -1),
-        AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + plainCell(capCellOf(row2, cap))),
+        AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + namedCell(capCellOf(row2, cap))),
         "and the two caps are still the whole list, each carrying its own figure beside its label",
       );
       backRow(host, ALL_AGENTS_LABEL).onSelect();
@@ -520,11 +555,20 @@ describe("choosing a cap", () => {
       assertEveryRowFits(top(host.seen));
     }));
 
-  it("names the AGENT and the CAP, so a screen of numbers says what they mean", () => {
+  it("names the AGENT and the CAP, and says the file's number when the cap is not the operator's", () => {
+    // Three clauses, all in the title and none of them anywhere else on the screen: WHO
+    // the caps are, WHICH cap, and whether the number in force is one the operator wrote.
+    // The third was found missing by the case that says the LIST is quiet about
+    // provenance — a picker whose list is a column of bare figures, offering a number the
+    // file chose, is the screen where an operator decides to overwrite one, so that is
+    // where the fact belongs.
+    const stated = { agents: { explore: { maxConcurrent: 2, maxDepth: 3 } } };
     for (const cap of AGENT_CAP_NAMES) {
-      const picker = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} });
-      assert.equal(picker.title, `explore — ${CAP_LABEL[cap]}`);
-      assert.doesNotMatch(picker.title, /lane/i);
+      const owned = capPickerProps("explore", cap, agentEntry("explore", stated), { confirm: () => {}, back: () => {} });
+      assert.equal(owned.title, `explore — ${CAP_LABEL[cap]}`, "a cap the overlay states claims nothing about the file");
+      const inherited = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} });
+      assert.equal(inherited.title, `explore — ${CAP_LABEL[cap]} (${FROM_CONFIG})`, "and a cap it does not says so, in the one place the operator is choosing a number");
+      assert.doesNotMatch(owned.title, /lane/i);
     }
   });
 
@@ -609,14 +653,12 @@ describe("the flow, end to end on disk", () => {
     // per-agent cap pair exists to avoid.
     withPickerOpen(havingWritten((host) => chooseValue(host, 4))((host) => {
       assert.equal(top(host.seen).title, "explore", "the agent's own caps, not the list and not the value screen");
-      // LABEL AND VALUE, with a space between them and nothing else. A frame is what
-      // ended the `·`: the mark existed to separate a label from a `footer` value the
-      // host had stranded at the far edge of the row, and the value now sits in the
-      // title, adjacent, where there is nothing to separate.
-      assert.match(capText(host, "maxConcurrent"), new RegExp(`at once 4$`, "m"),
-        "and it shows the NEW number, not the one it was holding");
-      assert.match(capText(host, "maxDepth"), new RegExp(`depth ${BASE.maxDepth} from config$`, "m"),
-        "with the other cap still reading as inherited, so nothing was invented by the write");
+      // LABEL AND VALUE, whole rows and by EQUALITY, so a failure prints what the
+      // operator sees. The operator set this one, so it claims no provenance — that is
+      // the difference between a number the file holds and a number somebody chose, and it
+      // is the reason `namedCell` and `terseCell` are two spellings rather than one.
+      assert.equal(capText(host, "maxConcurrent"), `${CAP_LABEL.maxConcurrent} 4`, "and it shows the NEW number, not the one it was holding");
+      assert.equal(capText(host, "maxDepth"), `${CAP_LABEL.maxDepth} ${BASE.maxDepth} from config`, "with the other cap still reading as inherited, so nothing was invented by the write");
     })));
 
   it("setting the OTHER cap of the same agent keeps the first, because the list is re-read after a write", () =>
@@ -629,7 +671,7 @@ describe("the flow, end to end on disk", () => {
       // the whole claim: the second write happens on a re-read, and it is one keypress
       // away rather than a trip through the list.
       capRow(host, "maxDepth").onSelect();
-      assert.equal(top(host.seen).title, `explore — ${CAP_LABEL.maxDepth}`, "the OTHER cap of the same agent");
+      assert.equal(top(host.seen).title, `explore — ${CAP_LABEL.maxDepth} (${FROM_CONFIG})`, "the OTHER cap of the same agent, and the file still holding its number");
       valueRow(host, 3).onSelect();
       assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4, maxDepth: 3 } } },
         "the cap set first survives the second, which is the whole claim");
@@ -679,7 +721,7 @@ describe("the flow, end to end on disk", () => {
     // The row used to print how many tasks were charged to it, which meant a read of
     // the ledger file in the render path. The number is gone, and with it the read.
     withOpen((host) => {
-      assert.match(rowText(top(host.seen), "explore"), /at once 2/);
+      assert.match(rowText(top(host.seen), "explore"), /2 concurrency/);
     }, { overlay: { agents: { explore: { maxConcurrent: 2 } } }, active: [{ childSessionId: "ses_x", agentName: "explore" }] }));
 });
 

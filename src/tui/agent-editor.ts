@@ -43,6 +43,41 @@ export const CAP_LABEL: Record<AgentCapName, string> = {
   maxDepth: "depth",
 };
 
+/**
+ * How each cap reads as a thing you COUNT, on a row of figures.
+ *
+ * A second vocabulary beside `CAP_LABEL`, and the two are not interchangeable — they are
+ * different registers of the same noun, and conflating them produces either a bad menu
+ * or a bad sentence.
+ *
+ * `CAP_LABEL` is what the cap is CALLED, and it appears inside sentences where the cap is
+ * the subject: `explore refused, already at once 2`. Read as a count — `2 at once` — it
+ * is idiomatic, because the word is an adverb there and the number counts it.
+ *
+ * `CAP_NOUN` is what the number is a count OF, and it appears where a figure stands
+ * alone: `Explore: 4 concurrency * 2 depth`. That is a table of quantities, and a table
+ * wants a noun, so `at once` becomes `concurrency` and `depth` stays `depth`.
+ *
+ * So this is not a rename of `CAP_LABEL` and does not replace it. Both are looked up by
+ * cap name, so a cap added to `AGENT_CAP_NAMES` without a noun here is a type error
+ * rather than a row reading `Explore: 4  * 2 depth`.
+ */
+export const CAP_NOUN: Record<AgentCapName, string> = {
+  maxConcurrent: "concurrency",
+  maxDepth: "depth",
+};
+
+/**
+ * An agent's name as a menu item's leading word, and NOT as a route.
+ *
+ * Capitalised because a list of names is a list of ITEMS, and a column of lower-case
+ * identifiers is a column of keys — the eye reads a lowercase run as a machine name
+ * rather than as a thing you can choose. It is display only: the host's spelling is what
+ * the row's `value` carries and what every write is addressed to, so nothing here can
+ * turn a press on `Explore` into a write against an agent that does not exist.
+ */
+export const displayName = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
+
 /** The numbers a cap can be set to, per cap. The picker's whole content. */
 export const CAP_CHOICES: Record<AgentCapName, readonly number[]> = {
   // A list rather than a text box, because typing "2" is three keystrokes and an

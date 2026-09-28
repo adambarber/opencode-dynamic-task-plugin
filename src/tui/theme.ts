@@ -20,31 +20,33 @@
  * drawn the way every other dialog in the host is drawn.
  */
 import { AGENT_CAP_NAMES } from "../shared/caps.js";
-import { CAP_LABEL, capCellOf, type AgentEntry, type CapCell } from "./agent-editor.js";
+import { CAP_NOUN, capCellOf, type AgentEntry, type CapCell } from "./agent-editor.js";
 
 /**
- * The separator between an agent row's two cells.
+ * The mark between an agent's two figures.
  *
- * A double space, and not a character, because the host's `space-between` on the row
- * supplies the rest of the separation and the cells already carry their own labels
- * (`at once`, `depth`). A mark between two labelled things is a symbol standing in for
- * information the layout could have supplied.
+ * A `*`, and not the `·` this file used to separate its cells with. Two labelled
+ * quantities with nothing between them read as one broken string — `4 concurrency2 depth`
+ * or `4 concurrency depth`, depending on which way the eye jumps — and the mark is what
+ * says they are two facts and not one. The `·` was removed for the same reason two rounds
+ * ago: a glyph standing in for information the layout could have supplied. This one
+ * cannot be supplied by the layout, because a menu row has one gap in it and two things
+ * to separate.
  */
-export const CELL_GAP = "  ";
+export const BETWEEN = " * ";
 
 /** The note a cell carries when the number is the config file's rather than the operator's. */
 export const INHERITED = "from config";
 
 /**
- * The short form of "the agent set holds this depth below the cap".
+ * The same fact, as a TITLE clause, for the screen where the operator chooses a number.
  *
- * `3/4 agent set` and not `3/4 agent set binds at 3`: the row shares its line with an
- * agent's name under the host's own `medium` dialog, and this is what had to give. The
- * number beside the bound already says the two differ, and the full sentence — which
- * names the same bound a third time — is where the picker's title puts it, on a screen
- * that exists to state it once.
+ * `INHERITED` and this are the same claim in two places a number appears: a cell beside a
+ * figure, and a title above a list of them. Two spellings because the positions are not
+ * interchangeable — `(from config)` reads as a parenthetical in a title, and `from config`
+ * would read as a status in one.
  */
-const CEILING = "agent set";
+export const FROM_CONFIG = "from config file";
 
 /**
  * The title clause that says what holds a cap down, in one piece.
@@ -56,19 +58,45 @@ const CEILING = "agent set";
 export const boundClause = (at: number): string => `agent set binds at ${at}`;
 
 /**
- * What a cell says, and the width contract over it.
+ * One figure, alone: what a cap holds right now, and nothing else.
  *
  * A bounded depth prints BOTH numbers, `3/4`: the reachable one first, because that is
  * the one a dispatch is judged against, and the cap beside it because that is the one the
  * operator typed. A bare integer cannot say whether it is the limit or something else
- * holding it down, which is the whole reason this is a cell and not a number.
+ * holding it down, and the two numbers say it in the width the repo already spends on
+ * `148/158` in its sidebars.
+ *
+ * NO PROVENANCE. A figure here is `4`, not `4 from config`, and that is the whole reason
+ * the list stopped reading as broken strings: the annotation appeared twice on every
+ * row, on both figures, and a list of twenty rows said `from config` forty times in a
+ * column. Where the operator is DECIDING rather than scanning — the agent's own caps
+ * screen — the annotation is still there, in `namedCell`, because there it is one line
+ * answering a question and here it is a column of noise.
  */
-export function plainCell(cell: CapCell): string {
-  if (cell.bounded !== null) return `${cell.bounded}/${cell.value} ${CEILING}`;
-  return cell.stated ? `${cell.value}` : `${cell.value} ${INHERITED}`;
+export function terseCell(cell: CapCell): string {
+  return cell.bounded !== null ? `${cell.bounded}/${cell.value}` : `${cell.value}`;
 }
 
-/** What one agent's row says, in the host's `description` field. */
+/**
+ * One figure where the operator is deciding about it, so the number says whose it is.
+ *
+ * The same number `terseCell` prints, with the noun that says what it counts and the
+ * provenance when the config file is the one that set it. This is the spelling on the
+ * agent's own caps screen, where a row IS a setting and "who chose this" is part of what
+ * the row is asking.
+ */
+export function namedCell(cell: CapCell): string {
+  return `${terseCell(cell)}${cell.stated ? "" : ` ${INHERITED}`}`;
+}
+
+/**
+ * An agent's row as the TERMINAL shows it: `4 concurrency * 2 depth`.
+ *
+ * Figure first, noun second, mark between. The order is the one a table of quantities is
+ * read in, and the inversion from the screen's earlier `at once 4` is the fix rather than
+ * a style: a label before its figure makes the reader hold the label while they find the
+ * number, and with two labels per row the eye is holding two while it reads four things.
+ */
 export function plainSummary(row: AgentEntry): string {
-  return AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${plainCell(capCellOf(row, cap))}`).join(CELL_GAP);
+  return AGENT_CAP_NAMES.map((cap) => `${terseCell(capCellOf(row, cap))} ${CAP_NOUN[cap]}`).join(BETWEEN);
 }

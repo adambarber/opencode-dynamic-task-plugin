@@ -20,7 +20,7 @@ import { applyAgentOverlay, readAgentOverlay, readAgentOverlayCaps, writeAgentOv
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
-import { CELL_GAP, plainCell, plainSummary } from "../../dist/tui/theme.js";
+import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
 
@@ -111,7 +111,7 @@ describe("a depth the agent set holds below the cap", () => {
   it("prints the reachable depth of TWO, with a cap of four, as 2/4", () => {
     const { rows } = agentDialogFrom({}, { ...BASE, maxDepth: 4 }, TWO_AGENTS, false, null);
     const explore = rows.find((row) => row.name === "explore");
-    assert.equal(plainCell(capCellOf(explore, "maxDepth")), "2/4 agent set", "both numbers, reachable first");
+    assert.equal(terseCell(capCellOf(explore, "maxDepth")), "2/4", "both numbers, reachable first, with no adjective");
   });
 
   it("lets the cap bind when the same agent may recur, because then the set is not the wall", () => {
@@ -154,20 +154,43 @@ describe("the limits list", () => {
     assert.deepEqual(rowNames(rows), AGENTS, "every registered agent is a row like any other");
   });
 
-  it("shows BOTH caps of an agent on its one row, side by side", () => {
+  it("shows BOTH caps of an agent on its one row, as a table of quantities", () => {
     // The operator's own framing: the concurrency cap "next to" the depth. Two rows
-    // of one agent would print the name twice and split the pair apart. The gap is the
+    // of one agent would print the name twice and split the pair apart. The mark is the
     // module's, so this says the two cells are ADJACENT without retyping how wide that is.
-    assert.equal(plainSummary(exploreRow(bothCaps(1, 2))), `at once 1${CELL_GAP}depth 2`);
+    //
+    // Figure before noun — `1 concurrency * 2 depth` — because this is a table of
+    // quantities and a table reads its numbers first. The label-before-figure order it
+    // replaced (`at once 1`) is the same fact in the register used inside sentences, and
+    // on a row it made the reader hold a label while they found a number, twice per row.
+    assert.equal(plainSummary(exploreRow(bothCaps(1, 2))), `1 concurrency${BETWEEN}2 depth`);
   });
 
-  it("says which caps are INHERITED, because an agent at 4 by default and one set to 4 look the same", () => {
-    const rows = view({ agents: { explore: { maxConcurrent: 1 } } }, AGENTS).rows;
-    assert.equal(capCellOf(rows[0], "maxConcurrent").stated, true, "declared in the overlay");
-    assert.equal(plainCell(capCellOf(rows[0], "maxConcurrent")), "1");
-    assert.equal(capCellOf(rows[0], "maxDepth").stated, false, "nothing declared, so it comes from the config file");
-    assert.equal(plainCell(capCellOf(rows[0], "maxDepth")), `${BASE.maxDepth} from config`);
+  /**
+   * The two caps of an agent that has declared one, and the spelling each is read in.
+   *
+   * The two cases below are about the SAME row from two directions — what a cell says with
+   * an adjective and what it says without one — and spelled out, the `view` call and the
+   * four lookups are eight identical lines. So the row is built once, here, and each case
+   * names only the cell and the spelling it is about.
+   */
+  const oneStated = () => view({ agents: { explore: { maxConcurrent: 1 } } }, AGENTS).rows[0];
+
+  it("reports which caps are INHERITED in the cell, because an agent at 4 by default and one set to 4 look the same", () => {
+    // The LIST no longer prints the annotation, on either figure of any row — it said
+    // `from config` forty times in a column, which is what made the screen read as broken
+    // strings. The fact is still IN the cell, and the agent's own caps screen prints it;
+    // what changed is that a column of quantities carries no adjectives and a screen where
+    // you are choosing a cap does.
+    const row = oneStated();
+    assert.equal(capCellOf(row, "maxConcurrent").stated, true, "declared in the overlay");
+    assert.equal(namedCell(capCellOf(row, "maxConcurrent")), "1", "and an operator's own number claims no provenance");
+    assert.equal(capCellOf(row, "maxDepth").stated, false, "nothing declared, so it comes from the config file");
+    assert.equal(namedCell(capCellOf(row, "maxDepth")), `${BASE.maxDepth} ${INHERITED}`);
   });
+
+  it("and the terse spelling, which is what the list prints, drops the annotation entirely", () =>
+    assert.equal(terseCell(capCellOf(oneStated(), "maxDepth")), `${BASE.maxDepth}`, "a figure, with no adjective beside it"));
 
   it("still offers rows when the overlay is a shape it cannot read, because repair is why it was opened", () => {
     const { rows, problem } = agentDialogFrom({ agents: [1, 2, 3] }, BASE, AGENTS, false, "that is not an object");
@@ -293,7 +316,7 @@ describe("clearing a cap removes it rather than emptying it", () => {
     // the agent was never the operator's to delete. It came from the host.
     const rows = view({ agents: {} }, AGENTS).rows;
     assert.deepEqual(rowNames(rows), AGENTS, "every registered agent is still a row");
-    assert.equal(plainCell(capCellOf(rows[0], "maxConcurrent")), `${BASE.maxConcurrent} from config`);
+    assert.equal(namedCell(capCellOf(rows[0], "maxConcurrent")), `${BASE.maxConcurrent} ${INHERITED}`);
   });
 });
 
@@ -374,7 +397,7 @@ describe("a hand-mangled overlay", () => {
       "the string cap is dropped and only the whole number survives");
     assert.deepEqual(applyAgentOverlay(BASE, mangled)?.agents.explore, { maxDepth: 2 },
       "and the two answers agree, because they come from one reader");
-    assert.equal(plainCell(capCellOf(rows[0], "maxDepth")), "2", "so the cell shows 2, not the file's claim");
+    assert.equal(terseCell(capCellOf(rows[0], "maxDepth")), "2", "so the cell shows 2, not the file's claim");
   });
 
   it("a body whose every cap is dropped leaves no overlay at all", () => {
@@ -405,7 +428,7 @@ describe("an overlay whose shapes are wrong in ways the reader must survive", ()
   it("an agent body that is not an object states no cap and is not a cap", () => {
     const rows = rowsFor({ agents: { explore: "four", general: 7 } });
     assert.deepEqual(rows.find((row) => row.name === "explore").stated, {});
-    assert.equal(plainCell(capCellOf(rows[0], "maxDepth")), `${BASE.maxDepth} from config`,
+    assert.equal(namedCell(capCellOf(rows[0], "maxDepth")), `${BASE.maxDepth} ${INHERITED}`,
       "a body that is not an object states no cap, so the config's own applies");
   });
 

@@ -23,11 +23,11 @@ import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../.
 import { withTempDir } from "./fixtures.js";
 import { renderTree } from "./render-tree.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
-import { CAP_LABEL, agentDialogFrom } from "../../../dist/tui/agent-editor.js";
-import { plainCell, plainSummary } from "../../../dist/tui/theme.js";
+import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
+import { namedCell, plainSummary, terseCell } from "../../../dist/tui/theme.js";
 import { darkTheme } from "./harness.js";
 import { footerText } from "./assertions.js";
-import tuiModule, { BACK_LABEL, LIST_DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -222,18 +222,7 @@ export const HOST_THEME = darkTheme();
 export function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
   const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
-  const props = limitsListProps(dialog, NO_ASKS);
-  // Each row's second line in PLAIN TEXT, in draw order, read from the field the screen
-  // chose — `description`, which the host paints muted beside the title. So this is the
-  // twin `plainSummary`/`plainCell` exist for, and the only place that knows which field
-  // a row used is the screen itself.
-  //
-  // Attaching it here rather than asking each case to pass it is what keeps
-  // `assertEveryRowFits` a one-argument claim: a case cannot forget the widest thing on
-  // the row, and a screen that grows a row cannot escape the check by being added where
-  // nobody remembered to measure.
-  props.plainLines = [plainCell(dialog.ceiling), ...dialog.rows.map((row) => plainSummary(row))];
-  return props;
+  return limitsListProps(dialog, NO_ASKS);
 }
 
 export { dialogRowText };
@@ -241,7 +230,24 @@ export { dialogRowText };
 /** The row for one agent, by its host spelling. */
 
 /** The row for one agent, by its host spelling. */
-export const row = (list, title) => list.options.find((candidate) => candidate.title === title);
+/**
+ * The row for a thing, by the spelling the OPERATOR gives it — not by the spelling on
+ * screen.
+ *
+ * A case says `row(list, "explore")` and means the agent the host published, whatever the
+ * screen chose to PRINT. A list row now prints `Explore:`, so a finder that matched
+ * `option.title` exactly found nothing and every case about an agent failed for the same
+ * uninteresting reason, thirty times over. Matching is by SHAPE — the exact title, or the
+ * capitalised title, or either with the row's colon — so the screen's presentation can
+ * change without a case having to learn the change, which is the whole point of a case
+ * being about behaviour.
+ */
+export const row = (list, name) => {
+  const titled = (candidate) => candidate.title === name || candidate.title === `${displayName(name)}:` || candidate.title === displayName(name);
+  const found = list.options.find(titled);
+  if (found) return found;
+  return list.options.find((candidate) => candidate.title.startsWith(displayName(name)));
+};
 
 /**
  * One agent's entry, as the screen holds it, from the production reader.
@@ -265,8 +271,8 @@ export function agentEntry(agent, raw = {}, agentNames = REGISTERED) {
  * that is in the dialog somewhere is in that string; a fact missing from it is genuinely
  * gone from the operator's view.
  */
-export const rowText = (list, title) => {
-  const found = row(list, title);
+export const rowText = (list, name) => {
+  const found = row(list, name);
   return [[found.title, found.description ?? ""].join(" ").trim()].join("\n");
 };
 
@@ -559,7 +565,7 @@ export const capText = (host, cap) => {
  * "check this whole screen", so a dialog that grows a row cannot escape the check by
  * being added somewhere that forgot to ask for it.
  */
-export const assertEveryRowFits = (dialog, width = LIST_DIALOG_WIDTH) =>
+export const assertEveryRowFits = (dialog, width = DIALOG_WIDTH) =>
   assertRows(
     dialog.options.map((option) => ({ option })),
     ({ option }) => fitsItsDialog(option, width),

@@ -18,7 +18,8 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL } from "../../dist/tui/agent-editor.js";
+import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
+import { FROM_CONFIG } from "../../dist/tui/theme.js";
 import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/index.js";
 import { readAgentOverlay } from "../../dist/shared/caps.js";
@@ -60,19 +61,30 @@ describe("the cross-agent total is a cap the operator can set", () => {
    */
   const totalRowOver = (overlay, fn) => withList(overlay, (list) => fn(rowText(list, CEILING_LABEL)));
 
-  it("shows the config file's number, marked as inherited, when nothing is stated", () =>
-    // The number in force and whether the operator WROTE it are the two answers a
-    // screen must not confuse: a total of 4 by default and a total deliberately set to
-    // 4 look identical as a bare integer, and they are different intentions.
+  it("shows the config file's number on the list, as a figure and nothing else", () =>
+    // The number in force and whether the operator WROTE it are the two answers a screen
+    // must not confuse: a total of 4 by default and a total deliberately set to 4 are the
+    // same integer. The list no longer distinguishes them — it is a column of quantities
+    // and `from config` on every row is what made it read as broken strings — so the claim
+    // has MOVED to the screen where the operator picks a total. The pair of cases here and
+    // the one below is what makes that move checkable rather than merely asserted.
     totalRowOver(undefined, (text) => {
-      assert.match(text, new RegExp(`${BASE.maxConcurrent} from config`),
-        "the number the dispatch path refuses on, saying where it came from");
+      assert.equal(text, `${displayName(CEILING_LABEL)}: ${BASE.maxConcurrent} concurrency`, "the number the dispatch path refuses on, with no adjective");
+    }));
+
+  it("and says where it came from in the PICKER, which is where the operator chooses one", () =>
+    // The list is for scanning and this is for deciding, and the same fact is worth
+    // different amounts of space in each. If the picker stopped saying it too, the
+    // information would be gone rather than moved — which is why the assertion is HERE and
+    // not only about the list's silence.
+    withOpen(async (host) => {
+      pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
+      assert.equal(top(host.seen).title, `${CEILING_LABEL} (${FROM_CONFIG})`, "the picker's own title says the number in force is the file's, and not the operator's");
     }));
 
   it("stops claiming the config once the operator states one", () =>
     totalRowOver({ maxConcurrent: 12 }, (text) => {
-      assert.match(text, /12/, "the stated total, not the default it replaced");
-      assert.doesNotMatch(text, /from config/, "and no longer a claim about the file it no longer reads");
+      assert.equal(text, `${displayName(CEILING_LABEL)}: 12 concurrency`, "the stated total, not the default it replaced");
     }));
 
   it("offers the same numbers an agent's concurrency cap does, because it is the same cap", () => {

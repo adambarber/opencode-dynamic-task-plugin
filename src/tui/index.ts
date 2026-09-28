@@ -56,6 +56,8 @@ import {
   applyCeilingEdit,
   capCellOf,
   ceilingOf,
+  displayName,
+  CAP_NOUN,
   overlayFrom,
   type AgentDialog,
   type AgentEntry,
@@ -64,7 +66,7 @@ import {
   type CeilingChoice,
   type EditOutcome,
 } from "./agent-editor.js";
-import { boundClause, plainCell, plainSummary } from "./theme.js";
+import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 
 /** The api shape, named once. The plugin function is a long way down a type. */
 type TuiApi = Parameters<TuiPlugin>[0];
@@ -207,12 +209,11 @@ export const tui: TuiPlugin = async (api) => {
  * new dialog that forgot would be silently narrow, and a narrow row is clipped rather
  * than wrapped, so the symptom is a fact missing from a line that still looked fine.
  */
-function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0], width: number): void {
+function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["replace"]>[0]): void {
   api.ui.dialog.replace(render, () => {
     limitsDialogUp = false;
   });
   limitsDialogUp = true;
-  api.ui.dialog.setSize(width >= 88 ? "large" : "medium");
 }
 
 /**
@@ -224,8 +225,8 @@ function mountLimitsDialog(api: TuiApi, render: Parameters<TuiDialogStack["repla
  * would force the pickers to be as wide as the list, which is the 28 columns of number
  * spent on nothing.
  */
-function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>, width: number): void {
-  mountLimitsDialog(api, () => api.ui.DialogSelect(build()), width);
+function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>): void {
+  mountLimitsDialog(api, () => api.ui.DialogSelect(build()));
 }
 
 /**
@@ -277,19 +278,18 @@ export function limitsListProps(
     // this host has the box, so its absence would be the thing that looked wrong.
     options: [
       {
-        title: CEILING_LABEL,
-        // THE CATEGORY IS THE HOST'S, not a row that happens to be first. The total used
-        // to sit above the agents because it was first in the array, and every reader and
-        // every case carried "first row is special" as a rule. `category` makes it a
-        // heading, which is what it always was — and the host draws the heading in its
-        // own accent, so it cannot drift from the palette's.
-        category: "Total",
-        description: plainCell(dialog.ceiling),
+        // The total NAMES ITSELF rather than sitting above the agents because it is first
+        // in the array, which is the rule every reader and every case had to carry. It
+        // carries no `category` of its own, because `Total ceiling:` and a `Total` heading
+        // over it would say the same word twice in three lines — and the `Agents` heading
+        // below is what organises the block, which is the job the heading was wanted for.
+        title: `${displayName(CEILING_LABEL)}:`,
+        description: terseCell(dialog.ceiling) + " " + CAP_NOUN.maxConcurrent,
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
       },
       ...dialog.rows.map((row) => ({
-        title: row.name,
+        title: `${displayName(row.name)}:`,
         category: "Agents",
         // The caps go in `description` — the field every native dialog in this host uses
         // for the muted text after a title, on the title's own line. This is where a
@@ -308,7 +308,7 @@ export function limitsListProps(
         // This is the width gate's one caller acting on its own verdict, which is the only
         // arrangement in which it can: a gate that reports a clip the screen then ignores
         // has found out that the screen does not care.
-        ...(fitsItsDialog({ title: row.name, description: plainSummary(row) }, LIST_DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
+        ...(fitsItsDialog({ title: row.name, description: plainSummary(row) }, DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
         value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
         onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
       })),
@@ -342,10 +342,32 @@ type PickerActions<Choice> = {
   back: () => void;
 };
 
+/**
+ * A picker's title: what the screen is FOR, then parenthesised facts about the number.
+ *
+ * One composition for all three pickers, because the parenthetical is a shape rather than
+ * a wording — the agent cap pickers contribute a bound, the ceiling picker contributes the
+ * config file, and a fourth picker would contribute whatever it knows. Written per picker
+ * it is three joins that happen to agree today, and the first one edited without the other
+ * two would leave the screens spelling the same fact three ways.
+ *
+ * It is also the ONLY place a picker says where its number came from, and that is a
+ * decision rather than an omission. The list is a column of quantities — `Explore: 2
+ * concurrency * 3/4 depth` — with no adjectives, because `from config` on both figures of
+ * every row said it forty times in a column, which is what made the list read as broken
+ * strings. A cap of 4 by default and a cap deliberately set to 4 are the same integer and
+ * different intentions, so the fact has to live somewhere: the screen where the operator
+ * chooses a number is the last place it fits, and a picker that omitted it would leave the
+ * information nowhere at all.
+ */
+function pickerTitle(subject: string, ...clauses: (string | null)[]): string {
+  return [subject, ...clauses.filter((clause) => clause !== null).map((clause) => `(${clause})`)].join(" ");
+}
+
 export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>): TuiDialogSelectProps<PickerChoice> {
   const { confirm, back } = actions;
   return {
-    title: CEILING_LABEL,
+    title: pickerTitle(CEILING_LABEL, ceiling.stated ? null : FROM_CONFIG),
     ...NO_FILTER,
     ...valuePicker(
       CAP_CHOICES.maxConcurrent,
@@ -389,7 +411,7 @@ export function agentCapsProps(
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
         title: CAP_LABEL[cap],
-        description: plainCell(capCellOf(row, cap)),
+        description: namedCell(capCellOf(row, cap)),
         value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
         onSelect: () => ask(cap),
       })),
@@ -421,10 +443,14 @@ export function capPickerProps(
   const cell = capCellOf(row, cap);
   const stated = cell.stated ? cell.value : null;
   const bound = ceilingOf(row.depth, cap, cell.value);
-  // The bound stated ONCE, in the title, after a frame showed it six times over.
-  const title = bound === null ? `${agent} — ${CAP_LABEL[cap]}` : `${agent} — ${CAP_LABEL[cap]} (${boundClause(bound)})`;
+  // What holds this cap down, stated ONCE, in the title, after a frame showed it six
+  // times over. Two facts, in the order they matter: a BOUND changes what the number can
+  // be set to, so it is the parenthetical; and when there is no bound but the cap is
+  // unstated, the number is the config file's and the screen says so, because a
+  // picker full of numbers a list of quiet figures chose between is where an operator
+  // decides to overwrite one.
   return {
-    title,
+    title: pickerTitle(`${agent} — ${CAP_LABEL[cap]}`, bound === null ? null : boundClause(bound), stated === null ? FROM_CONFIG : null),
     ...NO_FILTER,
     // The value in force, handed to the HOST rather than painted beside the number. The
     // host matches `current` to a row with `isDeepEqual` (dialog-select.tsx), so this is
@@ -494,7 +520,7 @@ function valuePicker(
             // what the row says rather than what the number says. Without it a press
             // here looks identical to pressing the number, and the two write opposite
             // files.
-            description: "clear this cap and use the config file's number",
+            description: "use the config file's number",
             value: asChoice(null),
             onSelect: () => onPick(null),
           }]),
@@ -605,8 +631,7 @@ const BACK_TO_LIST = "back to the list of agents";
  * invents, which is the error that made the last measurement describe a screen that does
  * not exist.
  */
-export const LIST_DIALOG_WIDTH = 88;
-export const PICKER_DIALOG_WIDTH = 60;
+export const DIALOG_WIDTH = 60;
 const TERMINAL_FLOOR = 80;
 /** The `scrollbox` the rows sit in, at `paddingLeft={1} paddingRight={1}`. */
 const SCROLLBOX_INDENT = 1;
@@ -660,7 +685,7 @@ const TITLE_CAP = 61;
  * than the screen passes everything and tells the operator nothing; one that is looser
  * lets a name be eaten by its own caps. Both are silent, so the figure comes off a frame.
  */
-export function fitsItsDialog(row: { title: string; description?: string }, width = PICKER_DIALOG_WIDTH, footerWidth = 0): boolean {
+export function fitsItsDialog(row: { title: string; description?: string }, width = DIALOG_WIDTH, footerWidth = 0): boolean {
   // Each separator is charged only when the thing it separates is there. A `+ 1` for the
   // space before a description a row does not have, and a gap for a footer it does not
   // have, are the same class of error as a padding the renderer never applies.
@@ -724,7 +749,7 @@ function askListChoice(api: TuiApi, view: LimitsView, choice: ListChoice): void 
 
 /** The list, over a view already read. The re-open path, so a second read is not paid for. */
 function showLimits(api: TuiApi, view: LimitsView): void {
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)), LIST_DIALOG_WIDTH);
+  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)));
 }
 
 /**
@@ -737,7 +762,7 @@ function showLimits(api: TuiApi, view: LimitsView): void {
 function openCeiling(api: TuiApi, view: LimitsView): void {
   const confirm = (choice: CeilingChoice) =>
     applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
-  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }), PICKER_DIALOG_WIDTH);
+  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }));
 }
 
 /**
@@ -751,9 +776,7 @@ function openCeiling(api: TuiApi, view: LimitsView): void {
 function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
   const row = rowOf(view, agent);
   mountLimitsSelect(api, () =>
-    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)),
-    PICKER_DIALOG_WIDTH,
-  );
+    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)));
 }
 
 /**
@@ -805,9 +828,7 @@ function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentC
   const confirm = (choice: CapChoice) =>
     applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
   mountLimitsSelect(api, () =>
-    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }),
-    PICKER_DIALOG_WIDTH,
-  );
+    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }));
 }
 
 /**

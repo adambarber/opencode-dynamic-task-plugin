@@ -113,7 +113,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
 
     const childSessionId = validateSessionResult(sessionResult);
     if (!childSessionId) {
-      return createFailed(sessionResult);
+      // The title and parent are passed rather than re-derived in the renderer: they
+      // are the two facts that make a session nobody can name findable, and they are
+      // fixed at the point the create was asked for. A session created without a
+      // title is titled after its agent here, so this is always a real string.
+      return createFailed(sessionResult, { title: sessionBody.title, parentSessionId });
     }
     createdSessionId = childSessionId;
 

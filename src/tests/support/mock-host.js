@@ -313,6 +313,7 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *
  * hooks: {
  *   createThrowsOnce?: boolean,
+ *   createReturnsIdless?: boolean,      // the session is real; the response names none
  *   promptFailIds?: Set<string>,         // async rejections
  *   promptHangIds?: Set<string>,         // never-settling prompts (non-blocking proof)
  *   promptSyncThrowIds?: Set<string>,    // synchronous throws
@@ -421,6 +422,11 @@ export function createMockClient(hooks = {}) {
         state.sessions.add(id);
         state.hostStatus.set(id, { type: "busy", at: Date.now() });
         state.sessionBodies.set(id, body);
+        // The host created the session and then answered with something no id can
+        // be read out of. The session is real — it is in `state.sessions`, so
+        // `sessionCount` counts it and nothing ever aborts it — which is the whole
+        // shape of the orphan: a running child the plugin has no name for.
+        if (hooks.createReturnsIdless) return SDK_ENVELOPE({ info: { title: body.title } });
         return SDK_ENVELOPE({ id });
       },
       // session.prompt routes by marker: parent notifications carry the tag

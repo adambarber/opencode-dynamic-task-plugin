@@ -86,6 +86,29 @@ describe("dynamic_task validation", () => {
     answerSays(out, "create failed");
     });
 
+  // The one post-create failure the plugin cannot clean up. `session.abort` needs
+  // an id; an unnameable session cannot be aborted, registered, notified, listed
+  // or settled, and it is left running on the server. The response says "create
+  // failed" and stops there — which reads as "nothing happened", so the parent
+  // never learns there is a child of its own running unmonitored.
+  //
+  // The message therefore carries the two facts that make it findable, the title
+  // it was created under and the parent it was created for, and admits the
+  // session may not exist at all: a host that fails the create outright can
+  // answer just as unparseably. Asserted in both directions, because a message
+  // that only says "I cannot clean this up" leaves the parent with nothing to
+  // act on, and one that only names the title is a guess when there is a parent.
+  it("a create response with no session id reports the orphan it cannot clean up", async () => {
+    const h = await setupHarness({ hooks: { createReturnsIdless: true } });
+    const out = await h.trySpawn({ description: "unnamed child", subagent_type: "explore", prompt: "hi" });
+
+    assert.strictEqual(sessionCount(h.client), 1, "the host DID create a session, so the orphan is real");
+    answerSays(out, "unnamed child", "the title is how the parent finds the session nobody reported");
+    answerSays(out, "p1", "and the parent it was created under, which is how a session list is filtered");
+    answerSays(out, "may exist", "without claiming a session the host may never have made");
+    answerSays(out, "stop it by hand", "and saying what the parent can still do about it");
+    });
+
   // The non-blocking promise, falsifiable: a hung child prompt must not
   // hold the spawn call. No clock can rescue this — there is no clock.
   it("returns immediately even while the child prompt never settles", async () => {

@@ -84,8 +84,32 @@ export function waitsReleasedBody(release: WaitRelease): string {
   );
 }
 
-export function createFailed(response: unknown): string {
-  return `ERROR: Failed to create session. Response: ${JSON.stringify(response)}`;
+/**
+ * The create response carried no session id.
+ *
+ * This is the one post-create failure the plugin cannot clean up. `session.abort`
+ * needs an id, so a session that cannot be named cannot be aborted, registered,
+ * notified, listed, or settled — it is left running on the server, and the ledger
+ * has never heard of it. The post-create path below aborts precisely to prevent
+ * that, and it cannot run here.
+ *
+ * So the sentence carries the two facts that make the orphan findable — the title
+ * it was created under and the parent it was created for, which together are how
+ * a session list is filtered — and admits the session may not exist at all, since
+ * a host that fails the create outright can answer just as unparseably. The
+ * first half of this message used to be the whole of it, and it reads as "nothing
+ * happened": a parent told a create failed has no reason to go looking for a
+ * child of its own that is running unmonitored, and silence about a possibly
+ * running child is the failure this plugin's whole claim is about.
+ */
+export function createFailed(
+  response: unknown,
+  session: { title: string; parentSessionId: string | null },
+): string {
+  return textBlock(
+    `ERROR: Failed to create session. Response: ${JSON.stringify(response)}`,
+    `The host answered the create without a session id, so this session could not be registered, stopped, or reported on. A session may exist that nobody is tracking: look for the title "${session.title}"${session.parentSessionId === null ? "" : ` under parent ${session.parentSessionId}`}, and stop it by hand if it is there.`,
+  );
 }
 
 export function spawnConfirmation(input: {

@@ -9,7 +9,7 @@
 import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
 import { clearNotifyLedger, configurePendingPersistence, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
-import { deferred, promptText } from './support/mock-host.js';
+import { deferred, promptText, SDK_ENVELOPE } from './support/mock-host.js';
 
 const NO_SLEEP = async () => {};
 
@@ -74,10 +74,13 @@ function gatedClient(gate, options = {}) {
  */
 function recordingClient(respond) {
   const calls = [];
+  const hostStatus = new Map();
   return {
     calls,
+    setStatus: (id, type) => hostStatus.set(id, type),
     client: {
       session: {
+        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, type]) => [id, { type }]))),
         prompt: async (args) => {
           calls.push(args);
           return respond(args);
@@ -641,6 +644,44 @@ describe("notify: the redelivery budget", () => {
       assert.strictEqual(afterAnswer.expired, true, "and the last word on the record is still EXPIRED");
       assert.notStrictEqual(afterAnswer.delivered, true, "never reported as delivered after the plugin gave up on it");
     });
+  });
+
+  // The two cases below are one world — a parent the host says is mid-turn —
+  // and differ only in whether the debt has been refused before. Everything but
+  // that is built once here, because a four-line client literal copied per case
+  // is what jscpd reads as a clone, and the worse cost is that two cases can
+  // quietly stop testing the same world while still looking like they do.
+  const toBusyParent = async (text, opts) => {
+    const { client, calls, setStatus } = answeredClient([]);
+    setStatus("parent_1", "busy");
+    await notifyParent(client, "parent_1", text, { ...gate(CHILD, "error"), ...opts });
+    return { writes: calls.length, owed: queuedFor(CHILD).map((entry) => entry.attempts) };
+  };
+
+  it("a REDELIVERY into a parent that is mid-turn is DEFERRED, and spends no attempt", async () => {
+    // Measured, 2026-09-28: a coda parent was admitted a turn at 19:35:02 and at
+    // 19:55:19 that never reached the model and never exited, so the host held
+    // every prompt after it and the project became un-typeable. Both turns were
+    // this gate re-offering one owed debt into a session that had already refused
+    // one. A held write is not evidence a notice is undeliverable, so the debt
+    // keeps the count it had and the next boot offers it again.
+    const sent = await toBusyParent("owed", { carriedAttempts: 1, maxAttempts: 3 });
+
+    assert.strictEqual(sent.writes, 0, "the write is not attempted at all, because a held write is what wedged the session");
+    assert.deepStrictEqual(sent.owed, [1], "and the debt is still owed, at the count it already had");
+    assert.strictEqual(getLatestNotification(CHILD).pending, true, "and the record says pending rather than delivered");
+  });
+
+  it("a FRESH notice to a busy parent is still written — the host holds it, and that has always worked", async () => {
+    // The falsification in the direction that would make the deferral a bug: 46
+    // notices in the same session each drew a completed turn, most of them
+    // written while the parent was busy. Only a debt that has ALREADY been
+    // refused once is evidence the parent cannot take a write, so a first
+    // attempt must keep making it or a busy parent silently swallows results.
+    const sent = await toBusyParent("fresh", {});
+
+    assert.strictEqual(sent.writes, 1, "a first attempt is written, and the host holds it until the parent's turn is over");
+    assert.deepStrictEqual(sent.owed, [], "and settled");
   });
 
   it("a debt under its budget is untouched — the bound is not a blanket give-up", async () => {

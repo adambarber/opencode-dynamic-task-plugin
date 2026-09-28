@@ -14,6 +14,7 @@ import { textBlock } from "./text-block.js";
 import { evictOldest } from "./bounded-map.js";
 import { errorMessage } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
+import { hostTurnInFlight } from "./liveness.js";
 
 // Client logging that never throws: a dead log call must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
@@ -669,6 +670,31 @@ export async function notifyParent(
     return outcome.delivered;
   };
   const run = async (): Promise<boolean> => {
+    // A debt that has ALREADY been refused once, offered to a parent that is
+    // mid-turn, is DEFERRED rather than written. Measured 2026-09-28: a parent
+    // was admitted a turn that never reached the model and never exited, so the
+    // host held every prompt after it and the whole project became un-typeable.
+    // Both of those turns were this line re-offering one owed debt into a
+    // session that had already refused one — a boot-time write compounding a
+    // wedge on every restart, which is why it read as a bug that kept coming
+    // back. A held write is not evidence a notice is undeliverable, so the debt
+    // keeps the count it had and the next boot offers it again.
+    //
+    // Gated on `carried > 0` on purpose, and that asymmetry is the whole design:
+    // 46 notices in that same session each drew a completed turn, most written
+    // while the parent was busy, because the host HOLDS a write to a mid-turn
+    // session and delivers it when the turn ends. A first attempt must keep
+    // making itself, or every settlement that lands during a parent's own turn
+    // would wait for a restart to be heard. Only a debt the parent has already
+    // refused is evidence it cannot take one.
+    if (carried > 0 && (await hostTurnInFlight(client, parentSessionId))) {
+      // Still queued, because the debt must outlive this process either way: the
+      // window where a notification exists in memory and on no disk is the crash
+      // the queue exists for, and deferring is not a reason to lose it.
+      queuePending({ ...owed, attempts: carried });
+      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried, pending: true });
+      return false;
+    }
     // The request is made ONCE and kept, because "slow" and "never" are the
     // same call from here: its answer may arrive long after this returns, and
     // the ledger must be able to say so rather than guess which it was.

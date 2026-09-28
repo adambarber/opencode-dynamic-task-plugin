@@ -142,6 +142,26 @@ export async function readLiveness(
   };
 }
 
+/**
+ * Is a turn running on this session RIGHT NOW, as the host's own status channel
+ * says? One word, and deliberately not `readLiveness`.
+ *
+ * A parent-write gate needs this before it spends an attempt, and the transcript
+ * that `readLiveness` also reads answers no part of that question: fetching a
+ * session's whole message list to learn one word is a second copy of a fact the
+ * status map already carries, on the path where a wrong answer costs a turn.
+ *
+ * A status read that FAILS is not "busy". The host holding a write is the only
+ * thing this guards, and a transport error is no evidence of it — reading failure
+ * as congestion would defer every debt for as long as the channel is down, which
+ * is a silent stall wearing a safety check's name.
+ */
+export async function hostTurnInFlight(client: OpenCodeClient, sessionId: string): Promise<boolean> {
+  const statusMap = await client.session.status().catch(() => null);
+  const state = statusMap === null ? null : hostTurnState(statusMap, sessionId);
+  return state !== null && RUNNING_HOST_STATES.has(state);
+}
+
 // Read-only session message fetch, shared by every reader of a child. Strict by
 // design: callers that report what they read (task_result) must be able to say
 // a read failed, and a swallowed error would print "(none yet)" for a child

@@ -10,15 +10,33 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays } from "./support/assertions.js";
-import { bootOn, settledOnDisk, waitFor } from "./support/integration.js";
+import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support/integration.js";
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
-import { getDebugLogPath } from "../../dist/debug-logger.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification } from "../../dist/shared/notify.js";
+
+/**
+ * A v3 file that reads, with one record inside it that does not.
+ *
+ * The two cases that need it are about OPPOSITE outcomes — one asserts the loss
+ * is reported, the other that the file is still written — and the document is
+ * what they share, so it is built once. `retainedAt` is live rather than the
+ * fixture's fixed clock because both cases put a real child on disk beside it,
+ * and a record dated 1970 is expired before the boot's retention sweep sees it.
+ */
+const partlyBadLedger = () => JSON.stringify({
+  version: 3,
+  tasks: {
+    ses_real: retainedEntry({ childSessionId: "ses_real", state: "completed", retainedAt: Date.now() }),
+    ses_broken: { state: "completed" },
+  },
+  active: {},
+  pending: [],
+});
 
 /**
  * A write that CANNOT land, blocked in a way that does not depend on the name the
@@ -43,11 +61,17 @@ const blockTheLedgerWrite = (directory) => {
 // the worst possible answer here, because the plugin's whole claim is that it
 // does not lose track of a child.
 //
-// Both cases are the same world, so it is built once: a project whose ledger
-// write cannot land, a plugin booted on it, and a child spawned and settled —
-// which is what makes the write fail. `debug` wraps the whole thing rather than
-// the assertions because `debugLog` gates at CALL time, so a log enabled only
-// while reading would hand back a file frozen before the failure happened.
+// TWO worlds, and the difference is where the failure happens rather than how
+// loud it is. A ledger path occupied by a directory cannot be READ, so the
+// refusal lands before any write is attempted and the file is left alone. A
+// ledger that reads perfectly inside a directory that cannot be written to gets
+// as far as the write, and fails there. They need different remedies — move the
+// file, versus fix the permissions — so they are reported as different things.
+//
+// The second world is also the one that used to be unreportable, because the
+// read-failure report above promised "two channels, matching the write failure
+// below" and the write failure had only the channel that is off unless
+// DYNAMIC_TASK_DEBUG was set before the process started.
 async function bootWithUnwritableLedger({ debug = false } = {}) {
   const directory = tmpProjectDir();
   blockTheLedgerWrite(directory);
@@ -61,14 +85,33 @@ async function bootWithUnwritableLedger({ debug = false } = {}) {
 }
 
 describe("a ledger write that cannot land is recorded, not swallowed", () => {
-  it("logs the failure and names the cause", async () => {
-    await bootWithUnwritableLedger({ debug: true });
-    const log = readFileSync(getDebugLogPath("plugin", "ledger"), "utf8");
-    answerSays(log, "ledger-write-failed", "the failure is on the record");
-    answerMatches(log, /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "and it names the cause, not just that it failed");
-    // Which project, not which child: one write carries every record at once, so
-    // there is no single child to name. The path is what an operator needs.
-    answerSays(log, ".dynamic-task-ledger.json", "and which project's ledger lost the write");
+  it("a ledger that cannot be read is refused, not replaced, and says so on the host log", async () => {
+    const { h } = await bootWithUnwritableLedger();
+    const said = JSON.stringify(h.logs());
+    answerMatches(said, /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "the cause is on the host log, where an operator will look");
+    answerMatches(said, /not writing the task ledger/i, "and it says the write was refused rather than attempted");
+    answerSays(said, ".dynamic-task-ledger.json", "and which project's ledger is being left alone");
+  });
+
+  it("a readable ledger in an unwritable project fails loudly on the host log", async () => {
+    // A valid v3 file the reader accepts, in a directory the writer cannot add a
+    // file to. The read is not the failure here, so the guard that leaves an
+    // unreadable file alone must not fire — and it does not, because the world
+    // is reached by permission rather than by content.
+    const directory = tmpProjectDir();
+    writeLedger(directory, { tasks: {}, active: {}, pending: [] });
+    const h = await setupHarness({ directory });
+    const { id } = await h.spawn({ description: "unpersistable, but readable" });
+    chmodSync(directory, 0o555);
+    try {
+      await h.settle(id);
+    } finally {
+      chmodSync(directory, 0o755);
+    }
+    const said = JSON.stringify(h.logs());
+    answerMatches(said, /write to the task ledger.*failed/i, "a lost write is on the host log, not only in a debug file");
+    answerMatches(said, /EACCES|EPERM/, "and it names the cause");
+    answerSays(said, ".dynamic-task-ledger.json", "and which project's ledger lost the write");
   });
 
   it("settles the child anyway — a failed write must not strand it", async () => {
@@ -110,12 +153,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   });
 
   it("records dropped inside a readable file are counted, not lost quietly", async () => {
-    const h = await bootOnCorrupt(JSON.stringify({
-      version: 3,
-      tasks: { ses_real: retainedEntry({ childSessionId: "ses_real", state: "completed" }), ses_broken: { state: "completed" } },
-      active: {},
-      pending: [],
-    }));
+    const h = await bootOnCorrupt(partlyBadLedger());
     lossIsReported(h, "a partly-bad file is still a loss worth reporting");
   });
 
@@ -123,6 +161,51 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
     const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
     const aboutTheLedger = h.logs().filter((entry) => /discarded|unparseable/i.test(JSON.stringify(entry)));
     assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
+  });
+
+  // Reporting the loss is half the promise this block's title makes, and the other
+  // half was not kept: the boot said the file was discarded, and then the first
+  // mutation of that same boot REPLACED it with this process's view of the world.
+  // For a file this build cannot parse that is the worst possible order — the
+  // evidence the operator was just told to go and look at is gone, replaced by a
+  // clean slate that reads as a project which has never run a task. The warning
+  // and the destruction were thirty lines apart and nothing connected them.
+  //
+  // What is preserved is not only the bytes: another opencode process in the same
+  // project may have live children in that file right now, and a write that cannot
+  // see them deletes them. So the refusal is not politeness about a broken file; it
+  // is the same rule the merge already follows for a file it CAN read.
+  it("a file this build cannot parse is left on disk, not overwritten by the boot that reported it", async () => {
+    const lost = { version: 2, tasks: { ses_old: retainedEntry({ childSessionId: "ses_old", state: "completed", retainedAt: Date.now() }) } };
+    const h = await bootOn(() => lost);
+    const ledgerPath = resolveTaskLedgerPath(h.directory);
+
+    const { id } = await h.spawn({ description: "settles into a file we cannot read" });
+    await settledOnDisk(h, id);
+
+    assert.deepStrictEqual(fileSays(ledgerPath), lost, "the unreadable file is exactly as the operator was told it was");
+    answerMatches(
+      JSON.stringify(h.logs()),
+      /will not (be )?(over)?write/i,
+      "and the operator is told the file is being left alone, not merely that it was read badly",
+    );
+  });
+
+  // The other direction, and the reason the guard is not simply "discarded means
+  // stop writing". That string covers two different worlds: a file whose records
+  // were dropped is a file this build READ — the survivors are in hand and a write
+  // merges onto a known document, which is the ordinary case. Refusing there would
+  // let one malformed record switch durability off for the project permanently,
+  // trading a repairable record for an unrecoverable one.
+  it("a file whose records were dropped is still written — one bad record is not a dead ledger", async () => {
+    const h = await bootOnCorrupt(partlyBadLedger());
+    const { id } = await h.spawn({ description: "settles into a partly-bad file" });
+    await settledOnDisk(h, id);
+
+    const onDisk = fileSays(resolveTaskLedgerPath(h.directory));
+    assert.ok(onDisk.tasks["ses_real"], "the record that did parse is still on disk");
+    assert.ok(onDisk.tasks[id], "and the record this boot settled is written beside it");
+    assert.ok(onDisk.tasks["ses_broken"] === undefined, "the record that did not parse is not invented");
   });
 });
 

@@ -78,9 +78,20 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // no log, no record, and nothing in any read to show for it. Two channels,
   // matching the write failure below: the host log, which is always on and is
   // where an operator looks when a project has lost track of its tasks, and the
-  // structured debug line, which carries the path.
+  // structured debug line, which carries the path. The write failure below is
+  // reported on both for the same reason, which is the reason it is now
+  // reported on both.
   if (ledger.discarded !== null) {
-    void safeLog(client, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.`);
+    // What the operator can DO about it is part of the report. Telling a project
+    // its records are gone, and then replacing the file those records were in,
+    // makes the instruction impossible to follow: there is nothing left to
+    // inspect, and no way to tell a foreign version from a v3 file this build
+    // merely failed to parse. So the sentence carries both halves — what was
+    // lost, and that the file is being left alone until it is dealt with.
+    const remedy = ledger.unreadable
+      ? " This build will not write to that file either; move it aside or delete it to let durable state resume."
+      : " Records that did parse are still in use and are written back.";
+    void safeLog(client, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
     debugLog("plugin", "ledger", "ledger-read-discarded", { path: ledgerPath, reason: ledger.discarded });
   }
   // One writer for the whole file. Retained records and owed notices live in one
@@ -97,8 +108,21 @@ export function initPluginState(directory: string, options: PluginOptions | unde
       //
       // A ledger that cannot be read is treated as the one it was before the
       // change rather than as an invitation to write a fresh slate over another
-      // process's children.
+      // process's children. `unreadable` is what makes that promise true: it is
+      // the distinction between a file this build READ and one it never saw at
+      // all, and only the second may not be written. The refusal costs this
+      // project its durable state until an operator acts — which is loud, and
+      // bounded, and reversible; the alternative destroys the file the operator
+      // was just told to go and look at, which is neither.
       const current = loadTaskLedger(ledgerPath);
+      if (current.unreadable) {
+        void safeLog(client, "warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
+        debugLog("plugin", "ledger", "ledger-write-refused", {
+          path: ledgerPath,
+          reason: current.discarded,
+        });
+        return;
+      }
       saveTaskLedger(mergeLedgerChange(current, changes), ledgerPath);
     } catch (error) {
       // Swallow so a durable-state failure can never break control flow — and
@@ -114,6 +138,16 @@ export function initPluginState(directory: string, options: PluginOptions | unde
       // Project-level, not task-level: a write carries every record at once, so
       // it belongs to no single child. One well-known file is more findable than
       // the same line scattered across a hundred task logs.
+      //
+      // BOTH channels, because the comment above the read failure claimed this
+      // symmetry and only half of it was true: a lost WRITE went to a debug log
+      // that is off unless DYNAMIC_TASK_DEBUG=1, so the one loss that leaves a
+      // child active forever with no notice owed to anyone was the quietest of
+      // all — while the loss the host log reports is the one an operator has
+      // already had to notice. The host log is the channel that needs no
+      // environment variable set before the process started, which is the only
+      // kind an operator can rely on being there.
+      void safeLog(client, "warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
       debugLog("plugin", "ledger", "ledger-write-failed", {
         path: ledgerPath,
         error: errorMessage(error),

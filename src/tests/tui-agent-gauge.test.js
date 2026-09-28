@@ -216,14 +216,17 @@ describe("the counter is drawn in the host's muted grey", () => {
     assert.equal(gaugeText(3, 4), "3/4", "three of four");
   });
 
-  it("sits at the RIGHT margin, because the host's slot container is a column", () => {
-    // The reported defect: the fraction rendered on its own line, at the left, and read
-    // as a stray thing rather than as part of the host's own footer furniture. The host
-    // gives a plugin a column and no inline mode — `SlotMode` is only `append`, `replace`
-    // and `single_winner` — so a contribution always owns its row, and the only choice
-    // left is where in it. `flex-end` on the cross axis of a column is the right margin.
+  it("sits at the RIGHT margin, which takes an auto left margin and not alignSelf", () => {
+    // The reported defect, twice. The slot's container is a ROW
+    // (`<box flexDirection="row" gap={1} alignItems="center">{props.right}</box>` in
+    // `packages/tui/src/component/prompt/index.tsx`), so `alignSelf` acts on the VERTICAL
+    // cross axis and moves the counter up and down, never sideways — which is what the
+    // first attempt did, and why it stayed at the left. `justifyContent` defaults to
+    // packing children left, so the horizontal lever a plugin actually has is an auto
+    // margin, which claims the free space ahead of it.
     const props = gaugeProps(screenTokens(darkTheme()).context, () => ({ active: 2, cap: 4 }));
-    assert.equal(props.alignSelf, "flex-end", "right margin, directly above the context figure");
+    assert.equal(props.marginLeft, "auto", "the free space goes to the left, so the fraction sits at the right edge");
+    assert.ok(!("alignSelf" in props), "alignSelf is the wrong axis in a row, and must not creep back");
   });
 
   it("and the text is a FUNCTION, because that is what makes the counter live", () => {

@@ -42,28 +42,35 @@ import { foldActiveByAgent, totalActiveOf } from "../shared/occupancy.js";
 import { screenTokens } from "./theme.js";
 
 /**
- * The host slot this counter is drawn in — and the whole host slot vocabulary, such as it
- * is. Read out of the installed `TuiHostSlotMap` in `@opencode-ai/plugin`:
+ * The host slot this counter is drawn in, and why it is the only place this can go.
+ *
+ * The whole host slot vocabulary is twelve names, from `TuiHostSlotMap` in the installed
+ * `@opencode-ai/plugin`:
  *
  *     app · app_bottom · home_logo · home_prompt · home_prompt_right
  *     session_prompt · session_prompt_right
  *     home_bottom · home_footer · sidebar_title · sidebar_content · sidebar_footer
  *
- * That list is why this constant is right and why the request it was built for cannot be
- * met exactly. There is no region for the row the host draws the CONTEXT figure in: the
- * two session-prompt slots are `session_prompt`, which is the prompt itself and hands out
- * a `ref` and an `on_submit` rather than a place to put text, and `session_prompt_right`.
- * So "beside the context counter" is not a placement this host offers, and the earlier
- * reading — that the counter had landed in the wrong row — was really the host putting a
- * slot on its own line.
+ * None of them is the row the CONTEXT figure is drawn in, and that is not an omission in
+ * the plugin API. In `packages/tui/src/component/prompt/index.tsx` the footer is
+ * hand-built JSX with no hook in it at all:
  *
- * `session_prompt_right` is still the correct answer, and it is the one the request names:
- * under the prompt, in the host's own muted tier. `SlotRenderable` mounts a plugin's nodes
- * into a COLUMN, and `SlotMode` is only `append | replace | single_winner` — there is no
- * inline mode, so a contribution always owns its row. What a plugin can choose is where
- * in that row it sits, which is why the body below carries `alignSelf: "flex-end"`: the
- * fraction sits at the right margin, directly above the context figure, instead of
- * stranded at the left of a row nobody asked to read.
+ *     <box gap={2} flexDirection="row">              // :1656
+ *       <Show when={editorContextLabelState() ...}>   //   the file label
+ *       <text fg={theme.textMuted} wrapMode="none">  // :1667  <-- 169.6K (16%)
+ *         {[item().context, item().cost].filter(Boolean).join(" · ")}
+ *       </text>
+ *       <text fg={theme.text}>                       //        ctrl+p commands
+ *         {paletteShortcut()} <span style={{ fg: theme.textMuted }}>commands</span>
+ *       </text>
+ *     </box>
+ *
+ * The counter is a plain sibling `<text>` in a row of literal elements, so a plugin cannot
+ * join that line — not through a slot, a prop, or a mode. `session_prompt_right` is the
+ * closest region the host actually offers, and it is the one the request names: under the
+ * prompt, in the host's own muted tier (`theme.textMuted`, which is the same role
+ * `screenTokens().context` resolves to). What a plugin can choose is where in that row it
+ * sits, and that is what `gaugeProps` below spends itself on.
  */
 export const GAUGE_SLOT = "session_prompt_right";
 
@@ -214,11 +221,19 @@ export function agentGaugeSlot(api: GaugeApi): TuiSlotPlugin {
 export function gaugeProps(muted: RGBA, reading: () => GaugeReading): Record<string, unknown> {
   return {
     fg: muted,
-    // The host's slot container is a COLUMN, so this owns its row whatever it does; the
-    // one thing a contribution chooses is where in that row it sits. `flex-end` on the
-    // cross axis of a column is the right margin, which puts the fraction directly above
-    // the context figure it belongs with instead of at the left of a wide screen.
-    alignSelf: "flex-end",
+    /**
+     * An auto left margin, and NOT `alignSelf`.
+     *
+     * The slot's container is a ROW — `packages/tui/src/component/prompt/index.tsx`
+     * renders it as `<box flexDirection="row" gap={1} alignItems="center">{props.right}</box>`,
+     * and the route hands the slot in as the prompt's `right` prop. In a row the main axis
+     * is horizontal, so the cross axis `alignSelf` acts on is VERTICAL: an `alignSelf` here
+     * moves the counter up and down, and `justifyContent` defaults to packing children
+     * left, which is why a bare `<text>` lands at the left margin. `marginLeft: "auto"`
+     * claims the free space on the left instead, which is the one way to sit at the right
+     * edge of a row you do not own. Yoga accepts `auto` here, and the type says so.
+     */
+    marginLeft: "auto",
     // A FUNCTION, not a string. `content` takes a value and this is what makes the
     // counter live: Solid re-invokes the child when the signal it closes over moves, and
     // the signal moves on the ledger's next write.

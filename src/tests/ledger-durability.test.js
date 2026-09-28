@@ -22,7 +22,7 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { readFileSync, writeFileSync } from "node:fs";
-import { createTaskStore, noteLateOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
+import { createTaskStore, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { childParams, defaultConfig } from "./support/fixtures.js";
 import { tmpLedgerPath, withTempFile } from "./support/harness.js";
@@ -78,7 +78,7 @@ describe("durable ledger — what a restart would believe", () => {
     withSettledChild((file, store) => {
       assertIs(fileSays(file).tasks["ses_c1"].state, "completed", "the seeded record starts as a recorded success");
 
-      noteLateOutcome(store, "ses_c1", "error");
+      recordSettledOutcome(store, "ses_c1", "error");
 
       assertIs(fileSays(file).tasks["ses_c1"].state, "error", "the correction is what the file says");
       // The whole point of the durable ledger: a fresh process, reading only the

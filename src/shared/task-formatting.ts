@@ -6,6 +6,7 @@ import { truncateText, type NotificationRecord } from "./notify.js";
 import { TaskState, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
+import { FailureClass, failureNote } from "./failure-class.js";
 import { textBlock, present } from "./text-block.js";
 import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
@@ -263,8 +264,24 @@ function activeStatusLines(task: ActiveTaskState): string[] {
 function settledStatusLines(task: RetainedTaskState): string[] {
   return [
     `Settled: ${formatAge(task.retainedAt)} ago`,
+    ...failureClassLines(task),
     ...present(task.abortError && `Abort error: ${truncateText(task.abortError, 200)}`),
   ];
+}
+
+/**
+ * Why the child failed, for any reader that holds the record.
+ *
+ * The line is `failureNote`'s own sentence rather than a restatement of it here:
+ * the notification and this must not be able to disagree about what a class MEANS,
+ * and two phrasings of one classification is exactly how that happens. It is
+ * omitted for a class of `none` and for a record written before classes existed,
+ * so a success never carries a line teaching the parent to skip it.
+ */
+function failureClassLines(task: TaskRecord | null | undefined): string[] {
+  const failureClass = task && "failureClass" in task ? task.failureClass : undefined;
+  if (failureClass === undefined || failureClass === FailureClass.None) return [];
+  return [failureNote(failureClass, 0)];
 }
 
 /**
@@ -353,6 +370,8 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   if (input.error !== undefined) {
     lines.push(`Error: ${input.error}`);
   }
+
+  lines.push(...failureClassLines(input.task));
 
   if (input.task) {
     lines.push(...formatLivenessLines(input.task, input.liveness ?? null));

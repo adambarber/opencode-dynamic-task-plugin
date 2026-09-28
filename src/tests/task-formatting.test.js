@@ -55,6 +55,48 @@ describe("buildBackgroundPrompt", () => {
   });
 });
 
+// A parent inspecting a settled child minutes later asks one question the
+// notification cannot answer any more: was this the network or was this the
+// work? The record is the only thing that outlives the moment, so if the class
+// is not rendered here it is not recoverable at all.
+describe("readers say WHY a child failed", () => {
+  // The class line, exactly, or "" when the reader rendered none. Asserting the
+  // whole line rather than a substring is what makes the three cases below one
+  // fact instead of three regexes — and it is the label that is the contract, so
+  // it is the label a reader can be held to.
+  const classLine = (rendered) => /^Failure class: \w+.*$/m.exec(rendered)?.[0] ?? "";
+
+  /**
+   * formatTaskResultSummary over an errored, settled child carrying this class.
+   * A local builder because the record-and-render call is long enough to read as
+   * a clone of the other cases in this file at the gate's floor — and a case
+   * should name the class it is about, not the four fields that get it there.
+   */
+  const erroredWith = (failureClass) => formatTaskResultSummary(resultRecord({
+    status: "error",
+    task: taskRecord({ state: "error", failureClass }),
+  }));
+
+  it("task_result names the class of a settled failure", () => {
+    assert.strictEqual(
+      classLine(erroredWith("transient")),
+      "Failure class: transient — a network or provider blip, not the work. Nothing here to investigate; the child resumes from where it stopped.",
+    );
+  });
+
+  it("task_status names it beside the settled clock", () => {
+    const detail = formatTaskStatusDetail(taskRecord({ state: "error", failureClass: "structural" }));
+    assert.strictEqual(classLine(detail), "Failure class: structural — the work failed, not the connection. This one is a real failure and needs a decision.");
+  });
+
+  // The class only means something if it is absent on a success too: a renderer
+  // that printed the line unconditionally would teach the parent to ignore it.
+  it("a child that finished says nothing about a failure class", () => {
+    const result = formatTaskResultSummary(resultRecord({ task: taskRecord({ state: "completed" }) }));
+    assert.strictEqual(classLine(result), "", "a success has no class to report");
+  });
+});
+
 describe("formatTaskResultSummary", () => {
   it("includes next action guidance for running tasks", () => {
     const result = formatTaskResultSummary(resultRecord({ status: "busy" }));

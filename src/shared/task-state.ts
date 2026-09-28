@@ -6,7 +6,7 @@
 // Lifecycle map (every edge below goes through the function named on it):
 //
 //   active ──terminal event (transitionState)──▶ completed|error|interrupted ──▶ retained ──▶ pruned
-//     │                                              ▲ completed ──noteLateOutcome──▶ error (only rewrite edge)
+//     │                                              ▲ completed ──recordSettledOutcome──▶ error (only rewrite edge)
 //     │                                              ├──blocked (declared needs_input)──▶ terminal, NOT rewritten:
 //     │                                              │    nothing to correct — it never claimed success
 //     │                                              └──revive (never interrupted)──▶ active, fresh startedAt
@@ -16,7 +16,7 @@
 // Durable across restart: retained records only (ledger). Active turns and
 // delivery receipts are process memory.
 //
-// Late-error escalation: noteLateOutcome() is the only edge that rewrites a
+// Late-error escalation: recordSettledOutcome() is the only edge that rewrites a
 // retained state (completed -> error).
 //
 // The transition result is deliberately plain — callers branch on
@@ -240,6 +240,8 @@ export interface ActiveTaskState extends TaskRecordBase {
 // the store's own vocabulary — `TaskRecord`, the reader, and a dozen tools import
 // it by name from this module — and moving a declaration is not a reason to make
 // every reader learn a new address for it.
+import type { FailureClass } from "./failure-class.js";
+
 export { retainedFor, actOnSettled, decideRetained, settledChange, noteAbortLanded, type RetainedTaskState } from "./settled-record.js";
 import { retainedFor, actOnSettled, decideRetained, settledChange, type RetainedTaskState } from "./settled-record.js";
 
@@ -248,7 +250,7 @@ export type TaskRecord = ActiveTaskState | RetainedTaskState;
 // State machine (the one true lifecycle matrix). Active tasks move to a terminal
 // state exactly once; terminal states never regress. Late error escalation
 // (completed -> error) is a SEPARATE, explicitly-marked edge handled by
-// noteLateOutcome, NOT by transitionState — this keeps the primary "does a
+// recordSettledOutcome, NOT by transitionState — this keeps the primary "does a
 // transition happen at all" question decidable from this matrix alone.
 const VALID_TRANSITIONS: Record<TaskState, TaskState[]> = {
   [TaskState.Active]: [TaskState.Completed, TaskState.Error, TaskState.Blocked, TaskState.Interrupted],
@@ -316,7 +318,17 @@ function reclaimAsActive(
   retained: RetainedTaskState,
   overrides: Partial<ActiveTaskState> = {},
 ): ActiveTaskState {
-  const { state: _settled, retainedAt: _at, abortError: _err, lastAbortAt: _abort, ...carried } = retained;
+  const {
+    state: _settled,
+    retainedAt: _at,
+    abortError: _err,
+    lastAbortAt: _abort,
+    // Settled-only, and dropped for the same reason `retainedAt` is: a running
+    // child has no failure class, and carrying a stale one onto the new turn
+    // would have `task_list` reporting a blip against work now in progress.
+    failureClass: _class,
+    ...carried
+  } = retained;
   const reclaimed: ActiveTaskState = { ...carried, state: TaskState.Active, ...overrides };
   store.dropRetained(childSessionId);
   notifyRunning(store, store.markRunning(childSessionId, reclaimed));
@@ -515,10 +527,51 @@ export function transitionState(
 // SUCCESS into a recorded failure, which is the one correction that must not be
 // lost to a restart: a child that failed and came back `completed` is a false
 // success the parent will act on.
-export function noteLateOutcome(store: TaskStore, childSessionId: string, outcome: Exclude<TaskState, TaskState.Active>): boolean {
+/**
+ * Record what a settlement actually CONCLUDED: the state it corrected to, and
+ * why the child failed. This is the ONE edge that rewrites a retained state, and
+ * the only rewrite it will make is a recorded SUCCESS corrected to error — an
+ * interrupted or errored task's own abort aftermath must never re-notify the
+ * parent.
+ *
+ * The correction is what `decideRetained` exists for. The rewrite turns a recorded
+ * SUCCESS into a recorded failure, the one change that must not be lost to a
+ * restart: a child that failed and came back `completed` is a false success the
+ * parent will act on.
+ *
+ * `failureClass` rides on the SAME amendment rather than on a write of its own,
+ * and that is not tidiness. A child that ended `idle` over an errored stream — the
+ * single most common real failure, and the one `isMessage` used to hide — is
+ * exactly the case that needs the correction, so a separate write for the class
+ * would double every ordinary settlement's ledger traffic.
+ *
+ * Omitted by the prompt-failure path, which has a different question to answer
+ * (was the WRITE refused, not did the work fail) and no transcript to classify. A
+ * record with no class is a failure of unknown cause, and reads as such.
+ *
+ * It lives here rather than in `settled-record.ts` because the guard compares
+ * against `TaskState.Completed`, and that module imports the enum as a TYPE on
+ * purpose — naming it as a value would close the runtime cycle its own docblock
+ * says keeps the two files from having one.
+ */
+export function recordSettledOutcome(
+  store: TaskStore,
+  childSessionId: string,
+  outcome: Exclude<TaskState, TaskState.Active>,
+  failureClass?: FailureClass | undefined,
+): boolean {
   return decideRetained(store, childSessionId, (retained) => {
-    if (retained.state !== TaskState.Completed || outcome !== TaskState.Error) return false;
-    retained.state = outcome;
+    const corrected = retained.state !== outcome;
+    // Nothing to record is a DECLINE, not an empty publish: a change that
+    // asserts a record identical to the one already on disk is a file write for
+    // no fact, and `persistLedger` discarding a zero-length payload is the same
+    // defect that once hid a real correction.
+    if (!corrected && failureClass === undefined) return false;
+    if (corrected) {
+      if (retained.state !== TaskState.Completed || outcome !== TaskState.Error) return false;
+      retained.state = outcome;
+    }
+    if (failureClass !== undefined) retained.failureClass = failureClass;
     return settledChange(childSessionId, retained);
   });
 }

@@ -18,11 +18,26 @@ import type { TaskStore } from "./store.js";
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
 import type { TaskRecordBase, TaskState } from "./task-state.js";
+import type { FailureClass } from "./failure-class.js";
 
 export interface RetainedTaskState extends TaskRecordBase {
   state: Exclude<TaskState, TaskState.Active>;
   retainedAt: number;
   abortError?: string | undefined;
+  /**
+   * Why the child failed, when it failed — `None` for a child that finished, and
+   * absent for a record written before the field existed.
+   *
+   * Settled-only, so a revival drops it: a running child has no failure, and
+   * carrying a stale class onto the new turn would have `task_list` reporting a
+   * blip against work that is currently running.
+   *
+   * Durable rather than advisory. A parent that inspects a child after the fact
+   * asks "was this the network or was this the work", and that question is still
+   * answerable a week later; it is exactly the kind of claim a fresh process can
+   * verify, so it belongs on disk.
+   */
+  failureClass?: FailureClass | undefined;
   // Last successful abort landing on this record. Guards withdrawInterruptClaim
   // against concurrent interrupts (F-R4): a stale claim never resurrects a
   // child a newer abort already killed. Transient bookkeeping, not ledger
@@ -82,10 +97,11 @@ export const settledChange = (id: string, record: RetainedTaskState): LedgerChan
  * AMENDED.
  *
  * That last half is the one this function was missing, and the omission was a
- * durable defect rather than a lost optimization: `noteLateOutcome` rewrote a
- * recorded `completed` to `error` and published a change with no record on it, so
- * the plugin's own writer returned on the zero-length payload and never wrote. The
- * correction lived in memory and the next boot read the success back off the disk.
+ * durable defect rather than a lost optimization: the late-outcome escalation
+ * rewrote a recorded `completed` to `error` and published a change with no
+ * record on it, so the plugin's own writer returned on the zero-length payload
+ * and never wrote. The correction lived in memory and the next boot read the
+ * success back off the disk.
  */
 export function decideRetained(
   store: TaskStore,

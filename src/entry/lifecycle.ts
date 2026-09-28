@@ -17,7 +17,7 @@ import {
   classifyPromptError,
   hydrateLatestOutcome,
 } from "../shared/prompt.js";
-import { classifyFailure, failureNote } from "../shared/failure-class.js";
+import { classifyFailure, failureNote, FailureClass } from "../shared/failure-class.js";
 import {
   notifyParent,
   safeLog,
@@ -30,7 +30,7 @@ import {
 } from "../shared/notify.js";
 import {
   transitionState,
-  noteLateOutcome,
+  recordSettledOutcome,
   declaredBlocked,
   terminalEventIsAttributable,
   isRunning,
@@ -289,12 +289,30 @@ export async function settleRunningChild(
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
   // the same words, so a settled `blocked` cannot be announced as a success.
   let kind: NotifyKind = settlementKind(verdict);
-  if (verdict === TaskState.Completed && outcome.errorDetail) {
-    verdict = TaskState.Error;
+  // The verdict the parent will actually hear, settled before anything is
+  // recorded. A turn that ended `idle` over an errored stream is a failure, and
+  // the correction and the classification must BOTH be taken from this final
+  // value — classifying the host's original `idle` describes a state the record
+  // is no longer in, which is how a structural failure ends up labelled "no
+  // failure class" and the parent loses the one fact it needed.
+  const concluded = verdict === TaskState.Completed && outcome.errorDetail
+    ? TaskState.Error
+    : verdict;
+  // WHY, recorded on the same amendment that may correct the state. A parent that
+  // inspects this child in an hour asks "was this the network or was this the
+  // work", and only the record can answer it — the notification is a moment, and
+  // moments do not survive. One write, not two: the common case for this
+  // correction IS the common case for a class, since both come from a turn that
+  // ended `idle` over an errored stream.
+  const failure = classifyFailure(concluded, outcome.errorDetail);
+  if (concluded !== verdict) {
+    verdict = concluded;
     kind = NotifyKind.Error;
-    if (!noteLateOutcome(store, childSessionId, TaskState.Error)) {
+    if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
       void safeLog(client, "info", `Late error already recorded for ${childSessionId}`);
     }
+  } else if (failure !== FailureClass.None) {
+    recordSettledOutcome(store, childSessionId, verdict, failure);
   }
   const latestText = outcome.text || settlementFallback(verdict, outcome.errorDetail);
 
@@ -334,7 +352,6 @@ export async function settleRunningChild(
   // the two used to be separate (a boolean here appending a sentence about a
   // classification that did not exist), which is how the sentence stopped
   // describing the decision.
-  const failure = classifyFailure(verdict, outcome.errorDetail);
   const classNote = failureNote(failure, findTask(store, childSessionId)?.transientResumes ?? 0);
   // Detached: the synchronous claim above is the settlement guarantee;
   // delivery transport must never hold the event pump head-of-line.
@@ -419,7 +436,7 @@ export async function handleChildLifecycleEvent(
     const outcome = await hydrateLatestOutcome(client, childSessionId);
     const current = store.retainedTasks.get(childSessionId);
     if (!current || current.state !== TaskState.Completed) return; // lost the escalation race
-    noteLateOutcome(store, childSessionId, TaskState.Error);
+    recordSettledOutcome(store, childSessionId, TaskState.Error);
     const errorDetail = outcome.errorDetail
       || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
     void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, errorDetail)

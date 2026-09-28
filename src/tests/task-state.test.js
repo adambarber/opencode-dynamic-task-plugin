@@ -9,7 +9,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, noteLateOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { ADVISORY_FIELDS, annotateNotice, createTaskStore, findTask, listTasks, markTurnReplacement, noteActivity, recordSettledOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { retainedEntry } from "./support/records.js";
 import { assertIs, assertNothing } from "./support/assertions.js";
@@ -73,7 +73,7 @@ function storeAtLimit(cfg) {
 /**
  * A store whose one task has already been retained in the given state. The
  * settled-record invariant is guarded from two entry points — transitionState
- * and noteLateOutcome — so the arrangement needs a name, not a state.
+ * and recordSettledOutcome — so the arrangement needs a name, not a state.
  */
 function storeSettledAs(state, cfg) {
   const store = storeWithActive(cfg);
@@ -167,7 +167,7 @@ describe("task-state: transitionState", () => {
 
   // The timeout-era races are structurally gone: settlement is exactly once
   // (active -> terminal), so a late error after a reported completion can
-  // only arrive through noteLateOutcome, never through transitionState.
+  // only arrive through recordSettledOutcome, never through transitionState.
   it("a second settlement attempt cannot regress the first outcome", () => {
     assertSettlementIsFinal(storeSettledAs("completed", defaultConfig));
   });
@@ -321,24 +321,24 @@ describe("task-state: revival and annotations", () => {
   });
 });
 
-describe("task-state: noteLateOutcome", () => {
+describe("task-state: recordSettledOutcome", () => {
 
   it("escalates a completed record to error — the one retained rewrite edge", () => {
     const store = storeSettledAs("completed", defaultConfig);
-    assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), true);
+    assert.strictEqual(recordSettledOutcome(store, "ses_active", "error"), true);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "error");
     assert.ok(store.retainedTasks.has("ses_active"), "stays retained");
   });
 
   it("refuses to rewrite interrupted or errored records", () => {
     const store = storeSettledAs("interrupted", defaultConfig);
-    assert.strictEqual(noteLateOutcome(store, "ses_active", "error"), false);
+    assert.strictEqual(recordSettledOutcome(store, "ses_active", "error"), false);
   });
 
   it("refuses non-edges and unknown sessions", () => {
     const store = storeSettledAs("completed", defaultConfig);
-    assert.strictEqual(noteLateOutcome(store, "ses_active", "completed"), false);
-    assertIs(noteLateOutcome(store, "ses_nope", "error"), false, "an untracked session has no outcome to note");
+    assert.strictEqual(recordSettledOutcome(store, "ses_active", "completed"), false);
+    assertIs(recordSettledOutcome(store, "ses_nope", "error"), false, "an untracked session has no outcome to note");
   });
 });
 
@@ -354,7 +354,7 @@ describe("task store: retained-change callback", () => {
     assertIs(kinds(changes.retained), "", "active-only writes stay silent");
     transitionState(store, "s1", "completed");
     assertIs(kinds(changes.retained), "settled");
-    noteLateOutcome(store, "s1", "error");
+    recordSettledOutcome(store, "s1", "error");
     assertIs(kinds(changes.retained), "settled,settled");
     // The escalation is the one amendment that REWRITES a recorded success, so
     // the change it publishes has to carry the corrected record. It used to

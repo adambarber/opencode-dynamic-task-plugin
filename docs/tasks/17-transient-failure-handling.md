@@ -136,6 +136,62 @@ that was already owed. The feature can only ever be too quiet, never too loud �
 and when the budget *is* spent, the note says so, so a parent reads it as a
 lasting outage rather than one unlucky turn.
 
+## The record carries it, because a moment does not
+
+The notification is a moment. A parent who inspects a child an hour later asks
+the same question and has to be able to answer it, so the class is a durable field
+on the settled record: `RetainedTaskState.failureClass`.
+
+It is **settled-only** — `reclaimAsActive` drops it, because a running child has no
+failure and a stale class would have `task_list` reporting a blip against work
+currently in progress. It is **not** advisory: the question stays answerable a week
+later, and it is exactly the kind of claim a fresh process can verify, so it
+belongs on disk. A record with no class is a failure of unknown cause and reads as
+such, which is what the prompt-failure path produces — it has a different question
+to answer (was the *write* refused, not did the work fail) and no transcript to
+classify.
+
+### One amendment, not two
+
+`noteLateOutcome` is now `recordSettledOutcome(store, id, outcome, failureClass?)`:
+the state correction and the class ride on the **same** `decideRetained` publish.
+That is not tidiness. A child that ended `idle` over an errored stream — the single
+most common real failure, and the one `isMessage` used to hide — is exactly the
+case that needs the correction, so a separate write for the class would double
+every ordinary settlement's ledger traffic.
+
+It also declined to publish when it had nothing to record. A change asserting a
+record identical to the one already on disk is a file write for no fact, and
+`persistLedger` discarding a zero-length payload is the same defect that once hid
+a real correction.
+
+It lives in `task-state.ts` rather than beside the other settled-record primitives
+because its guard compares against `TaskState.Completed`, and that module imports
+the enum as a **type** on purpose — naming it as a value would close the runtime
+cycle its own docblock says keeps the two files from having one.
+
+### The classification reads the CONCLUDED verdict
+
+The settlement takes the host's `idle` as its first verdict, hydrates, and only
+then discovers the turn ended over an errored stream. Both the correction and the
+classification are therefore taken from `concluded`, a value fixed *before*
+anything is recorded. Classifying the host's original `idle` describes a state the
+record is no longer in, which is how a structural failure ends up labelled "no
+failure class" — and the first version of this code did exactly that.
+
+## Readers
+
+`task_result` and `task_status` render the class through one
+`failureClassLines` helper, and the line it prints is `failureNote`'s own sentence
+rather than a restatement of it — the notification and the readers must not be able
+to disagree about what a class *means*, and two phrasings of one classification is
+how that happens. Omitted for `none` and for a record written before the field
+existed, so a success never carries a line teaching the parent to skip it.
+
+`task_list` does **not** show it: those rows are one line per task in a fleet view,
+and a parent scanning twenty children needs the shape, not the diagnosis. The
+inspection tools are where a diagnosis belongs.
+
 ## Contract test
 
 `transient-resume.test.js` — five cases against the real host shapes:
@@ -152,6 +208,11 @@ that is what the host sends for a turn that produced no output; a fixture adding
 `parts: []` would pass the reader's guard for the wrong reason, which is how a
 fully green suite shipped a 12% false-success rate on aborted children.
 
+`task-formatting.test.js` — `readers say WHY a child failed`: the class line from
+`task_result`, from `task_status`, and **absent** on a success. The last is the one
+that matters: a renderer that printed the line unconditionally would teach the
+parent to ignore it.
+
 Harness: `childFailingWith(detail)` in `support/integration.js`, one arrangement
 that was being built inline in seven places. The harness also gained
 `setTranscript(sessionId, messages)`, because the case that matters most — one
@@ -161,7 +222,7 @@ second harness and a second child.
 ## Proof
 
 `npx tsc --noEmit` exit 0; `npm run test:duplication` → `Found 0 clones`;
-`node --test src/tests/*.test.js` → 709 passing, 0 failing; `npm run test:coverage`
+`node --test src/tests/*.test.js` → 712 passing, 0 failing; `npm run test:coverage`
 exit 0 (90 lines / 80 branches / 90 functions).
 
 ## Status

@@ -9,7 +9,7 @@ import type { OpenCodeClient } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { errorMessage } from "./host-shape.js";
-import { eventField, isEventRecord } from "./host-shape.js";
+import { eventField, eventString, isEventRecord } from "./host-shape.js";
 import { withBound, READ_BOUNDS } from "./execution-bound.js";
 import type { Verdict } from "./verdict.js";
 
@@ -288,8 +288,13 @@ export function touchedFiles(messages: unknown): FileTouch[] {
     for (const part of message.parts ?? []) {
       const call = toolCallOf(part);
       if (call === null || !MUTATING_TOOLS.has(call.tool)) continue;
-      const filePath = call.input.filePath;
-      if (typeof filePath !== "string" || !filePath) continue;
+      // Through the family's own door rather than a bare `input.filePath`. The
+      // SDK types this object as `{[key: string]: unknown}`, so a direct read is
+      // the `noPropertyAccessFromIndexSignature` shape the strong-types doc names
+      // as the next measurement to take — a new site written the known-wrong way
+      // on the day that measurement is being prepared is a poor look.
+      const filePath = eventString(call.input, "filePath");
+      if (filePath === undefined) continue;
       if (seen.has(filePath)) continue;
       seen.add(filePath);
       touches.push({ verb: call.tool, path: filePath, incomplete: call.incomplete });

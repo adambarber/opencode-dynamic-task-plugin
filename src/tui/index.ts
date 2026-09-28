@@ -36,7 +36,6 @@
 import type { TuiDialogSelectProps, TuiDialogStack, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { errorMessage } from "../shared/host-shape.js";
-import { safeLog } from "../shared/notify.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
   AGENT_CAP_NAMES,
@@ -181,20 +180,7 @@ export const tui: TuiPlugin = async (api) => {
   // The host's own footer line when the tree walk finds it, the `right` region when it
   // does not. `mountGauge` returns the fallback to register, or null when the real line
   // took the counter and registering the slot too would draw it twice.
-  // The counter says WHERE it landed; this is where that becomes a log line. The refusal
-  // value is formatted here because `errorMessage` is the one place in this repo that turns
-  // an unknown throwable into words, and a second spelling of it in the gauge would be the
-  // duplication that helper exists to prevent.
-  api.slots.register(
-    mountGauge({
-      ...api,
-      onPlacement: (placement) => {
-        const why = placement.at === "footer" ? "joined the host footer line"
-          : `using the prompt right region (${placement.because}${placement.refusal === undefined ? "" : `: ${errorMessage(placement.refusal)}`})`;
-        void safeLog(api.client, "info", `dynamic-task gauge: ${why}`);
-      },
-    }),
-  );
+  api.slots.register(mountGauge(api));
   // No `onDispose` for either layer. The host already disposes keymap registrations
   // when a plugin deactivates, and the spec says so explicitly; wiring it a second
   // time is not belt-and-braces, it is a second owner for one teardown.

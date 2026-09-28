@@ -31,9 +31,10 @@
 import { watch, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import { jsx } from "@opentui/solid/jsx-runtime";
-import { createMemo, createSignal, onCleanup, type JSX } from "solid-js";
+import { createSignal, onCleanup, type JSX } from "solid-js";
 import type { TuiSlotContext, TuiSlotPlugin } from "@opencode-ai/plugin/tui";
 import { BaseRenderable, CliRenderer, fg, Renderable, StyledText, TextRenderable, type RGBA, type TextChunk } from "@opentui/core";
+import { errorMessage } from "../shared/host-shape.js";
 import { applyAgentOverlay, readAgentOverlay, type AgentCapSource } from "../shared/caps.js";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
@@ -169,10 +170,6 @@ type GaugeApi = {
    * the TUI its prompt: the fallback slot is a working mount, and crashing a mount over a
    * layout preference would be the worst possible trade. */
   renderer?: CliRenderer;
-  /** Told WHERE the counter landed, once. Not a logger: the mount reports a fact and the
-   * composition root decides what to do with it, so this module neither knows the host's
-   * log call nor formats an error. */
-  onPlacement?: (placement: GaugePlacement) => void;
 };
 
 /**
@@ -191,11 +188,6 @@ type GaugeApi = {
 export type GaugePlacement =
   | { readonly at: "footer" }
   | { readonly at: "slot"; readonly because: "no-renderer" | "no-footer-line"; readonly refusal?: unknown };
-
-/** Say where the counter landed, if anyone is listening, and only ever once. */
-function report(api: GaugeApi, placement: GaugePlacement): void {
-  api.onPlacement?.(placement);
-}
 
 
 
@@ -353,21 +345,31 @@ export function mountGauge(api: GaugeApi): TuiSlotPlugin {
 export function deferredCounter(api: GaugeApi): (ctx: TuiSlotContext) => JSX.Element | null {
   const directory = api.state.path.directory;
   const base = readDynamicTaskPolicy(directory, null);
-  const muted = createMemo(() => screenTokens(api.theme).context);
   let attached = false;
+  // TEMPORARY: the placement is reported AS the counter's own text. The host log never
+  // arrived — `safeLog` is best-effort and a TUI-side client that cannot log is a case it
+  // swallows — so three restarts went into placing by inference. The operator reading one
+  // word off the screen is the only channel that is guaranteed to be observed, and it
+  // closes the question either way: JOINED means the real footer line, and anything else
+  // names the step that failed.
+  let outcome = "";
   return (ctx) => {
-    if (!attached) {
+    if (!attached && !outcome) {
       const join = footerLineToJoin(api);
-      if (!join) {
-        report(api, { at: "slot", because: api.renderer?.root ? "no-footer-line" : "no-renderer" });
-      } else {
-        const attempt = attachToFooterLine(join.renderer, join.line, muted(), directory, base);
+      if (!join) outcome = api.renderer?.root ? "no-footer-line" : "no-renderer";
+      else {
+        const attempt = attachToFooterLine(join.renderer, join.line, screenTokens(ctx.theme).context, directory, base);
         attached = attempt.handle !== null;
-        report(api, attached ? { at: "footer" } : { at: "slot", because: "no-footer-line", refusal: attempt.refusal });
+        outcome = attached ? "JOINED" : `refused ${errorMessage(attempt.refusal)}`;
       }
     }
     if (attached) return null;
-    return jsx("text", gaugeProps(screenTokens(ctx.theme).context, readingSignal(directory, base)) as Record<string, unknown>);
+    return jsx("text", {
+      ...gaugeProps(screenTokens(ctx.theme).context, readingSignal(directory, base)),
+      get children() {
+        return `GAUGE:${outcome}`;
+      },
+    } as Record<string, unknown>);
   };
 }
 

@@ -199,8 +199,10 @@ export function initPluginState(directory: string, options: PluginOptions | unde
 
   // Pay the debt, oldest first, one pass and no waiting — through the one
   // re-offer of the queue, which is also where the budget comes from, so no
-  // caller can dial a debt without it.
-  redeliverOwedNotifications(client, config.pendingMaxAttempts);
+  // caller can dial a debt without it. The fan-out is capped at the same
+  // concurrency the operator already allows live work: a redelivery is a real
+  // turn, so a queue is paid in batches rather than all at once.
+  redeliverOwedNotifications(client, config.pendingMaxAttempts, config.maxConcurrent);
 
   return { store, config };
 }

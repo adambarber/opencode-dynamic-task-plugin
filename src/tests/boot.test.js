@@ -18,6 +18,7 @@ import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
 import { formatParentNotification } from "../../dist/shared/notify.js";
+import { ENV } from "../../dist/shared/config.js";
 
 /**
  * A v3 file that reads, with one record inside it that does not.
@@ -305,14 +306,31 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
 // was owed. The debt is written before the dial now, which makes a crash cost a
 // duplicate notice — visible, and the direction the spec takes deliberately.
 describe("boot redelivers what the last boot owed", () => {
-  const owedDebt = () => owedEntry({
-    parentSessionId: "ses_parent",
-    childSessionId: "ses_owed",
+  const owedDebt = (parentSessionId = "ses_parent", childSessionId = "ses_owed") => owedEntry({
+    parentSessionId,
+    childSessionId,
     // A real notification, from the real renderer: a debt built from a hand-written
     // approximation of the wire text is a debt the host never produced, and a boot
     // that redelivers it proves nothing about redelivering a real one.
-    text: formatParentNotification({ childSessionId: "ses_owed", description: "owed" }, "completed", "owed this"),
+    text: formatParentNotification({ childSessionId, description: "owed" }, "completed", "owed this"),
   });
+
+  /**
+   * A boot over N debts, with the fan-out bound set to `batch`. N well above the
+   * bound on purpose: a case at or under the bound cannot tell a cap from no cap.
+   */
+  const bootWithManyOwed = (count, batch) => withEnv(ENV.maxConcurrent, String(batch), () =>
+    bootOn(() => {
+      const debts = Array.from({ length: count }, (_, i) => owedDebt(`ses_parent_${i}`, `ses_child_${i}`));
+      return {
+        tasks: Object.fromEntries(debts.map((d) => [d.childSessionId, retainedEntry({
+          childSessionId: d.childSessionId, parentSessionId: d.parentSessionId,
+          agentName: "general", description: "owed",
+        })])),
+        pending: debts,
+      };
+    }),
+  );
 
   // Every case here is the same world with one debt in it, so the world is built
   // once: a project directory carrying an owed notice, and a plugin booted on it.
@@ -333,6 +351,14 @@ describe("boot redelivers what the last boot owed", () => {
       return null;
     }
   };
+  // The owed queue on disk, once it has settled to exactly `count`. The count is
+  // the same number the case then asserts, which is the point: a wait spelled
+  // with a looser condition than the assertion beneath it is a test that can
+  // pass on a queue that went somewhere else.
+  const pendingReached = (directory, count) => waitFor(() => {
+    const ledger = onDisk(directory);
+    return Array.isArray(ledger?.pending) && ledger.pending.length === count;
+  }, `the owed queue to reach ${count} on disk`);
   // Boot does not block on redelivery (a held parent must not delay every tool
   // by the write bound), so the observable is waited on — never a sleep standing
   // in for a contract.
@@ -366,10 +392,7 @@ describe("boot redelivers what the last boot owed", () => {
       [["ses_parent", true]],
       "exactly the owed write, to the parent it was addressed to",
     );
-    await waitFor(() => {
-      const ledger = onDisk(directory);
-      return Array.isArray(ledger?.pending) && ledger.pending.length === 0;
-    }, "the debt to be retired once the parent answered");
+    await pendingReached(directory, 0);
   });
 
   // A held write re-arms its own debt inside the gate, so the queue is not
@@ -383,6 +406,37 @@ describe("boot redelivers what the last boot owed", () => {
     await waitFor(() => dialCount(client) > 0, "the redelivery to dial");
     assert.strictEqual(dialCount(client), 1, "one dial, then the host holds it");
     assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
+  });
+
+  // The hole, measured on coda 2026-09-28: the boot re-offered EVERY restored
+  // debt, with no cap, and each redelivery is `session.prompt` — a real user
+  // turn in the parent's session. So a project that had accumulated many owes
+  // paid one whole turn per owe in a single boot, all at once, and in a large
+  // session a turn costs the parent its entire context. `pendingMaxAttempts`
+  // bounds how long ONE debt may live; nothing bounded how many one boot dials.
+  // That is the same shape as the re-arm this suite already caught: a budget
+  // that is declared and never spent down.
+  it("a boot re-offers at most maxConcurrent debts — a queue may not become a flood", async () => {
+    const { notices, client } = await bootWithManyOwed(9, 2);
+    await waitFor(() => dialCount(client) >= 2, "the bounded batch to be offered");
+    await sleep(40);
+
+    assert.strictEqual(notices().length, 2,
+      `a boot offered ${notices().length} of 9 debts with the fan-out bound at 2: ${JSON.stringify(notices().map((n) => n.to))}`);
+    assert.strictEqual(dialCount(client), 2, "and the host was asked to write exactly twice");
+  });
+
+  // The companion invariant, and the reason the bound is safe: work that was NOT
+  // attempted must not be charged for. An attempt is the price of a real write, so
+  // a deferred debt keeps the count it already had — which is also what lets the
+  // queue drain: a debt cannot be written off for patience it did not spend.
+  it("a debt the boot did not attempt is still owed, at the count it already had", async () => {
+    const { directory } = await bootWithManyOwed(9, 2);
+    await pendingReached(directory, 7);
+
+    const stillOwed = onDisk(directory).pending;
+    assert.deepStrictEqual([...new Set(stillOwed.map((d) => d.attempts))], [1],
+      "and none was charged an attempt for a write that never happened");
   });
 
   it("a v2 ledger boots clean rather than half-restored", async () => {

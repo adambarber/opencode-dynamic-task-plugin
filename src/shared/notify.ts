@@ -553,15 +553,37 @@ const notifyChains = new Map<string, Promise<unknown>>();
  * next boot, one that lands is retired before the receipt is written, and one
  * whose budget is spent is written off. The count rides along because only here
  * does a debt get redelivered; the gate is where the bound is SPENT.
+ *
+ * `batch` bounds how many this ONE boot offers, and it exists because the bound
+ * above was the only budget in this path: a re-offer is `session.prompt`, a real
+ * user turn in the parent's session, in a session that may hold an entire
+ * context, so paying the whole queue at once does not cost one turn per debt, it
+ * costs one turn per debt simultaneously, out of a process whose operator has
+ * not finished logging in. Measured 2026-09-28: one boot against a coda ledger
+ * wrote 240 parents. `pendingMaxAttempts` bounds how long ONE debt may live and
+ * this bounds how many one boot dials — two questions, and only one of them was
+ * being asked.
+ *
+ * The remainder is charged nothing, re-queued nowhere, and written off nowhere:
+ * it is left exactly as it was read, so the next boot offers the next batch, the
+ * queue drains in order, and no clock is needed. A debt is billed for a write it
+ * actually attempted, which is what stops a deferred debt from ageing out
+ * without ever having been tried.
  */
-export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: number): void {
-  for (const owed of getPendingDeliveries()) {
-    void notifyParent(client, owed.parentSessionId, owed.text, {
-      childSessionId: owed.childSessionId,
-      kind: owed.kind,
-      carriedAttempts: owed.attempts,
+export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: number, batch = 1): void {
+  const owed = getPendingDeliveries();
+  const offered = owed.slice(0, Math.max(1, batch));
+  for (const debt of offered) {
+    void notifyParent(client, debt.parentSessionId, debt.text, {
+      childSessionId: debt.childSessionId,
+      kind: debt.kind,
+      carriedAttempts: debt.attempts,
       maxAttempts,
     });
+  }
+  if (owed.length > offered.length) {
+    const held = owed.length - offered.length;
+    void safeLog(client, "warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
   }
 }
 

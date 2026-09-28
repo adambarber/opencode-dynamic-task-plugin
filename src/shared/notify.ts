@@ -144,6 +144,13 @@ export interface NotificationRecord extends DeliveryTarget {
   // answered, and the parent may still receive it. It is neither a failure nor a
   // success, and it stays in the ledger until the host answers either way.
   pending?: boolean;
+  // The debt spent its redelivery budget and was WRITTEN OFF: no write will be
+  // made for it again. Distinct from a failed delivery, which is the opposite
+  // promise — a failed delivery was tried and lost, this one will not be tried
+  // at all, and a parent reading both from the same word would be told a notice
+  // is still coming when nothing further is coming. It is what makes an
+  // unbounded redelivery loop a terminated one instead of a silent one.
+  expired?: boolean;
 }
 
 const notifyLedger: NotificationRecord[] = [];// Tenet 9: process-global by design — every key is a server-unique child
@@ -164,7 +171,7 @@ const NOTIFY_LEDGER_MAX = 200;
  * fields declared twenty lines above, so a fourth outcome could be added to the
  * record and silently not reach the builder or the emit.
  */
-export type DeliveryOutcome = Pick<NotificationRecord, "delivered" | "attempts" | "suppressed" | "pending">;
+export type DeliveryOutcome = Pick<NotificationRecord, "delivered" | "attempts" | "suppressed" | "pending" | "expired">;
 
 export function notifyRecord(
   target: DeliveryTarget,
@@ -179,6 +186,7 @@ export function notifyRecord(
     delivered: outcome.delivered,
     ...(outcome.suppressed ? { suppressed: true } : {}),
     ...(outcome.pending ? { pending: true } : {}),
+    ...(outcome.expired ? { expired: true } : {}),
   };
 }
 
@@ -258,7 +266,11 @@ const pendingDeliveries: PendingDelivery[] = [];
 // design — every entry is keyed by a server-unique child session id.
 let persistPending: ((changes: readonly LedgerChange[]) => void) | null = null;
 
-export function configurePendingPersistence(persist: (changes: readonly LedgerChange[]) => void): void {
+// `null` is a legal argument, not an oversight: the boot installs persistence
+// once and the test suite installs and REMOVES it, and a setter that cannot be
+// undone makes every case after the installing one depend on it — a leak the
+// suite's own ordering hides until someone reorders a describe block.
+export function configurePendingPersistence(persist: ((changes: readonly LedgerChange[]) => void) | null): void {
   persistPending = persist;
 }
 
@@ -332,6 +344,17 @@ export function defaultSleep(ms: number): Promise<void> {
 
 const NOTIFY_RETRY_DELAY_MS = 250;
 
+/**
+ * The bound a caller that names none gets. Deliberately NOT the same constant as
+ * the configured `pendingMaxAttempts`, and deliberately not tracking it: this is
+ * a funnel safety, not policy, and it exists for the caller who forgot to pass
+ * one. Only a restored debt carries a non-zero count, so only the boot redelivery
+ * can reach it — and the boot loop always names the operator's value, which is
+ * what makes an unbounded loop impossible rather than merely unlikely. Keep it
+ * small, keep it finite, and let the config own the number that means anything.
+ */
+const DEFAULT_PENDING_MAX_ATTEMPTS = 3;
+
 interface NotifyParentOptions {
   sleep?: (ms: number) => Promise<void>;
   record?: (entry: NotificationRecord) => void;
@@ -342,10 +365,50 @@ interface NotifyParentOptions {
   // durable queue. Counting from there is what makes a redelivery that keeps
   // getting held escalate visibly instead of looking like a fresh first try.
   carriedAttempts?: number;
+  /**
+   * How many redeliveries this debt is owed before it is written off.
+   *
+   * A BACKSTOP, not the policy channel: only a restored debt carries a
+   * non-zero `carriedAttempts`, so only the boot redelivery can reach the
+   * bound, and the boot loop is the one caller that sets it from the project's
+   * config. The default therefore has to be the terminating one — a caller that
+   * forgets to pass it must expire a notice rather than re-offer it forever,
+   * because the two failure modes are not symmetric. An unnoticed write-off
+   * loses one notice; an unbounded loop wedges the project it is owed to, since
+   * redelivering IS `session.prompt` and every attempt starts a parent turn.
+   */
+  maxAttempts?: number;
+}
+
+/**
+ * What a claim IS: which notice of which child, bound to the generation it was
+ * taken under. Named because four of the five methods below take exactly this
+ * triple, and `childSessionId` and `dedupKey` are both strings — so as positional
+ * arguments a transposition compiled, and a claim about one notice's history
+ * could be recorded against another's. One object, one meaning, and the
+ * generation travels with the thing it belongs to instead of beside it.
+ */
+interface Claim {
+  childSessionId: string;
+  dedupKey: string;
+  generation: number;
 }
 
 interface GateLedger {
-  record(childSessionId: string, dedupKey: string, generation: number): boolean;
+  record(claim: Claim): boolean;
+  /**
+   * Write off a debt whose redelivery budget is spent. Idempotent, and it takes
+   * the generation it is retiring AT, so every claim up to and including that
+   * one is dead and a later generation's claim is not.
+   */
+  retire(claim: Claim): void;
+  /**
+   * Whether this claim is dead because its debt was written off. Separate from
+   * `retire` rather than folded into it because a commit can arrive long after
+   * the write-off and asks only the second question; a commit that also wrote
+   * the obligation off would be reporting a retirement as a delivery.
+   */
+  isRetired(claim: Claim): boolean;
   // Revival resets settle-dedup: a continued task is a fresh settlement
   // subject, so its next completed/error must be deliverable even though the
   // prior turn's kind was recorded. Delivery history stays in the ledger.
@@ -359,7 +422,7 @@ interface GateLedger {
   // belongs to the current turn. Released on delivery failure so a failed
   // settlement stays redeliverable — only success reserves the key.
   claim(childSessionId: string, dedupKey: string): number | null;
-  release(childSessionId: string, dedupKey: string, generation: number): void;
+  release(claim: Claim): void;
   // Test-only isolation: the gate is process-global by design.
   clear(): void;
 }
@@ -387,6 +450,21 @@ function createGateLedger(): GateLedger {
   const delivered = new Map<string, Set<string>>();
   const inFlight = new Map<string, Set<string>>();
   const generations = new Map<string, number>();
+  // Debts WRITTEN OFF, and the generation each was retired at.
+  //
+  // Keyed to the debt and not to the claim, because a commit is a statement
+  // ABOUT a debt: once the obligation has ended, no answer arriving on any claim
+  // for that debt is a delivery any more. Keying it to the claim instead would
+  // leave the exact hole this closes — a revival clears the in-flight claim, so
+  // a second entry can spend the budget while the first request is still on the
+  // wire, and that first request's commit would find nothing wrong with it.
+  //
+  // The generation comparison is what makes it tight: a claim at or before the
+  // retirement is dead, and a claim from a LATER generation is a new subject
+  // with a new obligation of its own. `forgetChild` also clears the entries,
+  // which is what bounds the map; correctness does not depend on that, the
+  // comparison does.
+  const retired = new Map<string, Map<string, number>>();
   const drop = (map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): void => {
     const keys = map.get(childSessionId);
     if (!keys) return;
@@ -394,7 +472,7 @@ function createGateLedger(): GateLedger {
     if (keys.size === 0) map.delete(childSessionId);
   };
   return {
-    record(childSessionId, dedupKey, generation) {
+    record({ childSessionId, dedupKey, generation }) {
       if (currentGeneration(generations, childSessionId) !== generation) return false;
       const kinds = delivered.get(childSessionId) ?? new Set();
       if (kinds.has(dedupKey)) return false;
@@ -410,11 +488,20 @@ function createGateLedger(): GateLedger {
       inFlight.set(childSessionId, pending);
       return currentGeneration(generations, childSessionId);
     },
-    release(childSessionId, dedupKey, generation) {
+    release({ childSessionId, dedupKey, generation }) {
       // A stale generation's pending entry was already cleared by forgetChild;
       // dropping here could only hit the current generation's claim.
       if (currentGeneration(generations, childSessionId) !== generation) return;
       drop(inFlight, childSessionId, dedupKey);
+    },
+    retire({ childSessionId, dedupKey, generation }) {
+      const keys = retired.get(childSessionId) ?? new Map<string, number>();
+      keys.set(dedupKey, generation);
+      retired.set(childSessionId, keys);
+    },
+    isRetired({ childSessionId, dedupKey, generation }) {
+      const at = retired.get(childSessionId)?.get(dedupKey);
+      return at !== undefined && generation <= at;
     },
     forgetChild(childSessionId) {
       const next = currentGeneration(generations, childSessionId) + 1;
@@ -425,11 +512,13 @@ function createGateLedger(): GateLedger {
       }
       delivered.delete(childSessionId);
       inFlight.delete(childSessionId);
+      retired.delete(childSessionId);
     },
     clear() {
       delivered.clear();
       inFlight.clear();
       generations.clear();
+      retired.clear();
     },
   };
 }
@@ -447,6 +536,34 @@ const notifyChains = new Map<string, Promise<unknown>>();
 
 // The gate: every parent-directed write goes through here. One retry (a busy
 // parent prompt can transiently fail), honest failure, recorded either way.
+/**
+ * Pay every owed notification, oldest first, one pass and no waiting.
+ *
+ * This is the ONLY re-offer of the queue, and it is a function rather than a
+ * loop at the boot site because a loop there has to be re-read to be trusted: a
+ * caller can add an option to `notifyParent` and forget to pass it through, and
+ * the debt policy then depends on which caller remembered. Named, it has one
+ * reader and it is the one that owns the debt, so the budget cannot be dropped
+ * by omission — the cross-boundary gate is what proved the point, by catching a
+ * test that had re-implemented this loop to stand in for a boot.
+ *
+ * The write goes back through the gate because there is no second parent-write
+ * path, so a redelivery the host HOLDS re-arms its own entry and waits for the
+ * next boot, one that lands is retired before the receipt is written, and one
+ * whose budget is spent is written off. The count rides along because only here
+ * does a debt get redelivered; the gate is where the bound is SPENT.
+ */
+export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: number): void {
+  for (const owed of getPendingDeliveries()) {
+    void notifyParent(client, owed.parentSessionId, owed.text, {
+      childSessionId: owed.childSessionId,
+      kind: owed.kind,
+      carriedAttempts: owed.attempts,
+      maxAttempts,
+    });
+  }
+}
+
 export async function notifyParent(
   client: OpenCodeClient,
   parentSessionId: string,
@@ -465,6 +582,11 @@ export async function notifyParent(
     emit({ delivered: false, attempts: 0, suppressed: true });
     return Promise.resolve(false);
   }
+  // The claim, as one value: the generation is bound to the notice and the child
+  // it was taken for, so nothing downstream can pass the right pieces in the
+  // wrong order, and a revival that bumps the generation makes every later use
+  // of this value visibly stale.
+  const claim: Claim = { childSessionId: opts.childSessionId, dedupKey, generation };
   const attempt = () =>
     client.session.prompt({
       path: { id: parentSessionId },
@@ -476,6 +598,43 @@ export async function notifyParent(
   // how many times this parent has already been dialed for this write.
   const carried = opts.carriedAttempts ?? 0;
   const owed = owedDelivery({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, carried);
+  // The budget, checked in the GATE and not at the boot loop that offers these
+  // debts. `session.prompt` is the only parent-write path there is, so the gate
+  // is the only place a debt is ever offered — a check at the boot loop would be
+  // a policy decision at one call site, and the in-process re-offer would stay
+  // unchecked. After the claim, deliberately: a debt whose write is still in
+  // flight is claimed, so it is suppressed rather than expired, and a parent
+  // being slow is never written off underneath a request it may still answer.
+  const maxAttempts = opts.maxAttempts ?? DEFAULT_PENDING_MAX_ATTEMPTS;
+  if (carried >= maxAttempts) {
+    // Written off rather than dialed. This is the only branch in the gate that
+    // ends a debt WITHOUT asking the host anything, and it is the whole point:
+    // redelivering is `session.prompt`, so an attempt is not a free retry — it
+    // is a real user turn in the parent's session, which is why a host that
+    // holds one write per boot wedged the project instead of merely falling
+    // behind. The debt is retired, the claim is released so a genuinely new
+    // notice for this child is not suppressed by a write-off, and the record
+    // says EXPIRED so the parent is not told a failure that will be retried.
+    gateLedger.retire(claim);
+    gateLedger.release(claim);
+    dropPending(owed);
+    if (epoch === gateEpoch) emit({ delivered: false, attempts: carried, expired: true });
+    // The host log, for the same reason every other durable-state loss goes
+    // there: the notification ledger is in-memory, so this record dies with the
+    // process, and the parent may never open a status view. This is the only
+    // channel an operator is guaranteed to have without setting an environment
+    // variable before the process started, and the fact being reported is one
+    // they have to act on — the parent session is not accepting writes, and
+    // nothing will be retried.
+    void safeLog(
+      client,
+      "warn",
+      `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
+        `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
+        `The parent has NOT been told — read this task's status from the parent session to see the write-off.`,
+    );
+    return Promise.resolve(false);
+  }
   // Owed BEFORE the dial, every attempt: the debt must be on disk while the
   // request is in flight, because that window is the crash this exists for.
   const dial = async (attempts: number) => {
@@ -483,7 +642,17 @@ export async function notifyParent(
     return attempt();
   };
   const commit = (outcome: DeliveryOutcome) => {
-    // Two kinds of staleness, checked before anything is written:
+    // Three kinds of staleness, checked before anything is written.
+    //
+    // Retired: this debt spent its redelivery budget and has been written off.
+    // A host can answer a write whose obligation has already ended — the
+    // request outlives the budget whenever it outlives the process that made
+    // it, and a revival frees the claim so a second entry can spend the budget
+    // while the first request is still on the wire. That answer is not a
+    // delivery: the debt is gone and a newer generation owns the key. Emitting
+    // here would tell the operator a notice arrived that the plugin has
+    // already written off, and would be the last word on the record.
+    if (gateLedger.isRetired(claim)) return outcome.delivered;
     // Generation-bound: a revival (forgetChild) between this claim and this
     // commit makes the generation stale — history is emitted, the key is not
     // reserved, and the revived turn's claim stays intact.
@@ -491,8 +660,8 @@ export async function notifyParent(
     // the gate no longer knows this child at all, and the record belongs to a
     // world that is gone. Nothing is emitted and nothing is reserved.
     if (epoch !== gateEpoch) return outcome.delivered;
-    gateLedger.release(opts.childSessionId, dedupKey, generation);
-    if (outcome.delivered) gateLedger.record(opts.childSessionId, dedupKey, generation);
+    gateLedger.release(claim);
+    if (outcome.delivered) gateLedger.record(claim);
     // Retire the debt, then write the receipt: a crash in between costs a
     // redelivery the operator can see, never a record with no notice behind it.
     dropPending({ ...owed, attempts: outcome.attempts });

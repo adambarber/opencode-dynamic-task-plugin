@@ -35,6 +35,7 @@ function assertSafeDefaults(config) {
   assert.ok(config.agentCacheTtlMs > 0);
   assert.ok(config.retainedTaskTtlMs > 0);
   assert.ok(config.retainedTaskMaxEntries > 0);
+  assert.ok(config.pendingMaxAttempts > 0);
 }
 
 // One hypothesis: an absent or unusable env value yields the default. `undefined`
@@ -83,6 +84,24 @@ describe("normalizeDynamicTaskConfig", () => {
   it("lets env override tuple options", async () => {
     await withEnv(ENV.maxConcurrent, "7", async () => {
       assert.strictEqual(normalizeDynamicTaskConfig({ maxConcurrent: 2 }).maxConcurrent, 7);
+    });
+  });
+
+  it("reads the redelivery budget from env, file and defaults, in that order", async () => {
+    // The bound on an owed notification is the one setting whose wrong value
+    // wedges a project rather than merely mis-sizing a window, so every level
+    // that can move it is pinned. The default is spelled as a literal because
+    // there is deliberately no shared constant to spell: the gate's own backstop
+    // is a funnel safety for a caller that names no bound, not the same number,
+    // and a test that tied them together would pin a coincidence as a contract.
+    assert.strictEqual(normalizeDynamicTaskConfig({}).pendingMaxAttempts, 3);
+    assert.strictEqual(normalizeDynamicTaskConfig({ pendingMaxAttempts: 9 }).pendingMaxAttempts, 9);
+
+    await withEnv(ENV.pendingMaxAttempts, "5", async () => {
+      assert.strictEqual(normalizeDynamicTaskConfig({ pendingMaxAttempts: 9 }).pendingMaxAttempts, 5);
+    });
+    await withEnv(ENV.pendingMaxAttempts, "bogus", async () => {
+      assert.strictEqual(normalizeDynamicTaskConfig({ pendingMaxAttempts: 9 }).pendingMaxAttempts, 9, "an unusable env value falls through, it does not zero the bound");
     });
   });
 

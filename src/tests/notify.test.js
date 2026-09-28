@@ -6,8 +6,8 @@
  * the truncation and the recovery pointer are part of the contract.
  */
 
-import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { clearNotifyLedger, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
+import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
+import { clearNotifyLedger, configurePendingPersistence, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
 import { deferred, promptText } from './support/mock-host.js';
 
@@ -101,6 +101,38 @@ function answeredClient(script = []) {
 // The gate's own inputs: which child, what kind, and no real backoff — the
 // retry count is the thing under test, so waiting for it proves nothing.
 const gate = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
+
+/** The queue as one child's slice of it — module scope, because the debt's owner is the queue, not any one describe. */
+const queuedFor = (childSessionId) =>
+  getPendingDeliveries().filter((entry) => entry.childSessionId === childSessionId);
+
+/**
+ * The writes that carried THIS text. A boot pays the whole queue, and this file
+ * leaves other children's debts behind, so a bare call count would be a count of
+ * every debt in the ledger rather than of the one under test.
+ */
+const writesTo = (calls, text) => calls.filter((call) => call.body.parts[0].text === text);
+
+/**
+ * The clean slate every case in this file starts from, defined once because the
+ * queue is DURABLE state: `clearNotifyLedger` deliberately does not touch it, so
+ * without this each describe inherits whatever the previous one left owed and a
+ * case is asserting against a ledger it did not build.
+ *
+ * Registered ONCE at module scope rather than per describe, which is both the
+ * isolation the file wants and the reason the duplication gate stopped
+ * reporting the same two hook lines in every block.
+ */
+const cleanNotifyState = () => {
+  clearNotifyLedger();
+  restorePendingDeliveries([]);
+  // `configurePendingPersistence` writes process-global state, so a case that
+  // installs a recorder takes it back out.
+  configurePendingPersistence(null);
+};
+
+beforeEach(cleanNotifyState);
+afterEach(cleanNotifyState);
 
 /**
  * The outcome every delivery test ends on: the verdict AND how many writes
@@ -354,25 +386,46 @@ describe("notify gate: notifyParent", () => {
 // duplicate after a crash the visible, accepted cost: a missing notice is silent
 // deafness, a duplicate is a line the operator can read.
 describe("durable pending delivery: the queue IS the crash window", () => {
-  // The queue is process-global, so each case states its own starting world
-  // rather than inheriting whatever ran before it.
-  beforeEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-  });
-  const queuedFor = (childSessionId) =>
-    getPendingDeliveries().filter((entry) => entry.childSessionId === childSessionId);
+  // Two cases in this block are the same ARRANGEMENT — a completed delivery, with
+  // something recorded from inside the dial — and only the probe differs. One
+  // builder so each case states its own probe: written out, both were a four-line
+  // `recordingClient(async () => { ...; return accepted() })` plus a
+  // `notifyParent` tail, which is shared shape and no shared logic, and the
+  // duplication gate reads shape as duplication.
+  const probingDial = (childSessionId, probe) => {
+    const { client } = recordingClient(async () => {
+      probe();
+      return accepted();
+    });
+    return () => notifyParent(client, "parent_1", "settled", gate(childSessionId, "completed"));
+  };
 
   it("the write is already on the queue at the moment it dials", async () => {
     // Ordering is the whole contract: an entry written after the dial is a
     // comment, not a guarantee. The client reads the queue mid-prompt.
     let atDial = null;
-    const { client } = recordingClient(async () => {
+    await probingDial("ses_pre", () => {
       atDial = queuedFor("ses_pre").map((entry) => entry.kind);
-      return { ok: true };
-    });
-    await notifyParent(client, "parent_1", "settled", gate("ses_pre", "completed"));
+    })();
     assert.deepStrictEqual(atDial, ["completed"], "queued before the dial, not after it");
+  });
+
+  it("the DEBT is persisted before the dial, and the receipt only after it", async () => {
+    // The in-memory ordering above is not the claim; the DURABLE ordering is. A
+    // debt recorded after the dial is a comment about what was about to happen,
+    // not a guarantee that survives the process dying mid-request — which is the
+    // one window this whole mechanism exists for. The re-read each persist costs
+    // is the deliberate price of not being the process that deletes another
+    // process's running task, so these writes are not overhead to be debounced,
+    // and this case is what stops anyone proposing that: batching the Owed write,
+    // or the Delivered one, fails here before it ships.
+    //
+    // `owed` and `delivered` are persist writes; `dial` is this probe running
+    // inside `session.prompt`. The one assertion is the whole interleaving.
+    const order = [];
+    configurePendingPersistence((changes) => changes.forEach((change) => order.push(change.kind)));
+    await probingDial("ses_persisted", () => order.push("dial"))();
+    assert.deepStrictEqual(order, ["owed", "dial", "delivered"], "owed, then the request, then the receipt — in that order");
   });
 
   it("a held write stays queued until the host answers, then leaves", async () => {
@@ -429,6 +482,177 @@ describe("durable pending delivery: the queue IS the crash window", () => {
       "attempts and FIFO order both survive the durability boundary",
     );
     assert.strictEqual(restored[0].text, "a", "the owed text is the exact write, not a recipe to rebuild it");
+  });
+});
+
+// --- The redelivery budget ------------------------------------------------
+
+/**
+ * The same held transport, NEVER released.
+ *
+ * This exists because `withHeldWrites` releases in a `finally`, which made "a
+ * write that neither resolves nor rejects" unrepresentable — and that is the
+ * exact shape that shipped an unbounded redelivery with a green suite. Every
+ * held-write test proved the plugin recovers once the host ANSWERS; none could
+ * ask what happens when it never does, which is the only question that matters
+ * for a debt that is re-offered at every boot.
+ *
+ * The name says it at the call site, because the failure this fixes is a test
+ * that reads like all the others.
+ */
+async function withUnansweredWrite(body) {
+  return bounded(20, () => body(heldWriteClient()));
+}
+
+/**
+ * One boot, as `initPluginState` performs it: pay the durable queue through the
+ * one re-offer production has.
+ *
+ * A boot is a PROCESS BOUNDARY, so the in-memory gate goes with it — the claim
+ * ledger, the in-flight set and the delivery history are all per-process (the
+ * notification ledger is documented as in-memory for exactly this reason), and
+ * only the queue survives. Modelling that is what makes this a boot rather than
+ * a second offer: without the reset the second entry is SUPPRESSED, because the
+ * claim from the previous boot is still in flight in a process that has gone.
+ *
+ * `gateLedger.clear()` and NOT `clearNotifyLedger`, deliberately: the latter also
+ * bumps the epoch, and a parked commit from the previous boot would then be
+ * stopped by the epoch guard rather than by the retirement guard this work is
+ * about. One guard per test, or the test proves the wrong one.
+ */
+async function boot(client, maxAttempts) {
+  gateLedger.clear();
+  restorePendingDeliveries(getPendingDeliveries());
+  redeliverOwedNotifications(client, maxAttempts);
+  // Wait until this boot's own writes have reached their bound, which is what a
+  // real boot does before it exits: a redelivery it could not finish is left owed
+  // for the next one. Yielding on the test seam's chain count, not sleeping — a
+  // sleep would be a guess at the bound's length, and this is the observable
+  // that says the write is done being attempted.
+  for (let turn = 0; notifyChainCount() > 0; turn++) {
+    assert.ok(turn < 200, "the boot's writes never reached their bound — the chain did not drain");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+describe("notify: the redelivery budget", () => {
+  // The arrangement every case here is a variation of: one child, one owed
+  // notice, on a transport that never answers. Stated once, so a case says what
+  // it is about — the budget, the next boot, the late answer — instead of
+  // re-stating the fixture, which is what jscpd reads as a clone and what makes
+  // the difference between two cases invisible on a diff.
+  const CHILD = "ses_stuck";
+  const settle = (held, over = {}) => notifyParent(held.client, "parent_1", "owed", { ...gate(CHILD, "error"), ...over });
+  const owedAt = () => queuedFor(CHILD).map((e) => e.attempts);
+  /** The starting world, owed and already dialed, for the cases that begin there. */
+  const givenAnUnansweredDebt = (body) =>
+    withUnansweredWrite(async (held) => {
+      await settle(held);
+      return body(held);
+    });
+
+  it("a debt the host never answers is retired at the budget, and is NOT dialed again", async () => {
+    // The defect: a redelivery the host HOLDS re-arms its own entry with the
+    // count carried forward, and nothing anywhere consulted that count. The debt
+    // was re-offered at every boot forever, and because redelivery IS
+    // `session.prompt`, each boot also started a real parent turn — so the retry
+    // mechanism was itself what wedged the project.
+    await givenAnUnansweredDebt(async (held) => {
+      // Boot 1 is behind us: the original settlement, held forever, owed at 1.
+      assert.deepStrictEqual(owedAt(), [1], "a held write leaves the debt owed");
+
+      // Boots 2 and 3: each re-offers and is held again, so the count climbs and
+      // nothing ever commits. This is the loop the report found in the field.
+      for (const expected of [2, 3]) {
+        await boot(held.client, 3);
+        assert.deepStrictEqual(owedAt(), [expected], `boot ${expected}: the count is carried forward`);
+      }
+
+      // Boot 4: the budget is spent. The write is NOT dialed — the point of the
+      // bound is that a notice nobody can take is not worth a fourth parent turn
+      // — and the debt retires, honestly, as undelivered.
+      await boot(held.client, 3);
+
+      assert.strictEqual(writesTo(held.calls, "owed").length, 3, "three writes dialed for this debt, and no fourth");
+      assert.deepStrictEqual(queuedFor(CHILD), [], "an expired debt is not owed any more");
+
+      const record = getLatestNotification(CHILD);
+      assert.strictEqual(record.delivered, false, "it is recorded as undelivered");
+      assert.strictEqual(record.expired, true, "and as EXPIRED, which is not the same as failed");
+      assert.strictEqual(record.attempts, 3, "with the count that was actually spent");
+    });
+  });
+
+  it("an expired debt leaves nothing for the NEXT boot to re-offer", async () => {
+    // Retiring the entry in this process is not enough: the file is what the next
+    // process reads, and a budget that only cleaned memory still wedges every boot.
+    await givenAnUnansweredDebt(async (held) => {
+      // One boot that pays whatever is owed, and what is still owed afterwards —
+      // the whole claim of this case, so it gets a name rather than being
+      // re-spelled once per assertion.
+      const owedAfterABoot = async () => {
+        await boot(held.client, 1);
+        return queuedFor(CHILD);
+      };
+
+      assert.deepStrictEqual(await owedAfterABoot(), [], "the budget spent on that one attempt retired it");
+
+      // The next process reads the file, finds nothing, and offers nothing. Scoped
+      // to THIS debt, not to the whole queue: the queue is durable state and
+      // `clearNotifyLedger` deliberately does not touch it, so other cases in this
+      // file are free to leave entries behind.
+      const settled = getLatestNotification(CHILD);
+
+      assert.deepStrictEqual(await owedAfterABoot(), [], "and a further boot has nothing of it to re-offer");
+      assert.deepStrictEqual(getLatestNotification(CHILD), settled, "a boot with no debt to pay changes nothing at all");
+    });
+  });
+
+  it("a held write that answers AFTER expiry neither resurrects the debt nor reports delivery", async () => {
+    // The obligation outliving its budget. A revival clears the in-flight claim
+    // (a revived child is a new subject), so a second entry for the same debt can
+    // reach the budget while the FIRST request is still on the wire — and the
+    // host can then answer a write whose obligation has already ended. That
+    // answer is not a delivery: the debt is gone, a newer generation owns the
+    // key, and emitting here would tell the operator a notice arrived that the
+    // plugin has already written off.
+    const held = heldWriteClient();
+    // Boot 1 at a budget of 1: dialed, owed at 1, held. The request is parked.
+    await bounded(20, async () => {
+      await settle(held, { maxAttempts: 1 });
+      // The child is revived: a new turn, a new subject, and the in-flight claim
+      // for the old one is released — which is what lets a second entry through.
+      // Deliberately NOT a boot (no gate reset): the whole point is that one
+      // process holds the request AND writes off the debt.
+      gateLedger.forgetChild(CHILD);
+
+      const after = await settle(held, { carriedAttempts: 1, maxAttempts: 1 });
+      assert.strictEqual(after, false, "the second entry did not deliver");
+      assert.deepStrictEqual(queuedFor(CHILD), [], "and expired the debt");
+      const expired = getLatestNotification(CHILD);
+      assert.strictEqual(expired.expired, true, "recorded as expired");
+
+      // The host finally answers the write from boot 1, which is long past any
+      // obligation to deliver it.
+      await held.release();
+
+      assert.deepStrictEqual(queuedFor(CHILD), [], "the late answer does not put the debt back on the queue");
+      const afterAnswer = getLatestNotification(CHILD);
+      assert.strictEqual(afterAnswer.expired, true, "and the last word on the record is still EXPIRED");
+      assert.notStrictEqual(afterAnswer.delivered, true, "never reported as delivered after the plugin gave up on it");
+    });
+  });
+
+  it("a debt under its budget is untouched — the bound is not a blanket give-up", async () => {
+    // Falsification in the direction that would make the budget a defect: a
+    // parent that is merely slow must still be served on the next boot. Without
+    // this, "expires" and "is refused early" look identical from the outside.
+    const { client, calls } = answeredClient([]);
+    await notifyParent(client, "parent_1", "owed", { ...gate(CHILD, "error"), carriedAttempts: 1, maxAttempts: 3 });
+
+    assert.strictEqual(calls.length, 1, "a debt inside its budget is still dialed");
+    assert.strictEqual(getLatestNotification(CHILD).delivered, true, "and delivered");
+    assert.deepStrictEqual(queuedFor(CHILD), [], "and settled");
   });
 });
 

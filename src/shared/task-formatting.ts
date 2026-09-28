@@ -203,6 +203,16 @@ function formatNotificationLine(notification: NotificationRecord): string {
   if (!notification.delivered && notification.attempts === 0 && isParentless(notification.parentSessionId)) {
     return `Last notification: ${notification.kind} — Not delivered (no parent session)`;
   }
+  if (notification.expired) {
+    // The word matters more here than anywhere else on this line. A FAILED
+    // notice says "I tried and lost it", and the reader's next move is to look
+    // for a retry that is not coming; an EXPIRED one says the plugin stopped
+    // trying, which is a different fact with a different remedy — the parent
+    // session is not answering at all. Rendering this as a failure is how a
+    // written-off notice comes to look like a glitch, and the parent is the only
+    // reader who can do anything about it.
+    return `Last notification: ${notification.kind} (EXPIRED — undelivered after ${notification.attempts} attempt(s); this notice was given up on and will not be retried. The parent session is not accepting writes.)`;
+  }
   if (notification.pending) {
     // The wording names what is actually known, and no more. Live evidence:
     // the host puts the notification in the parent's context AS A USER MESSAGE

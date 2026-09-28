@@ -14,8 +14,7 @@ import { settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
   containFailure,
-  getPendingDeliveries,
-  notifyParent,
+  redeliverOwedNotifications,
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
@@ -172,17 +171,10 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   const restored = restoreActive(store, ledger.active);
   if (restored > 0) void reconcileRestored(client, store);
 
-  // Pay the debt, oldest first, one pass and no waiting. Every write goes back
-  // through the gate — there is no second parent-write path — so a redelivery
-  // the host HOLDS re-arms its own entry and waits for the next boot, and one
-  // that lands is retired before the receipt is written.
-  for (const owed of getPendingDeliveries()) {
-    void notifyParent(client, owed.parentSessionId, owed.text, {
-      childSessionId: owed.childSessionId,
-      kind: owed.kind,
-      carriedAttempts: owed.attempts,
-    });
-  }
+  // Pay the debt, oldest first, one pass and no waiting — through the one
+  // re-offer of the queue, which is also where the budget comes from, so no
+  // caller can dial a debt without it.
+  redeliverOwedNotifications(client, config.pendingMaxAttempts);
 
   return { store, config };
 }

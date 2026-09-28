@@ -278,6 +278,37 @@ describe("task formatting: fleet views", () => {
     for (const word of words) assert.ok(text.includes(word), `${word} must be rendered. got: ${text}`);
   };
 
+  // One seam for the two cases below, so each names the STATE it is about rather
+  // than re-spelling the record and the render chain — which jscpd reads as a
+  // clone of every other 4-line fixture in this file, whether or not any logic
+  // is shared.
+  const rendering = (over) => detailOf({}, notifiedAs("error", { delivered: false, attempts: 3, ...over }));
+
+  it("renders a written-off notice as EXPIRED, not as a failure", () => {
+    // The one fact a parent can act on. "FAILED" says the plugin tried and lost
+    // it, and the reader looks for a retry that is not coming; "EXPIRED" says the
+    // plugin stopped trying, which means the parent session is not accepting
+    // writes at all. A written-off notice rendered as a failure is a notice that
+    // looks like a glitch — and the parent is the only reader positioned to fix it.
+    const detail = rendering({ expired: true });
+
+    assert.match(detail, /EXPIRED/);
+    assert.match(detail, /undelivered after 3 attempt\(s\)/);
+    assert.match(detail, /will not be retried/);
+    assert.doesNotMatch(detail, /FAILED/, "a written-off notice is not a failed one");
+    assert.doesNotMatch(detail, /PENDING/, "and it is not waiting for an answer either");
+  });
+
+  it("keeps a genuinely failed notice reading as FAILED", () => {
+    // The falsification of the case above: a record with the same attempt count
+    // and no expiry must still read as a failure, or the two states have been
+    // collapsed and the expiry word proves nothing.
+    const detail = rendering({});
+
+    assert.match(detail, /FAILED after 3 attempt\(s\)/);
+    assert.doesNotMatch(detail, /EXPIRED/);
+  });
+
   it("formatTaskListSummary counts the running rows and indents the tree", () => {
     const now = Date.now();
     const summary = listOf({

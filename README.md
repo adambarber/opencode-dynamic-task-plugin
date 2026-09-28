@@ -102,6 +102,7 @@ Set via environment variables, `.opencode/dynamic-task-plugin.jsonc`, or the plu
 | `DYNAMIC_TASK_CACHE_TTL` | `300000` | Agent list cache TTL (ms) |
 | `DYNAMIC_TASK_RETAINED_TTL_MS` | `3600000` | Retained-task record TTL (ms) |
 | `DYNAMIC_TASK_RETAINED_MAX_ENTRIES` | `100` | Retained-task record cap |
+| `DYNAMIC_TASK_PENDING_MAX_ATTEMPTS` | `3` | How many times an owed parent notice is re-offered across restarts before it is written off |
 | `DYNAMIC_TASK_FORBIDDEN_AGENTS` | `(empty — all agents dispatch)` | Comma-separated blocked agent names |
 | `DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION` | `false` | Allow an agent to spawn itself |
 | `DYNAMIC_TASK_DEBUG` | off | `1` to enable per-session debug logs |

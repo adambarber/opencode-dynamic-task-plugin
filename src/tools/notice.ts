@@ -15,8 +15,8 @@ import {
   NOTICE_PARENTLESS,
   NOTICE_SENT,
   NOTICE_DUPLICATE_SUPPRESSED,
-  NOTICE_PARENT_UNREACHABLE,
   NOTICE_PENDING_ACK,
+  parentUndelivered,
   noticeClaimRefused,
 } from "../shared/voice.js";
 
@@ -82,5 +82,5 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
     return NOTICE_DUPLICATE_SUPPRESSED;
   }
   if (record?.pending) return NOTICE_PENDING_ACK;
-  return NOTICE_PARENT_UNREACHABLE;
+  return parentUndelivered(record);
 }

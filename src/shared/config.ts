@@ -28,6 +28,14 @@ export interface DynamicTaskConfig {
   agentCacheTtlMs: number;
   retainedTaskTtlMs: number;
   retainedTaskMaxEntries: number;
+  /**
+   * How many times a owed parent notification is re-offered across restarts
+   * before it is written off. Three is the default: enough to ride out an
+   * operator who left a terminal open or a laptop that slept through two boots,
+   * few enough that a parent which is gone is written off rather than
+   * re-offered forever.
+   */
+  pendingMaxAttempts: number;
   blockedAgents: string[];
   allowSameAgentRecursion: boolean;
 }
@@ -54,6 +62,15 @@ function buildDefaultConfig(): DynamicTaskConfig {
     agentCacheTtlMs: 300_000,
     retainedTaskTtlMs: 3_600_000,
     retainedTaskMaxEntries: 100,
+    // An owed notice is re-offered at every boot, and redelivering it IS
+    // `session.prompt` — a real user turn in the parent's session. So an
+    // unbounded retry is not a notice that arrives late, it is a parent that can
+    // never be idle. Three ends it, which is enough to ride out an operator who
+    // left a terminal open or a laptop that slept through two boots, and few
+    // enough that a parent which is gone is written off rather than re-offered
+    // forever. The gate has its own smaller backstop for a caller that names no
+    // bound; that is a funnel safety and is deliberately not this number.
+    pendingMaxAttempts: 3,
     // Any agent dispatches by default — lineage, depth, and recursion policy
     // bound the real hazards (self-spawning loops), not the agent name.
     // Operators who want names barred keep the blocklist as policy.
@@ -129,6 +146,7 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
   takePositiveInt(target, s, "agentCacheTtlMs");
   takePositiveInt(target, s, "retainedTaskTtlMs");
   takePositiveInt(target, s, "retainedTaskMaxEntries");
+  takePositiveInt(target, s, "pendingMaxAttempts");
   if (Array.isArray(s.blockedAgents)) {
     // An explicit empty list is a real setting ("block nothing"), not an
     // absent one — it must override the default blocklist.
@@ -163,6 +181,7 @@ export const ENV = {
   agentCacheTtlMs: "DYNAMIC_TASK_CACHE_TTL",
   retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
   retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
+  pendingMaxAttempts: "DYNAMIC_TASK_PENDING_MAX_ATTEMPTS",
   blockedAgents: "DYNAMIC_TASK_FORBIDDEN_AGENTS",
   allowSameAgentRecursion: "DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION",
 } as const;
@@ -181,7 +200,8 @@ export function normalizeDynamicTaskConfig(
     maxConcurrent: () => parsePositiveInt(envValue(ENV.maxConcurrent)),
     agentCacheTtlMs: () => parsePositiveInt(envValue(ENV.agentCacheTtlMs)),
     retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
-    retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
+      retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
+      pendingMaxAttempts: () => parsePositiveInt(envValue(ENV.pendingMaxAttempts)),
     blockedAgents: () => {
       const raw = envValue(ENV.blockedAgents);
       if (!raw) return undefined;
@@ -208,6 +228,7 @@ export function normalizeDynamicTaskConfig(
     agentCacheTtlMs: merged.agentCacheTtlMs,
     retainedTaskTtlMs: merged.retainedTaskTtlMs,
     retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
+    pendingMaxAttempts: merged.pendingMaxAttempts,
     blockedAgents: merged.blockedAgents,
     allowSameAgentRecursion: merged.allowSameAgentRecursion,
   };

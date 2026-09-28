@@ -238,8 +238,27 @@ export const NOTICE_SENT = "Message sent to parent.";
 export const NOTICE_DUPLICATE_SUPPRESSED =
   "Message not sent: this exact notice was already delivered (duplicate suppressed). Say something new and call task_notify again.";
 
-export const NOTICE_PARENT_UNREACHABLE =
-  "Message not sent: the parent did not acknowledge after 2 attempts. The notice is recorded locally; retry task_notify later.";
+/**
+ * What a child is told when a notice did not land, derived from the record.
+ *
+ * A function and not a sentence with a number in it, because the number used to
+ * be a literal: a redelivery carrying five earlier attempts produces a record
+ * that says 7, and the old string told the child "after 2 attempts" regardless.
+ * A count the sender cannot trust is worse than no count at all — it is the one
+ * number a child repeats back to its parent as an explanation.
+ *
+ * `expired` is answered here rather than falling through, and that is the point
+ * of the function: it is the only place that decides what an undelivered record
+ * means, so a call site that later redelivers with a carried count cannot reach
+ * for words that promise a retry the plugin has already given up on.
+ */
+export function parentUndelivered(record: { attempts: number; expired?: boolean } | null | undefined): string {
+  const attempts = record?.attempts ?? 0;
+  if (record?.expired === true) {
+    return `Message not sent: this notice was given up on after ${attempts} attempt(s) and will not be retried. The parent session is not accepting writes.`;
+  }
+  return `Message not sent: the parent did not acknowledge after ${attempts} attempt(s). The notice is recorded locally; retry task_notify later.`;
+}
 
 // A held write is the case the parent-facing record already learned to name
 // honestly (05-notification-gate): the host puts the notification in the

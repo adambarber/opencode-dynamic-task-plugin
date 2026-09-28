@@ -32,12 +32,10 @@ import { AGENT_OVERLAY_FILE, writeAgentOverlay } from "../../dist/shared/caps.js
 import { resolveTaskLedgerPath, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
 import { foldActiveByAgent, totalActiveOf } from "../../dist/shared/occupancy.js";
 import { activeByAgent } from "../../dist/shared/task-state.js";
-import { Renderable, TextBufferRenderable } from "@opentui/core";
 import { darkTheme } from "./support/harness.js";
 import { screenTokens, widthsAgree } from "../../dist/tui/theme.js";
-import { GAUGE_SLOT, deferredCounter, footerLineOf, footerLineToJoin, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
+import { GAUGE_SLOT, gaugeProps, gaugeRuns, gaugeStyledText, gaugeText, isLedgerEvent, readGauge, watchLedger } from "../../dist/tui/agent-gauge.js";
 import { withTempDir } from "./support/fixtures.js";
-import { renderTree } from "./support/render-tree.js";
 // ONE host double for the whole suite, not a second one here. It is the one that carries a
 // real `root`, so the counter's tree walk is exercised here against the same object the
 // limits screen meets — and a second double, private to this file, is one more thing that
@@ -227,39 +225,6 @@ describe("the counter is drawn in the host's muted grey", () => {
     }
   });
 
-  it("reads the real classes, which is the half of this a stand-in cannot prove", () => {
-    // The contract `TreeLike` declares, checked against the shipped classes rather than
-    // against a stand-in. `getChildren` is how a tree is walked; `plainText` is how a
-    // string is read; and a renderable that is not a text has NO `plainText` at all, so
-    // the walk's `typeof === "string"` guard is a real question rather than a formality.
-    // If a future opentui moves `plainText` up onto `Renderable`, this fails, and the
-    // guard in `findFooterAnchor` has to be reconsidered on its merits.
-    const base = Renderable.prototype;
-    const textProto = TextBufferRenderable.prototype;
-    assert.equal(typeof base.getChildren, "function", "the walk reads getChildren(), which is how a tree is walked");
-    assert.equal("children" in base, false, "and there is no children property, so a stand-in must not offer one");
-    assert.equal("plainText" in base, false, "a box has no plainText, so reading one yields undefined, not ''");
-    const descriptor = Object.getOwnPropertyDescriptor(textProto, "plainText");
-    assert.equal(typeof descriptor?.get, "function", "and on a text it is an ACCESSOR, not a data property");
-  });
-
-  it("finds the host's footer line by its commands hint, not by a guess at the tree", () => {
-    // The shape the host really builds, from `packages/tui/src/component/prompt/index.tsx`:
-    // root → column → column → the footer box, whose children are the file label, the
-    // context figure, and the commands hint. Only the box may be added to — adding to a
-    // text, or to an ancestor, would put the counter inside something the host owns.
-    const { root, line } = renderTree();
-    const found = footerLineOf(root);
-    assert.equal(found, line, "the box that HOLDS the hint, which is the anchor's parent");
-    assert.equal(found.getChildren().length, 3,
-      "and it holds THREE children, where the hint itself holds none — so this is the parent, not the text");
-  });
-
-  it("returns null rather than a near miss, so a renamed hint falls back to the slot", () => {
-    const { root } = renderTree({ footer: false });
-    assert.equal(footerLineOf(root), null, "a host that renamed the hint is a host to fall back on, not to guess at");
-  });
-
   it("reads as a fraction, so the eye can pass over it", () => {
     assert.equal(gaugeText(0, 4), "0/4", "an idle project");
     assert.equal(gaugeText(3, 4), "3/4", "three of four");
@@ -301,35 +266,6 @@ describe("the counter is drawn in the host's muted grey", () => {
 });
 
 describe("the module mounts the counter where the host draws the prompt's right", () => {
-  it("joins the host's footer line when the host has one, and nothing else will do", () => {
-    // The DECISION, and the only part of the mount that is testable here. Two things stop
-    // the rest: a real `TextRenderable` needs the OpenTUI native FFI, and `jsx` from
-    // `@opentui/solid/jsx-runtime` is EAGER — it calls `createElement` on the spot and
-    // throws "No renderer found" with none. So the walk is split out to be checked on its
-    // own, rather than left to fail silently inside the function that builds the node, and
-    // rather than pinned with a stand-in for a renderer this repo cannot construct.
-    //
-    // The consequence is worth stating: what is covered is the CHOICE of line and the
-    // decline. That the node lands on it is the one claim only a real TUI can settle.
-    withTempDir((directory) => {
-      const join = footerLineToJoin(hostApi(directory).api);
-      // Compared by WHAT it holds, not by identity: the double builds its own tree, so an
-      // identity check against a second `renderTree()` would be comparing two different
-      // objects and would pass or fail for reasons that have nothing to do with the walk.
-      assert.deepEqual(join.line.getChildren().map((child) => child.plainText),
-        ["/src/project", "109.7K (10%)", "ctrl+p commands"],
-        "the box holding the host's three footer children, which is where the counter belongs");
-      assert.ok(join.renderer, "and the renderer to build the node with, so no caller needs a bang");
-    });
-  });
-
-  it("and declines when the host's line is not there, rather than adding to something else", () => {
-    withTempDir((directory) => {
-      assert.equal(footerLineToJoin(hostApi(directory, { withFooter: false }).api), null,
-        "a host that renamed the hint has no line to join, and no near miss is good enough");
-    });
-  });
-
   it("and a store's own fold is the function the corner reads, not a second one beside it", () => {
     // `activeByAgent` is the tool-side caller. The claim is that it DELEGATES: a second
     // loop over `activeTasks` is how the two answers drift, and the duplication gate

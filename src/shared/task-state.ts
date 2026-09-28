@@ -464,14 +464,18 @@ export function registerActiveTask(
   // claim below, the record, the durable write, and a later revival's re-claim — and
   // the field is declared required while every JavaScript caller is free to omit it.
   // Normalizing at this boundary is what makes the four agree: without it a
-  // registration that omits the agent leaves all four holding `undefined`, and a
-  // revived task is re-admitted against an agent that does not exist. Idempotent, so
-  // resolving an already-resolved name costs nothing.
+  // registration that omits the agent leaves all four holding `undefined`, and the
+  // durable reader — which requires a string — drops the whole entry at load, so a
+  // child the store was tracking is invisible to the next boot.
   //
-  // Under lanes this folded a SECOND routing key that the record did not already
-  // carry. Folding the agent instead removes a field rather than adding a rule, and it
-  // is the one field whose value could disagree with `agentName` on the same record.
-  const registration = { ...task, agentName: agentKey(task.agentName) || task.agentName };
+  // Normalized to PRESENCE, never to a folded spelling. The record's `agentName` is
+  // the host's word: `fireChildPrompt` routes it back to the host on a revive, and
+  // every read tool displays it, so folding it here meant sending the host a name it
+  // did not give us and showing the operator an agent they never configured. The
+  // fold belongs to the policy KEY, and it is applied by every reader that compares
+  // against a cap — `agentActiveCount`, `resolveAgentCaps` — so it is one line there
+  // rather than a rule every consumer of the record has to remember.
+  const registration = { ...task, agentName: task.agentName ?? "" };
   claimSlot(store, registration, config);
   const record = activeRecord(registration, Date.now());
   notifyRunning(store, store.markRunning(task.childSessionId, record));
@@ -928,10 +932,18 @@ export function restoreRetained(
       // The cap's drop is named rather than left inside `pruneIfBounded`, which
       // has no way to hand it back: a record it drops must leave the shared file
       // too, and "this process no longer has it" is not the same claim.
-      const dropped = pruneIfBounded(store, record, maxEntries);
-      store.markRetained(id, dropped.kept);
-      if (dropped.forgotten !== null) changes.push({ kind: LedgerChangeKind.Forgotten, id: dropped.forgotten });
-      changes.push({ kind: LedgerChangeKind.Settled, id, record: dropped.kept });
+      const decision = pruneIfBounded(store, record, maxEntries);
+      if ("dropped" in decision) {
+        // The incoming record IS the oldest, so it is the one the cap evicts, and
+        // the file has to learn that — or the next boot restores what this one
+        // refused. A `Forgotten` with no `Settled` beside it is the whole truth:
+        // this record is not in the store, and was not for an instant of this boot.
+        changes.push({ kind: LedgerChangeKind.Forgotten, id });
+        return;
+      }
+      store.markRetained(id, decision.kept);
+      if (decision.forgotten !== null) changes.push({ kind: LedgerChangeKind.Forgotten, id: decision.forgotten });
+      changes.push({ kind: LedgerChangeKind.Settled, id, record: decision.kept });
     },
     store.onRetainedChange === undefined
       ? undefined
@@ -941,20 +953,31 @@ export function restoreRetained(
 
 // Restored entries bypass the runtime mutation choke points, so the cap is
 // enforced here (tenet: the cap cannot be escaped by any state path).
+//
+// AGE is the cap's rule, so it is judged on `retainedAt` from BOTH sides. The
+// only two things this can do — drop the oldest record held, or keep the one
+// arriving — are the same decision only while the file's key order is its age
+// order, which holds for a file this plugin wrote and for nothing else. A merge
+// of two ledgers, a formatter, a hand edit or a clock that moved between two
+// records all produce an order that is not an age order, and the oldest record
+// then arrives LAST, so the second branch evicts a record newer than the one it
+// keeps. The eviction is published as `Forgotten` and written back, so that is
+// not a transient slip: the file agrees with it and the next boot restores what
+// this one refused.
 function pruneIfBounded(
   store: TaskStore,
   record: RetainedTaskState,
   maxEntries: number,
-): { kept: RetainedTaskState; forgotten: string | null } {
-  let forgotten: string | null = null;
-  if (store.retainedTasks.size >= maxEntries) {
-    const oldestId = oldestRetainedId(store);
-    if (oldestId) {
-      store.dropRetained(oldestId);
-      forgotten = oldestId;
-    }
-  }
-  return { kept: record, forgotten };
+): { kept: RetainedTaskState; forgotten: string | null } | { dropped: true } {
+  if (store.retainedTasks.size < maxEntries) return { kept: record, forgotten: null };
+  const oldestId = oldestRetainedId(store);
+  if (!oldestId) return { kept: record, forgotten: null };
+  const oldest = store.retainedTasks.get(oldestId);
+  // A tie keeps the incoming record and evicts the held one, which is what the
+  // first branch did, so nothing about an already-correct case moves.
+  if (oldest && record.retainedAt < oldest.retainedAt) return { dropped: true };
+  store.dropRetained(oldestId);
+  return { kept: record, forgotten: oldestId };
 }
 
 export function oldestRetainedId(store: TaskStore): string | null {
@@ -969,13 +992,5 @@ export function oldestRetainedId(store: TaskStore): string | null {
   return oldest;
 }
 
-// Shared age formatting for task summaries and fleet rows.
-export function formatAge(startedAt: number): string {
-  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  const restMinutes = minutes % 60;
-  return restMinutes > 0 ? `${hours}h ${restMinutes}m` : `${hours}h`;
-}
+// Shared age formatting moved to task-formatting.ts: one caller, and that caller
+// is the module whose job is rendering. The line gate is what noticed.

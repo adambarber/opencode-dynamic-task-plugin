@@ -126,6 +126,20 @@ at all — no error, no refusal, just an agent running uncapped under a cap they
 can see. The same fold is in the running-task count, because undercounting a busy
 agent is the one direction of error that never announces itself.
 
+**The fold is on the KEY; the record keeps the host's spelling.** Both sides
+folding was the rule, and it used to be satisfied by baking the folded name into
+the record at registration — which is lossy in a way the counts cannot see. The
+`agentName` in a retained or active record is what `task_list`, `task_result` and
+the TUI all print, so a record written for a host agent spelled `Explore` claimed
+`explore`, and the claim was unfalsifiable: the counts stayed correct, every cap
+kept working, and the only evidence was a word on a screen that disagreed with
+the host. Folding at the key instead — `foldActiveByAgent` groups by `agentKey`
+and the record is untouched — gives the same equality on both sides with no lie
+in the value, and leaves the host's spelling available for anything that has to
+name the agent to the host rather than to a person. The compiler cannot enforce
+this, so the invariant is a case: dispatch to an agent whose host name differs
+from its folded key and read the count.
+
 ## Depth, and the binding constraint
 
 A per-agent `maxDepth` is a **placement limit**: the deepest generation at which

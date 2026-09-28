@@ -1,9 +1,12 @@
 // Presentation for fleet/status/result reads. Notification text is owned by
 // the gate (notify.ts); this module only renders store records for humans.
-// truncateText and formatAge live in notify.ts / task-state.ts respectively —
-// one home each, imported here.
+// truncateText is notify.ts's and imported here; formatAge is below for the
+// same reason it is here at all — one caller, and that caller is the module
+// whose whole job is rendering. It spent years in task-state.ts, which is a
+// lifecycle module, because a formatter is easy to park next to the data it
+// reads. `task-state: no file outgrows 1000 lines` is the gate that noticed.
 import { truncateText, type NotificationRecord } from "./notify.js";
-import { TaskState, failureClassOf, formatAge, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
+import { TaskState, failureClassOf, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
 import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
 import { FailureClass, failureNote } from "./failure-class.js";
@@ -11,6 +14,25 @@ import type { FileTouch } from "./prompt.js";
 import { textBlock, present } from "./text-block.js";
 import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
+
+/**
+ * How long ago a moment was, in the words an operator reads.
+ *
+ * Ages are rendered into eight different lines across this module and into none
+ * anywhere else, and a mixed convention ("45s" beside "1h 5m") makes a stalled
+ * task look like a recent one. `1h 5m` rather than `1h 5m 3s` for the same
+ * reason the seconds are dropped below a minute: the reader is comparing, not
+ * auditing, and the more digits on the line the less of the line they read.
+ */
+export function formatAge(startedAt: number): string {
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const restMinutes = minutes % 60;
+  return restMinutes > 0 ? `${hours}h ${restMinutes}m` : `${hours}h`;
+}
 
 // The one thing a settled record can still be told: the server is working on it,
 // so the settlement was premature and its output is not final. Named because it is

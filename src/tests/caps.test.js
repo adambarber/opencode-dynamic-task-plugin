@@ -184,6 +184,43 @@ describe("the key space", () => {
     assert.strictEqual(activeByAgent(store).get("explore"), 1);
     assert.strictEqual(activeByAgent(store).get("Explore"), undefined, "one key, not two spellings");
   });
+
+  it("folds the POLICY KEY, not the record — the pair, because either half alone proves nothing", () => {
+    // The record is what routing and every read tool display, so a folded name
+    // there is a name the host never gave us: sent back to the host on a revive,
+    // and shown to the operator as the agent they did not configure. The fold
+    // belongs to the policy key.
+    //
+    // Asserted as a PAIR because each half can pass for the wrong reason. The
+    // spelling alone would pass against a cap lookup that had quietly stopped
+    // folding — the record reads right and every agent runs uncapped. The cap
+    // alone would pass against the fold simply being left where it was, which is
+    // the bug. What makes it a claim about WHERE the fold lives is that both
+    // hold at once.
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4 }, { agents: { explore: { maxConcurrent: 1 } } });
+    const store = createTaskStore();
+    const record = registerActiveTask(store, registration("ses_a", "Explore"), config);
+
+    assert.strictEqual(record.agentName, "Explore", "the record is the host's own spelling");
+    assert.throws(
+      () => registerActiveTask(store, registration("ses_b", "Explore"), config),
+      /cannot run more than 1 active task/,
+      "and the cap written under a folded key still finds the unfolded record",
+    );
+  });
+
+  it("a registration that names no agent is still a record the durable reader accepts", () => {
+    // The type requires the field and every JavaScript caller is free to omit it.
+    // An omitted name used to be folded to itself, which left `undefined` on the
+    // record — and `isValidLedgerEntry` requires a string, so the whole entry was
+    // DROPPED at load: a child the store was tracking, invisible to the next boot,
+    // with the ledger reporting a count of records that "failed validation" for a
+    // reason no operator could act on. The boundary is where the field becomes the
+    // string the reader requires, because four consumers downstream rely on it.
+    const store = createTaskStore();
+    const record = registerActiveTask(store, { childSessionId: "ses_a", parentSessionId: "p", description: "d", lineage: [] });
+    assert.strictEqual(typeof record.agentName, "string", "the field the durable validator checks is present");
+  });
 });
 
 describe("the capacity judgment", () => {

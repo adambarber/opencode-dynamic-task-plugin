@@ -461,6 +461,41 @@ describe("task-state: restoreRetained", () => {
     restoreRetained(store, []);
     assert.strictEqual(writes, 0, "a first boot has no file to correct");
   });
+
+  // The cap's eviction is published as `Forgotten` and written back, so choosing
+  // the wrong record is not a slip that washes out on the next boot — it is the
+  // file agreeing with the wrong answer. And a file's key order is not its age
+  // order: a merge of two ledgers, a formatter, a hand edit, or a clock that
+  // moved backwards between two records all produce one, and the oldest record
+  // then arrives LAST. Evicting the oldest record already held while keeping the
+  // newest arrival — the only two things the function can do — evicts a record
+  // newer than the one it keeps, forever.
+  //
+  // So the claim is CONVERGENCE rather than a single outcome: the same two
+  // records in either order must leave the same one standing and name the same
+  // one forgotten. One outcome asserted once would be satisfied by an
+  // implementation that happens to be right about one order, which is the whole
+  // failure. Ages are derived from the id so the two orders cannot be quietly
+  // the same fixture.
+  const twoAges = (order) =>
+    order.map((id) => [id, { ...ledgerEntry(id), retainedAt: id === "ses_older" ? 1 : 9 }]);
+  const outcomeOf = (order) => {
+    const store = createTaskStore();
+    const forgotten = [];
+    store.onRetainedChange = (changes) => {
+      changes.filter((change) => change.kind === "forgotten").forEach((change) => forgotten.push(change.id));
+    };
+    restoreRetained(store, twoAges(order), 1);
+    return { standing: [...store.retainedTasks.keys()], forgotten };
+  };
+
+  it("evicts the OLDEST record, whichever order the file arrived in", () => {
+    const olderArrivesLast = outcomeOf(["ses_newer", "ses_older"]);
+    const olderArrivesFirst = outcomeOf(["ses_older", "ses_newer"]);
+
+    assert.deepStrictEqual(olderArrivesLast.standing, ["ses_newer"], "the cap is one record, and it is the newer one");
+    assert.deepStrictEqual(olderArrivesLast, olderArrivesFirst, "where a record sat in the file cannot decide which record survives");
+  });
 });
 
 describe("pruneRetainedTasks — TTL and max entry eviction", () => {

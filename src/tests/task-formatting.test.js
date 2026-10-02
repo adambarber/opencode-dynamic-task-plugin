@@ -11,6 +11,23 @@ import { describe, it, assert } from "./support/runner.js";
 import { buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { noticeRecord } from "../../dist/shared/task-state.js";
 import { notifiedAs } from "./support/records.js";
+import { busyWord } from "./support/sdk-contract.js";
+
+/**
+ * A liveness reading in the shape `readLiveness` returns.
+ *
+ * The two fields it takes are the whole of the gap this fix closed: `hostTurn` is a
+ * host WORD or absent (never a null the plugin made up), and `statusAnswered` says
+ * whether anyone managed to ask. So the fixture has no way to say "the channel
+ * answered and found nothing" and no way to say "the channel failed" — those are
+ * `reading(undefined, …)` and a second factory, not one overloaded null.
+ */
+const reading = (hostTurn, lastMessageAt) => ({
+  hostTurn: hostTurn === undefined ? undefined : { type: hostTurn },
+  statusAnswered: true,
+  lastMessageAt,
+  messageCount: 1,
+});
 
 // The record the view formatters read. Production owns the shape
 // (taskResultRecord) and the boring truth that goes with it; what is left here is
@@ -175,7 +192,7 @@ describe("formatTaskResultSummary", () => {
     const result = formatTaskResultSummary(resultRecord({
       status: "active",
       task: taskRecord(),
-      liveness: { hostState: "busy", lastMessageAt: Date.now() - 1000 },
+      liveness: reading(busyWord(), Date.now() - 1000),
     }));
     assert.match(result, /Status: active/);
     assert.match(result, /Server status: busy/);
@@ -190,7 +207,7 @@ describe("formatTaskResultSummary", () => {
     const result = formatTaskResultSummary(resultRecord({
       status: "completed",
       task: taskRecord({ state: "completed" }),
-      liveness: { hostState: null, lastMessageAt: null },
+      liveness: reading(undefined, null),
     }));
     assert.match(result, /Status: completed/);
     assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);

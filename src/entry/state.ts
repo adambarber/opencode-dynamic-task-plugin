@@ -10,7 +10,7 @@ import { LedgerChangeKind } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
-import { hostTurnOver, readLiveness } from "../shared/liveness.js";
+import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
@@ -276,34 +276,38 @@ async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Prom
     // still settles it and nothing is notified that was not observed.
     try {
       const reading = await readLiveness(client, childSessionId);
-      // This pass may end a restored child two ways and no more: the host said
-      // the turn is over, or the host stopped listing it. Every other reading —
-      // working, retrying, or a word this plugin does not read — leaves it
-      // active, because its own terminal event still settles it and nothing is
-      // notified that was not observed. Deciding a child's fate from a word we
-      // did not understand is how a restart invents an error.
-      const vanished = reading.hostState === null;
-      if (!vanished && !hostTurnOver(reading)) {
+      // Two facts, and this pass may only end a child on one of them. A turn the
+      // host is running is left alone. A status channel that never answered is left
+      // alone too: its silence is not evidence, and settling off it would invent the
+      // very errors this pass exists to avoid.
+      if (!reading.statusAnswered) {
+        await safeLog(client, "info", `Restored task ${childSessionId}: status channel unanswered; left active`);
+        continue;
+      }
+      if (hostTurnRunning(reading)) {
         await safeLog(
           client,
           "info",
-          `Restored task ${childSessionId} is not over (host says "${String(reading.hostState)}"); left active`,
+          `Restored task ${childSessionId} is still running (host says "${reading.hostTurn?.type}"); left active`,
         );
         continue;
       }
+      // No running turn, so the session's fate is the transcript's to say — which is
+      // `settleRunningChild`'s own work. The one exception is a host that says it has
+      // no such session, and that question has its own endpoint: the status map
+      // cannot answer it, because "nothing running" and "never existed" look the
+      // same in there.
+      const presence = await readSessionPresence(client, childSessionId);
+      if (presence.existence !== SessionExistence.Missing) {
+        await settleRunningChild(client, store, childSessionId, { status: "idle" });
+        continue;
+      }
       // No cap source, and deliberately so: a boot-reconciled child is not a
-      // candidate for the silent transient resume. Most of what this pass settles
-      // is a child that VANISHED across the restart, and reviving its record
-      // would send a prompt to a session the host no longer has. The idle case
-      // could be resumed, but a resume that mostly fires against children that
-      // are gone is a worse trade than a message. So this pass always reports,
-      // and the reason it can is the one that belongs: the parent was told its
-      // child is missing.
+      // candidate for the silent transient resume, and reviving a record would send
+      // a prompt to a session the host has just denied having.
       await settleRunningChild(client, store, childSessionId, {
-        status: vanished ? "error" : "idle",
-        ...(vanished
-          ? { cause: "The plugin restarted while this child was running, and the host no longer lists a turn for it: the child vanished across the restart, so its work was never seen through — it did not fail." }
-          : {}),
+        status: "error",
+        cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
       });
     } catch (error: unknown) {
       await containFailure(client, `Could not reconcile restored task ${childSessionId}`, error, "left active");

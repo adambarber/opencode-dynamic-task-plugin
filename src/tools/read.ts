@@ -7,7 +7,7 @@ import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../sh
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
   readLiveness,
-  statusFromHostState,
+  statusFromHostTurn,
   type LivenessReading,
 } from "../shared/liveness.js";
 import {
@@ -48,7 +48,7 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     return formatTaskResultSummary(
       taskResultRecord({
         sessionId,
-        status: task ? task.state : statusFromHostState(liveness?.hostState ?? null),
+        status: task ? task.state : statusFromHostTurn(liveness?.hostTurn),
         messageCount: messages.length,
         latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
         // Free: the transcript this already read for the count and the latest text

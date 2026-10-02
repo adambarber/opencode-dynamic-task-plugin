@@ -12,7 +12,7 @@ import assert from "node:assert";
 import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
 import { deferred, events } from "./support/mock-host.js";
 import { answerMatches, answerSays, assertNoticeCount, textDeclaresKind } from "./support/assertions.js";
-import { dispatchArgs, eventHarness, harnessRejectingPrompt, hostStatus, withSingleSlot } from "./support/integration.js";
+import { dispatchArgs, eventHarness, harnessRejectingPrompt, withSingleSlot } from "./support/integration.js";
 
 describe("settlement: the notification layer owns outcomes", () => {
   // The head that sees EVERY event is the most-executed code in the plugin, so
@@ -90,7 +90,7 @@ describe("settlement: the notification layer owns outcomes", () => {
   it("repeated terminal events notify exactly once", async () => {
     const { h, id } = await withSettledChild();
     await h.settle(id);
-    await hostStatus(h, id);
+    await h.fireEvent(events.idle(id));
     assertNoticeCount(h, 1, "one settled turn, one notice");
   });
 

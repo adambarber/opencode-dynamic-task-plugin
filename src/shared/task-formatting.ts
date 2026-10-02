@@ -304,10 +304,24 @@ function formatNotificationLine(notification: NotificationRecord): string {
  * along only when the answer can be yes. Rendering "not listed by the server"
  * beside a task that is already settled reads as a fault in a view that has none.
  */
+/**
+ * What the status channel said, as one phrase. Three states, because a channel that
+ * could not be read is not a channel that found nothing — and rendering the first as
+ * the second is the defect this wording exists to prevent, in the same way the
+ * reconciler leaves a child alone rather than settling it.
+ *
+ * Declared once because both render sites used to say it, and they drifted: they
+ * agreed while the channel answered and could not agree about a failed one.
+ */
+function hostStatusPhrase(liveness: LivenessReading): string {
+  if (!liveness.statusAnswered) return "(the server's status channel could not be read)";
+  return liveness.hostTurn?.type ?? "(not listed by the server)";
+}
+
 function sourcedLivenessLines(task: TaskRecord, liveness: LivenessReading | null): string[] {
   if (!liveness || !(task.state === TaskState.Active || hostTurnRunning(liveness))) return [];
   return [
-    `Server status: ${liveness.hostState ?? "(not listed by the server)"}`,
+    `Server status: ${hostStatusPhrase(liveness)}`,
     liveness.lastMessageAt === null
       ? "Last child message: (none yet)"
       : `Last child message: ${formatAge(liveness.lastMessageAt)} ago`,
@@ -324,16 +338,22 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
   // event for this child's session), an explicit notice, and the spawn as
   // the floor for a child that has gone unheard since it was registered.
   const observed = observedMotion(task.startedAt, task.lastNotice?.at, task.lastActivityAt);
+  // Only a channel that ANSWERED can carry a verdict. An unread one is already named
+  // as unread by the sourced line, and then the plugin's own clock is the only thing
+  // left with anything to say — reading a failed channel as the server reporting no
+  // turn running has this plugin diagnosing its own blind spot, and it is the same
+  // error the reconciler was fixed for, one layer down.
+  const answered = liveness?.statusAnswered === true ? liveness : null;
   // The three states an active task can be in, each its own failure with its
   // own action — so they read as distinct, and none of them reads as
   // patience. Without a server reading only the silence is knowable, and
   // silence alone must not be dressed up as a diagnosis.
   const diagnosis =
-    liveness && turnReplacementPending(task)
-      ? hostTurnRunning(liveness)
+    answered && turnReplacementPending(task)
+      ? hostTurnRunning(answered)
         ? undefined
         : "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not."
-      : liveness && !hostTurnRunning(liveness)
+      : answered && !hostTurnRunning(answered)
         ? "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt."
         : Date.now() - observed > STALE_TURN_AFTER_MS
           ? `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`
@@ -534,7 +554,7 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   } else if (input.liveness) {
     // An untracked session has no store record to reconcile, so only the
     // sourced facts render — never a status inferred from message shapes.
-    lines.push(`Server status: ${input.liveness.hostState ?? "(not listed by the server)"}`);
+    lines.push(`Server status: ${hostStatusPhrase(input.liveness)}`);
   }
 
   if (input.notification) {

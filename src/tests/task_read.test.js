@@ -73,12 +73,13 @@ describe("task_result and task_interrupt paths", () => {
       }],
     ["a just-steered turn waiting to start reads as pending, not as work in progress",
       async ({ c }) => {
-        // The abort parks the turn on the server, so the status channel reads
-        // idle until the replacement's first event — the exact window turn
-        // attribution exists to cover.
+        // The abort parks the turn, and the host DELETES a parked turn from its status
+        // map — so the channel answers, and its answer is that it lists nothing. That is
+        // the window turn attribution exists to cover, and it is not the word `idle`:
+        // a fake that stored `idle` here is the lie this whole fix removed.
         await c.steer("pivot");
         const out = await c.status();
-        return [out, [[/Server status: idle/, true], [/replacement turn has not started/i, true], [/stalled/i, false]]];
+        return [out, [[/not listed by the server/, true], [/replacement turn has not started/i, true], [/stalled/i, false]]];
       }],
     ["a store the server has stopped reporting is flagged, not read as work",
       async ({ h, c }) => {
@@ -138,7 +139,11 @@ describe("task_result and task_interrupt paths", () => {
     const { c } = await withChild({ harness: { hooks: { statusThrows: new Error("status down") } } });
     const status = await statusSays(c, "State: active");
     answerSays(status, "Last plugin event:", "the plugin's own clock still reads");
-    answerOmits(status, "Server status", "an unanswered channel renders nothing");
+    // A channel that failed is named as failed, and is NOT reported as one that
+    // answered and found nothing: the reader has to be able to tell "the server has
+    // no turn" from "nobody could ask", because those need different responses.
+    answerSays(status, "status channel could not be read", "the gap is named as a gap");
+    answerOmits(status, "not listed by the server", "an unread channel is not an empty one");
     answerOmits(status, "missed the ending", "no reading, no verdict");
   });
 
@@ -177,7 +182,10 @@ describe("task_result and task_interrupt paths", () => {
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
-    answerOmits(summary, "Server status", "nothing was learned");
+    // The gap is named, and it is not dressed up as the host having said the session
+    // lists nothing — that inference ends children, so it must not reach a reader.
+    answerSays(summary, "status channel could not be read");
+    answerOmits(summary, "not listed by the server", "an unread channel is not an empty one");
   });
 
   it("a retryable transport failure says so", async () => {

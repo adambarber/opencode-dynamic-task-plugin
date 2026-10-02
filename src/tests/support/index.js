@@ -13,6 +13,7 @@ export * from "./runner.js";
 export * from "./assertions.js";
 export * from "./harness.js";
 export * from "./mock-host.js";
+export * from "./faults.js";
 export * from "./integration.js";
 export * from "./dispatch-wait-scenario.js";
 export * from "./gate-world.js";

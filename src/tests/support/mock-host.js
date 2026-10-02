@@ -16,6 +16,9 @@
  */
 
 import assert from "node:assert";
+
+import { readFileSync } from "node:fs";
+import { FAULTS, armFault, armHookFaults, armedFlag, fault, forId } from "./faults.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
@@ -119,7 +122,7 @@ const questionEndpoint = (state, hooks, { method, carriesAnswers, throws: throwH
       requestID: path.requestID,
       ...(carriesAnswers ? { answers: body.answers } : {}),
     });
-    return { ok: true };
+    return SDK_ENVELOPE({ ok: true });
   };
 
 /**
@@ -168,7 +171,19 @@ export function recordingClient(respond) {
   };
 }
 
-export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 200 } });
+/**
+ * The SDK envelope every answer arrives in. `refusal` is the second half of the
+ * same contract: the SDK does not throw on an API error, it RESOLVES the envelope
+ * with an `error` beside a non-2xx status — which is why a fake that can only
+ * refuse by throwing cannot express a refusal, and why a case written against it
+ * tested the wrong branch.
+ */
+export const SDK_ENVELOPE = (data, refusal) => ({
+  data,
+  request: {},
+  response: { status: refusal?.status ?? 200 },
+  ...(refusal?.error ? { error: refusal.error } : {}),
+});
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {
@@ -186,9 +201,13 @@ export function deferred() {
  * `state[name]`, the test holds the release: one shape, so a new gate cannot
  * invent its own protocol with the mock.
  */
-export function armGate(state, name, { fails = false } = {}) {
+export function armGate(state, name, { fails = false, maybe = false } = {}) {
   const gate = deferred();
   state[name] = { promise: gate.promise, used: false, fails, release: gate.resolve };
+  // The gate name is the fault name: one spelling, so the teardown rule needs no
+  // translation table between "what a test armed" and "what a branch records".
+  armFault(state, name);
+  if (maybe) state.maybe.add(name);
   return { release: () => gate.resolve() };
 }
 
@@ -388,6 +407,7 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *   questionRejectThrows?: boolean,
  *   agentsList?: unknown[],
  *   sessionPrefix?: string,            // tells two hosts apart in one project
+ *   silentHost?: boolean,              // every call is accepted and none is answered
  * }
  * Hook sets are read live: mutate them after setup to arm later phases.
  *
@@ -398,6 +418,38 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  * test that needs the two told apart — two plugin instances in one project, say
  * — says so with `sessionPrefix` rather than renumbering.
  */
+/**
+ * A host that accepts every call and answers none of them.
+ *
+ * Armed through one Proxy over the three namespaces the plugin actually dials
+ * (`app`, `question`, `session`), read live, so a case can boot against a working
+ * host and then go silent for the call under test. The gate is here rather than in
+ * each endpoint because the point of the case is that NOTHING answers: a sweep over
+ * a hand-written list of hung methods proves only that the list is current.
+ */
+const SILENCED = new Set(["app", "question", "session"]);
+
+const silence = (state, hooks, value, ns = "") =>
+  new Proxy(value, {
+    get(target, prop) {
+      const inner = target[prop];
+      if (typeof inner === "function") {
+        return async (...args) => {
+          if (!armedFlag(state, hooks, "silentHost")) return inner(...args);
+          // A trace of what the host swallowed, so a hang can be located instead of
+          // raced. The suite still proves nothing by waiting; this names the call.
+          fault(state, "silentHost");
+      const called = `${ns}${String(prop)}`;
+          if (Array.isArray(hooks.silencedCalls)) hooks.silencedCalls.push(called);
+          if (process.env.SILENCE_TRACE) appendFileSync(process.env.SILENCE_TRACE, `${called}\n`);
+          return new Promise(() => {});
+        };
+      }
+      if (inner !== null && typeof inner === "object") return silence(state, hooks, inner, `${ns}${String(prop)}.`);
+      return inner;
+    },
+  });
+
 export function createMockClient(hooks = {}) {
   const state = {
     sessions: new Set(),
@@ -413,6 +465,13 @@ export function createMockClient(hooks = {}) {
     transcripts: new Map(),
     logs: [],
     aborted: [],
+    // Every fault application, counted by name, and every fault a test asked
+    // for. See `FAULTS`.
+    faults: new Map(),
+    armed: new Set(),
+    // Faults a case knowingly may not reach — the only way out of the teardown
+    // rule, so "the host was hostile" is always a claim somebody made on purpose.
+    maybe: new Set(),
     // Every abort the plugin ASKED for, refused ones included. `aborted` above
     // records what the host actually did, which is the wrong question for an
     // ownership suite: a plugin that must never stop a session it did not
@@ -452,14 +511,18 @@ export function createMockClient(hooks = {}) {
     state.sessions.add(id);
     putHostStatus(state, id, type);
   }
+  armHookFaults(state, hooks);
 
-  return {
+  const endpoints = {
     _state: state,
     app: {
       // A host that cannot answer is a case the plugin has to survive, and a
       // mock that can only ever succeed cannot express one.
       agents: async () => {
-        if (hooks.agentsListThrows) throw new Error("agent list unavailable");
+        if (armedFlag(state, hooks, "agentsListThrows")) {
+          fault(state, "agentsListThrows");
+          throw new Error("agent list unavailable");
+        }
         return SDK_ENVELOPE(hooks.agentsList ?? [
           { name: "explore", mode: "subagent" },
           { name: "general", mode: "subagent" },
@@ -481,7 +544,8 @@ export function createMockClient(hooks = {}) {
     },
     session: {
       create: async ({ body }) => {
-        if (hooks.createThrowsOnce && !state.createThrown) {
+        if (armedFlag(state, hooks, "createThrowsOnce") && !state.createThrown) {
+          fault(state, "createThrowsOnce");
           state.createThrown = true;
           throw new Error("create failed");
         }
@@ -497,7 +561,10 @@ export function createMockClient(hooks = {}) {
         // be read out of. The session is real — it is in `state.sessions`, so
         // `sessionCount` counts it and nothing ever aborts it — which is the whole
         // shape of the orphan: a running child the plugin has no name for.
-        if (hooks.createReturnsIdless) return SDK_ENVELOPE({ info: { title: body.title } });
+        if (armedFlag(state, hooks, "createReturnsIdless")) {
+          fault(state, "createReturnsIdless");
+          return SDK_ENVELOPE({ info: { title: body.title } });
+        }
         return SDK_ENVELOPE({ id });
       },
       // session.prompt routes by marker: parent notifications carry the tag
@@ -511,24 +578,27 @@ export function createMockClient(hooks = {}) {
         // failing is the one settlement that can still land while a steer
         // waits on its abort, so this is how a steer is raced against it.
         if (state.promptGate && !state.promptGate.used) {
+          fault(state, "promptGate");
           state.promptGate.used = true;
           return state.promptGate.promise.then(() => {
             throw new Error("prompt rejected by the provider");
           });
         }
-        if (hooks.promptSyncThrowIds?.has(path.id)) {
+        const syncDead = forId(state, "promptSyncThrow", hooks.promptSyncThrowIds, path.id, () => {
           throw new Error(`prompt sync-dead for ${path.id}`);
-        }
-        if (hooks.promptHangIds?.has(path.id)) {
-          return new Promise(() => {});
-        }
-        if (hooks.promptFailIds?.has(path.id)) {
-          return Promise.reject(new Error(`prompt failed for ${path.id}`));
-        }
+        });
+        if (syncDead) return syncDead;
+        const hung = forId(state, "promptHang", hooks.promptHangIds, path.id, () => new Promise(() => {}));
+        if (hung) return hung;
+        const failed = forId(state, "promptFail", hooks.promptFailIds, path.id, () => {
+          throw new Error(`prompt failed for ${path.id}`);
+        });
+        if (failed) return failed;
         if (isParentNotification(text)) {
           // The delivery transport for THIS notification, as a plan rather
           // than an override: a test states what the transport does, never how
           // the plugin reaches it.
+          fault(state, "notifyTransport");
           const plan = hooks.notifyTransport;
           state.notifyCalls.push(text);
           const record = noticeRecord(path.id, text);
@@ -566,6 +636,7 @@ export function createMockClient(hooks = {}) {
           captureNotice(state, record);
         } else {
           if (hooks.childPromptFailOnce && !state.childPromptFailed) {
+          fault(state, "childPromptFailOnce");
             state.childPromptFailed = true;
             return Promise.reject(
               Object.assign(new Error(hooks.childPromptFailOnce.message), {
@@ -575,7 +646,18 @@ export function createMockClient(hooks = {}) {
           }
           state.promptBodies.push({ to: path.id, body });
         }
-        return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
+        if (hooks.promptRefusal) {
+          // A host that SAYS NO, in the shape it says it: a resolved envelope with
+          // a non-2xx status and an error beside it. Every production reader of a
+          // write answer goes through `hostRefusal`, so this is the only way a case
+          // can put that branch under test through the harness.
+          fault(state, "promptRefusal");
+          const { status, message } = hooks.promptRefusal;
+          return Promise.resolve(
+            SDK_ENVELOPE(undefined, { status, error: { name: "ApiError", message } }),
+          );
+        }
+        return Promise.resolve(SDK_ENVELOPE({ parts: [{ type: "text", text: "PROMPT_OK" }] }));
       },
       // The server's status channel: a map of every session with a turn the
       // host knows about. A session absent from it has no turn running.
@@ -585,18 +667,26 @@ export function createMockClient(hooks = {}) {
       // whole fleet in one. The count is the only proof a view did not do it.
       status: async () => {
         state.statusReads += 1;
-        if (hooks.statusHang) return new Promise(() => {});
-        if (hooks.statusThrows) throw hooks.statusThrows;
+        if (armedFlag(state, hooks, "statusHang")) {
+          fault(state, "statusHang");
+          return new Promise(() => {});
+        }
+        if (armedFlag(state, hooks, "statusThrows")) {
+          fault(state, "statusThrows");
+          throw hooks.statusThrows;
+        }
         return SDK_ENVELOPE(
           Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
         );
       },
       messages: async ({ path }) => {
-        if (state.messageReadGate?.used) {
+        if (state.messageReadGate && !state.messageReadGate.used) {
+          fault(state, "messageReadGate");
           state.messageReadGate.used = true;
           await state.messageReadGate.promise;
         }
         if (state.unreadable.has(path.id)) {
+          fault(state, "unreadableTranscript");
           const error = new Error(`Session "${path.id}" transcript unavailable.`);
           error.status = 500;
           throw error;
@@ -620,22 +710,28 @@ export function createMockClient(hooks = {}) {
         // A transport that never answers. The plugin bounds every other host
         // call, so a hang here is the one shape a caller cannot survive unless
         // the abort path carries its own deadline.
-        if (hooks.abortHangIds?.has(path.id)) return new Promise(() => {});
+        const abortHung = forId(state, "abortHang", hooks.abortHangIds, path.id, () => new Promise(() => {}));
+        if (abortHung) return abortHung;
         // The lost packet: ONE abort per id never comes back, and every later one
         // is answered normally. `abortHangIds` is the wrong shape for a deadline
         // test — a hang that never lifts also hangs the harness's teardown, so the
         // suite would stop reporting anything after the case it was written for.
         // This is the shape a real network failure has: the request is lost once,
         // and a retry gets through.
-        if (hooks.abortLoseOnceIds?.has(path.id) && !state.abortsLost.has(path.id)) {
-          state.abortsLost.add(path.id);
-          return new Promise(() => {});
+        if (!state.abortsLost.has(path.id)) {
+          const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, path.id, () => {
+            state.abortsLost.add(path.id);
+            return new Promise(() => {});
+          });
+          if (lost) return lost;
         }
-        if (hooks.abortThrowsOnce && !state.abortThrown) {
+        if (armedFlag(state, hooks, "abortThrowsOnce") && !state.abortThrown) {
+          fault(state, "abortThrowsOnce");
           state.abortThrown = true;
           throw new Error("abort failed");
         }
-        if (hooks.abortThrows) {
+        if (armedFlag(state, hooks, "abortThrows")) {
+          fault(state, "abortThrows");
           // The message is what a test will assert it saw, so the plan carries
           // it rather than the test reaching in to normalize it.
           throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
@@ -647,6 +743,7 @@ export function createMockClient(hooks = {}) {
         // session that was never there.
         const serverLostIt = (id) => !state.sessions.has(id) || Boolean(hooks.abortFailIds?.has(id));
         if (serverLostIt(path.id)) {
+          if (hooks.abortFailIds?.has(path.id)) fault(state, "abortFail");
           throw sessionNotFound(path.id);
         }
         // The abort gate: the first abort parks here until the test releases
@@ -654,6 +751,7 @@ export function createMockClient(hooks = {}) {
         // `fails`, the released abort reports the session as gone — the race
         // outcome the settlement path must survive.
         if (state.abortGate && !state.abortGate.used) {
+          fault(state, "abortGate");
           state.abortGate.used = true;
           await state.abortGate.promise;
           if (state.abortGate.fails) {
@@ -662,7 +760,7 @@ export function createMockClient(hooks = {}) {
         }
         state.aborted.push(path.id);
         setHostTurn(state, path.id, "idle");
-        return { ok: true };
+        return SDK_ENVELOPE({ ok: true });
       },
     },
     // Hold the next abort open. Returns the release, awaited by the test.
@@ -695,7 +793,57 @@ export function createMockClient(hooks = {}) {
     setTranscript(sessionId, messages) {
       state.transcripts.set(sessionId, messages);
     },
+    /**
+     * Go silent for every call from here on. The fake owns the flip because
+     * arming is the fake's bookkeeping: a case that set the flag by hand still
+     * armed it, but a case that goes through here cannot arm it twice, and the
+     * teardown rule sees both the same way.
+     */
+    silenceHost() {
+      hooks.silentHost = true;
+      armFault(state, "silentHost");
+      return { release: () => (hooks.silentHost = false) };
+    },
   };
+  // Only the three namespaces the plugin dials are silenced; the helpers above are
+  // how a case ARMS the silence, so silencing them would leave nothing to arm with.
+  return Object.fromEntries(
+    Object.entries(endpoints).map(([key, value]) => [key, SILENCED.has(key) ? silence(state, hooks, value) : value]),
+  );
+}
+
+/**
+ * The fake's own source, for a suite that has to READ what the fake says rather than
+ * run it. Owned here so every such suite asks the same reader: two suites each
+ * assembling the path would be the drift this file exists to prevent, one level up.
+ */
+export const FAKE_SOURCE = readFileSync(new URL(import.meta.url), "utf8");
+
+/**
+ * Is this the answer shape the SDK sends — the payload beside the response it arrived
+ * in? Beside the builder because a producer and a recogniser of one shape are one fact,
+ * and two copies of it would drift the way everything else here did.
+ */
+export const isSDKEnvelope = (answer) =>
+  answer !== null && typeof answer === "object" && "data" in answer && "response" in answer;
+
+/**
+ * The arguments one endpoint answers, by namespace and method — the shape the
+ * HOST's route expects, which is not the same shape as the plugin's.
+ *
+ * This lives beside the endpoints rather than in the suite that probes them,
+ * because that suite's only question is what comes BACK and the thing it must not
+ * decide for itself is what to send. `question.reject` is why: its route takes no
+ * body at all, so a probe that sends one learns nothing except that the fake
+ * knows its routes better than the probe did.
+ */
+export function hostCallArgs(ns, method, probeId) {
+  const path = ns === "question" ? { requestID: "prb_shape_probe" } : { id: probeId };
+  if (method === "reject") return { path };
+  if (method === "reply") return { path, body: { answers: [["probe"]] } };
+  if (method === "prompt") return { path, body: { parts: [{ type: "text", text: "probe" }] } };
+  if (method === "create") return { body: { title: "probe" } };
+  return { path };
 }
 
 /**

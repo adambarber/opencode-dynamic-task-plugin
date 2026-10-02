@@ -15,10 +15,11 @@
  */
 
 import assert from "node:assert";
-import { mkdtempSync, readFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
+import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
@@ -280,7 +281,12 @@ const liveHarnesses = [];
  * forgotten by a test that builds its harness inline.
  */
 export async function setupHarness({ hooks = {}, options = {}, directory = tmpProjectDir() } = {}) {
+  const trace = (mark) => {
+    if (process.env.HARNESS_TRACE) appendFileSync(process.env.HARNESS_TRACE, `${mark}\n`);
+  };
+  trace("setup:enter");
   const client = createMockClient(hooks);
+  trace("setup:client");
   const state = client._state;
 
   // A step that must produce exactly one notice, counted against a baseline so
@@ -308,7 +314,9 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   clearNotifyLedger();
   const mod = await import("../../../dist/index.js");
   const pluginFn = mod.default || mod;
+  trace("setup:plugin-loaded");
   const result = await pluginFn({ client, directory }, options);
+  trace("setup:plugin-run");
   assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
   const spawned = [];
 
@@ -430,8 +438,50 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     child(id, args = {}, ctx = { sessionID: PARENT }) {
       return bindChild(harness, id, args, ctx);
     },
+    /**
+     * Which faults the host actually applied, by name.
+     *
+     * A test that arms a fault and asserts nothing about it has proved only that
+     * the fault did not break the thing under test — which is also what a fake
+     * whose fault never engages reports. So the witness is the answer to "was the
+     * host really hostile?".
+     */
+    witnesses() {
+      return witnesses(client._state);
+    },
+    /**
+     * Assert the host really applied `name`. Fails with what DID fire, because
+     * "silentHost never fired" is a bug in the fake and the diagnostic has to
+     * point there rather than at the plugin behaviour under test.
+     */
+    assertFired(name) {
+      const seen = witnesses(client._state);
+      assert.ok(
+        (seen[name] ?? 0) > 0,
+        `fault "${name}" never fired — the fake did not engage. Fired: ${JSON.stringify(seen)}`,
+      );
+      return seen[name];
+    },
+    /** The fault names this fake can inject, for a suite that enumerates them. */
+    faults: FAULTS,
+    /**
+     * Declare that an armed fault may never fire in this case — the only way out
+     * of the teardown rule, so "the host was hostile" is always a claim somebody
+     * made deliberately rather than one the run happened to satisfy.
+     */
+    maybeFault(name) {
+      client._state.maybe.add(name);
+    },
+    /**
+     * Arm the silent host the way a case that boots live then loses the host
+     * does: by flipping the flag, which the fake counts as arming on the read.
+     */
+    silence() {
+      return client.silenceHost();
+    },
   };
   liveHarnesses.push(harness);
+  trace("setup:done");
   return harness;
 }
 
@@ -620,6 +670,19 @@ export async function releaseSpawns(harness) {
 afterEach(async () => {
   for (const harness of liveHarnesses.splice(0)) {
     await releaseSpawns(harness);
+    // A fault that was armed and never applied is a passing case about nothing,
+    // and it fails in the direction that makes tests easy: the fake went
+    // indifferent, so the run went green while proving nothing about a hostile
+    // host. The rule is here rather than in each test because the property is
+    // about the fake, and a test that has to remember it is a test that will not.
+    const unengaged = unengagedFaults(harness.client._state).filter(
+      (name) => !harness.client._state.maybe.has(name),
+    );
+    assert.deepStrictEqual(
+      unengaged,
+      [],
+      `armed but never applied: ${unengaged.join(", ")} — the fake did not engage, so this case proved nothing`,
+    );
   }
 });
 

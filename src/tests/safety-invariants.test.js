@@ -126,6 +126,7 @@ const DOC_PERSISTENCE = "docs/tasks/06-persistence-and-observability.md";
 const DOC_ADMISSION = "docs/tasks/07-admission-gate.md";
 const DOC_TYPES = "docs/tasks/08-strong-types.md";
 const DOC_FIDELITY = "docs/tasks/00-fidelity-ground-truth.md (Tenet 12)";
+const DOC_BOUND = "docs/tasks/02-execution-bound.md";
 
 /**
  * A banned spelling, with the doctrine note and the claim it enforces. The three

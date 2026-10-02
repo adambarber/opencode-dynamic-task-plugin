@@ -27,7 +27,7 @@ export interface NotifyArgs {
 }
 
 export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: ToolContext): Promise<string> {
-  const { client, store, config } = deps;
+  const { host, store, config } = deps;
   const callerId = callerSessionId(ctx);
   if (callerId === undefined) {
     return CALLER_UNKNOWN;
@@ -67,7 +67,7 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
     NotifyKind.Notice,
     message,
   );
-  const delivered = await notifyParent(client, task.parentSessionId, parentMessage, {
+  const delivered = await notifyParent(host, task.parentSessionId, parentMessage, {
     childSessionId: task.childSessionId,
     kind: NotifyKind.Notice,
     dedupKey: noticeDedupKey(message),

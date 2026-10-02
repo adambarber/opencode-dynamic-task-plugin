@@ -19,6 +19,7 @@
 // `{id}` route exists.
 
 import type { PluginInput } from "@opencode-ai/plugin";
+import { expired, withBound, type BoundArgs, type Bounded } from "./execution-bound.js";
 import type { QuestionReplyData, QuestionRejectData } from "@opencode-ai/sdk/v2/types";
 import type { SessionGetErrors, SessionStatus, SessionStatusResponses } from "@opencode-ai/sdk";
 
@@ -37,6 +38,74 @@ export interface QuestionNamespace {
 export type OpenCodeClient = PluginInput["client"] & {
   question: QuestionNamespace;
 };
+
+// The brand that keeps a host namespace out of production's reach. Module-private,
+// so nothing outside can spell the key; a real `Symbol` because it is read at runtime.
+const HOST: unique symbol = Symbol("opaque-host");
+
+// What production is given instead of the client. Boundedness used to rest on a scan
+// reading the lines above each call, blind to an indirect receiver — see the issue doc.
+export type OpaqueHost<C = OpenCodeClient> = { readonly [HOST]: C };
+
+/** Mint the one value production holds — from the plugin entry, nowhere else. */
+export function asOpaqueHost<C>(client: C): OpaqueHost<C> {
+  return { [HOST]: client };
+}
+
+/**
+ * The only way out of an `OpaqueHost`: the real client, under a stated deadline.
+ *
+ * Boundedness becomes an argument rather than a scan finding — `ms` has no
+ * default, so naming `.session` means passing the bound in the same expression.
+ * The lambda is what keeps the SDK's generics resolving (`throwOnError: true`
+ * stays one typed payload); taking a promise instead would mean building it
+ * first, which is the unbounded step being prevented.
+ *
+ * `work` must RETURN a promise, and `timedOut` is a value rather than a thunk. Both
+ * shapes are here because this chokepoint shipped two ways to be wrong while it read
+ * as bounded: `safeLog` passed the synchronous `hostLogCall(client)` probe and bounded
+ * that instead of the await inside it (boot then never returned against a silent host),
+ * and `readSessionMessages` passed a thunk that THREW — which ran inside the timer and
+ * left this promise pending forever. `probeHost` is the honest spelling for a shape
+ * read, so a probe in `work` is now a type error rather than a silent hole.
+ */
+export async function callHost<C, T, D = T>(
+  host: OpaqueHost<C> | undefined | null,
+  ...[ms, work, timedOut]: BoundArgs<C, T, D>
+): Promise<Bounded<T, D>> {
+  return host == null ? expired(timedOut) : withBound(ms, () => work(host[HOST]), timedOut);
+}
+
+/**
+ * Look at the host's SHAPE without dialling it: a synchronous read, so there is
+ * no request to bound. `callHost` is the other question — it asks the host
+ * something and needs a deadline.
+ */
+export function probeHost<C, T>(host: OpaqueHost<C>, inspect: (client: C) => T): T {
+  return inspect(host[HOST]);
+}
+
+/** How a fire-and-forget write reports a failure when nobody awaits the promise. */
+export type FailureReporter = (error: unknown) => void;
+
+/**
+ * The deliberate exception, typed rather than listed in a test file.
+ *
+ * Three calls are fire-and-forget by contract, so a deadline bounds nothing. The
+ * `void` return is what turns the exemption into a decision: a future edit that
+ * awaits one fails to compile instead of restoring a wait the gate ignores.
+ */
+export function fireAndForget(
+  host: OpaqueHost,
+  work: (client: OpenCodeClient) => unknown,
+  onFailure?: FailureReporter,
+): void {
+  void Promise.resolve(work(host[HOST])).catch((error: unknown) => {
+    // Swallowed only when there is nobody to tell. A caller that classifies the
+    // failure passes `onFailure`, so the report is not lost to this shape.
+    onFailure?.(error);
+  });
+}
 
 /**
  * The host's status map, as the host's own generated type declares it: session id to
@@ -108,4 +177,15 @@ export type HostSessionMissing = SessionGetErrors[404];
 export function hasQuestionCall(client: PluginInput["client"], call: "reply" | "reject"): boolean {
   const question = (client as { question?: Record<string, unknown> }).question;
   return typeof question?.[call] === "function";
+}
+
+// The boot guard's three calls, asked the same way: does the key exist and is it
+// callable. Widened to an untyped map because the runtime truth is a PARTIAL client.
+export function hasCoreApis(client: PluginInput["client"]): boolean {
+  const seen = client as unknown as { app?: Record<string, unknown>; session?: Record<string, unknown> };
+  return (
+    typeof seen?.app?.agents === "function" &&
+    typeof seen?.session?.create === "function" &&
+    typeof seen?.session?.prompt === "function"
+  );
 }

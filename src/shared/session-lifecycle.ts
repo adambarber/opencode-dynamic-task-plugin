@@ -11,7 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { OpenCodeClient } from "./client.js";
+import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
 import { isFailureClass } from './failure-class.js';
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { TaskState } from "./task-state.js";
@@ -21,7 +21,7 @@ import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
-import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
+import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { TaskStore } from "./store.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
@@ -122,7 +122,7 @@ export type AbortRefusal = { kind: AbortRefusalKind.Self } | { kind: AbortRefusa
  * the bug this interface exists to make un-askable.
  */
 export interface AbortTarget {
-  client: OpenCodeClient;
+  host: OpaqueHost;
   store: TaskStore;
   /** The session that asked for the stop. Never a target, whatever the args say. */
   callerSessionId: string | undefined;
@@ -159,7 +159,7 @@ export function stopPlan(
 const ABORT_SENT: AbortOutcome = { serverGone: false, transportError: undefined };
 
 export function abortSession(target: AbortTarget, sessionId: string): Promise<AbortOutcome> {
-  const { client } = target;
+  const { host } = target;
   // Decided before any transport is touched, and answered without an await: a
   // refusal must cost nothing and must hold when the server is gone, because a
   // dead server is exactly when a wrong target id is most likely to be guessed.
@@ -171,7 +171,7 @@ export function abortSession(target: AbortTarget, sessionId: string): Promise<Ab
   // ignorance, not a death — the request may never have reached the server — so it
   // has to arrive as the thing callers already know how to read, or a dead server
   // would get two spellings of "possibly still running".
-  const dial = (): Promise<AbortOutcome> =>
+  const dial = (client: OpenCodeClient): Promise<AbortOutcome> =>
     client.session
       .abort({ path: { id: sessionId } })
       .then((): AbortOutcome => ABORT_SENT)
@@ -182,10 +182,11 @@ export function abortSession(target: AbortTarget, sessionId: string): Promise<Ab
           : { serverGone: false, transportError: message };
       });
 
-  return withBound(
+  return callHost(
+    host,
     WRITE_BOUNDS.abort,
     dial,
-    (): AbortOutcome => ({ serverGone: false, transportError: `no answer within ${WRITE_BOUNDS.abort}ms` }),
+    { serverGone: false, transportError: `no answer within ${WRITE_BOUNDS.abort}ms` },
   ).then((bounded) => bounded.value);
 }
 

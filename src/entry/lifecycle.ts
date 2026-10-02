@@ -2,7 +2,7 @@
 // terminal-event settlement handler. Owns every entry-side client.session
 // call except spawn's create and the steer/interrupt aborts (Tenet 9: those
 // stay in their tool executors beside the claims that order them).
-import type { OpenCodeClient } from "../shared/client.js";
+import type { OpaqueHost } from "../shared/client.js";
 import {
   getSessionIdFromEvent,
   getEventLifecycleStatus,
@@ -58,7 +58,7 @@ import type { ModelOverride } from "../shared/prompt.js";
 // Promise so every call site voids it the same way; the parentless path
 // resolves false immediately after recording the non-delivery.
 export function deliverParent(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   parentSessionId: string,
   childSessionId: string,
   description: string,
@@ -78,7 +78,7 @@ export function deliverParent(
     );
     return Promise.resolve(false);
   }
-  return notifyParent(client, parentSessionId, message, { childSessionId, kind });
+  return notifyParent(host, parentSessionId, message, { childSessionId, kind });
 }
 
 export interface ChildRef extends TaskIdentity {
@@ -90,7 +90,7 @@ export interface ChildRef extends TaskIdentity {
 // delivery failures where no event will ever arrive (session vanished,
 // transport rejected): without it a fired prompt leaves the ledger active
 // and the parent silently deaf.
-export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: ChildRef, prompt: string): void {
+export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildRef, prompt: string): void {
   const routing: { agent: string; model?: { providerID: string; modelID: string } } = {
     agent: task.agentName,
     ...(task.requestedModel !== undefined ? { model: task.requestedModel } : {}),
@@ -103,7 +103,7 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
   // only bound on a truly-dead child stays operator interruption.
   const onPromptFailure = (error: unknown): void => {
     const classified = classifyPromptError(error);
-    void safeLog(client, "warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
+    void safeLog(host, "warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
     if (classified.retryable) return;
     let settled = false;
     try {
@@ -115,12 +115,12 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
       const modelSuffix = task.requestedModel
         ? `\nRequested model: ${task.requestedModel.providerID}/${task.requestedModel.modelID}`
         : "";
-      void deliverParent(client, task.parentSessionId, task.childSessionId, task.description, NotifyKind.Error, `${classified.message}${modelSuffix}`)
+      void deliverParent(host, task.parentSessionId, task.childSessionId, task.description, NotifyKind.Error, `${classified.message}${modelSuffix}`)
         .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
     }
   };
   try {
-    invokePrompt(client, task.childSessionId, prompt, routing).catch(onPromptFailure);
+    invokePrompt(host, task.childSessionId, prompt, routing, onPromptFailure);
   } catch (error: unknown) {
     onPromptFailure(error);
   }
@@ -154,7 +154,7 @@ export function fireChildPrompt(client: OpenCodeClient, store: TaskStore, task: 
  * settlement falls back to REPORTING, which is the only safe direction to fail in.
  */
 export function reviveWithPrompt(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   childSessionId: string,
   prompt: string,
@@ -163,7 +163,7 @@ export function reviveWithPrompt(
 ): ActiveTaskState {
   const revived = reviveRetainedTask(store, childSessionId, capSource, model);
   gateLedger.forgetChild(childSessionId);
-  fireChildPrompt(client, store, revived, prompt);
+  fireChildPrompt(host, store, revived, prompt);
   return revived;
 }
 
@@ -178,7 +178,7 @@ export function reviveWithPrompt(
  * and starts redoing finished work — costs more than the blip did.
  */
 function resumeAfterBlip(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   childSessionId: string,
   capSource: AgentCapSource | undefined,
@@ -189,10 +189,10 @@ function resumeAfterBlip(
     "Do not start over. If you were mid-way through a tool call, check whether it actually took effect before repeating it.",
   );
   try {
-    reviveWithPrompt(client, store, childSessionId, text, capSource);
+    reviveWithPrompt(host, store, childSessionId, text, capSource);
     return true;
   } catch (error: unknown) {
-    void safeLog(client, "info", `Transient resume refused for ${childSessionId}: ${errorMessage(error)} — reporting the failure instead`);
+    void safeLog(host, "info", `Transient resume refused for ${childSessionId}: ${errorMessage(error)} — reporting the failure instead`);
     return false;
   }
 }
@@ -238,7 +238,7 @@ function settlementVerdict(input: {
 }
 
 export async function settleRunningChild(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   childSessionId: string,
   signal: SettlementSignal,
@@ -250,7 +250,7 @@ export async function settleRunningChild(
   // first also means a session this plugin has no record of costs one lookup
   // instead of two.
   if (!terminalEventIsAttributable(store, childSessionId)) {
-    void safeLog(client, "info", `Dropped unattributable ending for ${childSessionId}, staying active`);
+    void safeLog(host, "info", `Dropped unattributable ending for ${childSessionId}, staying active`);
     return false;
   }
   // "Still running" is asked of the store's ONE reader for "is this one of ours",
@@ -279,12 +279,12 @@ export async function settleRunningChild(
   try {
     transitionState(store, childSessionId, verdict);
   } catch {
-    void safeLog(client, "info", `Lost settlement race for ${childSessionId}, dropping`);
+    void safeLog(host, "info", `Lost settlement race for ${childSessionId}, dropping`);
     return false;
   }
-  void safeLog(client, "info", `Settled ${childSessionId} as ${verdict}`);
+  void safeLog(host, "info", `Settled ${childSessionId} as ${verdict}`);
 
-  const outcome = await hydrateLatestOutcome(client, childSessionId);
+  const outcome = await hydrateLatestOutcome(host, childSessionId);
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
   // the same words, so a settled `blocked` cannot be announced as a success.
   let kind: NotifyKind = settlementKind(verdict);
@@ -308,7 +308,7 @@ export async function settleRunningChild(
     verdict = concluded;
     kind = NotifyKind.Error;
     if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
-      void safeLog(client, "info", `Late error already recorded for ${childSessionId}`);
+      void safeLog(host, "info", `Late error already recorded for ${childSessionId}`);
     }
   } else if (failure !== FailureClass.None) {
     recordSettledOutcome(store, childSessionId, verdict, failure);
@@ -332,8 +332,8 @@ export async function settleRunningChild(
   // swallow the next outcome too.
   if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource)) {
     const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
-    if (resumeAfterBlip(client, store, childSessionId, capSource)) {
-      void safeLog(client, "info", `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
+    if (resumeAfterBlip(host, store, childSessionId, capSource)) {
+      void safeLog(host, "info", `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
       return true;
     }
   }
@@ -359,7 +359,7 @@ export async function settleRunningChild(
   // Observability survives via the ledger record, logged on completion.
   // deliverParent is the single funnel for parent-directed writes: it
   // records parentless settlements instead of dialing a phantom session.
-  void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${classNote}${unreadableNote}`)
+  void deliverParent(host, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${classNote}${unreadableNote}`)
     .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
   // The parent's answer to a settlement this child may have been an EDGE for is
   // not sent here. It is sent by the store's own retained-change sink, which every
@@ -383,7 +383,7 @@ export async function settleRunningChild(
  * derivation this hook exists to replace.
  */
 export function releaseWaitingDispatches(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   settledChildSessionId: string,
 ): void {
@@ -408,13 +408,13 @@ export function releaseWaitingDispatches(
     // A wait is a property of the PARENT's dispatch, so the child session id
     // this rides on is the edge that answered it — which is what lets the
     // parent see it next to the settlement that released it.
-    void deliverParent(client, waitingParent, settledChildSessionId, "a dispatch you asked for", NotifyKind.Notice, body)
+    void deliverParent(host, waitingParent, settledChildSessionId, "a dispatch you asked for", NotifyKind.Notice, body)
       .then((delivered) => debugLog(waitingParent, settledChildSessionId, "wait-released", { delivered }));
   }
 }
 
 export async function handleChildLifecycleEvent(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   event: unknown,
   capSource?: AgentCapSource | undefined,
@@ -423,7 +423,7 @@ export async function handleChildLifecycleEvent(
   if (!childSessionId) return;
 
   if (store.activeTasks.get(childSessionId)) {
-    await settleRunningChild(client, store, childSessionId, {
+    await settleRunningChild(host, store, childSessionId, {
       status: getEventLifecycleStatus(event),
       event,
     }, capSource);
@@ -440,7 +440,7 @@ export async function handleChildLifecycleEvent(
     const status = getEventLifecycleStatus(event);
     if (!endedBadly(status)) return;
     if (retained.state !== TaskState.Completed) return;
-    const outcome = await hydrateLatestOutcome(client, childSessionId);
+    const outcome = await hydrateLatestOutcome(host, childSessionId);
     const current = store.retainedTasks.get(childSessionId);
     if (!current || current.state !== TaskState.Completed) return; // lost the escalation race
     // WHY, on the same amendment, and ONE decision read twice. A failure that
@@ -456,7 +456,7 @@ export async function handleChildLifecycleEvent(
     const errorDetail = outcome.errorDetail
       || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
     const classNote = failureNote(failure, current.transientResumes ?? 0);
-    void deliverParent(client, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, `${errorDetail}${classNote ? `\n\n${classNote}` : ""}`)
+    void deliverParent(host, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, `${errorDetail}${classNote ? `\n\n${classNote}` : ""}`)
       .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: NotifyKind.Error, delivered }));
   }
 }

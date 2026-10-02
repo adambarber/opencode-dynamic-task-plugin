@@ -33,18 +33,18 @@ import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "
 // rather than two copies free to drift.
 function readTarget(scope: ResolvedSessionScope) {
   pruneRetainedTasks(scope.store, scope.config);
-  const { client, sessionId } = scope;
-  return { client, sessionId, task: findTask(scope.store, sessionId) };
+  const { host, sessionId } = scope;
+  return { host, sessionId, task: findTask(scope.store, sessionId) };
 }
 
 export async function executeTaskResult(scope: ResolvedSessionScope): Promise<string> {
-  const { client, sessionId, task } = readTarget(scope);
+  const { host, sessionId, task } = readTarget(scope);
   try {
-    const messages = await readSessionMessages(client, sessionId);
+    const messages = await readSessionMessages(host, sessionId);
     // One read, one rendering. The store's word when it has a record, the
     // server's own word when it does not — and never a guess about message
     // shapes, which is what used to make a working child read as completed.
-    const liveness = await readLivenessSafely(client, sessionId, messages);
+    const liveness = await readLivenessSafely(host, sessionId, messages);
     return formatTaskResultSummary(
       taskResultRecord({
         sessionId,
@@ -94,7 +94,7 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
 }
 
 export async function executeTaskStatus(scope: ResolvedSessionScope): Promise<string> {
-  const { client, sessionId, task } = readTarget(scope);
+  const { host, sessionId, task } = readTarget(scope);
   if (!task) {
     return unknownSessionResult(sessionId);
   }
@@ -104,7 +104,7 @@ export async function executeTaskStatus(scope: ResolvedSessionScope): Promise<st
   return formatTaskStatusDetail(
     task,
     getTurnNotification(sessionId, task.startedAt),
-    await readLivenessSafely(client, sessionId),
+    await readLivenessSafely(host, sessionId),
   );
 }
 
@@ -124,7 +124,7 @@ async function readLivenessSafely(
 }
 
 export async function executeTaskList(deps: ToolDeps): Promise<string> {
-  const { client, store, config } = deps;
+  const { host, store, config } = deps;
   const pruned = pruneRetainedTasks(store, config);
   const { retained } = listTasks(store);
   // The store record in, FleetRow out: the renderer's contract is named rather
@@ -163,7 +163,7 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   // leaves the effective depth UNKNOWN rather than zero. Reporting 0 would read
   // as "this agent cannot delegate at all", which is a claim the plugin cannot
   // support when it simply could not ask.
-  const agents = await dispatchableAgentNamesOrNull(client, config);
+  const agents = await dispatchableAgentNamesOrNull({ host }, config);
   return formatTaskListSummary({
     tree: branch.map((node) => ({
       ...toRow(node.task),

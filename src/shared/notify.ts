@@ -8,8 +8,8 @@
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
-import type { OpenCodeClient } from "./client";
-import { boundedRead, WRITE_BOUNDS } from "./execution-bound.js";
+import { callHost, type OpaqueHost } from "./client.js";
+import { WRITE_BOUNDS } from "./execution-bound.js";
 import { evictOldest } from "./bounded-map.js";
 import { NotifyKind } from "./notification-text.js";
 import { errorMessage, hostRefusal } from "./host-shape.js";
@@ -60,26 +60,37 @@ interface LogBody {
  * own check, so a client whose `log` is a string of the wrong length fails to log
  * rather than throwing inside a catch that swallows it.
  */
-function hostLogCall(client: LogSink | null | undefined): ((args: { body: LogBody }) => Promise<unknown>) | null {
-  const log = client?.app?.log;
+function hostLogCall(sink: LogSink | null | undefined): ((args: { body: LogBody }) => Promise<unknown>) | null {
+  const log = sink?.app?.log;
   if (typeof log !== "function") return null;
   const call = log as (args: { body: LogBody }) => Promise<unknown>;
   return typeof call === "function" ? call : null;
 }
 
-export async function safeLog(
-  client: LogSink,
+/**
+ * Best-effort host log, bounded at this chokepoint for every caller. The sink is
+ * reached THROUGH the opaque host: the defect the boundedness scanner could not see
+ * arrived here as a `LogSink` parameter, so scanning for `client.session.…` missed it.
+ *
+ * The BODY is the bound, never a probe around it. Bounding `hostLogCall(client)` bounds
+ * a synchronous read and leaves the await that can hang to the host — boot never
+ * returning, re-entering through the one call the opaque-host refactor touched. A
+ * chokepoint that bounds the wrong expression reads as bounded and is not.
+ */
+export async function safeLog<C extends LogSink>(
+  host: OpaqueHost<C> | undefined | null,
   level: "info" | "warn" | "error",
   message: string,
 ): Promise<void> {
-  const log = hostLogCall(client);
-  if (!log) return;
-  // Bounded at THIS chokepoint, for every caller, because a best-effort write
-  // that can be held open is not best-effort — it is a dependency. Boot awaits
-  // it, so an unbounded log sink stopped the plugin from loading at all, with no
-  // symptom to read and no log line explaining why.
-  await boundedRead(WRITE_BOUNDS.log, () => log({ body: { service: "dynamic-task", level, message } })).catch(
-    () => null,
+  await callHost<C, void>(
+    host,
+    WRITE_BOUNDS.log,
+    async (client) => {
+      const log = hostLogCall(client);
+      if (log === null) return;
+      await log({ body: { service: "dynamic-task", level, message } }).catch(() => undefined);
+    },
+    undefined,
   );
 }
 
@@ -100,12 +111,12 @@ export async function safeLog(
  * arrangement exists to end.
  */
 export async function containFailure(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   what: string,
   error: unknown,
   tail = "",
 ): Promise<void> {
-  await safeLog(client, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
+  await safeLog(host, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
 }
 
 /**
@@ -599,11 +610,11 @@ const notifyChains = new Map<string, Promise<unknown>>();
  * actually attempted, which is what stops a deferred debt from ageing out
  * without ever having been tried.
  */
-export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: number, batch = 1): void {
+export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number, batch = 1): void {
   const owed = getPendingDeliveries();
   const offered = owed.slice(0, Math.max(1, batch));
   for (const debt of offered) {
-    void notifyParent(client, debt.parentSessionId, debt.text, {
+    void notifyParent(host, debt.parentSessionId, debt.text, {
       childSessionId: debt.childSessionId,
       kind: debt.kind,
       carriedAttempts: debt.attempts,
@@ -612,7 +623,7 @@ export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: 
   }
   if (owed.length > offered.length) {
     const held = owed.length - offered.length;
-    void safeLog(client, "warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
+    void safeLog(host, "warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
   }
 }
 
@@ -630,14 +641,14 @@ export function redeliverOwedNotifications(client: OpenCodeClient, maxAttempts: 
  * A refusal is never inferred from a failed read, only from the host's own
  * words, so a flaky channel defers nothing and loses nothing.
  */
-async function parentRefusal(client: OpenCodeClient, sessionId: string): Promise<string | null> {
-  if (await hostTurnInFlight(client, sessionId)) return "mid-turn";
-  if (await parentTurnStuck(client, sessionId)) return "wedged — its last turn has no completion";
+async function parentRefusal(host: OpaqueHost, sessionId: string): Promise<string | null> {
+  if (await hostTurnInFlight(host, sessionId)) return "mid-turn";
+  if (await parentTurnStuck(host, sessionId)) return "wedged — its last turn has no completion";
   return null;
 }
 
 export async function notifyParent(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   parentSessionId: string,
   message: string,
   opts: NotifyParentOptions,
@@ -665,18 +676,44 @@ export async function notifyParent(
   // wrong order, and a revival that bumps the generation makes every later use
   // of this value visibly stale.
   const claim: Claim = { childSessionId: opts.childSessionId, dedupKey: gateKey, generation };
-  const attempt = async () => {
-    const result = await client.session.prompt({
-      path: { id: parentSessionId },
-      body: { parts: [{ type: "text", text: message }] },
+  // The one write, and the ONE bound on it. The bound REPORTS a hold rather than
+  // throwing: "has not answered yet" and "refused" are different outcomes with
+  // different records, and the answer may still arrive, so the caller needs the
+  // in-flight promise to attach the late commit to. Two bounds here made a held
+  // write arrive as a refusal.
+  type Attempt =
+    | { held: true; request: Promise<unknown> }
+    | { held: false; result: unknown };
+  const attempt = (): Promise<Attempt> => {
+    // The IN-FLIGHT request, kept beside the bounded read. The bound answers "has it
+    // answered yet", never "will it answer" — so a hold needs the unbounded promise
+    // to learn the answer when it lands, and the bound is what stops the caller
+    // waiting for it.
+    let inFlight: Promise<unknown> | undefined;
+    const request = callHost(host, WRITE_BOUNDS.parentPrompt, (client) => {
+      inFlight = client.session.prompt({
+        path: { id: parentSessionId },
+        body: { parts: [{ type: "text", text: message }] },
+      });
+      return inFlight;
+    }, undefined);
+    return request.then((bounded) => {
+      // A HELD write is not a refusal and not an answer: the bound returned, the
+      // request did not. The caller commits the pending record and attaches the
+      // late commit to `inFlight`, so the record turns truthful whenever the host
+      // finally answers.
+      // `inFlight` is set by the lambda above on every path that reached the
+      // host; a timeout that predates it would be the bound firing before the
+      // request was ever made, and `request` is the honest stand-in.
+      if (bounded.timedOut) return { held: true, request: inFlight ?? request };
+      // A REFUSED write is a failed write. The SDK resolves an API error in the
+      // envelope rather than throwing, so this is the only place the answer is
+      // read at all; treating it as delivered retires the debt on the host's
+      // refusal and leaves the parent told nothing with nothing to retry.
+      const refusal = hostRefusal(bounded.value);
+      if (refusal !== null) throw new Error(`host refused the write: ${refusal}`);
+      return { held: false, result: bounded.value };
     });
-    // A REFUSED write is a failed write. The SDK resolves an API error in the
-    // envelope rather than throwing, so this is the only place the answer is
-    // read at all; treating it as delivered retires the debt on the host's
-    // refusal and leaves the parent told nothing with nothing to retry.
-    const refusal = hostRefusal(result);
-    if (refusal !== null) throw new Error(`host refused the write: ${refusal}`);
-    return result;
   };
   // The owed write, built once: the queue holds the exact text, so a boot that
   // redelivers it has nothing to reconstruct and no way to say something else.
@@ -713,7 +750,7 @@ export async function notifyParent(
     // they have to act on — the parent session is not accepting writes, and
     // nothing will be retried.
     void safeLog(
-      client,
+      host,
       "warn",
       `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
         `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
@@ -726,17 +763,17 @@ export async function notifyParent(
   // A dropped debt is a notice the operator will never be told exists, so it is
   // said out loud here rather than only in the queue's shape: the one channel an
   // operator has without setting an environment variable first is the host log.
-  const announceDropped = (client: OpenCodeClient, dropped: PendingDelivery | null): void => {
+  const announceDropped = (host: OpaqueHost, dropped: PendingDelivery | null): void => {
     if (dropped === null) return;
     void safeLog(
-      client,
+      host,
       "warn",
       `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
         `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`,
     );
   };
-  const dial = async (attempts: number) => {
-    announceDropped(client, queuePending({ ...owed, attempts: carried + attempts }));
+  const dial = (attempts: number): Promise<Attempt> => {
+    announceDropped(host, queuePending({ ...owed, attempts: carried + attempts }));
     return attempt();
   };
   const commit = (outcome: DeliveryOutcome) => {
@@ -796,7 +833,7 @@ export async function notifyParent(
     // only thing standing between one wedged parent and an infinite retry, so
     // every path that does not deliver spends toward it — including this one.
     if (carried > 0) {
-      const refusal = await parentRefusal(client, parentSessionId);
+      const refusal = await parentRefusal(host, parentSessionId);
       if (refusal !== null) {
         // Still queued, because the debt must outlive this process either way: the
         // window where a notification exists in memory and on no disk is the crash
@@ -805,11 +842,11 @@ export async function notifyParent(
         const dropped = queuePending({ ...owed, attempts: carried + 1 });
         if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
         void safeLog(
-          client,
+          host,
           "warn",
           `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`,
         );
-        announceDropped(client, dropped);
+        announceDropped(host, dropped);
         // The claim goes back, because nothing was written and the debt is still
         // live: holding it would make every LATER obligation for this child and
         // kind permanently unwritable, because this is a refusal rather than a
@@ -821,9 +858,22 @@ export async function notifyParent(
     // The request is made ONCE and kept, because "slow" and "never" are the
     // same call from here: its answer may arrive long after this returns, and
     // the ledger must be able to say so rather than guess which it was.
-    const request = dial(1);
-    const bounded = await boundedRead(WRITE_BOUNDS.parentPrompt, () => request).catch(() => null);
-    if (bounded?.timedOut) {
+    let outcome: Attempt;
+    try {
+      outcome = await dial(1);
+    } catch {
+      // A REFUSED write — the caller is told the attempt failed and the gate's
+      // one retry is the answer, which is what this has always done.
+      await sleep(NOTIFY_RETRY_DELAY_MS);
+      try {
+        await dial(2);
+        return commit({ delivered: true, attempts: carried + 2 });
+      } catch {
+        return commit({ delivered: false, attempts: carried + 2 });
+      }
+    }
+    if (outcome.held) {
+      const { request } = outcome;
       // Same epoch rule as commit(): the held write is recorded only while the
       // gate still knows the child it belongs to.
       if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
@@ -841,16 +891,7 @@ export async function notifyParent(
       );
       return false;
     }
-    if (bounded) return commit({ delivered: true, attempts: carried + 1 });
-    // The request FAILED rather than merely ran long — a busy parent can also
-    // refuse outright, and one retry has always been the gate's answer to that.
-    await sleep(NOTIFY_RETRY_DELAY_MS);
-    try {
-      await dial(2);
-      return commit({ delivered: true, attempts: carried + 2 });
-    } catch {
-      return commit({ delivered: false, attempts: carried + 2 });
-    }
+return commit({ delivered: true, attempts: carried + 1 });
   };
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();
   const cur: Promise<boolean> = prev.then(run, run);

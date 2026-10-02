@@ -20,7 +20,7 @@ import {
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
-import type { OpenCodeClient } from "../shared/client.js";
+import type { OpaqueHost } from "../shared/client.js";
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
 
 // Plugin-level state store (ephemeral — lost on restart)
@@ -29,7 +29,7 @@ export interface PluginState {
   config: DynamicTaskConfig;
 }
 
-export function initPluginState(directory: string, options: PluginOptions | undefined, client: OpenCodeClient): PluginState {
+export function initPluginState(directory: string, options: PluginOptions | undefined, host: OpaqueHost): PluginState {
   // The file's own caps, over the defaults, over env — by the ONE reader the TUI also
   // calls, so the screen an operator reads and the policy a dispatch is judged against
   // cannot be derived from two different files.
@@ -48,7 +48,7 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     // this a mangled overlay would simply never apply and the operator would see
     // the old cap with no explanation anywhere.
     if (problem !== null) {
-      void safeLog(client, "warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
+      void safeLog(host, "warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
       debugLog("plugin", "agents", "agent-overlay-ignored", { path: agentOverlayPath(directory), reason: problem });
     }
     // The overlay this one replaced, named rather than ignored. Deleting a file the
@@ -61,7 +61,7 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     // exactly the thing that was deleted.
     if (retiredOverlayPresent(directory)) {
       void safeLog(
-        client,
+        host,
         "warn",
         `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
           "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.",
@@ -98,9 +98,9 @@ export function initPluginState(directory: string, options: PluginOptions | unde
  * recorded in docs/tasks/11-durability.md rather than something a hook on this
  * process's own changes could see.
  */
-function releaseWaitsForSettled(client: OpenCodeClient, store: TaskStore, changes: readonly LedgerChange[]): void {
+function releaseWaitsForSettled(host: OpaqueHost, store: TaskStore, changes: readonly LedgerChange[]): void {
   for (const change of changes) {
-    if (change.kind === LedgerChangeKind.Settled) releaseWaitingDispatches(client, store, change.id);
+    if (change.kind === LedgerChangeKind.Settled) releaseWaitingDispatches(host, store, change.id);
   }
 }
 
@@ -125,7 +125,7 @@ const ledger = loadTaskLedger(ledgerPath);
     const remedy = ledger.unreadable
       ? " This build will not write to that file either; move it aside or delete it to let durable state resume."
       : " Records that did parse are still in use and are written back.";
-    void safeLog(client, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
+    void safeLog(host, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
     debugLog("plugin", "ledger", "ledger-read-discarded", { path: ledgerPath, reason: ledger.discarded });
   }
   // One writer for the whole file. Retained records and owed notices live in one
@@ -150,7 +150,7 @@ const ledger = loadTaskLedger(ledgerPath);
       // was just told to go and look at, which is neither.
       const current = loadTaskLedger(ledgerPath);
       if (current.unreadable) {
-        void safeLog(client, "warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
+        void safeLog(host, "warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
         debugLog("plugin", "ledger", "ledger-write-refused", {
           path: ledgerPath,
           reason: current.discarded,
@@ -181,7 +181,7 @@ const ledger = loadTaskLedger(ledgerPath);
       // already had to notice. The host log is the channel that needs no
       // environment variable set before the process started, which is the only
       // kind an operator can rely on being there.
-      void safeLog(client, "warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
+      void safeLog(host, "warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
       debugLog("plugin", "ledger", "ledger-write-failed", {
         path: ledgerPath,
         error: errorMessage(error),
@@ -193,7 +193,7 @@ const ledger = loadTaskLedger(ledgerPath);
   // swallowed here so a durable-state failure can never break control flow.
   store.onRetainedChange = (changes) => {
     persistLedger(changes);
-    releaseWaitsForSettled(client, store, changes);
+    releaseWaitsForSettled(host, store, changes);
   };
   store.onActiveChange = persistLedger;
   configurePendingPersistence(persistLedger);
@@ -225,21 +225,21 @@ const ledger = loadTaskLedger(ledgerPath);
     const each = owedDebts
       .map((debt) => `${debt.kind} for task ${debt.childSessionId} to parent ${debt.parentSessionId} (attempt ${debt.attempts + 1} of ${config.pendingMaxAttempts})`)
       .join("; ");
-    void safeLog(client, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
+    void safeLog(host, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
   }
 
   // The running set is restored BEFORE the pending notices are paid, and
   // reconciliation is detached (below), so an owed notice and a vanished
   // child's notice can neither mask nor reorder each other.
   const restored = restoreActive(store, ledger.active);
-  if (restored > 0) void reconcileRestored(client, store);
+  if (restored > 0) void reconcileRestored(host, store);
 
   // Pay the debt, oldest first, one pass and no waiting — through the one
   // re-offer of the queue, which is also where the budget comes from, so no
   // caller can dial a debt without it. The fan-out is capped at the same
   // concurrency the operator already allows live work: a redelivery is a real
   // turn, so a queue is paid in batches rather than all at once.
-  redeliverOwedNotifications(client, config.pendingMaxAttempts, config.maxConcurrent);
+  redeliverOwedNotifications(host, config.pendingMaxAttempts, config.maxConcurrent);
 
   return { store, config };
 }
@@ -266,27 +266,27 @@ const ledger = loadTaskLedger(ledgerPath);
 // answer, read once. Detached from boot so a slow transcript cannot delay tool
 // registration — the settlement itself is durable before it is delivered, so a
 // boot that returns early has already recorded what it decided.
-async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Promise<void> {
+async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<void> {
   const restored = [...store.activeTasks.keys()];
-  await safeLog(client, "info", `Reconciling ${restored.length} task(s) restored across restart`);
+  await safeLog(host, "info", `Reconciling ${restored.length} task(s) restored across restart`);
   for (const childSessionId of restored) {
     // Per child, not per pass: a read that fails (the status channel itself is
     // down) must not decide the fate of every task listed after it. Not knowing
     // leaves the task active — the safe reading, because its own terminal event
     // still settles it and nothing is notified that was not observed.
     try {
-      const reading = await readLiveness(client, childSessionId);
+      const reading = await readLiveness(host, childSessionId);
       // Two facts, and this pass may only end a child on one of them. A turn the
       // host is running is left alone. A status channel that never answered is left
       // alone too: its silence is not evidence, and settling off it would invent the
       // very errors this pass exists to avoid.
       if (!reading.statusAnswered) {
-        await safeLog(client, "info", `Restored task ${childSessionId}: status channel unanswered; left active`);
+        await safeLog(host, "info", `Restored task ${childSessionId}: status channel unanswered; left active`);
         continue;
       }
       if (hostTurnRunning(reading)) {
         await safeLog(
-          client,
+          host,
           "info",
           `Restored task ${childSessionId} is still running (host says "${reading.hostTurn?.type}"); left active`,
         );
@@ -297,20 +297,20 @@ async function reconcileRestored(client: OpenCodeClient, store: TaskStore): Prom
       // no such session, and that question has its own endpoint: the status map
       // cannot answer it, because "nothing running" and "never existed" look the
       // same in there.
-      const presence = await readSessionPresence(client, childSessionId);
+      const presence = await readSessionPresence(host, childSessionId);
       if (presence.existence !== SessionExistence.Missing) {
-        await settleRunningChild(client, store, childSessionId, { status: "idle" });
+        await settleRunningChild(host, store, childSessionId, { status: "idle" });
         continue;
       }
       // No cap source, and deliberately so: a boot-reconciled child is not a
       // candidate for the silent transient resume, and reviving a record would send
       // a prompt to a session the host has just denied having.
-      await settleRunningChild(client, store, childSessionId, {
+      await settleRunningChild(host, store, childSessionId, {
         status: "error",
         cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
       });
     } catch (error: unknown) {
-      await containFailure(client, `Could not reconcile restored task ${childSessionId}`, error, "left active");
+      await containFailure(host, `Could not reconcile restored task ${childSessionId}`, error, "left active");
     }
   }
 }

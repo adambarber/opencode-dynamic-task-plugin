@@ -5,12 +5,12 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
-import type { OpenCodeClient } from "./client.js";
+import { callHost, fireAndForget, type FailureReporter, type OpaqueHost } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { errorMessage } from "./host-shape.js";
 import { eventField, eventString, isEventRecord } from "./host-shape.js";
-import { boundedRead, READ_BOUNDS } from "./execution-bound.js";
+import { READ_BOUNDS } from "./execution-bound.js";
 import type { Verdict } from "./verdict.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
@@ -78,20 +78,26 @@ export function describeModelShapeError(model: unknown): string | null {
   return null;
 }
 
+/**
+ * Fire-and-forget by contract: the caller never awaits a prompt, so its turn is free
+ * to end. The absent returned promise IS the contract — a caller that awaited it fails
+ * to compile, which is what `fireAndForget`'s `void` is for.
+ */
 export function invokePrompt(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   sessionId: string,
   text: string,
   routing: PromptRouting = {},
-): Promise<unknown> {
-  return client.session.prompt({
+  onFailure?: FailureReporter,
+): void {
+  fireAndForget(host, (client) => client.session.prompt({
     path: { id: sessionId },
     body: {
       parts: [{ type: "text", text }],
       ...(routing.agent !== undefined ? { agent: routing.agent } : {}),
       ...(routing.model !== undefined ? { model: routing.model } : {}),
     },
-  });
+  }), onFailure);
 }
 
 // ─── classifyPromptError ───────────────────────────────────────────
@@ -337,13 +343,19 @@ export function touchedFiles(messages: unknown): FileTouch[] {
  * disagree about how long that child gets to describe itself.
  */
 export async function readSessionMessages(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   sessionId: string,
   query?: { limit?: number },
 ): Promise<unknown[]> {
-  const bounded = await boundedRead(READ_BOUNDS.transcript, () =>
-    client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
+  const bounded = await callHost(
+    host,
+    READ_BOUNDS.transcript,
+    (client) => client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
+    null,
   );
+  // The throw is HERE, not in the timeout arm: an arm runs inside the timer callback,
+  // where a throw escapes as an uncaught exception and leaves this promise pending
+  // forever. The bound's job is to report, and the report has to be readable.
   if (bounded.timedOut) throw new Error(`transcript unanswered after ${READ_BOUNDS.transcript}ms`);
   return extractMessages(bounded.value);
 }
@@ -440,7 +452,7 @@ export interface HydratedOutcome {
 }
 
 export async function hydrateLatestOutcome(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   sessionId: string,
 ): Promise<HydratedOutcome> {
   const blank: HydratedOutcome = { text: "", errorDetail: "", unreadable: true };
@@ -448,7 +460,7 @@ export async function hydrateLatestOutcome(
     // Through the shared transcript read, which is where the bound lives. It used
     // to be a second chokepoint with its own deadline, so the two could disagree
     // about how long a child gets to describe itself.
-    const messages = await readSessionMessages(client, sessionId);
+    const messages = await readSessionMessages(host, sessionId);
     return {
       text: getLatestAssistantText(messages),
       errorDetail: latestMessageErrorDetail(messages),

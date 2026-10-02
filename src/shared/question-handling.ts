@@ -14,8 +14,8 @@
 import { errorMessage } from "./host-shape.js";
 import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
-import { hasQuestionCall, type OpenCodeClient } from "./client.js";
-import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
+import { callHost, hasQuestionCall, probeHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { WRITE_BOUNDS } from "./execution-bound.js";
 
 /**
  * What answering a question amounts to. An enum rather than a string-literal
@@ -61,16 +61,19 @@ export function decideQuestion(
 
 // Settlement transport: guards on inputs, and an "already resolved" answer
 // (or a 404/409 race with a human) counts as success — the question closed,
-// which is all the background task wanted. Reply and reject differ only in which
-// host method they invoke and what body they send, so the guard and the failure
-// meaning cannot drift apart between them.
-async function sendQuestionSettlement(questionId: string, send: () => Promise<unknown>): Promise<QuestionResult> {
+// which is all the background task wanted. The reply/reject split lives in
+// `settleQuestion`, so the guard and the failure meaning cannot drift apart.
+async function sendQuestionSettlement(
+  host: OpaqueHost,
+  questionId: string,
+  send: (client: OpenCodeClient) => Promise<unknown>,
+): Promise<QuestionResult> {
   try {
     // Bounded like every other write, and for the same reason as the create: the
     // caller awaits this to decide what happens to a child's turn. A timeout
     // travels the throw path so the failure is classified as one, rather than
     // being a second kind of answer that every caller must learn.
-    const settled = await withBound(WRITE_BOUNDS.question, send, () => undefined);
+    const settled = await callHost(host, WRITE_BOUNDS.question, send, undefined);
     if (settled.timedOut) throw new Error(`question settlement unanswered after ${WRITE_BOUNDS.question}ms`);
     return { succeeded: true };
   } catch (error: unknown) {
@@ -113,19 +116,38 @@ function unsent(reason: string): Promise<QuestionResult> {
  * `answers`: one entry per asked question, each the list of chosen labels. A bare
  * `answer` string is silently the wrong shape.
  */
-export function replyToQuestion(client: OpenCodeClient, questionId: string, answer: string): Promise<QuestionResult> {
-  if (!questionId || !answer) return unsent("missing question id or answer");
-  if (!hasQuestionCall(client, "reply")) return unsent("this host's client has no question.reply");
-  return sendQuestionSettlement(questionId, () =>
-    client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer]] } }),
-  );
+export function replyToQuestion(host: OpaqueHost, questionId: string, answer: string): Promise<QuestionResult> {
+  return settleQuestion(host, QuestionAction.Reply, questionId, answer);
 }
 
-// No `reason` parameter: the reject endpoint accepts no body, so there is
-// nothing to send one in. Callers that need the reason recorded log it there —
-// which is also the only place it can honestly go.
-export function rejectQuestion(client: OpenCodeClient, questionId: string): Promise<QuestionResult> {
-  if (!questionId) return unsent("missing question id");
-  if (!hasQuestionCall(client, "reject")) return unsent("this host's client has no question.reject");
-  return sendQuestionSettlement(questionId, () => client.question.reject({ path: { requestID: questionId } }));
+// No `reason` parameter: the reject endpoint accepts no body, so there is nothing to
+// send one in. Callers needing the reason recorded log it there — the only honest place.
+export function rejectQuestion(host: OpaqueHost, questionId: string): Promise<QuestionResult> {
+  return settleQuestion(host, QuestionAction.Reject, questionId);
+}
+
+/**
+ * The one question write, so the two verbs cannot drift on the guard, the probe or
+ * the failure meaning — they differ only in which host method they call and what
+ * body that method takes, and a `QuestionAction` literal in a branch is the same
+ * rename hazard `decideQuestion`'s enum exists to prevent.
+ */
+function settleQuestion(
+  host: OpaqueHost,
+  action: QuestionAction,
+  questionId: string,
+  answer?: string,
+): Promise<QuestionResult> {
+  const rejecting = action === QuestionAction.Reject;
+  if (!questionId || (rejecting ? false : !answer)) {
+    return unsent(rejecting ? "missing question id" : "missing question id or answer");
+  }
+  if (!probeHost(host, (client) => hasQuestionCall(client, action))) {
+    return unsent(`this host's client has no question.${action}`);
+  }
+  return sendQuestionSettlement(host, questionId, (client) =>
+    rejecting
+      ? client.question.reject({ path: { requestID: questionId } })
+      : client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer!]] } }),
+  );
 }

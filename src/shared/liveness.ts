@@ -6,9 +6,9 @@
 // declared type, never a local re-declaration of it. Both re-declarations that
 // used to live here were load-bearing and both were wrong.
 
-import type { HostSessionMissing, HostStatusMap, HostTurn, OpenCodeClient } from "./client.js";
+import { callHost, type HostSessionMissing, type HostStatusMap, type HostTurn, type OpaqueHost } from "./client.js";
 import { isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE, readSessionMessages } from "./prompt.js";
-import { boundedRead, READ_BOUNDS } from "./execution-bound.js";
+import { READ_BOUNDS } from "./execution-bound.js";
 import { isPlainRecord } from "./host-shape.js";
 
 // opencode v1.18.30 packages/opencode/src/session/status.ts: `set` DELETES the
@@ -99,12 +99,12 @@ function messageTime(message: unknown): { completed?: unknown; created?: unknown
  * shrug apart from an answer.
  */
 export async function readLiveness(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   childSessionId: string,
   messages?: unknown[],
 ): Promise<LivenessReading> {
-  const list = messages ?? (await readSessionMessages(client, childSessionId).catch(() => []));
-  const statusMap = await readStatusMap(client);
+  const list = messages ?? (await readSessionMessages(host, childSessionId).catch(() => []));
+  const statusMap = await readStatusMap(host);
   return {
     hostTurn: statusMap?.[childSessionId],
     statusAnswered: statusMap !== null,
@@ -157,15 +157,13 @@ function isHostSessionMissing(error: unknown): error is HostSessionMissing {
 
 /**
  * Bounded, because this sits on the reconcile path and an unbounded host call there
- * is a boot that never finishes. `throwOnError` makes the SDK hand over its own
- * payload on success and its own error on refusal — no envelope to unwrap, no error
- * shape to re-declare, which is why this is ten lines and not thirty.
+ * is a boot that never finishes. `throwOnError` makes the host's 404 THROW, so
+ * existence is answered by the catch below and the success envelope is ignored.
  */
-export async function readSessionPresence(client: OpenCodeClient, sessionId: string): Promise<SessionPresence> {
+export async function readSessionPresence(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
   try {
-    const bounded = await boundedRead(READ_BOUNDS.presence, () =>
-      client.session.get({ path: { id: sessionId }, throwOnError: true }),
-    );
+    const bounded = await callHost(host, READ_BOUNDS.presence, (client) =>
+      client.session.get({ path: { id: sessionId }, throwOnError: true }), null);
     if (bounded.timedOut) return { existence: SessionExistence.Unread };
     return { existence: SessionExistence.Present };
   } catch (error: unknown) {
@@ -180,8 +178,8 @@ export async function readSessionPresence(client: OpenCodeClient, sessionId: str
  * "busy" — reading transport failure as congestion defers every debt for as long as
  * the channel is down, a silent stall wearing a safety check's name.
  */
-export async function hostTurnInFlight(client: OpenCodeClient, sessionId: string): Promise<boolean> {
-  const statusMap = await readStatusMap(client);
+export async function hostTurnInFlight(host: OpaqueHost, sessionId: string): Promise<boolean> {
+  const statusMap = await readStatusMap(host);
   if (statusMap === null) return false;
   const turn = statusMap[sessionId];
   return turn !== undefined && hostTurnIsRunning(turn);
@@ -194,8 +192,8 @@ export async function hostTurnInFlight(client: OpenCodeClient, sessionId: string
  * wedge has no run. Only the transcript can: an assistant message whose
  * `time.completed` is absent.
  */
-export async function parentTurnStuck(client: OpenCodeClient, sessionId: string): Promise<boolean> {
-  const list = await readSessionMessages(client, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
+export async function parentTurnStuck(host: OpaqueHost, sessionId: string): Promise<boolean> {
+  const list = await readSessionMessages(host, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
   if (list === null) return false;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const message = list[i];
@@ -214,11 +212,18 @@ const WEDGE_TAIL_MESSAGES = 5;
  * Two readers want this and want different things from a failure, so the READ
  * reports it and each caller interprets — but neither may wait forever for it.
  */
-async function readStatusMap(client: OpenCodeClient): Promise<HostStatusMap | null> {
+async function readStatusMap(host: OpaqueHost): Promise<HostStatusMap | null> {
   try {
-    const bounded = await boundedRead(READ_BOUNDS.status, () => client.session.status({ throwOnError: true }));
+    const bounded = await callHost(
+      host,
+      READ_BOUNDS.status,
+      (client) => client.session.status({ throwOnError: true }),
+      null,
+    );
+    // No re-check of `value` for null: the discriminated bound has already said which
+    // of the two this is, so the answer cannot arrive wearing the timeout's shape.
     if (bounded.timedOut) return null;
-    return bounded.value === null ? null : bounded.value.data;
+    return bounded.value.data;
   } catch {
     return null;
   }

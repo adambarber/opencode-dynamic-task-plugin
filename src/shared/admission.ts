@@ -8,31 +8,33 @@
 import type { DynamicTaskConfig } from "./config.js";
 import { resolveAgentCaps } from "./caps.js";
 import { liveAgentCaps } from "./caps.js";
-import { safeLog, type LogSink } from "./notify.js";
+import { safeLog } from "./notify.js";
+import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+
+// The one host call the listing makes. Stated structurally so BOTH SDK generations
+// fit: the TUI holds the v2 client, the plugin the v1 one, and a cast would be a
+// claim that one has the other's methods.
+export interface AgentCaller {
+  // `log` rides along because a failed read still has to be reportable, so the
+  // reader is handed the same `LogSink` the log funnel asks for.
+  app: { agents: () => Promise<unknown>; log?: unknown };
+}
 
 /**
- * The one host call the agent listing needs.
- *
- * Not the plugin's client. The TUI process holds a different SDK generation's client
- * and calls this same function, and typing the parameter as `OpenCodeClient` made that
- * a compile error over a `question` namespace the TUI has no use for — with a cast as
- * the only way past it, which is a cast that says the TUI has a question API. The
- * narrower type is both true and the reason the two processes can share one reader.
+ * What the agent listing needs from a host: just the opaque host, and not the
+ * plugin's client — the TUI holds a different generation's client and calls this
+ * same function, so a cast would be a claim that it has a `question` namespace.
  */
-export interface AgentLister extends LogSink {
-  // No `parameters` argument, deliberately. The v2 SDK's `agents` takes an optional
-  // query object, and declaring one here would make the parameter type `unknown` —
-  // which no concrete `{ query?: ... }` satisfies, so the TUI's client stopped
-  // assigning. A zero-arg function type accepts a function with only optional
-  // parameters, and this caller passes none either way.
-  app: { agents: () => Promise<unknown>; log?: unknown };
+export interface AgentLister<C = OpenCodeClient> {
+  /** The only route to a host namespace from here, and it is always bounded. */
+  host: OpaqueHost<C>;
 }
 
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import type { Verdict } from "./verdict.js";
 import { hostPayload } from './session-lifecycle.js';
 import { errorMessage, isEventRecord } from "./host-shape.js";
-import { withBound, READ_BOUNDS } from "./execution-bound.js";
+import { READ_BOUNDS } from "./execution-bound.js";
 import {
   validateAgent,
   validateLineage,
@@ -318,8 +320,8 @@ export function buildAgentList(agents: unknown): string {
   return names.join(", ");
 }
 
-export async function fetchAgents(client: AgentLister, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
-  return (await fetchAgentListing(client, cacheTtlMs)).agents;
+export async function fetchAgents<C extends AgentCaller>(host: AgentLister<C>, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
+  return (await fetchAgentListing(host, cacheTtlMs)).agents;
 }
 
 /**
@@ -351,25 +353,28 @@ export interface AgentListing {
  * delegate at all, a failed read means we do not know — and a caller that cannot tell
  * them apart will report a fleet it never observed.
  */
-export async function dispatchableAgentNamesOrNull(
-  client: AgentLister,
+export async function dispatchableAgentNamesOrNull<C extends AgentCaller>(
+  host: AgentLister<C>,
   config: DynamicTaskConfig,
 ): Promise<string[] | null> {
-  const listing = await fetchAgentsOrUnknown(client, config.agentCacheTtlMs);
+  const listing = await fetchAgentsOrUnknown(host, config.agentCacheTtlMs);
   return listing.known ? dispatchableAgentNames(listing.agents, config) : null;
 }
 
-export async function fetchAgentsOrUnknown(
-  client: AgentLister,
+export async function fetchAgentsOrUnknown<C extends AgentCaller>(
+  host: AgentLister<C>,
   cacheTtlMs: number = CACHE_TTL,
 ): Promise<AgentListing> {
-  return fetchAgentListing(client, cacheTtlMs);
+  return fetchAgentListing(host, cacheTtlMs);
 }
 
-async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE_TTL): Promise<AgentListing> {
-  // Non-object clients (the host's probes) can't key a WeakMap; they also
-  // can't serve a successful fetch, so they simply never cache.
-  const cacheKey: object | null = typeof client === "object" && client !== null ? client : null;
+async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, cacheTtlMs: number = CACHE_TTL): Promise<AgentListing> {
+  // Keyed on the OPAQUE HOST, never on the `{ host }` wrapper: callers build that
+  // wrapper per call, so keying on it gave every read a fresh cache. Non-object
+  // clients (the host's probes) can't key a WeakMap; they also can't serve a
+  // successful fetch, so they simply never cache.
+  const inner = host?.host;
+  const cacheKey: object | null = typeof inner === "object" && inner !== null ? inner : null;
   const now = Date.now();
   const cached = cacheKey ? agentCaches.get(cacheKey) : undefined;
   // `length > 0` is a guard against the SETUP RACE, not against caching hygiene, and
@@ -399,7 +404,7 @@ async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE
       // Bounded like every other read: a timeout becomes a THROW, so a host that
       // accepts the call and never answers lands on the same warn-and-serve-stale
       // path as a host that refuses it. Both facts are "the list is unknown".
-      const listed = await withBound(READ_BOUNDS.agents, () => client.app.agents(), () => undefined);
+      const listed = await callHost(host?.host, READ_BOUNDS.agents, (c) => c.app.agents(), () => undefined);
       if (listed.timedOut) throw new Error(`agent list unanswered after ${READ_BOUNDS.agents}ms`);
       const result: unknown = listed.value;
       const entry: AgentCacheEntry = {
@@ -421,7 +426,7 @@ async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE
         // safeLog, not a raw app.log: the client itself may be unusable
         // (host probes entry exports outside the plugin lifecycle) and a
         // throw here fails the entire plugin boot.
-        await safeLog(client, "warn", `Failed to fetch agents: ${errorMessage(error)}`);
+        await safeLog(host?.host, "warn", `Failed to fetch agents: ${errorMessage(error)}`);
       }
     }
   }

@@ -11,7 +11,8 @@ import {
 import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
-import { withBound, WRITE_BOUNDS } from "../shared/execution-bound.js";
+import { WRITE_BOUNDS } from "../shared/execution-bound.js";
+import { callHost } from "../shared/client.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import {
   activeRecord,
@@ -43,8 +44,8 @@ import type { SpawnArgs } from "./args.js";
 export type { SpawnArgs } from "./args.js";
 
 export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: ToolContext): Promise<string> {
-  const { client, store, config, directory } = deps;
-  const agents = await fetchAgents(client, config.agentCacheTtlMs);
+  const { host, store, config, directory } = deps;
+  const agents = await fetchAgents({ host }, config.agentCacheTtlMs);
 
   // Admission gate: resolve + policy-check before session.create.
   // Fail-fast ordering: unknown callers are rejected before payload validation.
@@ -130,10 +131,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // Bounded like every other outbound call: this one is awaited by the CALLER'S
     // turn, so a create the host never answers is not a slow dispatch — it is a
     // `dynamic_task` that never returns, with the parent's turn open behind it.
-    const created = await withBound(
+    const created = await callHost(
+      host,
       WRITE_BOUNDS.create,
-      () => client.session.create({ body: sessionBody, query: { directory: directory || ctx.directory } }),
-      () => null,
+      (client) => client.session.create({ body: sessionBody, query: { directory: directory || ctx.directory } }),
+      null,
     );
     if (created.timedOut) throw new Error(`session create unanswered after ${WRITE_BOUNDS.create}ms`);
     const sessionResult = created.value;
@@ -156,7 +158,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // The opening describes the child to itself, so it must describe the tools
     // the child actually has: `agent` is the admitted record, and its declared
     // tool map is the only evidence available about what its sessions can call.
-    fireChildPrompt(client, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent) }));
+    fireChildPrompt(host, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent) }));
 
     debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,
@@ -201,7 +203,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
           activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now()),
         ));
         try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* settled concurrently */ }
-        await abortSession({ client, store, callerSessionId: parentSessionId || undefined }, failedChildSessionId);
+        await abortSession({ host, store, callerSessionId: parentSessionId || undefined }, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal
       // settlement — a failed spawn the parent never hears about
@@ -211,7 +213,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         ? `${message}\nRequested model: ${requestedModelLabel}`
         : message;
       void deliverParent(
-        client,
+        host,
         parentSessionId || UNKNOWN_PARENT,
         failedChildSessionId,
         args.description || "background task",

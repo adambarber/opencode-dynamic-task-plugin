@@ -47,6 +47,7 @@ import {
   type AgentOverlay,
 } from "../shared/caps.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
+import { asOpaqueHost } from "../shared/client.js";
 import {
   CAP_CHOICES,
   CAP_LABEL,
@@ -753,7 +754,7 @@ async function readLimits(api: TuiApi): Promise<LimitsView> {
   // `null` here is the FAILED read, not an empty project: it makes the screen show the
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
-  const agents = await dispatchableAgentNamesOrNull(api.client, base);
+  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(api.client) }, base);
   return {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree

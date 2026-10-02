@@ -7,7 +7,7 @@
 // only mis-attribute a reused id. The map this gate used to keep existed to
 // bridge an `asked` event that carried no session id — a shape the host has
 // never published.
-import type { OpenCodeClient } from "../shared/client.js";
+import type { OpaqueHost } from "../shared/client.js";
 import { annotateNotice, findTask, NoticeClaim, TaskState, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
 import { isQuestionAsked, readAskedQuestion } from "../shared/host-events.js";
@@ -24,14 +24,14 @@ import { replyToQuestion, rejectQuestion, decideQuestion, QuestionAction } from 
 // refusal reported to the wrong parent is the one mistake this tail cannot be
 // asked to make twice, and a caller with a record in hand cannot get it wrong.
 async function reportRefusal(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   asked: { questionId: string; sessionId: string },
   record: Pick<TaskIdentity, "parentSessionId">,
   arm: "question-auto" | "question-retained",
   reason: string,
 ): Promise<void> {
   const { questionId, sessionId } = asked;
-  const result = await rejectQuestion(client, questionId);
+  const result = await rejectQuestion(host, questionId);
   debugLog(record.parentSessionId, sessionId, `${arm}-${result.succeeded ? "rejected" : "reject-failed"}`, {
     questionId,
     reason,
@@ -42,7 +42,7 @@ async function reportRefusal(
 // True when this event was a question the gate consumed (caller returns).
 // False for anything else (caller falls through to lifecycle handling).
 export async function handleQuestionEvent(
-  client: OpenCodeClient,
+  host: OpaqueHost,
   store: TaskStore,
   eventType: string,
   event: unknown,
@@ -66,7 +66,7 @@ export async function handleQuestionEvent(
     const active = task;
     const decision = decideQuestion("active", answer);
     if (decision.action === QuestionAction.Reply) {
-      const result = await replyToQuestion(client, questionId, decision.answer);
+      const result = await replyToQuestion(host, questionId, decision.answer);
       if (result.succeeded) {
         debugLog(active.parentSessionId, sessionId, "question-auto-answered", {
           questionId,
@@ -78,7 +78,7 @@ export async function handleQuestionEvent(
         questionId,
         reason: result.reason,
       });
-      await reportRefusal(client, asked, active, "question-auto", "Background task question auto-answer failed");
+      await reportRefusal(host, asked, active, "question-auto", "Background task question auto-answer failed");
       return true;
     }
     // The gate just refused the child its question — nobody can answer, and the
@@ -93,7 +93,7 @@ export async function handleQuestionEvent(
     // reason already says only pushes the parent's remedy further out, and the
     // status view truncates.
     annotateNotice(store, sessionId, decision.reason, NoticeClaim.NeedsInput);
-    await reportRefusal(client, asked, active, "question-auto", decision.reason);
+    await reportRefusal(host, asked, active, "question-auto", decision.reason);
     return true;
   }
 
@@ -102,7 +102,7 @@ export async function handleQuestionEvent(
     // worthless anyway — so the question is closed rather than left open.
     const decision = decideQuestion("retained", answer);
     if (decision.action === QuestionAction.Reject) {
-      await reportRefusal(client, asked, task, "question-retained", decision.reason);
+      await reportRefusal(host, asked, task, "question-retained", decision.reason);
     }
     return true;
   }

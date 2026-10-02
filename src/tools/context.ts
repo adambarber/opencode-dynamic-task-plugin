@@ -1,7 +1,7 @@
 // Shared tool context (entry/tools boundary): everything a tool executor
 // needs, owned in one place so no executor reaches past the funnel.
 import type { ToolContext } from "@opencode-ai/plugin";
-import type { OpenCodeClient } from "../shared/client.js";
+import type { OpaqueHost } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskRecord, TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
@@ -12,7 +12,7 @@ import { UntrackedStatus } from "../shared/liveness.js";
 import type { Refusal } from "../shared/verdict.js";
 
 export interface ToolDeps {
-  client: OpenCodeClient;
+  host: OpaqueHost;
   store: TaskStore;
   config: DynamicTaskConfig;
   directory: string;
@@ -68,7 +68,7 @@ export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext
     scope: {
       sessionId: String((args as { session_id: string }).session_id),
       callerSessionId: callerSessionId(ctx),
-      client: deps.client,
+      host: deps.host,
       store: deps.store,
       config: deps.config,
     },

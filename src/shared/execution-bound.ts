@@ -16,7 +16,30 @@
 // One timer, one owner, one place. `safety-invariants` fails any other
 // timer-shaped call in src/**, so a new wait cannot enter anywhere else.
 
-export type Bounded<T> = { value: T; timedOut: boolean };
+/**
+ * The answer, or the bound's report that there was none. DISCRIMINATED, because the
+ * two are different shapes and a `timedOut: boolean` field lets a caller read
+ * `value.data` after a timeout it has already handled — which is how a `() => null`
+ * timeout arm once typed itself as `T` and forced a re-check of a value that could
+ * not be null.
+ */
+export type Bounded<T, D = T> =
+  | { value: T; timedOut: false }
+  | { value: D; timedOut: true };
+
+/**
+ * The one construction of a bound's timeout report, so an absent host and a host that
+ * did not answer in time cannot drift into two shapes for the same fact.
+ */
+export const expired = <D>(timedOut: D): Bounded<never, D> => ({ value: timedOut, timedOut: true });
+
+/**
+ * The bound's arguments, named once: the deadline, the work it covers, and the value
+ * reported when the deadline wins. `callHost` is this plus a host to hand the work, so
+ * it takes the SAME tuple rather than spelling the shape a second time — two spellings
+ * of one chokepoint's contract is how they drift.
+ */
+export type BoundArgs<C, T, D> = [ms: number, work: (client: C) => Promise<T>, timedOut: D];
 
 /**
  * Run `work` with a deadline. Resolves with whatever the caller supplies for
@@ -27,18 +50,27 @@ export type Bounded<T> = { value: T; timedOut: boolean };
  * `work`'s own rejection is the caller's to handle — this bounds the WAIT, it
  * does not swallow failures.
  *
- * `work` may be sync or async. A client whose method answers immediately is
- * ordinary, not exceptional, and a bound that demanded a promise would turn
- * that answer into a TypeError — the failure would surface as a retry, a
- * latency, and a wrong record, all of which blame the wrong thing.
+ * `work` may answer immediately — a client that returns synchronously is ordinary,
+ * not exceptional — and it is still typed as returning a promise, because the thing a
+ * bound must refuse is a body that FINISHED while the call it wrapped is still open.
+ *
+ * `timedOut` is the VALUE a bound reports, not a thunk producing one. That is the
+ * whole point of the shape: a thunk runs inside the timer callback, where a throw
+ * escapes as an uncaught exception and leaves this promise pending forever — the one
+ * outcome a bound exists to make impossible. A caller that wants a timeout to travel a
+ * throw path throws it AFTER the await, where the failure can be caught.
+ *
+ * `work` must return a promise, so a synchronous read cannot be passed where a call
+ * belongs: a bound around `hostLogCall(client)` looks identical to a bound around
+ * `await log(...)` at the call site and is unbounded in fact.
  */
-export function withBound<T>(
+export function withBound<T, D>(
   ms: number,
-  work: () => T | Promise<T>,
-  onTimeout: () => T,
-): Promise<Bounded<T>> {
-  return new Promise<Bounded<T>>((resolve, reject) => {
-    const timer = setTimeout(() => resolve({ value: onTimeout(), timedOut: true }), ms);
+  work: () => Promise<T>,
+  timedOut: D,
+): Promise<Bounded<T, D>> {
+  return new Promise<Bounded<T, D>>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(expired(timedOut)), ms);
     Promise.resolve().then(work).then(
       (value) => {
         clearTimeout(timer);
@@ -51,18 +83,6 @@ export function withBound<T>(
     );
   });
 }
-
-/**
- * A bounded read whose "the host did not answer" answer is `null` — which is what most
- * of them want, and which each used to spell at its own call site.
- *
- * Named because the spelling was the thing that drifted: a timeout arm written five
- * times is five decisions that happened to agree, and the two that agreed by accident
- * were the two a reader could no longer tell apart from a genuine answer of `null`.
- * A caller that needs a different timeout meaning passes the arm it means.
- */
-export const boundedRead = <T>(ms: number, work: () => T | Promise<T>): Promise<Bounded<T | null>> =>
-  withBound<T | null>(ms, work, () => null);
 
 // A transcript read is one call to a local server. Generous enough to survive a
 // loaded machine, far short of the minutes a parent waits before assuming its

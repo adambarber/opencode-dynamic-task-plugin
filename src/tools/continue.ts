@@ -34,7 +34,7 @@ import type { ContinueArgs } from "./args.js";
 export type { ContinueArgs } from "./args.js";
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
-  const { client, store, config, sessionId, callerSessionId } = scope;
+  const { host, store, config, sessionId, callerSessionId } = scope;
 
   // The shared opening for a prompt-bearing tool: validate the prompt and model
   // before anything moves (a bad id fails without touching the task), then
@@ -71,7 +71,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // terminal event, or operator interruption, ends the task.
     markTurnReplacement(store, sessionId);
     const { serverGone, transportError: abortError } = await abortSession(
-      { client, store, callerSessionId },
+      { host, store, callerSessionId },
       sessionId,
     );
     if (serverGone) {
@@ -90,7 +90,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         return steerStateUnknown(sessionId);
       }
       const missing = steerMissing(sessionId);
-      void deliverParent(client, active.parentSessionId, sessionId, active.description, NotifyKind.Error, missing.notify)
+      void deliverParent(host, active.parentSessionId, sessionId, active.description, NotifyKind.Error, missing.notify)
         .then((delivered) => debugLog(active.parentSessionId, sessionId, "steer-missing-notify", { delivered }));
       return missing.report;
     }
@@ -130,7 +130,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         "",
         admitted.prompt,
       );
-      fireChildPrompt(client, store, {
+      fireChildPrompt(host, store, {
         childSessionId: sessionId,
         parentSessionId: active.parentSessionId,
         agentName: active.agentName,
@@ -148,7 +148,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // spelled twice (revive, clear the settle-dedup, prompt).
   let task;
   try {
-    task = reviveWithPrompt(client, store, sessionId, admitted.prompt, config, admitted.modelOverride);
+    task = reviveWithPrompt(host, store, sessionId, admitted.prompt, config, admitted.modelOverride);
   } catch (error: unknown) {
     if (!store.retainedTasks.has(sessionId)) {
       return untrackedSession(sessionId);

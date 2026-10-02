@@ -14,7 +14,7 @@
 // candidate plugin function.
 
 import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
-import type { OpenCodeClient } from "./shared/client.js";
+import { asOpaqueHost, hasCoreApis, probeHost, type OpenCodeClient } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
 import { errorMessage } from "./shared/host-shape.js";
 import { eventString } from "./shared/host-shape.js";
@@ -42,9 +42,12 @@ export default async function dynamicTaskPlugin(
   // a belief.
   const directory = input.directory;
   const client = input.client as OpenCodeClient;
+  // The one mint. Past this line nothing downstream can name a host namespace.
+  const host = asOpaqueHost(client);
 
-  if (!client?.app?.agents || !client?.session?.create || !client?.session?.prompt) {
-    await safeLog(client, "warn", "Missing required client APIs, plugin disabled");
+  const coreApisPresent = probeHost(host, hasCoreApis);
+  if (!coreApisPresent) {
+    await safeLog(host, "warn", "Missing required client APIs, plugin disabled");
     return {};
   }
 
@@ -53,10 +56,10 @@ export default async function dynamicTaskPlugin(
   // instance's events into another project's store. Debug root and
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
-  const { config, store } = initPluginState(directory, options, client);
-  const deps = { client, store, config, directory };
+  const { config, store } = initPluginState(directory, options, host);
+  const deps = { host, store, config, directory };
 
-  await safeLog(client, "info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
+  await safeLog(host, "info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
 
   return {
     event: async ({ event }: { event: unknown }) => {
@@ -97,7 +100,7 @@ export default async function dynamicTaskPlugin(
 
       // --- Question gate (Task 04): attribute through the gate, then settle.
       try {
-        if (await handleQuestionEvent(client, store, eventType, event)) return;
+        if (await handleQuestionEvent(host, store, eventType, event)) return;
       } catch (qerr: unknown) {
         debugLog("unknown", "unknown", "question-handler-error", { error: errorMessage(qerr) });
       }
@@ -105,9 +108,9 @@ export default async function dynamicTaskPlugin(
       // --- Session lifecycle event handler ---
       if (!terminal) return;
       try {
-        await handleChildLifecycleEvent(client, store, event, config);
+        await handleChildLifecycleEvent(host, store, event, config);
       } catch (error: unknown) {
-        await containFailure(client, "event handler error", error);
+        await containFailure(host, "event handler error", error);
         debugLog("event-handler", "event-handler", "event-handler-error", {
           error: errorMessage(error),
         });

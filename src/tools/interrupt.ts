@@ -14,7 +14,6 @@
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
 import { abortSession, stopPlan } from "../shared/session-lifecycle.js";
-import type { OpaqueHost } from "../shared/client.js";
 import { safeLog } from "../shared/notify.js";
 import {
   TaskState,
@@ -73,12 +72,11 @@ interface InterruptClaim {
  * The `because` is a parameter because the two sites differ exactly there.
  */
 function abortFailedActive(
-  host: OpaqueHost,
   sessionId: string,
   message: string,
   because: string,
 ): InterruptOutcome {
-  void safeLog(host, "warn", `Interrupt: abort failed for ${sessionId} (${message}); ${because}.`);
+  void safeLog("warn", `Interrupt: abort failed for ${sessionId} (${message}); ${because}.`);
   return { kind: "abort-failed-active", message };
 }
 
@@ -118,7 +116,7 @@ async function abortClaimed(
     // Untracked: transient abort failures are simply the caller's
     // transport error; nothing of ours is at stake.
     if (abortMessage) {
-      return abortFailedActive(host, sessionId, abortMessage, "untracked child, so nothing of ours is at stake");
+      return abortFailedActive(sessionId, abortMessage, "untracked child, so nothing of ours is at stake");
     }
     if (serverGone) return { kind: "gone" };
     return { kind: "untracked" };
@@ -134,7 +132,7 @@ async function abortClaimed(
     // ignorance — the newer success wins).
     if (claimed && store.retainedTasks.get(sessionId)?.state === TaskState.Interrupted) {
       if (withdrawInterruptClaim(store, sessionId, claim.claimTime, config)) {
-        return abortFailedActive(host, sessionId, abortMessage, "speculative claim withdrawn, child may still be live");
+        return abortFailedActive(sessionId, abortMessage, "speculative claim withdrawn, child may still be live");
       }
       recordAbortError(store, sessionId, abortMessage);
       return { kind: "abort-failed-retained", message: abortMessage };

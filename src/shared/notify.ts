@@ -7,6 +7,8 @@
 // execution-bound, including the one on the parent prompt itself — the host
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
@@ -16,8 +18,21 @@ import { errorMessage, hostRefusal } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
 
-// Client logging that never throws: a dead log call must not break a
+// Plugin logging that never throws: a dead log write must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
+
+/** Where the plugin's own log lives — the project directory, set once at boot. */
+let logRoot = ".dynamic-task-debug";
+
+/** Point the plugin log at the project, beside the durable ledger. */
+export function configurePluginLogRoot(directory: string): void {
+  logRoot = directory ? path.join(directory, ".dynamic-task-debug") : ".dynamic-task-debug";
+}
+
+function pluginLogRoot(): string {
+  return logRoot;
+}
+
 /**
  * The one host call logging needs — OPTIONAL, and that is the point.
  *
@@ -34,64 +49,28 @@ import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
  * missing call, so a client that cannot log is not a new case. Making that guarantee
  * structural is better than making it true by inspection of a try block.
  */
-export interface LogSink {
-  // `unknown`, and that is the point: the call is CHECKED at the boundary rather than
-  // asserted in a type. The two SDK generations this plugin runs against spell `app.log`
-  // differently — the server's takes `{ body }` and the TUI's takes an optional query
-  // object with a wider body — so no single signature accepts both, and writing one
-  // would have rejected a client that logs perfectly well. The alternative was a cast
-  // at every cross-process call site; this is one named question instead.
-  app: { log?: unknown };
-}
-
-/** The body this plugin writes, and the only one it writes. */
-interface LogBody {
-  service: string;
-  level: "info" | "warn" | "error";
-  message: string;
-}
+/** The level vocabulary this plugin writes; the only one it uses. */
+export type LogLevel = "info" | "warn" | "error";
 
 /**
- * The `app.log` call, or null when this client has no usable one.
+ * The plugin's own log, written where the plugin can see it.
  *
- * The same sanctioned idiom as `hasQuestionCall` below, for the same reason: the cast
- * widens to an untyped map to ASK whether the key is a function, which is the question
- * — it does not assert an answer. Narrowing what was found is a second step with its
- * own check, so a client whose `log` is a string of the wrong length fails to log
- * rather than throwing inside a catch that swallows it.
+ * v2 removed the host log sink: `app` is now `{name, version, channel}` and has no
+ * `log`, so there is nothing to write to. Keeping the funnel and pointing it at the
+ * plugin's own directory deletes the host round-trip entirely — which is why this is
+ * SYNCHRONOUS and needs no bound. That is not a downgrade: a line we own survives the
+ * host that emitted it, and the unbounded `await` behind it was the one call capable
+ * of holding plugin boot open against a silent host.
  */
-function hostLogCall(sink: LogSink | null | undefined): ((args: { body: LogBody }) => Promise<unknown>) | null {
-  const log = sink?.app?.log;
-  if (typeof log !== "function") return null;
-  const call = log as (args: { body: LogBody }) => Promise<unknown>;
-  return typeof call === "function" ? call : null;
-}
-
-/**
- * Best-effort host log, bounded at this chokepoint for every caller. The sink is
- * reached THROUGH the opaque host: the defect the boundedness scanner could not see
- * arrived here as a `LogSink` parameter, so scanning for `client.session.…` missed it.
- *
- * The BODY is the bound, never a probe around it. Bounding `hostLogCall(client)` bounds
- * a synchronous read and leaves the await that can hang to the host — boot never
- * returning, re-entering through the one call the opaque-host refactor touched. A
- * chokepoint that bounds the wrong expression reads as bounded and is not.
- */
-export async function safeLog<C extends LogSink>(
-  host: OpaqueHost<C> | undefined | null,
-  level: "info" | "warn" | "error",
-  message: string,
-): Promise<void> {
-  await callHost<C, void>(
-    host,
-    WRITE_BOUNDS.log,
-    async (client) => {
-      const log = hostLogCall(client);
-      if (log === null) return;
-      await log({ body: { service: "dynamic-task", level, message } }).catch(() => undefined);
-    },
-    undefined,
-  );
+export function safeLog(level: LogLevel, message: string): void {
+  try {
+    const root = pluginLogRoot();
+    mkdirSync(root, { recursive: true });
+    appendFileSync(path.join(root, "plugin.log"), `${new Date().toISOString()} ${level} ${message}\n`, "utf8");
+  } catch {
+    // A failing fs write must never break the turn that noticed a problem worth
+    // recording; observability is never worth losing the work it was observing.
+  }
 }
 
 /**
@@ -110,13 +89,8 @@ export async function safeLog<C extends LogSink>(
  * spellings of one fact about an unknown throwable, which is the drift this
  * arrangement exists to end.
  */
-export async function containFailure(
-  host: OpaqueHost,
-  what: string,
-  error: unknown,
-  tail = "",
-): Promise<void> {
-  await safeLog(host, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
+export function containFailure(what: string, error: unknown, tail = ""): void {
+  safeLog("warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
 }
 
 /**
@@ -623,7 +597,7 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
   }
   if (owed.length > offered.length) {
     const held = owed.length - offered.length;
-    void safeLog(host, "warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
+    void safeLog("warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
   }
 }
 
@@ -691,10 +665,7 @@ export async function notifyParent(
     // waiting for it.
     let inFlight: Promise<unknown> | undefined;
     const request = callHost(host, WRITE_BOUNDS.parentPrompt, (client) => {
-      inFlight = client.session.prompt({
-        path: { id: parentSessionId },
-        body: { parts: [{ type: "text", text: message }] },
-      });
+      inFlight = client.session.prompt({ sessionID: parentSessionId, text: message });
       return inFlight;
     }, undefined);
     return request.then((bounded) => {
@@ -749,13 +720,9 @@ export async function notifyParent(
     // variable before the process started, and the fact being reported is one
     // they have to act on — the parent session is not accepting writes, and
     // nothing will be retried.
-    void safeLog(
-      host,
-      "warn",
-      `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
-        `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
-        `The parent has NOT been told — read this task's status from the parent session to see the write-off.`,
-    );
+    void safeLog("warn", `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
+      `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
+      `The parent has NOT been told — read this task's status from the parent session to see the write-off.`);
     return Promise.resolve(false);
   }
   // Owed BEFORE the dial, every attempt: the debt must be on disk while the
@@ -763,17 +730,13 @@ export async function notifyParent(
   // A dropped debt is a notice the operator will never be told exists, so it is
   // said out loud here rather than only in the queue's shape: the one channel an
   // operator has without setting an environment variable first is the host log.
-  const announceDropped = (host: OpaqueHost, dropped: PendingDelivery | null): void => {
+  const announceDropped = (dropped: PendingDelivery | null): void => {
     if (dropped === null) return;
-    void safeLog(
-      host,
-      "warn",
-      `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
-        `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`,
-    );
+    void safeLog("warn", `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
+      `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`);
   };
   const dial = (attempts: number): Promise<Attempt> => {
-    announceDropped(host, queuePending({ ...owed, attempts: carried + attempts }));
+    announceDropped(queuePending({ ...owed, attempts: carried + attempts }));
     return attempt();
   };
   const commit = (outcome: DeliveryOutcome) => {
@@ -841,12 +804,8 @@ export async function notifyParent(
         // re-armed count is the one this boot spent.
         const dropped = queuePending({ ...owed, attempts: carried + 1 });
         if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
-        void safeLog(
-          host,
-          "warn",
-          `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`,
-        );
-        announceDropped(host, dropped);
+        void safeLog("warn", `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
+        announceDropped(dropped);
         // The claim goes back, because nothing was written and the debt is still
         // live: holding it would make every LATER obligation for this child and
         // kind permanently unwritable, because this is a refusal rather than a

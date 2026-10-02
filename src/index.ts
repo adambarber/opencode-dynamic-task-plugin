@@ -1,5 +1,4 @@
 // Dynamic Task Plugin — non-blocking subagent orchestration with parent notifications
-// Location: ~/.config/opencode/plugins/dynamic-task.ts (auto-scanned)
 // Docs: https://opencode.ai/docs/plugins
 //
 // The contract: tools never wait. Every prompt is fired and owned at the gate;
@@ -10,45 +9,35 @@
 //
 // Layout: this file is wiring only — state boot (entry/state), the event head
 // (entry/questions, entry/lifecycle), and the tool inventory (tools/). Only
-// the default export is public: the host invokes every entry export as a
-// candidate plugin function.
+// the default export is public.
+//
+// v2 changed the SHAPE of a plugin, not just its calls: the host decodes the
+// default export as `{ id, effect | setup }` and calls `setup(context)`. A bare
+// factory function — the v1 shape — is rejected by the loader before any of it
+// runs, so this is where "does the plugin load at all" is decided.
 
-import type { PluginInput, PluginOptions } from "@opencode-ai/plugin";
-import { asOpaqueHost, hasCoreApis, probeHost, type OpenCodeClient } from "./shared/client.js";
+import type { Context, Plugin } from "@opencode/plugin/promise/plugin";
+import type { PluginOptions } from "@opencode/plugin";
+import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
-import { errorMessage } from "./shared/host-shape.js";
-import { eventString } from "./shared/host-shape.js";
+import { errorMessage, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
-import { safeLog, containFailure } from "./shared/notify.js";
+import { safeLog, containFailure, configurePluginLogRoot } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
-import { handleQuestionEvent } from "./entry/questions.js";
+import { handleAskEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { noteActivity } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
-export default async function dynamicTaskPlugin(
-  input: PluginInput,
-  options?: PluginOptions,
-) {
-  // The boundary cast (Task 08): the host provides the `question` namespace beyond
-  // the generated SDK surface. Everything downstream takes the augmented
-  // OpenCodeClient — no further casts.
-  //
-  // What earns it, precisely: the guard below probes the four capabilities the tool
-  // map needs, and the fifth — the question namespace — is probed by
-  // `hasQuestionCall` at the two call sites that use it, because a host without it
-  // should lose questions rather than the whole plugin. The premise is documented
-  // and verified in shared/client.ts; these two probes are what stop it being only
-  // a belief.
-  const directory = input.directory;
-  const client = input.client as OpenCodeClient;
+async function setup(context: Context, options?: PluginOptions): Promise<void> {
+  const directory = context.location.directory;
   // The one mint. Past this line nothing downstream can name a host namespace.
-  const host = asOpaqueHost(client);
+  const host = asOpaqueHost(context);
+  configurePluginLogRoot(directory);
 
-  const coreApisPresent = probeHost(host, hasCoreApis);
-  if (!coreApisPresent) {
-    await safeLog(host, "warn", "Missing required client APIs, plugin disabled");
-    return {};
+  if (!probeHost(host, hasCoreApis)) {
+    safeLog("warn", "Missing required host APIs, plugin disabled");
+    return;
   }
 
   // Initialize state at plugin load time — the store and config are captured
@@ -58,65 +47,65 @@ export default async function dynamicTaskPlugin(
   // exemption note in docs/tasks/06-persistence-and-observability.md).
   const { config, store } = initPluginState(directory, options, host);
   const deps = { host, store, config, directory };
+  const tools = buildToolMap(deps);
 
-  await safeLog(host, "info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
+  safeLog("info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
 
-  return {
-    event: async ({ event }: { event: unknown }) => {
-      const eventType = eventString(event, "type") ?? "(none)";
-      const eventName = eventString(event, "name") ?? "(none)";
-      const evtSessionId = getSessionIdFromEvent(event);
+  // The event head, on v2's own registration surface. `transform` registers the
+  // editor pass; `subscribe` is the stream itself.
+  context.tool.transform((editor) => {
+    for (const [name, info] of Object.entries(tools)) editor.add({ ...info, name });
+  });
+  await context.tool.reload();
 
-      // NO host log on this path, and the absence is the design. This head is
-      // the only code in the plugin that sees every event, and the host emits one
-      // per message AND per part — so a session with 5,399 parts pays this line
-      // 5,399 times inside a single turn. At `info` that is a round trip to the
-      // host per part, detached and unbounded, and the host log contains ZERO of
-      // them: the whole cost bought no observability at all. It was also the most
-      // likely thing in the plugin to make the host's own event pump the busiest
-      // writer in the process, on the one path a turn cannot afford to be slow.
-      //
-      // `debugLog` below is where per-event observability belongs: it returns
-      // before allocating anything unless DYNAMIC_TASK_DEBUG=1, so it costs
-      // nothing when nobody is watching and writes everything when someone is.
-      // The distinction is the point — a diagnostic that is always on is not a
-      // diagnostic, it is a tax.
-      debugLog("event-handler", "event-handler", "event-received", {
-        type: eventType,
-        name: eventName,
-        sessionId: evtSessionId,
-      });
+  const onEvent = async (event: unknown): Promise<void> => {
+    const eventType = eventString(event, "type") ?? "(none)";
+    const eventName = eventString(event, "name") ?? "(none)";
+    const evtSessionId = getSessionIdFromEvent(event);
 
-      // --- Activity heartbeat: this head is the ONLY place that sees every
-      // host event, so it is where "the child's turn is moving" is observed.
-      // Synchronous and before any gate, because the whole point is that a
-      // child doing real work (message/part updates, token deltas, tool
-      // transitions) never reads as silent since spawn. Terminality is decided
-      // once, here, and handed to both consumers: a turn ENDING is real motion
-      // but it is not the turn working, and conflating the two is what let a
-      // stale ending vouch for itself as the current turn's.
-      const terminal = isTerminalSessionEvent(event);
-      noteActivity(store, evtSessionId, terminal);
+    // NO plugin log on this path, and the absence is the design. This head is
+    // the only code in the plugin that sees every event, and the host emits one
+    // per message AND per part — so a session with 5,399 parts pays this line
+    // 5,399 times inside a single turn. `debugLog` below is where per-event
+    // observability belongs: it returns before allocating anything unless
+    // DYNAMIC_TASK_DEBUG=1, so it costs nothing when nobody is watching.
+    debugLog("event-handler", "event-handler", "event-received", {
+      type: eventType,
+      name: eventName,
+      sessionId: evtSessionId,
+    });
 
-      // --- Question gate (Task 04): attribute through the gate, then settle.
-      try {
-        if (await handleQuestionEvent(host, store, eventType, event)) return;
-      } catch (qerr: unknown) {
-        debugLog("unknown", "unknown", "question-handler-error", { error: errorMessage(qerr) });
-      }
+    // --- Activity heartbeat: this head is the ONLY place that sees every
+    // host event, so it is where "the child's turn is moving" is observed.
+    // Terminality is decided once, here, and handed to both consumers.
+    const terminal = isTerminalSessionEvent(event);
+    noteActivity(store, evtSessionId, terminal);
 
-      // --- Session lifecycle event handler ---
-      if (!terminal) return;
-      try {
-        await handleChildLifecycleEvent(host, store, event, config);
-      } catch (error: unknown) {
-        await containFailure(host, "event handler error", error);
-        debugLog("event-handler", "event-handler", "event-handler-error", {
-          error: errorMessage(error),
-        });
-      }
-    },
+    // --- Ask gate: attribute through the gate, then deny.
+    try {
+      if (await handleAskEvent(host, store, eventType, event)) return;
+    } catch (qerr: unknown) {
+      debugLog("unknown", "unknown", "ask-handler-error", { error: errorMessage(qerr) });
+    }
 
-    tool: buildToolMap(deps),
+    // --- Session lifecycle event handler ---
+    if (!terminal) return;
+    try {
+      await handleChildLifecycleEvent(host, store, event, config);
+    } catch (error: unknown) {
+      containFailure("event handler error", error);
+      debugLog("event-handler", "event-handler", "event-handler-error", { error: errorMessage(error) });
+    }
   };
+
+  void (async () => {
+    for await (const event of context.event.subscribe()) {
+      void onEvent(event);
+    }
+  })();
 }
+
+export default {
+  id: "dynamic-task",
+  setup: (context: Context) => setup(context),
+} satisfies Plugin;

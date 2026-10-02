@@ -1,153 +1,91 @@
 // src/shared/question-handling.ts
-// Question auto-answer policy (Task 04). A background child must never sit on a
-// human prompt: a live child's question is answered with an option the host
-// offered, a settled child's question is rejected, and a question that cannot be
+// Ask settlement policy. A background child must never sit on a human prompt: a live
+// child's ask is DENIED, a settled child's is denied, and an ask that cannot be
 // attributed to one of this plugin's tasks is never touched.
 //
-// Nothing here reads a host shape or spells a host field on its own. Event names
-// and payloads come from src/shared/host-events.ts, and the question namespace is
-// typed from the SDK in src/shared/client.ts — because the version of this file
-// that read `question.created` and answered with `properties.answers` described
-// a host that does not exist: opencode publishes `question.asked`, carrying
-// `questions: QuestionInfo[]`, and routes replies to `/question/{requestID}`.
+// v2 replaced the free-text question with a PERMISSION: `permission.asked` carries
+// `{id, sessionID, action, resources}` with no options and no labels, and the only
+// answer the plugin API accepts is `permission.reply({decision: "once" | "always" |
+// "reject"})`. So there is nothing left to auto-answer — a permission is a yes/no
+// about a named action, not a question with a best choice.
+//
+// The single answer is DENY, and that is a decision rather than a leftover: allowing
+// an action on a parent's behalf is a privilege the plugin was never granted, and
+// denying is what this gate already did whenever it could not compute an answer. The
+// refusal is still reported to the parent as the child's `needs_input`, so a child
+// blocked this way stays visibly blocked instead of settling as a success.
 
-import { errorMessage } from "./host-shape.js";
-import { isEventRecord } from "./host-shape.js";
+import { errorMessage, isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
-import { callHost, hasQuestionCall, probeHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { callHost, hasPermissionReply, probeHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
-
-/**
- * What answering a question amounts to. An enum rather than a string-literal
- * union, because the caller branches on it to choose which host method to
- * invoke — a raw literal in that branch is a rename that compiles clean and
- * silently answers the wrong way.
- */
-export enum QuestionAction {
-  Reply = "reply",
-  Reject = "reject",
-}
-
-export type QuestionDecision =
-  | { action: QuestionAction.Reply; answer: string }
-  | { action: QuestionAction.Reject; reason: string };
 
 export interface QuestionResult {
   succeeded: boolean;
   reason?: string;
 }
 
-// Pure decision, on what the host actually offered. `answer` is null when the
-// gate has nothing to give: no options, or a multi-part ask the single-answer
-// reply endpoint cannot satisfy (see host-events.AskedQuestion.answer).
-//
-// Both rejection reasons are operator voice (voice.ts), because each one is the
-// only description of what can happen next — but note WHERE that text lands. The
-// reject endpoint declares `body?: never`, so this gate cannot inject a reason
-// into the asking session. The reason reaches the operator through the block
-// claim the caller writes, and the child's own view is the host's rejection.
-export function decideQuestion(
-  taskState: "active" | "retained",
-  answer: string | null,
-): QuestionDecision {
-  if (taskState === "retained") {
-    return { action: QuestionAction.Reject, reason: QUESTION_SETTLED };
-  }
-  if (answer === null || answer.length === 0) {
-    return { action: QuestionAction.Reject, reason: QUESTION_NO_ANSWER };
-  }
-  return { action: QuestionAction.Reply, answer };
+/**
+ * Why this ask is refused, in operator voice, for the two cases there are.
+ *
+ * Declared once because both render sites used to say it and they drifted: they
+ * agreed while the channel answered and could not agree about a failed one.
+ */
+export function decideAsk(taskState: "active" | "retained"): string {
+  return taskState === "retained" ? QUESTION_SETTLED : QUESTION_NO_ANSWER;
+}
+
+/** Deny one ask. The only settlement this plugin makes, and the only verb it needs. */
+export function denyAsk(host: OpaqueHost, sessionId: string, requestId: string): Promise<QuestionResult> {
+  if (!sessionId || !requestId) return unsent("missing ask id or session id");
+  if (!probeHost(host, hasPermissionReply)) return unsent("this host's context has no permission.reply");
+  return sendDenial(host, requestId, (client) =>
+    client.permission.reply({ sessionID: sessionId, requestID: requestId, decision: "reject" }),
+  );
 }
 
 // Settlement transport: guards on inputs, and an "already resolved" answer
-// (or a 404/409 race with a human) counts as success — the question closed,
-// which is all the background task wanted. The reply/reject split lives in
-// `settleQuestion`, so the guard and the failure meaning cannot drift apart.
-async function sendQuestionSettlement(
+// (or a 404/409 race with a human) counts as success — the ask closed,
+// which is all the background task wanted.
+async function sendDenial(
   host: OpaqueHost,
-  questionId: string,
+  requestId: string,
   send: (client: OpenCodeClient) => Promise<unknown>,
 ): Promise<QuestionResult> {
   try {
-    // Bounded like every other write, and for the same reason as the create: the
-    // caller awaits this to decide what happens to a child's turn. A timeout
-    // travels the throw path so the failure is classified as one, rather than
-    // being a second kind of answer that every caller must learn.
+    // Bounded like every other write, and for the same reason: the caller awaits this
+    // to decide what happens to a child's turn. A timeout travels the throw path so the
+    // failure is classified as one, rather than being a second kind of answer.
     const settled = await callHost(host, WRITE_BOUNDS.question, send, undefined);
-    if (settled.timedOut) throw new Error(`question settlement unanswered after ${WRITE_BOUNDS.question}ms`);
+    if (settled.timedOut) throw new Error(`ask denial unanswered after ${WRITE_BOUNDS.question}ms`);
     return { succeeded: true };
   } catch (error: unknown) {
-    return classifySettlementFailure(questionId, error);
+    return classifyDenialFailure(requestId, error);
   }
 }
 
-// A question that is already closed still counts as closed, and the host says so
-// two different ways: 409 when a human or a race got there first, 404 when the
-// question is gone from its table. Both are the outcome the background task
-// wanted and both are ONE reason, so the recognizers are named side by side
-// instead of spelled as two branches returning the same verdict — a branch that
-// returns the same thing twice is a branch whose two conditions can be reasoned
-// about separately and cannot.
+// An ask that is already closed still counts as closed, and the host says so two
+// different ways: 409 when a human or a race got there first, 404 when the ask is gone
+// from its table. Both are the outcome the background task wanted and both are ONE
+// reason, so the recognizers are named side by side instead of spelled as two branches
+// returning the same verdict.
 const ALREADY_CLOSED: ReadonlyArray<{ status: number; says: RegExp }> = [
-  { status: 409, says: /already (resolved|answered)|question not found|not found/i },
-  { status: 404, says: /no such question|missing/i },
+  { status: 409, says: /already (resolved|answered|decided)|permission not found|not found/i },
+  { status: 404, says: /no such (ask|permission)|missing/i },
 ];
 
-function classifySettlementFailure(questionId: string, error: unknown): QuestionResult {
+function classifyDenialFailure(requestId: string, error: unknown): QuestionResult {
   const status = isEventRecord(error) ? (error as Record<string, unknown>).status : undefined;
   const message = errorMessage(error);
   if (ALREADY_CLOSED.some(({ status: code, says }) => status === code || says.test(message))) {
     return { succeeded: true, reason: "already_resolved" };
   }
-  return { succeeded: false, reason: `${questionId}: ${message}` };
+  return { succeeded: false, reason: `${requestId}: ${message}` };
 }
 
-// A settlement this gate never sent: asked to close a question it cannot even
-// address. Named once so the refusal shape is one thing, and a caller that
-// forgets the guard fails the same way every other refusal fails.
+// A settlement this gate never sent: asked to close an ask it cannot even address.
+// Named once so the refusal shape is one thing, and a caller that forgets the guard
+// fails the same way every other refusal fails.
 function unsent(reason: string): Promise<QuestionResult> {
   return Promise.resolve({ succeeded: false, reason });
-}
-
-/**
- * Answer a question on behalf of a child.
- *
- * The host routes /question/{requestID}/reply — `requestID`, not `id` — and wants
- * `answers`: one entry per asked question, each the list of chosen labels. A bare
- * `answer` string is silently the wrong shape.
- */
-export function replyToQuestion(host: OpaqueHost, questionId: string, answer: string): Promise<QuestionResult> {
-  return settleQuestion(host, QuestionAction.Reply, questionId, answer);
-}
-
-// No `reason` parameter: the reject endpoint accepts no body, so there is nothing to
-// send one in. Callers needing the reason recorded log it there — the only honest place.
-export function rejectQuestion(host: OpaqueHost, questionId: string): Promise<QuestionResult> {
-  return settleQuestion(host, QuestionAction.Reject, questionId);
-}
-
-/**
- * The one question write, so the two verbs cannot drift on the guard, the probe or
- * the failure meaning — they differ only in which host method they call and what
- * body that method takes, and a `QuestionAction` literal in a branch is the same
- * rename hazard `decideQuestion`'s enum exists to prevent.
- */
-function settleQuestion(
-  host: OpaqueHost,
-  action: QuestionAction,
-  questionId: string,
-  answer?: string,
-): Promise<QuestionResult> {
-  const rejecting = action === QuestionAction.Reject;
-  if (!questionId || (rejecting ? false : !answer)) {
-    return unsent(rejecting ? "missing question id" : "missing question id or answer");
-  }
-  if (!probeHost(host, (client) => hasQuestionCall(client, action))) {
-    return unsent(`this host's client has no question.${action}`);
-  }
-  return sendQuestionSettlement(host, questionId, (client) =>
-    rejecting
-      ? client.question.reject({ path: { requestID: questionId } })
-      : client.question.reply({ path: { requestID: questionId }, body: { answers: [[answer!]] } }),
-  );
 }

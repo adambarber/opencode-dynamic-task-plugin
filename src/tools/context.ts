@@ -1,6 +1,6 @@
 // Shared tool context (entry/tools boundary): everything a tool executor
 // needs, owned in one place so no executor reaches past the funnel.
-import type { ToolContext } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
 import type { OpaqueHost } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskRecord, TaskStore } from "../shared/task-state.js";

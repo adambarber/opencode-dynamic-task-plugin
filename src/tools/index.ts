@@ -1,10 +1,10 @@
 // Tool map (entry/tools boundary): every registered tool is defined here —
-// description, args, and a one-line execute that delegates to its executor
-// module. Session-scoped tools are built by scopedTool, which resolves the
-// session scope once and hands it to the executor. Bodies live beside their
-// hazards; this file owns the inventory the Task-00 fidelity gate reads.
-import { tool } from "@opencode-ai/plugin";
-import type { ToolContext } from "@opencode-ai/plugin";
+// description, input schema, and a one-line execute that delegates to its executor
+// module. Session-scoped tools are built by scopedTool, which resolves the session
+// scope once and hands it to the executor. Bodies live beside their hazards; this
+// file owns the inventory the Task-00 fidelity gate reads.
+import type { Tool } from "@opencode/schema/tool";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { executeDynamicTask } from "./spawn.js";
 import { executeTaskContinue } from "./continue.js";
 import { executeTaskNotify } from "./notice.js";
@@ -24,44 +24,43 @@ import {
   MODEL_ARG_DESCRIPTION,
 } from "../shared/voice.js";
 
-// The tool SDK's own arg-map type, so a schema change in the SDK cannot be
-// papered over here.
-type ToolArgs = Parameters<typeof tool>[0]["args"];
+// One JSON Schema per tool's WHOLE input, not a record of per-argument schemas: v2's
+// `Tool.Info` takes a single `input`. JSON Schema is not a fallback — `ValueSchema`
+// declares it as one of three accepted forms, so writing it directly drops the zod-ish
+// `tool.schema` DSL entirely and leaves the host validating the same shape we publish.
+type InputSchema = Tool.ValueSchema;
+
+const string = (description: string) => ({ type: "string", description }) as const;
+const optionalString = (description: string) => ({ type: "string", description }) as const;
+const optionalStringList = (description: string) =>
+  ({ type: "array", items: { type: "string" }, description }) as const;
 
 export function buildToolMap(deps: ToolDeps) {
   // The ONLY door into any registered tool, and the ONLY decision about what an
   // executor runs against. Bound to its resolver, so a tool declares the input it
   // runs against in one place and the executor that goes with it — the session-id
   // guard is structurally present for every session tool rather than repeated
-  // (and driftable) inside four executors, and an executor's signature has no
-  // room for an unresolved id. The refusal is reported by the resolve step,
-  // before the executor exists.
+  // (and driftable) inside four executors.
   //
-  // `args: never` is not a hole, and it should not be "fixed". The four executors
-  // that read their raw arguments declare them under their own real types
-  // (SpawnArgs, ContinueArgs, NotifyArgs) and TypeScript still accepts them here
-  // because `never` is the bottom type — assignable to every type, which is
-  // exactly the property that lets one signature admit four different arg types.
-  // The alternative is a per-call-site `raw as SpawnArgs`, which is a LARGER claim
-  // (each site would assert its own type) and no safer: the resolver above has
-  // already established that the value's shape, which is the whole reason the raw
-  // arguments can be handed over un-narrowed.
+  // The four executors that read their raw arguments declare them under their own real
+  // types (SpawnArgs, ContinueArgs, NotifyArgs); a JSON-Schema input decodes to
+  // `unknown`, which is the honest type for something the host validated for us and
+  // which every one of those executors already took.
   const registeredTool = <T>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<T>) =>
-    (description: string, args: ToolArgs, execute: (input: T, args: never, ctx: ToolContext) => Promise<string>) =>
-      tool({
-        description,
-        args,
-        async execute(raw, ctx: ToolContext) {
-          // ctx goes to the resolver because the resolved scope is how a
-          // session-scoped tool learns who is calling it — a fact the arguments
-          // cannot carry, and the fact that lets a stop tell a caller from its
-          // own session. Passing it here rather than threading it past the resolver
-          // is what keeps that decision at the one door.
-          const resolved = resolve(raw, ctx);
-          if (!resolved.ok) return resolved.error;
-          return execute(resolved.input, raw as never, ctx);
-        },
-      });
+    (input: InputSchema, description: string, execute: (resolved: T, args: never, ctx: ToolContext) => Promise<string>) => ({
+      input,
+      description,
+      async execute(raw: unknown, ctx: ToolContext) {
+        // ctx goes to the resolver because the resolved scope is how a
+        // session-scoped tool learns who is calling it — a fact the arguments
+        // cannot carry, and the fact that lets a stop tell a caller from its
+        // own session. Passing it here rather than threading it past the resolver
+        // is what keeps that decision at the one door.
+        const verdict = resolve(raw, ctx);
+        if (!verdict.ok) return { content: verdict.error };
+        return { content: await execute(verdict.input, raw as never, ctx) };
+      },
+    });
 
   // A tool that acts on a named child resolves the session id here, once per
   // call. The two tools that run against the PLUGIN rather than a session scope
@@ -79,27 +78,26 @@ export function buildToolMap(deps: ToolDeps) {
   // had three descriptions and one absence. The word "background" was also wrong
   // for three of the four: a settled FOREGROUND task is continued, read and
   // stopped through this argument too.
-  const SESSION_ID = tool.schema.string().describe("Child session ID from dynamic_task (ses_...)");
-  // One builder for the two dependency arguments. They are the same schema with
-  // the same meaning — a list of child session ids — and differ only in what
-  // waiting for them MEANS, which is the sentence, not the type. Spelling the
-  // chain twice is how the two arguments stop being the same kind of value.
-  const SESSION_ID_LIST = (description: string) =>
-    tool.schema.array(tool.schema.string()).optional().describe(description);
+  const SESSION_ID = string("Child session ID from dynamic_task (ses_...)");
+  // One builder for the two dependency arguments. They are the same schema with the
+  // same meaning — a list of child session ids — and differ only in what
+  // waiting for them MEANS, which is the sentence, not the type.
+  const SESSION_ID_LIST = (description: string) => optionalStringList(description);
   // Likewise the prompt and the model override: the two arguments every
   // prompt-bearing tool takes, each with its own sentence but the same shape. The
   // model's base contract is MODEL_ARG_DESCRIPTION (providerID/modelID as spelled
   // in the host's own config, bare ids refused) — a tool that restates that
   // sentence restates it wrong sooner or later, so a tool adds a clause instead.
-  const PROMPT = (description: string) => tool.schema.string().describe(description);
-  const MODEL = (clause = "") => tool.schema.string().optional().describe(`${MODEL_ARG_DESCRIPTION}${clause}`);
+  const PROMPT = (description: string) => string(description);
+  const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
 
   return {
-      dynamic_task: pluginTool(
-        DYNAMIC_TASK_DESCRIPTION,
-        {
-          description: tool.schema.string().describe("Short human-readable task label"),
-          subagent_type: tool.schema.string().describe("Agent to invoke"),
+    dynamic_task: pluginTool(
+      {
+        type: "object",
+        properties: {
+          description: string("Short human-readable task label"),
+          subagent_type: string("Agent to invoke"),
           prompt: PROMPT("Instructions for the child session"),
           model: MODEL(),
           depends_on: SESSION_ID_LIST(
@@ -109,54 +107,81 @@ export function buildToolMap(deps: ToolDeps) {
             "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
           ),
         },
-        executeDynamicTask,
-      ),
+        required: ["description", "subagent_type", "prompt"],
+      },
+      DYNAMIC_TASK_DESCRIPTION,
+      executeDynamicTask,
+    ),
 
-      task_continue: scopedTool(
-        TASK_CONTINUE_DESCRIPTION,
-        {
+    task_continue: scopedTool(
+      {
+        type: "object",
+        properties: {
           session_id: SESSION_ID,
           prompt: PROMPT("Follow-up instructions"),
           model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
         },
-        executeTaskContinue,
-      ),
+        required: ["session_id", "prompt"],
+      },
+      TASK_CONTINUE_DESCRIPTION,
+      executeTaskContinue,
+    ),
 
-      task_notify: pluginTool(
-        TASK_NOTIFY_DESCRIPTION,
-        {
-          message: tool.schema.string().describe("What the parent needs to know"),
-          kind: tool.schema
-            .enum(NOTICE_CLAIMS)
-            .optional()
-            .describe("What this notice claims about your own state: 'progress' (default) or 'needs_input' when this turn cannot finish without the parent"),
+    task_notify: pluginTool(
+      {
+        type: "object",
+        properties: {
+          message: string("What the parent needs to know"),
+          kind: {
+            type: "string",
+            enum: [...NOTICE_CLAIMS],
+            description:
+              "What this notice claims about your own state: 'progress' (default) or 'needs_input' when this turn cannot finish without the parent",
+          },
         },
-        executeTaskNotify,
-      ),
+        required: ["message"],
+      },
+      TASK_NOTIFY_DESCRIPTION,
+      executeTaskNotify,
+    ),
 
-      task_result: scopedTool(TASK_RESULT_DESCRIPTION, { session_id: SESSION_ID }, executeTaskResult),
+    task_result: scopedTool(
+      { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
+      TASK_RESULT_DESCRIPTION,
+      executeTaskResult,
+    ),
 
-      task_interrupt: scopedTool(
-        TASK_INTERRUPT_DESCRIPTION,
-        {
+    task_interrupt: scopedTool(
+      {
+        type: "object",
+        properties: {
           session_id: SESSION_ID,
-          scope: tool.schema
-            .enum(["subtree", "self"])
-            .optional()
-            .describe("How far the stop reaches: the whole subtree below this task (default), or this session only"),
+          scope: {
+            type: "string",
+            enum: ["subtree", "self"],
+            description:
+              "How far the stop reaches: the whole subtree below this task (default), or this session only",
+          },
         },
-        executeTaskInterrupt,
-      ),
+        required: ["session_id"],
+      },
+      TASK_INTERRUPT_DESCRIPTION,
+      executeTaskInterrupt,
+    ),
 
-      // Through the same door as the other five. It was the one tool registered
-      // by calling `tool(...)` inline, with the resolver it needed written as a
-      // closure over `deps` — so the comment on `registeredTool` above ("the ONLY
-      // door into any registered tool") was false, and a second registration path
-      // was a second place for a session guard to be forgotten. It runs against
-      // the PLUGIN, not a session scope, so it is a pluginTool like dynamic_task
-      // and task_notify; the difference is that its executor takes no raw args.
-      task_list: pluginTool(TASK_LIST_DESCRIPTION, {}, (input) => executeTaskList(input)),
+    // Through the same door as the other six. It was the one tool registered
+    // by calling the tool builder inline, with the resolver it needed written as
+    // a closure over `deps` — so the comment on `registeredTool` above ("the ONLY
+    // door into any registered tool") was false. It runs against the PLUGIN, not a
+    // session scope, so it is a pluginTool like dynamic_task and task_notify.
+    task_list: pluginTool({ type: "object", properties: {} }, TASK_LIST_DESCRIPTION, (input) =>
+      executeTaskList(input),
+    ),
 
-      task_status: scopedTool(TASK_STATUS_DESCRIPTION, { session_id: SESSION_ID }, executeTaskStatus),
+    task_status: scopedTool(
+      { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
+      TASK_STATUS_DESCRIPTION,
+      executeTaskStatus,
+    ),
   };
 }

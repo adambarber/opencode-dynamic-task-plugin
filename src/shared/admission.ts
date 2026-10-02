@@ -9,23 +9,20 @@ import type { DynamicTaskConfig } from "./config.js";
 import { resolveAgentCaps } from "./caps.js";
 import { liveAgentCaps } from "./caps.js";
 import { safeLog } from "./notify.js";
-import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { callHost, type OpaqueHost } from "./client.js";
 
-// The one host call the listing makes. Stated structurally so BOTH SDK generations
-// fit: the TUI holds the v2 client, the plugin the v1 one, and a cast would be a
-// claim that one has the other's methods.
+// The one host call the listing makes. Stated structurally so a FAKE can satisfy it
+// without the whole host: the reader is bounded, so it needs the shape, not the client.
 export interface AgentCaller {
-  // `log` rides along because a failed read still has to be reportable, so the
-  // reader is handed the same `LogSink` the log funnel asks for.
-  app: { agents: () => Promise<unknown>; log?: unknown };
+  agent: { list: () => Promise<unknown> };
 }
 
 /**
- * What the agent listing needs from a host: just the opaque host, and not the
- * plugin's client — the TUI holds a different generation's client and calls this
- * same function, so a cast would be a claim that it has a `question` namespace.
+ * What the agent listing needs from a host: just the opaque host, and not the host's
+ * whole domain object — so a test can hand in a caller that lists agents and nothing
+ * else, instead of claiming to be a host.
  */
-export interface AgentLister<C = OpenCodeClient> {
+export interface AgentLister<C = AgentCaller> {
   /** The only route to a host namespace from here, and it is always bounded. */
   host: OpaqueHost<C>;
 }
@@ -404,7 +401,7 @@ async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, ca
       // Bounded like every other read: a timeout becomes a THROW, so a host that
       // accepts the call and never answers lands on the same warn-and-serve-stale
       // path as a host that refuses it. Both facts are "the list is unknown".
-      const listed = await callHost(host?.host, READ_BOUNDS.agents, (c) => c.app.agents(), () => undefined);
+      const listed = await callHost(host?.host, READ_BOUNDS.agents, (c) => c.agent.list(), () => undefined);
       if (listed.timedOut) throw new Error(`agent list unanswered after ${READ_BOUNDS.agents}ms`);
       const result: unknown = listed.value;
       const entry: AgentCacheEntry = {
@@ -426,7 +423,7 @@ async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, ca
         // safeLog, not a raw app.log: the client itself may be unusable
         // (host probes entry exports outside the plugin lifecycle) and a
         // throw here fails the entire plugin boot.
-        await safeLog(host?.host, "warn", `Failed to fetch agents: ${errorMessage(error)}`);
+        await safeLog("warn", `Failed to fetch agents: ${errorMessage(error)}`);
       }
     }
   }

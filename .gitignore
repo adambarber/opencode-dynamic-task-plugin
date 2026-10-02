@@ -48,3 +48,6 @@ report/
 # host cannot find is not degraded, it is never loaded — silently — so this file
 # is the difference between a working command palette and an empty one.
 !.opencode/tui.json
+
+# Host source checkout used for v2 contract verification
+tmp/

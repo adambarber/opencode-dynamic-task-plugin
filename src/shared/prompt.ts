@@ -90,14 +90,22 @@ export function invokePrompt(
   routing: PromptRouting = {},
   onFailure?: FailureReporter,
 ): void {
-  fireAndForget(host, (client) => client.session.prompt({
-    path: { id: sessionId },
-    body: {
-      parts: [{ type: "text", text }],
-      ...(routing.agent !== undefined ? { agent: routing.agent } : {}),
-      ...(routing.model !== undefined ? { model: routing.model } : {}),
+  fireAndForget(
+    host,
+    // v2 took routing OUT of the prompt: `SessionPromptInput` has no model and no
+    // agent field at all, so the session is switched first and then prompted. Three
+    // bounded writes where v1 did one, and that is the price of the current API.
+    async (client) => {
+      if (routing.agent !== undefined) await client.session.switchAgent({ sessionID: sessionId, agent: routing.agent });
+      if (routing.model !== undefined)
+        await client.session.switchModel({
+          sessionID: sessionId,
+          model: { id: routing.model.modelID, providerID: routing.model.providerID },
+        });
+      return client.session.prompt({ sessionID: sessionId, text });
     },
-  }), onFailure);
+    onFailure,
+  );
 }
 
 // ─── classifyPromptError ───────────────────────────────────────────
@@ -347,17 +355,17 @@ export async function readSessionMessages(
   sessionId: string,
   query?: { limit?: number },
 ): Promise<unknown[]> {
-  const bounded = await callHost(
-    host,
-    READ_BOUNDS.transcript,
-    (client) => client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
-    null,
-  );
+  // v2 renamed this call to `session.context` and flattened the id into `sessionID`.
+  // The v1 `query.limit` had no counterpart — v2 returns the whole context — so the
+  // limit is applied HERE, after the read, where it costs nothing and stays honest
+  // about what the host actually said.
+  const bounded = await callHost(host, READ_BOUNDS.transcript, (client) => client.session.context({ sessionID: sessionId }), null);
   // The throw is HERE, not in the timeout arm: an arm runs inside the timer callback,
   // where a throw escapes as an uncaught exception and leaves this promise pending
   // forever. The bound's job is to report, and the report has to be readable.
   if (bounded.timedOut) throw new Error(`transcript unanswered after ${READ_BOUNDS.transcript}ms`);
-  return extractMessages(bounded.value);
+  const whole = extractMessages(bounded.value);
+  return query?.limit === undefined ? whole : whole.slice(-query.limit);
 }
 
 // ─── extractMessages ───────────────────────────────────────────────

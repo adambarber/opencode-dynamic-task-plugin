@@ -1,6 +1,6 @@
 // Plugin state boot (entry): config normalization, per-instance store, and
 // durable-state wiring. Lives apart from the entry so the entry stays wiring.
-import type { PluginOptions } from "@opencode-ai/plugin";
+import type { PluginOptions } from "@opencode/plugin";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
@@ -48,7 +48,7 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     // this a mangled overlay would simply never apply and the operator would see
     // the old cap with no explanation anywhere.
     if (problem !== null) {
-      void safeLog(host, "warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
+      void safeLog("warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
       debugLog("plugin", "agents", "agent-overlay-ignored", { path: agentOverlayPath(directory), reason: problem });
     }
     // The overlay this one replaced, named rather than ignored. Deleting a file the
@@ -60,12 +60,8 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     // under a key the operator never wrote, and the map from lane to agent is
     // exactly the thing that was deleted.
     if (retiredOverlayPresent(directory)) {
-      void safeLog(
-        host,
-        "warn",
-        `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
-          "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.",
-      );
+      void safeLog("warn", `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
+        "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.");
       debugLog("plugin", "agents", "retired-lane-overlay", { path: retiredLaneOverlayPath(directory) });
     }
     return applyAgentOverlay(config, raw);
@@ -125,7 +121,7 @@ const ledger = loadTaskLedger(ledgerPath);
     const remedy = ledger.unreadable
       ? " This build will not write to that file either; move it aside or delete it to let durable state resume."
       : " Records that did parse are still in use and are written back.";
-    void safeLog(host, "warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
+    void safeLog("warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
     debugLog("plugin", "ledger", "ledger-read-discarded", { path: ledgerPath, reason: ledger.discarded });
   }
   // One writer for the whole file. Retained records and owed notices live in one
@@ -150,7 +146,7 @@ const ledger = loadTaskLedger(ledgerPath);
       // was just told to go and look at, which is neither.
       const current = loadTaskLedger(ledgerPath);
       if (current.unreadable) {
-        void safeLog(host, "warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
+        void safeLog("warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
         debugLog("plugin", "ledger", "ledger-write-refused", {
           path: ledgerPath,
           reason: current.discarded,
@@ -181,7 +177,7 @@ const ledger = loadTaskLedger(ledgerPath);
       // already had to notice. The host log is the channel that needs no
       // environment variable set before the process started, which is the only
       // kind an operator can rely on being there.
-      void safeLog(host, "warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
+      void safeLog("warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
       debugLog("plugin", "ledger", "ledger-write-failed", {
         path: ledgerPath,
         error: errorMessage(error),
@@ -225,7 +221,7 @@ const ledger = loadTaskLedger(ledgerPath);
     const each = owedDebts
       .map((debt) => `${debt.kind} for task ${debt.childSessionId} to parent ${debt.parentSessionId} (attempt ${debt.attempts + 1} of ${config.pendingMaxAttempts})`)
       .join("; ");
-    void safeLog(host, "info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
+    void safeLog("info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
   }
 
   // The running set is restored BEFORE the pending notices are paid, and
@@ -268,7 +264,7 @@ const ledger = loadTaskLedger(ledgerPath);
 // boot that returns early has already recorded what it decided.
 async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<void> {
   const restored = [...store.activeTasks.keys()];
-  await safeLog(host, "info", `Reconciling ${restored.length} task(s) restored across restart`);
+  await safeLog("info", `Reconciling ${restored.length} task(s) restored across restart`);
   for (const childSessionId of restored) {
     // Per child, not per pass: a read that fails (the status channel itself is
     // down) must not decide the fate of every task listed after it. Not knowing
@@ -281,15 +277,11 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // alone too: its silence is not evidence, and settling off it would invent the
       // very errors this pass exists to avoid.
       if (!reading.statusAnswered) {
-        await safeLog(host, "info", `Restored task ${childSessionId}: status channel unanswered; left active`);
+        await safeLog("info", `Restored task ${childSessionId}: status channel unanswered; left active`);
         continue;
       }
       if (hostTurnRunning(reading)) {
-        await safeLog(
-          host,
-          "info",
-          `Restored task ${childSessionId} is still running (host says "${reading.hostTurn?.type}"); left active`,
-        );
+        await safeLog("info", `Restored task ${childSessionId} is still running (host says "${reading.hostTurn}"); left active`);
         continue;
       }
       // No running turn, so the session's fate is the transcript's to say — which is
@@ -310,7 +302,7 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
         cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
       });
     } catch (error: unknown) {
-      await containFailure(host, `Could not reconcile restored task ${childSessionId}`, error, "left active");
+      await containFailure(`Could not reconcile restored task ${childSessionId}`, error, "left active");
     }
   }
 }

@@ -314,8 +314,8 @@ function formatNotificationLine(notification: NotificationRecord): string {
  * agreed while the channel answered and could not agree about a failed one.
  */
 function hostStatusPhrase(liveness: LivenessReading): string {
-  if (!liveness.statusAnswered) return "(the server's status channel could not be read)";
-  return liveness.hostTurn?.type ?? "(not listed by the server)";
+  if (!liveness.statusAnswered) return "(the server's transcript could not be read)";
+  return liveness.hostTurn ?? "(no unfinished turn in the server's transcript)";
 }
 
 function sourcedLivenessLines(task: TaskRecord, liveness: LivenessReading | null): string[] {

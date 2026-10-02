@@ -171,9 +171,11 @@ export function abortSession(target: AbortTarget, sessionId: string): Promise<Ab
   // ignorance, not a death — the request may never have reached the server — so it
   // has to arrive as the thing callers already know how to read, or a dead server
   // would get two spellings of "possibly still running".
+  // v2 renamed this call: `session.abort` is `session.interrupt`, and its id is a
+  // flat `sessionID` rather than a `{ path: { id } }` envelope.
   const dial = (client: OpenCodeClient): Promise<AbortOutcome> =>
     client.session
-      .abort({ path: { id: sessionId } })
+      .interrupt({ sessionID: sessionId })
       .then((): AbortOutcome => ABORT_SENT)
       .catch((error: unknown): AbortOutcome => {
         const message = errorMessage(error);

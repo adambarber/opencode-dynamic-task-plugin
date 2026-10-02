@@ -103,7 +103,7 @@ export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildR
   // only bound on a truly-dead child stays operator interruption.
   const onPromptFailure = (error: unknown): void => {
     const classified = classifyPromptError(error);
-    void safeLog(host, "warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
+    void safeLog("warn", `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
     if (classified.retryable) return;
     let settled = false;
     try {
@@ -192,7 +192,7 @@ function resumeAfterBlip(
     reviveWithPrompt(host, store, childSessionId, text, capSource);
     return true;
   } catch (error: unknown) {
-    void safeLog(host, "info", `Transient resume refused for ${childSessionId}: ${errorMessage(error)} — reporting the failure instead`);
+    void safeLog("info", `Transient resume refused for ${childSessionId}: ${errorMessage(error)} — reporting the failure instead`);
     return false;
   }
 }
@@ -250,7 +250,7 @@ export async function settleRunningChild(
   // first also means a session this plugin has no record of costs one lookup
   // instead of two.
   if (!terminalEventIsAttributable(store, childSessionId)) {
-    void safeLog(host, "info", `Dropped unattributable ending for ${childSessionId}, staying active`);
+    void safeLog("info", `Dropped unattributable ending for ${childSessionId}, staying active`);
     return false;
   }
   // "Still running" is asked of the store's ONE reader for "is this one of ours",
@@ -279,10 +279,10 @@ export async function settleRunningChild(
   try {
     transitionState(store, childSessionId, verdict);
   } catch {
-    void safeLog(host, "info", `Lost settlement race for ${childSessionId}, dropping`);
+    void safeLog("info", `Lost settlement race for ${childSessionId}, dropping`);
     return false;
   }
-  void safeLog(host, "info", `Settled ${childSessionId} as ${verdict}`);
+  void safeLog("info", `Settled ${childSessionId} as ${verdict}`);
 
   const outcome = await hydrateLatestOutcome(host, childSessionId);
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
@@ -308,7 +308,7 @@ export async function settleRunningChild(
     verdict = concluded;
     kind = NotifyKind.Error;
     if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
-      void safeLog(host, "info", `Late error already recorded for ${childSessionId}`);
+      void safeLog("info", `Late error already recorded for ${childSessionId}`);
     }
   } else if (failure !== FailureClass.None) {
     recordSettledOutcome(store, childSessionId, verdict, failure);
@@ -333,7 +333,7 @@ export async function settleRunningChild(
   if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource)) {
     const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
     if (resumeAfterBlip(host, store, childSessionId, capSource)) {
-      void safeLog(host, "info", `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
+      void safeLog("info", `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
       return true;
     }
   }

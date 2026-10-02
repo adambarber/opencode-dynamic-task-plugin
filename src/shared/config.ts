@@ -11,7 +11,7 @@
 // operator saw.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { PluginOptions } from "@opencode-ai/plugin";
+import type { PluginOptions } from "@opencode/plugin";
 import { agentKey, parseAgentCaps, type AgentCaps } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 

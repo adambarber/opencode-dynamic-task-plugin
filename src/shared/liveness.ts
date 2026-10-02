@@ -6,16 +6,18 @@
 // declared type, never a local re-declaration of it. Both re-declarations that
 // used to live here were load-bearing and both were wrong.
 
-import { callHost, type HostSessionMissing, type HostStatusMap, type HostTurn, type OpaqueHost } from "./client.js";
+import { callHost, type OpaqueHost } from "./client.js";
 import { isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE, readSessionMessages } from "./prompt.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { isPlainRecord } from "./host-shape.js";
 
-// opencode v1.18.30 packages/opencode/src/session/status.ts: `set` DELETES the
-// entry on `idle` and stores it otherwise — so the map holds RUNNING turns only, and
-// an absent key means "no turn running", never "no such session".
-// The host does publish a `session.status` EVENT carrying `idle` first; that is a
-// different channel with its own vocabulary, and it is handled by the event path.
+// v1 answered "is a turn running" from an in-memory status map that DELETED its
+// entry on idle, so absent meant "not running" and had also been misread as "no such
+// session". v2 has no such call on the plugin surface at all — and does not need one:
+// `SessionMessageAssistant.time.completed` is the durable record of a finished turn,
+// in the transcript this module already reads. Absence of a completion on the last
+// assistant message IS "the host is still working on it", and unlike the map it
+// survives a restart.
 
 /** Our words for a session we track no record of — not the host's. */
 export enum UntrackedStatus {
@@ -23,12 +25,20 @@ export enum UntrackedStatus {
   Unknown = "unknown",
 }
 
+/**
+ * The host's own turn word. v2 declares exactly one (`SessionActive = {type:
+ * "running"}`), so presence of the word is the whole signal and its absence means no
+ * turn is running — which says nothing about existence, because existence is read
+ * from `session.get` and never from this.
+ */
+export type HostTurnWord = "running";
+
 export interface LivenessReading {
-  /** The host's turn object verbatim, or undefined when the map lists no key. */
-  hostTurn: HostTurn | undefined;
+  /** The host's turn word when the transcript says the last turn is unfinished. */
+  hostTurn: HostTurnWord | undefined;
   /**
-   * Did the status channel answer? Its silence is not evidence, so without this a
-   * settled reader cannot tell "no turn" from "no reply".
+   * Did the transcript read answer? Its silence is not evidence, so without this a
+   * settled reader cannot tell "no turn running" from "no reply".
    */
   statusAnswered: boolean;
   /** When the child last wrote a message; null when it has written none. */
@@ -36,24 +46,9 @@ export interface LivenessReading {
   messageCount: number;
 }
 
-/**
- * A switch over the SDK's own union with no `default`, so `noImplicitReturns` turns
- * a word the host adds into a BUILD ERROR here rather than a runtime "not running"
- * that leaves every working child looking settled.
- */
-function hostTurnIsRunning(turn: HostTurn): boolean {
-  switch (turn.type) {
-    case "busy":
-    case "retry":
-      return true;
-    case "idle":
-      return false;
-  }
-}
-
-/** A turn the server is running: working, or retrying on the provider's behalf. */
+/** A turn the server is running: an assistant message with no recorded completion. */
 export function hostTurnRunning(reading: LivenessReading): boolean {
-  return reading.hostTurn !== undefined && hostTurnIsRunning(reading.hostTurn);
+  return reading.hostTurn !== undefined;
 }
 
 /**
@@ -61,8 +56,8 @@ export function hostTurnRunning(reading: LivenessReading): boolean {
  * "completed" — a plugin that does not track a session cannot witness its
  * completion, and "no running turn" is the only fact this read can see.
  */
-export function statusFromHostTurn(hostTurn: HostTurn | undefined): UntrackedStatus {
-  return hostTurn !== undefined && hostTurnIsRunning(hostTurn) ? UntrackedStatus.Busy : UntrackedStatus.Unknown;
+export function statusFromHostTurn(hostTurn: HostTurnWord | undefined): UntrackedStatus {
+  return hostTurn === undefined ? UntrackedStatus.Unknown : UntrackedStatus.Busy;
 }
 
 /**
@@ -103,13 +98,15 @@ export async function readLiveness(
   childSessionId: string,
   messages?: unknown[],
 ): Promise<LivenessReading> {
-  const list = messages ?? (await readSessionMessages(host, childSessionId).catch(() => []));
-  const statusMap = await readStatusMap(host);
+  const read = messages === undefined ? await readSessionMessages(host, childSessionId).catch(() => null) : messages;
+  if (read === null) {
+    return { hostTurn: undefined, statusAnswered: false, lastMessageAt: null, messageCount: 0 };
+  }
   return {
-    hostTurn: statusMap?.[childSessionId],
-    statusAnswered: statusMap !== null,
-    lastMessageAt: lastMessageAt(list),
-    messageCount: list.length,
+    hostTurn: transcriptTurnRunning(read) ? "running" : undefined,
+    statusAnswered: true,
+    lastMessageAt: lastMessageAt(read),
+    messageCount: read.length,
   };
 }
 
@@ -145,10 +142,15 @@ export const NOT_FOUND_NAME: HostSessionMissing["name"] = "NotFoundError";
 export const NOT_FOUND_STATUS = 404;
 
 /**
- * Two spellings, because the SDK's error mode picks which one arrives and the reader
- * must not depend on a mode it does not set — reading only one would report every
- * missing session present whenever the other mode is in force.
+ * The host's own "no such session", narrowed to what we actually compare.
+ *
+ * v2 has no declared 404 type on the plugin surface — `session.get` REJECTS with a
+ * `ClientError` — so the guard checks the two spellings that error carries. Reading
+ * both is the same rule as before: trusting one would report every missing session
+ * present whenever the host picked the other.
  */
+export type HostSessionMissing = Record<string, unknown>;
+
 function isHostSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
   if (error["name"] === NOT_FOUND_NAME) return true;
@@ -157,13 +159,12 @@ function isHostSessionMissing(error: unknown): error is HostSessionMissing {
 
 /**
  * Bounded, because this sits on the reconcile path and an unbounded host call there
- * is a boot that never finishes. `throwOnError` makes the host's 404 THROW, so
- * existence is answered by the catch below and the success envelope is ignored.
+ * is a boot that never finishes. v2 has no `throwOnError`: the client rejects on a
+ * 404 by itself, so existence is answered by the catch below.
  */
 export async function readSessionPresence(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
   try {
-    const bounded = await callHost(host, READ_BOUNDS.presence, (client) =>
-      client.session.get({ path: { id: sessionId }, throwOnError: true }), null);
+    const bounded = await callHost(host, READ_BOUNDS.presence, (client) => client.session.get({ sessionID: sessionId }), null);
     if (bounded.timedOut) return { existence: SessionExistence.Unread };
     return { existence: SessionExistence.Present };
   } catch (error: unknown) {
@@ -173,16 +174,28 @@ export async function readSessionPresence(host: OpaqueHost, sessionId: string): 
 }
 
 /**
- * Is a turn running RIGHT NOW? One word, deliberately not `readLiveness`: a
- * parent-write gate needs this before it spends an attempt, and a failed read is not
- * "busy" — reading transport failure as congestion defers every debt for as long as
- * the channel is down, a silent stall wearing a safety check's name.
+ * The host's own turn word, derived from the transcript: present when the last
+ * assistant turn has recorded no completion. `finish` and `error` classify HOW a
+ * turn ended; presence of `completed` is simply that it ended.
+ */
+export function transcriptTurnRunning(messages: unknown[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!isMessage(message) || messageRoleOf(message) !== ASSISTANT_ROLE) continue;
+    return messageTime(message)?.completed === undefined;
+  }
+  return false;
+}
+
+/**
+ * Is a turn running RIGHT NOW? Deliberately not `readLiveness`: a parent-write gate
+ * needs this before it spends an attempt, and a failed read is not "busy" — reading
+ * transport failure as congestion defers every debt for as long as the channel is
+ * down, a silent stall wearing a safety check's name.
  */
 export async function hostTurnInFlight(host: OpaqueHost, sessionId: string): Promise<boolean> {
-  const statusMap = await readStatusMap(host);
-  if (statusMap === null) return false;
-  const turn = statusMap[sessionId];
-  return turn !== undefined && hostTurnIsRunning(turn);
+  const messages = await readSessionMessages(host, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
+  return messages === null ? false : transcriptTurnRunning(messages);
 }
 
 /**
@@ -208,23 +221,10 @@ export async function parentTurnStuck(host: OpaqueHost, sessionId: string): Prom
 const WEDGE_TAIL_MESSAGES = 5;
 
 /**
- * The status channel in the SDK's own declared type, or null when it did not answer.
- * Two readers want this and want different things from a failure, so the READ
- * reports it and each caller interprets — but neither may wait forever for it.
+ * The transcript's last assistant turn completed on its own, or the host gave up.
+ *
+ * Both words come from ONE record — `SessionMessageAssistant.time.completed` — and
+ * `statusAnswered` says whether we were shown it at all. There is no third answer:
+ * a host that refuses to say whether a turn is running leaves the child alone rather
+ * than inventing the errors this pass exists to prevent.
  */
-async function readStatusMap(host: OpaqueHost): Promise<HostStatusMap | null> {
-  try {
-    const bounded = await callHost(
-      host,
-      READ_BOUNDS.status,
-      (client) => client.session.status({ throwOnError: true }),
-      null,
-    );
-    // No re-check of `value` for null: the discriminated bound has already said which
-    // of the two this is, so the answer cannot arrive wearing the timeout's shape.
-    if (bounded.timedOut) return null;
-    return bounded.value.data;
-  } catch {
-    return null;
-  }
-}

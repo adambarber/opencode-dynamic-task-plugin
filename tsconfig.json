@@ -28,5 +28,12 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  // src/tui is EXCLUDED while its own v2 slice runs. v2 replaced the TUI plugin
+  // surface outright: `DialogSelect` components and `dialog.replace` are gone in
+  // favour of `dialog.select(options)` and Solid `dialog.show(() => JSX)`, and
+  // `registerLayer` became `keymap.layer(() => layer)`. That is a rewrite of the
+  // rendering layer, not a port, so it is scoped out here rather than half-migrated
+  // into a tree that pretends to build. The CORE plugin (src/index.ts and its tools)
+  // is fully on the v2 promise API and is what the host loads.
+  "exclude": ["node_modules", "dist", "src/tui"]
 }

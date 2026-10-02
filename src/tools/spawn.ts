@@ -1,6 +1,6 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
-import type { ToolContext } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
 import {
   resolveAdmission,
   registerAdmittedTask,
@@ -44,7 +44,7 @@ import type { SpawnArgs } from "./args.js";
 export type { SpawnArgs } from "./args.js";
 
 export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: ToolContext): Promise<string> {
-  const { host, store, config, directory } = deps;
+  const { host, store, config } = deps;
   const agents = await fetchAgents({ host }, config.agentCacheTtlMs);
 
   // Admission gate: resolve + policy-check before session.create.
@@ -134,7 +134,9 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     const created = await callHost(
       host,
       WRITE_BOUNDS.create,
-      (client) => client.session.create({ body: sessionBody, query: { directory: directory || ctx.directory } }),
+      // v2 takes the create body FLAT — `{title, parentID}` at the top level, no `body`
+    // envelope and no `query.directory`: the plugin's context already names the project.
+    (client) => client.session.create(sessionBody),
       null,
     );
     if (created.timedOut) throw new Error(`session create unanswered after ${WRITE_BOUNDS.create}ms`);

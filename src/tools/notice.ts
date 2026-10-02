@@ -1,6 +1,6 @@
 // task_notify executor: the child's mid-flight voice. Advisory metadata on
 // the active record, delivery through the gate — never a settlement.
-import type { ToolContext } from "@opencode-ai/plugin";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless } from "../shared/session-lifecycle.js";
 import { notifyParent, noticeDedupKey, getLatestNotification } from "../shared/notify.js";

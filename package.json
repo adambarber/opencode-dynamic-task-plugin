@@ -23,8 +23,11 @@
   "license": "MIT",
   "devDependencies": {
     "@jscpd/tokenizer": "4.2.6",
-    "@opencode-ai/plugin": "^1.18.30",
-    "@opencode-ai/sdk": "^1.18.30",
+    "@opencode-ai/plugin": "1.18.34",
+    "@opencode-ai/sdk": "1.18.34",
+    "@opencode/client": "2.0.22",
+    "@opencode/plugin": "2.0.22",
+    "@opencode/schema": "2.0.22",
     "@opentui/core": "^0.4.5",
     "@opentui/keymap": "^0.4.5",
     "@opentui/solid": "^0.4.5",

@@ -360,11 +360,12 @@ export async function settleRunningChild(
   // records parentless settlements instead of dialing a phantom session.
   void deliverParent(client, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${classNote}${unreadableNote}`)
     .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
-  // This settlement may also be the answer to a dispatch another parent was
-  // refused. Released HERE — the one place a task settles — so a wait is
-  // answered exactly when its edge is, and by the same predicate the gate
-  // refused it on. A separate funnel would be a second readiness rule.
-  releaseWaitingDispatches(client, store, childSessionId);
+  // The parent's answer to a settlement this child may have been an EDGE for is
+  // not sent here. It is sent by the store's own retained-change sink, which every
+  // settlement passes through whether it came through this function or not — see
+  // releaseWaitsForSettled in entry/state.ts. Four of the five ways a task can end
+  // settle from somewhere else, and "the one place a task settles" was a claim
+  // about this function that four call sites quietly contradicted.
   return true;
 }
 
@@ -374,8 +375,13 @@ export async function settleRunningChild(
  * edge released. The settlement claim is already taken, so this cannot fail
  * loudly: an unanswered hint leaves the parent waiting, which is exactly the
  * state this replaced — no worse, and the wait is already gone from the store.
+ *
+ * Takes the SETTLED EDGE as its argument rather than discovering it, because the
+ * caller is the store's change sink and its whole claim is that it sees every
+ * settlement: a function that found the edge for itself would be the second
+ * derivation this hook exists to replace.
  */
-function releaseWaitingDispatches(
+export function releaseWaitingDispatches(
   client: OpenCodeClient,
   store: TaskStore,
   settledChildSessionId: string,

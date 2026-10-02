@@ -6,11 +6,12 @@ import { readDynamicTaskPolicy } from "../shared/config.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
+import { LedgerChangeKind } from "../shared/ledger-change.js";
 import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
 import { hostTurnOver, readLiveness } from "../shared/liveness.js";
-import { settleRunningChild } from "./lifecycle.js";
+import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
   containFailure,
@@ -70,7 +71,40 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     return applyAgentOverlay(config, raw);
   });
 
-  const ledger = loadTaskLedger(ledgerPath);
+  /**
+ * Answer every wait this settlement decided, from the store's own change sink.
+ *
+ * The hook is the store's, and that is the entire argument for it. A settlement
+ * is the fact that answers a wait, and the store already publishes every fact
+ * about itself — so the sink is the one place where "a task ended" is
+ * observable BY CONSTRUCTION rather than by remembering to say so. The five ways
+ * a task can end (a host lifecycle event, a post-create failure, a lost server, a
+ * refused turn, an operator interrupt) each settle through their own call site,
+ * and one of them was the only one that also told the waiting parents; the other
+ * four held `depends_on` waits until the wait registry evicted them, which is
+ * silent, bounded by a cap, and indistinguishable from a child that is merely
+ * slow. Calling the release from each site would have been the same four
+ * omissions waiting for the fifth.
+ *
+ * After `persistLedger` on purpose: the durable record should exist before
+ * anyone is told the edge is gone, so a process that dies mid-release re-reads a
+ * ledger that already knows.
+ *
+ * Only `Settled`, and the exclusion is deliberate rather than an oversight.
+ * `Forgotten` is a task being evicted from a bounded history — by then it
+ * settled, which is when its waits were answered; releasing again would be a
+ * second readiness rule for the same edge. A wait naming a task settled in
+ * ANOTHER process is a different hole, and it is the shared-ledger adoption gap
+ * recorded in docs/tasks/11-durability.md rather than something a hook on this
+ * process's own changes could see.
+ */
+function releaseWaitsForSettled(client: OpenCodeClient, store: TaskStore, changes: readonly LedgerChange[]): void {
+  for (const change of changes) {
+    if (change.kind === LedgerChangeKind.Settled) releaseWaitingDispatches(client, store, change.id);
+  }
+}
+
+const ledger = loadTaskLedger(ledgerPath);
   // A discarded ledger is a LOST one, and the loss is only actionable if the
   // operator is told. It used to be a bare `catch {}` that returned an empty
   // document, which is indistinguishable from a project that has never run a
@@ -157,7 +191,10 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // Ledger sync: every retained mutation and every change to the running set
   // persists, through the one writer that holds the whole file. Errors are
   // swallowed here so a durable-state failure can never break control flow.
-  store.onRetainedChange = persistLedger;
+  store.onRetainedChange = (changes) => {
+    persistLedger(changes);
+    releaseWaitsForSettled(client, store, changes);
+  };
   store.onActiveChange = persistLedger;
   configurePendingPersistence(persistLedger);
 

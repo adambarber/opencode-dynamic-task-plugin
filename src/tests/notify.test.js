@@ -8,9 +8,10 @@
 
 import { cleanNotifyState } from "./support/gate-world.js";
 import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
+import { opaqueHost } from "./support/opaque-host.js";
 import { clearNotifyLedger, configurePendingPersistence, gateLedger, getLatestNotification, getPendingDeliveries, noticeDedupKey, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { formatParentNotification, isParentNotification, notificationTag } from "../../dist/shared/notification-text.js";
-import { bounded } from './support/harness.js';
+import { bounded, drain } from './support/harness.js';
 import { deferred, promptText, recordingClient } from './support/mock-host.js';
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
@@ -141,7 +142,7 @@ describe("notify gate: notifyParent", () => {
 
   it("delivers on first attempt and records success", async () => {
     const { client, calls } = answeredClient([]);
-    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_a1", "completed"));
+    const delivered = await notifyParent(opaqueHost(client), "parent_1", "hello", gate("ses_a1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(calls.length, 1);
     const record = getLatestNotification("ses_a1");
@@ -153,7 +154,7 @@ describe("notify gate: notifyParent", () => {
 
   it("retries once, then records failure", async () => {
     const { client, calls } = answeredClient([new Error("down"), new Error("still down")]);
-    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_b1", "error"));
+    const delivered = await notifyParent(opaqueHost(client), "parent_1", "hello", gate("ses_b1", "error"));
     assert.strictEqual(delivered, false);
     assert.strictEqual(calls.length, 2, "exactly one retry");
     const record = getLatestNotification("ses_b1");
@@ -162,7 +163,7 @@ describe("notify gate: notifyParent", () => {
 
   it("second-attempt success records delivered with attempts=2", async () => {
     const { client } = answeredClient([new Error("blip")]);
-    const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_c1", "completed"));
+    const delivered = await notifyParent(opaqueHost(client), "parent_1", "hello", gate("ses_c1", "completed"));
     assert.strictEqual(delivered, true);
     assert.strictEqual(getLatestNotification("ses_c1").attempts, 2);
   });
@@ -179,7 +180,7 @@ describe("notify gate: notifyParent", () => {
   // the record turns truthful whenever the host answers.
   it("a write the host holds is recorded pending, never failed, and lands when the host answers", async () => {
     await withHeldWrites(async ({ client, calls, release }) => {
-      const delivered = await notifyParent(client, "parent_1", "hello", gate("ses_held1", "completed"));
+      const delivered = await notifyParent(opaqueHost(client), "parent_1", "hello", gate("ses_held1", "completed"));
       assert.strictEqual(delivered, false, "the caller is not held hostage to a busy parent");
       assert.strictEqual(calls.length, 1, "dialed once — a held write is never retried");
       const waiting = getLatestNotification("ses_held1");
@@ -195,8 +196,8 @@ describe("notify gate: notifyParent", () => {
 
   it("a held write still blocks a second copy of the same kind until it answers", async () => {
     await withHeldWrites(async ({ client }) => {
-      await notifyParent(client, "parent_1", "first", gate("ses_held2", "completed"));
-      const again = await notifyParent(client, "parent_1", "second", gate("ses_held2", "completed"));
+      await notifyParent(opaqueHost(client), "parent_1", "first", gate("ses_held2", "completed"));
+      const again = await notifyParent(opaqueHost(client), "parent_1", "second", gate("ses_held2", "completed"));
       assert.strictEqual(again, false, "the outstanding claim refuses the duplicate");
       assert.strictEqual(getLatestNotification("ses_held2").suppressed, true, "and says why");
     });
@@ -209,7 +210,7 @@ describe("notify gate: notifyParent", () => {
   // reset restarts those at zero.
   it("an answer that arrives after the gate was reset lands in nothing", async () => {
     await withHeldWrites(async ({ client, release }) => {
-      await notifyParent(client, "parent_1", "from the old world", gate("ses_reset1", "completed"));
+      await notifyParent(opaqueHost(client), "parent_1", "from the old world", gate("ses_reset1", "completed"));
       clearNotifyLedger();
       await release();
       assert.strictEqual(
@@ -218,7 +219,7 @@ describe("notify gate: notifyParent", () => {
         "the old world's answer cannot write into the new one",
       );
       assert.strictEqual(
-        await notifyParent(client, "parent_1", "from the new world", gate("ses_reset1", "completed")),
+        await notifyParent(opaqueHost(client), "parent_1", "from the new world", gate("ses_reset1", "completed")),
         true,
         "and the id is free again for whoever holds it now",
       );
@@ -235,8 +236,8 @@ describe("notify gate: notifyParent", () => {
       return accepted();
     });
     const [ra, rb] = await Promise.all([
-      notifyParent(client, "p", "first", gate("ses_chain1", "completed")),
-      notifyParent(client, "p", "second", gate("ses_chain1", "error")),
+      notifyParent(opaqueHost(client), "p", "first", gate("ses_chain1", "completed")),
+      notifyParent(opaqueHost(client), "p", "second", gate("ses_chain1", "error")),
     ]);
     assert.strictEqual(ra && rb, true, "both deliver");
     assert.deepStrictEqual(order, ["start:first", "end:first", "start:second", "end:second"]);
@@ -246,8 +247,8 @@ describe("notify gate: notifyParent", () => {
     const parked = deferred();
     const { client, calls } = gatedClient(parked);
     const opts = gate("ses_race1", "completed");
-    const first = notifyParent(client, "parent_1", "hello", opts);
-    const second = notifyParent(client, "parent_1", "hello", opts);
+    const first = notifyParent(opaqueHost(client), "parent_1", "hello", opts);
+    const second = notifyParent(opaqueHost(client), "parent_1", "hello", opts);
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
     parked.resolve();
@@ -256,7 +257,7 @@ describe("notify gate: notifyParent", () => {
 
   it("settles deliver exactly once per kind", async () => {
     const { client, calls } = answeredClient([]);
-    const settled = (message) => notifyParent(client, "parent_1", message, gate("ses_d1", "completed"));
+    const settled = (message) => notifyParent(opaqueHost(client), "parent_1", message, gate("ses_d1", "completed"));
     const first = await settled("hello");
     const second = await settled("hello again");
     assert.strictEqual(first, true);
@@ -270,25 +271,25 @@ describe("notify gate: notifyParent", () => {
 
   it("a distinct error can follow a delivered completion", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "done", gate("ses_e1", "completed"));
-    const escalated = await notifyParent(client, "parent_1", "actually failed", gate("ses_e1", "error"));
+    await notifyParent(opaqueHost(client), "parent_1", "done", gate("ses_e1", "completed"));
+    const escalated = await notifyParent(opaqueHost(client), "parent_1", "actually failed", gate("ses_e1", "error"));
     assertDelivered(escalated, calls, 2);
   });
 
   it("notices dedup by message-derived key, not by kind", async () => {
     const { client, calls } = answeredClient([]);
     const opts = (message) => ({ ...gate("ses_f1", "notice"), dedupKey: `notice:${message}` });
-    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), true);
-    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on Y", opts("blocked on Y")), true);
-    assert.strictEqual(await notifyParent(client, "parent_1", "blocked on X", opts("blocked on X")), false);
+    assert.strictEqual(await notifyParent(opaqueHost(client), "parent_1", "blocked on X", opts("blocked on X")), true);
+    assert.strictEqual(await notifyParent(opaqueHost(client), "parent_1", "blocked on Y", opts("blocked on Y")), true);
+    assert.strictEqual(await notifyParent(opaqueHost(client), "parent_1", "blocked on X", opts("blocked on X")), false);
     assert.strictEqual(calls.length, 2);
   });
 
   it("revival clears settle-dedup so the next completion can deliver", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "turn 1", gate("ses_g1", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "turn 1", gate("ses_g1", "completed"));
     gateLedger.forgetChild("ses_g1");
-    const second = await notifyParent(client, "parent_1", "turn 2", gate("ses_g1", "completed"));
+    const second = await notifyParent(opaqueHost(client), "parent_1", "turn 2", gate("ses_g1", "completed"));
     assertDelivered(second, calls, 2);
   });
 
@@ -299,14 +300,14 @@ describe("notify gate: notifyParent", () => {
     const retryGate = deferred();
     const { client } = gatedClient(retryGate, { throwFirst: true });
     const opts = gate("ses_gen1", "completed");
-    const first = notifyParent(client, "parent_1", "turn 1", opts);
+    const first = notifyParent(opaqueHost(client), "parent_1", "turn 1", opts);
     await new Promise((r) => setTimeout(r, 10)); // the retry has dialed and is held
     gateLedger.forgetChild("ses_gen1");          // revival: new generation, cleared pending
     retryGate.resolve();
     const firstDelivered = await first;          // stale-generation commit lands (transport succeeded)
     assert.strictEqual(firstDelivered, true, "the retry genuinely delivered — history says so");
 
-    const second = await notifyParent(client, "parent_1", "turn 2", opts);
+    const second = await notifyParent(opaqueHost(client), "parent_1", "turn 2", opts);
     assert.strictEqual(second, true, "the revived turn must not be poisoned by the stale commit");
   });
 
@@ -318,7 +319,7 @@ describe("notify gate: notifyParent", () => {
     });
     const pending = [];
     for (let i = 0; i < 1005; i++) {
-      pending.push(notifyParent(client, "p", `m${i}`, gate(`ses_ch${i}`, "completed")));
+      pending.push(notifyParent(opaqueHost(client), "p", `m${i}`, gate(`ses_ch${i}`, "completed")));
     }
     assert.strictEqual(notifyChainCount(), 1000, `chain map FIFO-capped. got ${notifyChainCount()}`);
     transportGate.resolve();
@@ -331,7 +332,7 @@ describe("notify gate: notifyParent", () => {
   it("ledger is bounded and latest-wins per child", async () => {
     const { client } = answeredClient([]);
     for (let i = 0; i < 205; i++) {
-      await notifyParent(client, "parent_1", `msg ${i}`, gate(`ses_${i}`, "completed"));
+      await notifyParent(opaqueHost(client), "parent_1", `msg ${i}`, gate(`ses_${i}`, "completed"));
     }
     assert.ok(getLatestNotification("ses_204"), "newest retained");
     assert.strictEqual(getLatestNotification("ses_0"), null, "oldest evicted");
@@ -344,9 +345,9 @@ describe("notify gate: notifyParent", () => {
   it("recent keys still dedupe after mass delivery (bounded window documented)", async () => {
     const { client } = answeredClient([]);
     for (let i = 0; i < 1005; i++) {
-      await notifyParent(client, "p", `m${i}`, gate(`ses_ev${i}`, "completed"));
+      await notifyParent(opaqueHost(client), "p", `m${i}`, gate(`ses_ev${i}`, "completed"));
     }
-    const again = await notifyParent(client, "p", "again", gate("ses_ev1004", "completed"));
+    const again = await notifyParent(opaqueHost(client), "p", "again", gate("ses_ev1004", "completed"));
     assert.strictEqual(again, false, "in-window keys still dedupe; eviction only touches the oldest");
   });
 });
@@ -370,7 +371,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
       probe();
       return accepted();
     });
-    return () => notifyParent(client, "parent_1", "settled", gate(childSessionId, "completed"));
+    return () => notifyParent(opaqueHost(client), "parent_1", "settled", gate(childSessionId, "completed"));
   };
 
   it("the write is already on the queue at the moment it dials", async () => {
@@ -403,7 +404,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
 
   it("a held write stays queued until the host answers, then leaves", async () => {
     await withHeldWrites(async ({ client, release }) => {
-      await notifyParent(client, "parent_1", "held", gate("ses_heldq", "completed"));
+      await notifyParent(opaqueHost(client), "parent_1", "held", gate("ses_heldq", "completed"));
       assert.strictEqual(queuedFor("ses_heldq").length, 1, "an unanswered write is still owed");
       assert.strictEqual(getLatestNotification("ses_heldq").pending, true, "and the record says so");
       await release();
@@ -414,19 +415,19 @@ describe("durable pending delivery: the queue IS the crash window", () => {
 
   it("a delivered write leaves nothing owed, a failed one neither", async () => {
     const { client } = answeredClient([]);
-    await notifyParent(client, "parent_1", "ok", gate("ses_okq", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "ok", gate("ses_okq", "completed"));
     assert.deepStrictEqual(queuedFor("ses_okq"), [], "delivered: the debt is settled");
 
     const failing = answeredClient([new Error("down"), new Error("still down")]);
-    await notifyParent(failing.client, "parent_1", "no", gate("ses_noq", "error"));
+    await notifyParent(opaqueHost(failing.client), "parent_1", "no", gate("ses_noq", "error"));
     assert.deepStrictEqual(queuedFor("ses_noq"), [], "a known failure is a known outcome, not a debt");
     assert.strictEqual(getLatestNotification("ses_noq").delivered, false);
   });
 
   it("a suppressed repeat never dials and never queues", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
-    await notifyParent(client, "parent_1", "once", gate("ses_supp", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "once", gate("ses_supp", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "once", gate("ses_supp", "completed"));
     assert.strictEqual(calls.length, 1, "suppressed: nothing dialed");
     assert.deepStrictEqual(queuedFor("ses_supp"), [], "nothing dialed, nothing owed");
   });
@@ -436,7 +437,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     // answering: reset to zero, a write held across five restarts would read as
     // five first tries and the escalation would be invisible.
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "owed", { ...gate("ses_carry", "completed"), carriedAttempts: 2 });
+    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gate("ses_carry", "completed"), carriedAttempts: 2 });
     assert.strictEqual(calls.length, 1, "one redelivery attempt, not three");
     assert.strictEqual(getLatestNotification("ses_carry").attempts, 3, "third attempt overall, not first");
   });
@@ -496,16 +497,10 @@ async function withUnansweredWrite(body) {
 async function boot(client, maxAttempts) {
   gateLedger.clear();
   restorePendingDeliveries(getPendingDeliveries());
-  redeliverOwedNotifications(client, maxAttempts);
-  // Wait until this boot's own writes have reached their bound, which is what a
-  // real boot does before it exits: a redelivery it could not finish is left owed
-  // for the next one. Yielding on the test seam's chain count, not sleeping — a
-  // sleep would be a guess at the bound's length, and this is the observable
-  // that says the write is done being attempted.
-  for (let turn = 0; notifyChainCount() > 0; turn++) {
-    assert.ok(turn < 200, "the boot's writes never reached their bound — the chain did not drain");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
+  redeliverOwedNotifications(opaqueHost(client), maxAttempts);
+  // Wait until this boot's own writes have reached their bound, which is what a real
+  // boot does before it exits: a redelivery it could not finish is left owed for the next.
+  await drain(notifyChainCount, "notify");
 }
 
 describe("notify: the redelivery budget", () => {
@@ -515,7 +510,7 @@ describe("notify: the redelivery budget", () => {
   // re-stating the fixture, which is what jscpd reads as a clone and what makes
   // the difference between two cases invisible on a diff.
   const CHILD = "ses_stuck";
-  const settle = (held, over = {}) => notifyParent(held.client, "parent_1", "owed", { ...gate(CHILD, "error"), ...over });
+  const settle = (held, over = {}) => notifyParent(opaqueHost(held.client), "parent_1", "owed", { ...gate(CHILD, "error"), ...over });
   const owedAt = () => queuedFor(CHILD).map((e) => e.attempts);
   /** The starting world, owed and already dialed, for the cases that begin there. */
   const givenAnUnansweredDebt = (body) =>
@@ -662,7 +657,7 @@ describe("notify: the redelivery budget", () => {
   const toParent = async (text, opts, world) => {
     const { client, calls, ...transport } = answeredClient([]);
     world(transport);
-    await notifyParent(client, "parent_1", text, { ...gate(CHILD, "error"), ...opts });
+    await notifyParent(opaqueHost(client), "parent_1", text, { ...gate(CHILD, "error"), ...opts });
     return { writes: calls.length, owed: queuedFor(CHILD).map((entry) => entry.attempts) };
   };
   // One transcript, three shapes, and the difference IS the check: a clock with no
@@ -762,7 +757,7 @@ describe("notify: the redelivery budget", () => {
     // parent that is merely slow must still be served on the next boot. Without
     // this, "expires" and "is refused early" look identical from the outside.
     const { client, calls } = answeredClient([]);
-    await notifyParent(client, "parent_1", "owed", { ...gate(CHILD, "error"), carriedAttempts: 1, maxAttempts: 3 });
+    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gate(CHILD, "error"), carriedAttempts: 1, maxAttempts: 3 });
 
     assert.strictEqual(calls.length, 1, "a debt inside its budget is still dialed");
     assert.strictEqual(getLatestNotification(CHILD).delivered, true, "and delivered");

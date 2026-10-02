@@ -18,3 +18,4 @@ export * from "./integration.js";
 export * from "./dispatch-wait-scenario.js";
 export * from "./gate-world.js";
 export * from "./stop-scenarios.js";
+export * from "./opaque-host.js";

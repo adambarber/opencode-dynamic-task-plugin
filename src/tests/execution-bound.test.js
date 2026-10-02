@@ -27,13 +27,13 @@ const assertBound = async (out, expected, why) => {
 
 describe("execution bound: withBound", () => {
   it("passes a fast answer through as a whole answer", async () => {
-    await assertBound(await withBound(1_000, () => Promise.resolve("ok"), () => NO_VALUE), { value: "ok", timedOut: false }, "a fast answer is the work's own");
+    await assertBound(await withBound(1_000, () => Promise.resolve("ok"), NO_VALUE), { value: "ok", timedOut: false }, "a fast answer is the work's own");
   });
 
   it("hands back the caller's degradation, flagged, when work runs long", async () => {
     const gate = deferred();
     await assertBound(
-      await bounded(20, () => withBound(WRITE_BOUNDS.parentPrompt, () => gate.promise, () => NO_VALUE)),
+      await bounded(20, () => withBound(WRITE_BOUNDS.parentPrompt, () => gate.promise, NO_VALUE)),
       { value: NO_VALUE, timedOut: true },
       "a bound that ran out answers the degradation, flagged",
     );
@@ -44,26 +44,31 @@ describe("execution bound: withBound", () => {
   // ordinary. A bound that reached for `.then` on the raw result turned that
   // answer into a TypeError, which the caller read as a failure and answered
   // with a retry — a 200ms stall and a record blaming the wrong thing.
+  //
+  // The funnel tolerates it; `callHost`'s type no longer ACCEPTS it, because a body
+  // that finished before the call it wraps opened is the `safeLog` defect. So this
+  // is the tolerance the type is not obliged to promise, kept because the SDK is not
+  // ours and a future method may answer synchronously.
   it("accepts a work function that answers synchronously", async () => {
-    await assertBound(await withBound(1_000, () => "immediate", () => NO_VALUE), { value: "immediate", timedOut: false }, "a synchronous answer is an answer");
+    await assertBound(await withBound(1_000, () => "immediate", NO_VALUE), { value: "immediate", timedOut: false }, "a synchronous answer is an answer");
   });
 
   it("reports a synchronous throw as the rejection it is", async () => {
     await assert.rejects(
       withBound(1_000, () => {
         throw new Error("threw before promising");
-      }, () => NO_VALUE),
+      }, NO_VALUE),
       /threw before promising/,
     );
   });
 
   it("surfaces the work's own rejection rather than reporting a timeout", async () => {
-    await assert.rejects(withBound(1_000, () => Promise.reject(new Error("upstream down")), () => NO_VALUE), /upstream down/);
+    await assert.rejects(withBound(1_000, () => Promise.reject(new Error("upstream down")), NO_VALUE), /upstream down/);
   });
 
   it("a fast answer leaves no timer behind", async () => {
     const before = process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
-    await withBound(60_000, () => "quick", () => NO_VALUE);
+    await withBound(60_000, () => "quick", NO_VALUE);
     await sleep(5);
     const after = process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
     assert.ok(after <= before, `a cleared deadline leaves no pending timer (before ${before}, after ${after})`);

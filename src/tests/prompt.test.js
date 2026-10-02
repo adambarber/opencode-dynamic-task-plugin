@@ -8,6 +8,8 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
+import { settled } from "./support/harness.js";
+import { opaqueHost } from "./support/opaque-host.js";
 import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride, touchedFiles } from "../../dist/shared/prompt.js";
 import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.js";
 
@@ -169,7 +171,7 @@ describe("prompt dance: invokePrompt", () => {
    * here rather than re-typed per case, which is how one of them grew a second
    * prompt stub nobody was asserting against.
    */
-  const clientAnswering = (respond) => ({ session: { prompt: async (args) => respond(args) } });
+  const clientAnswering = (respond) => opaqueHost({ session: { prompt: async (args) => respond(args) } });
 
   it("sends the single payload shape and resolves with the client result", async () => {
     let captured;
@@ -177,18 +179,28 @@ describe("prompt dance: invokePrompt", () => {
       captured = args;
       return { parts: [{ type: "text", text: "hi" }] };
     });
-    const result = await invokePrompt(client, "ses_1", "hello");
+    // `invokePrompt` is fire-and-forget by contract, so the write is observed at
+    // the TRANSPORT rather than in a return value the caller never had.
+    invokePrompt(client, "ses_1", "hello");
+    await settled();
     assert.deepStrictEqual(captured, {
       path: { id: "ses_1" },
       body: { parts: [{ type: "text", text: "hello" }] },
     });
-    assert.deepStrictEqual(result, { parts: [{ type: "text", text: "hi" }] });
   });
 
   it("rejects with the raw client error (callers classify)", async () => {
     const failure = new Error("boom");
     const client = clientAnswering(() => { throw failure; });
-    await assert.rejects(() => invokePrompt(client, "ses_1", "hello"), /boom/);
+    // A fire-and-forget write does not reject at the call site; the failure
+    // reaches the `onFailure` the caller passed, and is dropped without one.
+    const seen = [];
+    invokePrompt(client, "ses_1", "hello", {}, (error) => seen.push(error));
+    await settled();
+    assert.deepStrictEqual(seen, [failure], "the failure reaches onFailure intact");
+    invokePrompt(clientAnswering(() => { throw failure; }), "ses_1", "hello");
+    await settled();
+    assert.deepStrictEqual(seen, [failure], "and is swallowed with no reporter, not thrown at boot");
   });
 });
 
@@ -329,7 +341,7 @@ describe("prompt dance: getLatestAssistantText", () => {
 // these clients declare: a reader that grew a second dependency would have to
 // be faked differently, and this is where that would show.
 describe("prompt dance: hydrateLatestOutcome", () => {
-  const clientReading = (read) => ({ session: { messages: async () => read() } });
+  const clientReading = (read) => opaqueHost({ session: { messages: async () => read() } });
 
   // The outcome is a fixed shape — text, errorDetail, unreadable — and a case
   // states only the part that moved. The full default is written once, so a new

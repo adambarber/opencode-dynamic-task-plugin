@@ -7,6 +7,7 @@
  * records say it was told, which is the only failure this plugin must not have.
  */
 
+import { opaqueHost } from "./support/opaque-host.js";
 import {
   afterEach,
   assert,
@@ -15,6 +16,7 @@ import {
   deferred,
   describe,
   isolatedGate,
+  settled,
   it,
   PARENT,
   recordingClient,
@@ -34,9 +36,6 @@ const gate = (childSessionId, kind, extra = {}) => ({
   sleep: NO_SLEEP,
   ...extra,
 });
-
-/** Drain the microtask queue: a late commit lands as a promise reaction, not a timer. */
-const settled = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("a parent owed the same notice twice", () => {
   let h;
@@ -80,12 +79,12 @@ describe("a write the gate declined", () => {
   it("gives its key back, so a LATER obligation for the same child is still writable", async () => {
     const child = "ses_refused";
     world.setStatus(PARENT, "busy");
-    await notifyParent(world.client, PARENT, "owed from an earlier boot", gate(child, "completed", { carriedAttempts: 1 }));
+    await notifyParent(opaqueHost(world.client), PARENT, "owed from an earlier boot", gate(child, "completed", { carriedAttempts: 1 }));
     assert.strictEqual(world.calls.length, 0, "a mid-turn parent is not dialed at all");
 
     // The parent goes idle, and a NEW obligation for this same child arises.
     world.setStatus(PARENT, "idle");
-    const delivered = await notifyParent(world.client, PARENT, "a different obligation", gate(child, "completed"));
+    const delivered = await notifyParent(opaqueHost(world.client), PARENT, "a different obligation", gate(child, "completed"));
 
     assert.strictEqual(delivered, true, "the second obligation is written");
     assert.deepStrictEqual(
@@ -103,7 +102,7 @@ describe("a write that answers late", () => {
     const lateWorld = recordingClient(() => late.promise);
 
     const delivered = await bounded(5, () =>
-      notifyParent(lateWorld.client, PARENT, "owed", gate(child, "error")),
+      notifyParent(opaqueHost(lateWorld.client), PARENT, "owed", gate(child, "error")),
     );
     assert.strictEqual(delivered, false, "the bound gave up before the host answered");
 
@@ -123,7 +122,7 @@ describe("a write that answers late", () => {
       response: { status: 404 },
     }));
 
-    const delivered = await notifyParent(refusing.client, PARENT, "owed", gate(child, "completed"));
+    const delivered = await notifyParent(opaqueHost(refusing.client), PARENT, "owed", gate(child, "completed"));
 
     assert.strictEqual(delivered, false, "a host that says no is not a delivery");
     assert.strictEqual(getLatestNotification(child).delivered, false, "and the record says so");
@@ -141,7 +140,7 @@ describe("the queue of undelivered debts", () => {
   it("stops growing, and the newest debt is the one it keeps", async () => {
     const offered = 260;
     for (let i = 0; i < offered; i++) {
-      await notifyParent(world.client, PARENT, `owed ${i}`, gate(`ses_child_${i}`, "completed", { carriedAttempts: 1 }));
+      await notifyParent(opaqueHost(world.client), PARENT, `owed ${i}`, gate(`ses_child_${i}`, "completed", { carriedAttempts: 1 }));
     }
 
     const owed = getPendingDeliveries();

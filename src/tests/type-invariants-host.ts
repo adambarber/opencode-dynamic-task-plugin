@@ -11,18 +11,16 @@
  *   - `OVER_HOST_STATES` was a `Set` of hand-written words, so a word the host had
  *     not added yet read as "not a status" and settled a working child.
  *   - a status channel that never answered read as "no turn running" — silence
- *     resolved as a fact, which is the same error one layer down.
+ *     resolved as a fact, the same error one layer down.
  *
- * Each of those compiled. So each coercion is now written down where the compiler
- * sees it, and the pins are falsified by breaking production before they are
- * trusted: see the commit message for the three deliberate breakages and what each
- * pin did about them.
+ * Each of those compiled. So each coercion is written down where the compiler sees
+ * it, falsified by breaking production before being trusted: the commit message
+ * records the three deliberate breakages and what each pin did about them.
  *
  * `@ts-expect-error` is not a bypass and nothing is silenced here. The directive
- * ASSERTS an error exists on the next line; if the regression it guards ever
- * returns, TypeScript reports an unused directive and `npx tsc --noEmit` — the
- * authoritative gate — fails on the regression itself. That is the opposite of
- * `any`, which fails silently in the same situation.
+ * ASSERTS an error exists on the next line; if the regression it guards returns,
+ * `npx tsc --noEmit` — the authoritative gate — fails as an UNUSED directive. That
+ * is the opposite of `any`, which fails silently in the same situation.
  */
 import type { HostSessionMissing, HostStatusMap, HostTurn } from "../shared/client.js";
 
@@ -83,3 +81,36 @@ export type _HostPins = [
   typeof nearMiss,
   typeof toleratedByShape,
 ];
+// ── BOUNDEDNESS IS A TYPE: production cannot reach a host namespace ──
+// Tenet 2 ("every outbound host call is bounded") was held by a scan reading
+// production text, which cannot see a call reached through an indirect receiver —
+// the one defect it missed was `hostLogCall(client)`, an unbounded `safeLog` that
+// stopped plugin init silently, because the log was what hung.
+//
+// So boundedness moves into the type: production holds `OpaqueHost`, which has no
+// namespaces, so naming one is a BUILD FAILURE. Falsified by inserting an unbounded
+// `host.session.status(...)` into prompt.ts: TS2339. The rejected alternative —
+// branding each SDK method's return — is in docs/tasks/18-opaque-host-boundedness.md.
+import type { OpaqueHost } from "../shared/client.js";
+
+declare const host: OpaqueHost;
+
+// @ts-expect-error  THE PIN. Naming a host namespace through the value production
+// was given is the only way an outbound call escapes `client.ts`. An UNUSED
+// directive means opacity was weakened and boundedness is a scan finding again.
+const escapesTheChokepoint = await host.session.status({ throwOnError: true });
+
+// ── and the mint is the ONLY way to obtain one ──
+// The brand is a `unique symbol`, so no literal can carry the key. The fixture is
+// the DECISIVE one — a REAL client under the brand's NAME — and it was falsified:
+// under a `declare const HOST: "__host"` corruption it compiles clean. An earlier
+// fixture ({ session: unknown }) was rejected under BOTH brands, proving nothing.
+import type { OpenCodeClient } from "../shared/client.js";
+
+declare const realClient: OpenCodeClient;
+declare const spellsTheBrand: { __host: OpenCodeClient };
+// @ts-expect-error  A literal cannot carry a `unique symbol` key, so no object can
+// stand in for a minted host. This compiles clean if the brand becomes a string.
+const forgedHost: OpaqueHost = spellsTheBrand;
+
+export type _OpaqueHostPins = [typeof escapesTheChokepoint, typeof forgedHost];

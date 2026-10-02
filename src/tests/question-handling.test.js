@@ -13,15 +13,16 @@ import {
   rejectQuestion,
   replyToQuestion,
 } from "../../dist/shared/question-handling.js";
+import { opaqueHost } from "./support/opaque-host.js";
 import { QUESTION_ASKED, readAskedQuestion } from "../../dist/shared/host-events.js";
 import { truncateText } from "../../dist/shared/notify.js";
 import { assertAnswer, assertIs, assertNothing } from "./support/assertions.js";
 
 describe("question gate: reply/reject settlement", () => {
   function questionClient(behavior) {
-    return { question: { reply: behavior.reply, reject: behavior.reject } };
+    return opaqueHost({ question: { reply: behavior.reply, reject: behavior.reject } });
   }
-  const okClient = () => questionClient({ reply: async () => {}, reject: async () => {} });
+  const okClient = () => opaqueHost({ question: { reply: async () => {}, reject: async () => {} } });
 
   // One hypothesis: what replyToQuestion's outcome IS, given how the transport
   // behaved. Only the "already resolved" throw is absorbed — any other failure
@@ -64,10 +65,11 @@ describe("question gate: reply/reject settlement", () => {
       [{ question: { reply: async () => {} } }, rejectQuestion, "question.reject"],
       [{}, replyToQuestion, "question.reply"],
       [{}, rejectQuestion, "question.reject"],
+      [{ session: {} }, replyToQuestion, "question.reply"],
     ];
     for (const [client, call, missing] of cases) {
       assert.deepStrictEqual(
-        await call(client, "q1", "yes"),
+        await call(opaqueHost(client), "q1", "yes"),
         { succeeded: false, reason: `this host's client has no ${missing}` },
         `a client without ${missing} must be a refusal, not a crash`,
       );
@@ -76,9 +78,11 @@ describe("question gate: reply/reject settlement", () => {
 
   it("reject succeeds and absorbs 409 conflicts", async () => {
     assert.deepStrictEqual(await rejectQuestion(okClient(), "q1"), { succeeded: true });
-    const conflicted = questionClient({
-      reply: async () => {},
-      reject: async () => { const e = new Error("gone"); e.status = 409; throw e; },
+    const conflicted = opaqueHost({
+      question: {
+        reply: async () => {},
+        reject: async () => { const e = new Error("gone"); e.status = 409; throw e; },
+      },
     });
     assert.deepStrictEqual(
       await rejectQuestion(conflicted, "q1"),

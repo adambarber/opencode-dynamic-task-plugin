@@ -8,6 +8,7 @@
  */
 
 import { describe, it, beforeEach, assert } from "./support/runner.js";
+import { opaqueHost } from "./support/opaque-host.js";
 import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentList, registerAdmittedTask, resolveAdmission, resolveDependencies, resetAgentCache } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
@@ -77,7 +78,7 @@ describe("fetchAgents", () => {
    * (`result.length`, `result[0].name`, `result.map(...)`), so which of those
    * was the actual contract was ambiguous; now it is names, always.
    */
-  const agentNames = async (client) => (await fetchAgents(client)).map((a) => a.name);
+  const agentNames = async (client) => (await fetchAgents({ host: opaqueHost(client) })).map((a) => a.name);
 
   it("dispatches subagent and all modes, rejects primary", async () => {
     const mockClient = clientWith([
@@ -141,19 +142,23 @@ describe("fetchAgents", () => {
   // plugin instance (or the host's entry-export probes) can never serve
   // another client's agent list.
   it("caches per client: two clients keep distinct agent lists", async () => {
+    // ONE mint per client, as production does at boot: the cache keys on host
+    // identity, so re-minting per call would mint a fresh cache every read.
     const clientA = clientWith([{ name: "alpha", mode: "subagent" }]);
     const clientB = clientWith([{ name: "beta", mode: "subagent" }]);
+    const hostA = opaqueHost(clientA);
+    const hostB = opaqueHost(clientB);
 
     // These reads are a TIMELINE, not three assertions: A, then B, then A again.
     // Declared as data so the order is the spec — the third read is the whole
     // point, since only a per-client cache can answer it without refetching.
     const timeline = [
-      [clientA, ["alpha"]],
-      [clientB, ["beta"]],
-      [clientA, ["alpha"]],
+      [hostA, ["alpha"]],
+      [hostB, ["beta"]],
+      [hostA, ["alpha"]],
     ];
-    for (const [client, expected] of timeline) {
-      assert.deepStrictEqual((await fetchAgents(client)).map((a) => a.name), expected);
+    for (const [host, expected] of timeline) {
+      assert.deepStrictEqual((await fetchAgents({ host })).map((a) => a.name), expected);
     }
     assert.strictEqual(clientA.agentCalls, 1, "client A's second read is served from its own cache");
     assert.strictEqual(clientB.agentCalls, 1, "client B's fetch never touched client A's cache");
@@ -165,16 +170,16 @@ describe("fetchAgents", () => {
         ? [{ name: "first", mode: "subagent" }]
         : [{ name: "second", mode: "subagent" }]);
 
-    assert.strictEqual((await fetchAgents(mockClient, 60000))[0].name, "first");
-    assert.strictEqual((await fetchAgents(mockClient, 0))[0].name, "second", "expired TTL forces a fresh fetch");
+    assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 60000))[0].name, "first");
+    assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 0))[0].name, "second", "expired TTL forces a fresh fetch");
     assert.strictEqual(mockClient.agentCalls, 2);
   });
 
   it("resetAgentCache invalidates every client's cache", async () => {
     const mockClient = clientWith([{ name: "explore", mode: "subagent" }]);
-    await fetchAgents(mockClient, 60000);
+    await fetchAgents({ host: opaqueHost(mockClient) }, 60000);
     resetAgentCache();
-    await fetchAgents(mockClient, 60000);
+    await fetchAgents({ host: opaqueHost(mockClient) }, 60000);
     assert.strictEqual(mockClient.agentCalls, 2, "reset must not leave any client's entry fresh");
   });
 
@@ -191,8 +196,8 @@ describe("fetchAgents", () => {
     // the empty list as UNKNOWN, which is the opposite error and the one that
     // sends an operator hunting for a project that cannot delegate.
     const mockClient = clientWith([{ name: "primary", mode: "primary" }]);
-    assert.deepStrictEqual(await dispatchableAgentNamesOrNull(mockClient, defaultConfig), [], "no subagent is a known empty list, not an unknown one");
-    assert.deepStrictEqual(await dispatchableAgentNamesOrNull(mockClient, defaultConfig), [], "and it still knows it on the second read");
+    assert.deepStrictEqual(await dispatchableAgentNamesOrNull({ host: opaqueHost(mockClient) }, defaultConfig), [], "no subagent is a known empty list, not an unknown one");
+    assert.deepStrictEqual(await dispatchableAgentNamesOrNull({ host: opaqueHost(mockClient) }, defaultConfig), [], "and it still knows it on the second read");
     assert.strictEqual(mockClient.agentCalls, 2, "the empty answer is re-asked rather than served from cache");
   });
 });

@@ -32,6 +32,7 @@ import {
 // writes "assistant" by hand is a test that passes on a day the binding changes and
 // fails on no day at all, which is the Tenet 12 failure mode exactly. There is no
 // matching user binding to import, so "user" is a literal and stays one.
+import { opaqueHost } from "./support/opaque-host.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { hostStatusWords } from "./support/sdk-contract.js";
 
@@ -87,7 +88,7 @@ describe("liveness vocabulary", () => {
   // have no way left to tell the two apart.
   it("carries the host's own turn object through to the reading", async () => {
     const reading = await readLiveness(
-      { session: { status: async () => ({ data: { ses_x: { type: "busy" } } }) } },
+      opaqueHost({ session: { status: async () => ({ data: { ses_x: { type: "busy" } } }) } }),
       "ses_x",
       [],
     );
@@ -109,13 +110,13 @@ describe("liveness vocabulary", () => {
 // into, and the contrast is the test. An assertion that only ever expected the
 // refusal would be satisfied by a function that returned false unconditionally.
 describe("liveness: what the host did not say is not a reading", () => {
-  const status = (data) => ({ session: { status: async () => ({ data }) } });
+  const status = (data) => opaqueHost({ session: { status: async () => ({ data }) } });
 
   it("reports the status channel's silence as silence, not as a settled turn", async () => {
     // The channel is DOWN. Every restored child is left active by the reconciler on
     // the strength of this flag, so reading "no reply" as "no turn running" ends
     // every child in the store the moment the host has one bad moment.
-    const failed = { session: { status: async () => { throw new Error("channel down"); } } };
+    const failed = opaqueHost({ session: { status: async () => { throw new Error("channel down"); } } });
     const reading = await readLiveness(failed, "ses_x", []);
     assert.strictEqual(reading.statusAnswered, false, "a transport failure is not an answer");
     assert.strictEqual(reading.hostTurn, undefined);
@@ -139,7 +140,7 @@ describe("liveness: what the host did not say is not a reading", () => {
     // the other is in force.
     const named = Object.assign(new Error("nope"), { name: NOT_FOUND_NAME });
     const statusOnly = Object.assign(new Error("nope"), { status: 404 });
-    const refusing = (error) => ({ session: { get: async () => { throw error; } } });
+    const refusing = (error) => opaqueHost({ session: { get: async () => { throw error; } } });
 
     for (const [spelling, error] of [["name", named], ["status", statusOnly]]) {
       const presence = await readSessionPresence(refusing(error), "ses_x");
@@ -155,8 +156,7 @@ describe("liveness: what the host did not say is not a reading", () => {
     assert.strictEqual((await readSessionPresence(refusing(statusOnly), "ses_x")).missing?.name, "Error");
 
     // A refusal that is not the host's not-found says nothing about existence.
-    const other = await readSessionPresence(
-      refusing(Object.assign(new Error("nope"), { name: "UnauthorizedError", status: 403 })),
+    const other = await readSessionPresence(refusing(Object.assign(new Error("nope"), { name: "UnauthorizedError", status: 403 })),
       "ses_x",
     );
     assert.strictEqual(other.existence, SessionExistence.Unread,
@@ -164,7 +164,10 @@ describe("liveness: what the host did not say is not a reading", () => {
 
     // And the positive, or the check above proves nothing: a session the host HAS
     // reads present whatever else is true of it.
-    const present = await readSessionPresence({ session: { get: async () => ({ data: { id: "ses_x" } }) } }, "ses_x");
+    const present = await readSessionPresence(
+      opaqueHost({ session: { get: async () => ({ data: { id: "ses_x" } }) } }),
+      "ses_x",
+    );
     assert.strictEqual(present.existence, SessionExistence.Present);
   });
 
@@ -199,7 +202,7 @@ describe("liveness: what the host did not say is not a reading", () => {
         { info: { role: "user", time: { created: 200, completed: 210 } } },
       ],
     });
-    const client = (messages) => ({ session: { messages: async () => ({ data: messages }) } });
+    const client = (messages) => opaqueHost({ session: { messages: async () => ({ data: messages }) } });
 
     assert.strictEqual(await parentTurnStuck(client(tailWith({ created: 100 })), "ses_x"), true,
       "the open assistant turn under a user message is still the turn that never closed");

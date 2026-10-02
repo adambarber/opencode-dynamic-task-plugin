@@ -5,20 +5,22 @@
  * back is wrong, so there is nothing to root-cause and nothing to roll back, and
  * the turn that made the call stays open until somebody gives up on the process.
  *
- * Two claims, and they need two different instruments — conflating them is how
+ * TWO claims, and they need two different instruments — conflating them is how
  * this file was wrong twice before.
  *
- * BOUNDEDNESS is a property of the source, so it is read off the source: the
- * "every host call is bounded" scanner in safety-invariants.test.js lists every
- * `client.*` call site and fails on one that is neither inside `withBound` nor a
- * named exception. A new outbound call is unbounded the moment it is written, and
- * nothing here has to wait to notice.
+ * BOUNDEDNESS is now the compiler's job. Production holds an `OpaqueHost` with no
+ * `.session`/`.app`/`.question`; the only way to name a host namespace is
+ * `callHost(host, bound, work)`, so a call outside the chokepoint is a build error.
  *
- * ANSWERING is a property of a run, and these cases observe it. They shorten the
- * plugin's real deadlines (`bounded` — the timer still fires, only the patience
- * changes) and then race each tool against a local deadline so a regression
- * FAILS rather than taking the whole suite down with it. That race is a
- * seatbelt, not the evidence: the scanner is.
+ * ANSWERING is a property of a run, and these cases observe it: `bounded` shortens
+ * the plugin's real deadlines (the timer still fires, only the patience changes) and
+ * each tool races a local deadline, so a regression FAILS rather than wedging the
+ * suite (`--test-timeout=0`). The race is a seatbelt; the type is the evidence.
+ *
+ * Both caught defects were one mistake — a bound around the wrong expression. `safeLog`
+ * bounded the synchronous probe for `app.log` and left the hangable await outside it;
+ * `readSessionMessages` threw from its timeout arm, which runs inside the timer, so
+ * the throw escaped and the bound's promise stayed pending forever.
  */
 
 import assert from "node:assert";
@@ -49,9 +51,8 @@ const PATIENCE_MS = 2_000;
 const NEVER_ANSWERED = "THE-HOST-NEVER-ANSWERED";
 
 /**
- * Run `call` and report whether it came back. The deadline is local and longer
- * than every bound the plugin owns, so losing this race means the call is not
- * bounded at all.
+ * Run `call` and report whether it came back. The deadline is local and longer than
+ * every bound the plugin owns, so losing this race means the call is not bounded at all.
  */
 const answered = async (what, call) => {
   const outcome = await Promise.race([
@@ -61,7 +62,7 @@ const answered = async (what, call) => {
   assert.notStrictEqual(
     outcome.text,
     NEVER_ANSWERED,
-    `${what} answered nothing while the host was silent — an unbounded call, and the scanner did not catch it`,
+    `${what} answered nothing while the host was silent — an unbounded call, and the opaque host did not prevent it`,
   );
   return outcome.text;
 };

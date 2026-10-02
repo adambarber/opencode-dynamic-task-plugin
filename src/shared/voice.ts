@@ -11,6 +11,7 @@
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
+import { AbortRefusalKind, type AbortRefusal } from "./session-lifecycle.js";
 import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
@@ -188,6 +189,21 @@ export function steerSettledMidway(state: string): string {
 
 export function steerAbortFailed(abortError: string): string {
   return `ERROR: abort failed (${abortError}) — task left active; the running turn was not stopped, so no message was sent. Retry task_continue to steer again.`;
+}
+
+/**
+ * A steer aimed at the session doing the steering. A steer is an abort first, so
+ * this refusal is what stands between a child and its own dead turn — and it says
+ * the task is untouched, because that is the half the caller cannot see: the
+ * running turn was NOT stopped and NO message was sent, so the task is exactly as
+ * it was. A refusal that only said "refused" would leave a child believing its
+ * parent had redirected it.
+ */
+export function steerSelfRefused(sessionId: string, refusal: AbortRefusal): string {
+  if (refusal.kind === AbortRefusalKind.Self) {
+    return `Refused: ${sessionId} is this session itself. A steer stops the running turn before sending, so steering this session would stop the turn doing the steering — nothing was stopped and no message was sent. To redirect your own work, just do it in this turn. To steer a child, name its session id from dynamic_task.`;
+  }
+  return `Refused: ${sessionId} is not a session this plugin dispatched, so it is not ours to stop — nothing was stopped and no message was sent. task_continue takes a child session id from dynamic_task.`;
 }
 
 export function steerSent(sessionId: string, agentName: string): string {
@@ -396,4 +412,23 @@ export function interruptSubtreeReport(
 
 export function interruptScopeRefused(value: string): string {
   return `ERROR: scope "${value}" is not a scope. Use scope: "subtree" (default — the task and everything below it) or scope: "self" (that session only).`;
+}
+
+/**
+ * A stop the plugin will not send. One function for both refusals, because they
+ * are the same event — the tool was aimed at something it may not touch — and two
+ * sentences for the same event is how one of them grows a promise the other does
+ * not keep.
+ *
+ * The words name the target and the reason, and for the self case the words are
+ * the whole point: a caller that interrupted its own session and got back
+ * "untracked" would have no way to know it had just described its own turn as a
+ * stranger's. So the self sentence says *itself*, in those words, and the
+ * untracked sentence says what to name instead.
+ */
+export function interruptStopRefused(sessionId: string, refusal: AbortRefusal): string {
+  if (refusal.kind === AbortRefusalKind.Self) {
+    return `Refused: ${sessionId} is this session itself. A session is not a task it can interrupt — nothing under it was reached. Name a child session id from dynamic_task to stop that one (and, by default, everything below it).`;
+  }
+  return `Refused: ${sessionId} is not a session this plugin dispatched, so it is not ours to stop and nothing was sent. task_interrupt takes a child session id from dynamic_task.`;
 }

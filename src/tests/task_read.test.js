@@ -210,13 +210,25 @@ describe("task_result and task_interrupt paths", () => {
     assertNoticeCount(h, 0, "the abort's own idle event must not notify");
   });
 
-  it("task_interrupt requires a session id and names missing sessions", async () => {
+  it("task_interrupt requires a session id and refuses one it never dispatched", async () => {
     const h = await setupHarness();
     await assertNeedsSessionId(h.tool.task_interrupt);
     const missing = await eventHarness({ abortFailIds: new Set(["ses_ghost"]) });
     const out = await missing.tool.task_interrupt.execute({ session_id: "ses_ghost" });
-    answerSays(out, "not found");
-    });
+    // It used to ask the server about it and report the 404 as `not found`, which
+    // read as a legitimate answer about the session. The host is not asked at all
+    // now: a session this plugin did not dispatch is refused before any transport is
+    // touched, so the answer says so and names what it is not — see the abort
+    // ownership suite for the request-level claim. The 404 hook stays because a
+    // refusal must hold when the server would have answered.
+    answerSays(out, "ses_ghost", "names the session it will not touch");
+    answerSays(out, "not a session this plugin dispatched");
+    assert.deepStrictEqual(
+      missing.client._state.abortAttempts,
+      [],
+      "the server must never be asked about a session this plugin did not start",
+    );
+  });
 
   it("a failed abort leaves a live task active — the natural event still settles it", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { abortThrowsOnce: true } } });

@@ -12,7 +12,14 @@ import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import { transitionState, agentCapacityRefusal, TaskState } from "../shared/task-state.js";
+import {
+  activeRecord,
+  transitionState,
+  agentCapacityRefusal,
+  TaskState,
+  type NewTaskRegistration,
+} from "../shared/task-state.js";
+import { notifyRunning } from "../shared/change-sinks.js";
 import { NotifyKind } from "../shared/notify.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
@@ -93,15 +100,28 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   if (limitError) return `ERROR: ${limitError}`;
 
   let createdSessionId: string | null = null;
-  let parentSessionId: string | null = null;
+  const parentSessionId = resolveParentSessionId(ctx);
+  // The registration, minus the id the create has not returned yet. Built BEFORE
+  // the try so the failure path can leave the record the success path would have
+  // left: a registered child and a created-but-unregistered one are the same
+  // dispatch, and spelling the record twice is how an orphan would end up
+  // described differently from the task it was.
+  const registration = {
+    parentSessionId: parentSessionId || UNKNOWN_PARENT,
+    agentName: agent.name,
+    description: args.description || `Task: ${agent.name}`,
+    lineage: admission.newLineage,
+    ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
+    ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
+    ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
+  } satisfies Omit<NewTaskRegistration, "childSessionId">;
   try {
     // 1.18 contract: sessions carry title/parentID only — agent and
     // model ride on each prompt via PromptRouting.
     const sessionBody: { title: string; parentID?: string } = {
-      title: args.description || `Task: ${agent.name}`,
+      title: registration.description,
     };
 
-    parentSessionId = resolveParentSessionId(ctx);
     if (parentSessionId) {
       sessionBody.parentID = parentSessionId;
     }
@@ -122,16 +142,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     createdSessionId = childSessionId;
 
     // Register in active state via the admission gate.
-    const activeTask = registerAdmittedTask(store, {
-      childSessionId,
-      parentSessionId: parentSessionId || UNKNOWN_PARENT,
-      agentName: agent.name,
-      description: args.description || `Task: ${agent.name}`,
-      lineage: admission.newLineage,
-      ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
-      ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
-      ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
-    }, config);
+    const activeTask = registerAdmittedTask(store, { ...registration, childSessionId }, config);
 
     // Fire-and-forget: the lifecycle event owns settlement, the
     // catch owns delivery failure.
@@ -165,9 +176,25 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       if (store.activeTasks.has(failedChildSessionId)) {
         try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* already terminal */ }
       } else {
-        // Best-effort: the child is already untracked, so the outcome
-        // changes nothing here — it cannot be notified, only left running.
-        await abortSession(client, failedChildSessionId);
+        // Not "already untracked, nothing to do" — this process created the session,
+        // so the record is how it accounts for it. Three things turn on it: the kill
+        // becomes VISIBLE to every fleet view, the session comes under the same
+        // ownership rule as any other task (which is what lets the kill below be sent
+        // rather than refused as a stranger's), and the orphan counts against the
+        // retained cap instead of living forever outside it.
+        //
+        // Through the ordinary pair rather than a private write, because there is no
+        // private write: the store never saw it run, so `transitionState` has no
+        // from-state until `markRunning` gives it one. The intermediate "running"
+        // change is published and then overwritten in the same pending write, so the
+        // ledger ends holding the settled record and nothing ever read the transient
+        // state — it exists to reach the funnel, not to be observed.
+        notifyRunning(store, store.markRunning(
+          failedChildSessionId,
+          activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now()),
+        ));
+        try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* settled concurrently */ }
+        await abortSession({ client, store, callerSessionId: parentSessionId || undefined }, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal
       // settlement — a failed spawn the parent never hears about

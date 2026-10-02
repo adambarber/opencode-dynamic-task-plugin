@@ -65,10 +65,23 @@ export const READ_BOUND_MS = 5_000;
 // "failed": the bound exists to hand the caller an answer NOW, not to give up.
 export const PARENT_WRITE_BOUND_MS = 2_000;
 
+// A stop. Short for the same reason and by the same argument as the parent
+// write, and for one more: this is the one call the plugin makes to work it may
+// not own, so a server that never answers it must not be able to keep the caller
+// holding the tool open. An unbounded abort was not a slow report — it was a
+// `task_interrupt` that never returned, and a `task_continue` that never fired
+// its replacement prompt, with the steer claim already armed. The child then sat
+// `active` waiting for a replacement turn that could not start, which is a
+// stranded child with a live process and no way to see why.
+export const ABORT_BOUND_MS = 2_000;
+
 // Deadlines named per KIND, not per call site: a new read or write that must not
 // outlive its caller says which bound it wants instead of inventing a number.
 export const READ_BOUNDS: { transcript: number } = { transcript: READ_BOUND_MS };
-export const WRITE_BOUNDS: { parentPrompt: number } = { parentPrompt: PARENT_WRITE_BOUND_MS };
+export const WRITE_BOUNDS: { parentPrompt: number; abort: number } = {
+  parentPrompt: PARENT_WRITE_BOUND_MS,
+  abort: ABORT_BOUND_MS,
+};
 
 /**
  * Test seam: shrink every bound for the duration of a test, and get the restore
@@ -82,10 +95,13 @@ export const WRITE_BOUNDS: { parentPrompt: number } = { parentPrompt: PARENT_WRI
 export function shrinkBoundsForTesting(ms: number): () => void {
   const read = READ_BOUNDS.transcript;
   const write = WRITE_BOUNDS.parentPrompt;
+  const abort = WRITE_BOUNDS.abort;
   READ_BOUNDS.transcript = ms;
   WRITE_BOUNDS.parentPrompt = ms;
+  WRITE_BOUNDS.abort = ms;
   return () => {
     READ_BOUNDS.transcript = read;
     WRITE_BOUNDS.parentPrompt = write;
+    WRITE_BOUNDS.abort = abort;
   };
 }

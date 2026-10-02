@@ -191,6 +191,20 @@ export const wasAborted = (client, sessionId) => client._state.aborted.includes(
 /** The sessions aborted so far, for a failure message that wants the list. */
 export const abortedSessions = (client) => client._state.aborted;
 
+/**
+ * Whether the host was ever ASKED to abort a session.
+ *
+ * `wasAborted` asks what the host did, which is the wrong question for anything
+ * about authority: a host that does not own the id answers 404, so a plugin that
+ * stopped a session it had no business stopping produces no `aborted` entry and a
+ * test written against `wasAborted` calls that clean. The request is the record.
+ */
+export const abortWasRequestedFor = (client, sessionId) =>
+  client._state.abortAttempts.includes(sessionId);
+
+/** Every session the host was asked to abort, in order. */
+export const abortRequests = (client) => client._state.abortAttempts;
+
 /** Every session the host has been asked to create. */
 export const sessionIds = (client) => [...client._state.sessions];
 

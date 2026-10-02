@@ -41,18 +41,33 @@ function missingSessionId(args: unknown): string | null {
  * which is indistinguishable from forgetting one. A fourth dependency added to
  * `ToolDeps` reaches every executor automatically now, and the session-scoped ones
  * will say so by failing to compile if they were relying on it not arriving.
+ *
+ * `callerSessionId` is the other half of the same hazard and the reason the guard
+ * is possible: `sessionId` is what the tool was ASKED to act on, read from the
+ * arguments, and `callerSessionId` is who is asking, read from the host's context.
+ * They are the same kind of value and routinely the same id, which is precisely why
+ * they are two named fields and not one. `task_interrupt` and `task_continue` both
+ * stop a session, and a tool that cannot see who called it cannot tell a caller
+ * naming its own session from one naming a child's — the confusion that had the
+ * plugin asking the server to kill the turn it was speaking in. Undefined means the
+ * host named no caller, which is not the same as "no caller": such a call has
+ * nothing to be protected FROM, so ownership falls back to the store alone.
  */
-export type ResolvedSessionScope = Omit<ToolDeps, "directory"> & { sessionId: string };
+export type ResolvedSessionScope = Omit<ToolDeps, "directory"> & {
+  sessionId: string;
+  callerSessionId: string | undefined;
+};
 
 export type SessionScope = { ok: true; scope: ResolvedSessionScope } | Refusal;
 
-export function openSessionScope(deps: ToolDeps, args: unknown): SessionScope {
+export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext): SessionScope {
   const missing = missingSessionId(args);
   if (missing) return { ok: false, error: missing };
   return {
     ok: true,
     scope: {
       sessionId: String((args as { session_id: string }).session_id),
+      callerSessionId: callerSessionId(ctx),
       client: deps.client,
       store: deps.store,
       config: deps.config,

@@ -20,6 +20,8 @@ import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
+import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
+import type { TaskStore } from "./store.js";
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
 // narrow them live in host-shape.ts, the bottom of the shape layer.
@@ -77,25 +79,115 @@ export function normalizeStatus(raw: unknown): string {
 // claim sits — so the funnel takes the ordering-preserving shape: it performs
 // the call and hands back what the failure MEANS, never what to do about it.
 //
-// Two meanings, and they are the whole reason this is one funnel: a "not
-// found" child is dead (settle/report it), while any other transport failure
-// may never have reached the server, so the turn may still be running and a
-// caller that treats it as a kill replaces a live turn instead of stopping it.
+// Three meanings, and they are the whole reason this is one funnel. A "not
+// found" child is dead (settle/report it); any other transport failure may never
+// have reached the server, so the turn may still be running and a caller that
+// treats it as a kill replaces a live turn instead of stopping it; and a REFUSAL
+// means no request was made at all, which is a fourth thing again and cannot be
+// spelled as either of the first two without lying about one of them.
 export interface AbortOutcome {
   serverGone: boolean;
   transportError: string | undefined;
+  /** Present when no request was made, and the reason. */
+  refusal?: AbortRefusal;
 }
 
-export function abortSession(client: OpenCodeClient, sessionId: string): Promise<AbortOutcome> {
-  return client.session
-    .abort({ path: { id: sessionId } })
-    .then((): AbortOutcome => ({ serverGone: false, transportError: undefined }))
-    .catch((error: unknown): AbortOutcome => {
-      const message = errorMessage(error);
-      return message.includes("not found")
-        ? { serverGone: true, transportError: undefined }
-        : { serverGone: false, transportError: message };
-    });
+/**
+ * The two reasons a stop is refused. An enum for the same reason
+ * `InterruptScope` is one: the vocabulary is small, closed, and decided by the
+ * plugin rather than read off the wire — so a raw literal comparison here is a
+ * member that survives a rename, and a new member that falls through to whatever
+ * the final `else` said. Two callers render these differently (a stop and a steer
+ * have different remedies), so the words cannot be assembled at the decision
+ * either — which is why the discriminator is a typed member rather than a bare
+ * sentence, and why the sentence lives in voice.ts.
+ */
+export enum AbortRefusalKind {
+  /** The caller aimed the tool at the session it is speaking in. */
+  Self = "self",
+  /** The session is in neither half of the store: this process did not start it. */
+  Unowned = "unowned",
+}
+
+export type AbortRefusal = { kind: AbortRefusalKind.Self } | { kind: AbortRefusalKind.Unowned };
+
+/**
+ * The three facts a stop needs, and the reason they travel together: the client
+ * is what the request goes through, the store is what says whether the target is
+ * the plugin's, and the caller is what says whether the target is the caller.
+ * The two ids are neighbours in every signature that takes them, which is
+ * exactly how a swap happens — and a swap here is a swapped *identity*: "is this
+ * mine" and "is this me" are different questions, and asking the wrong one is
+ * the bug this interface exists to make un-askable.
+ */
+export interface AbortTarget {
+  client: OpenCodeClient;
+  store: TaskStore;
+  /** The session that asked for the stop. Never a target, whatever the args say. */
+  callerSessionId: string | undefined;
+}
+
+/**
+ * Whether the plugin will stop `sessionId` for this caller, and why not if it
+ * will not. Answered from the store, so the question is settled by the only thing
+ * that knows what this process started.
+ *
+ * "Tracked" means either half of the store holds a record. A settled task is
+ * deliberately still stoppable: naming one is an explicit ask, and answering it
+ * with silence would be a lie in the other direction — the parent asked what it
+ * costs to stop something already stopped, and the answer is nothing at all. The
+ * host settles the question of whether anything is actually running; the store
+ * settles whether the plugin is willing to ask.
+ *
+ * Exported because two callers need the answer WITHOUT asking: a tool that must
+ * refuse before it claims anything, and a report that must say why it stopped
+ * nothing. Both were reading the store again instead of asking the funnel, which
+ * is how the two halves came to disagree about a self-target.
+ */
+export function stopRefusal(
+  store: TaskStore,
+  sessionId: string,
+  callerSessionId: string | undefined,
+): AbortRefusal | undefined {
+  if (callerSessionId !== undefined && callerSessionId === sessionId) return { kind: AbortRefusalKind.Self };
+  if (!store.activeTasks.has(sessionId) && !store.retainedTasks.has(sessionId)) {
+    return { kind: AbortRefusalKind.Unowned };
+  }
+  return undefined;
+}
+
+/** The outcome an accepted request produces: stopped, and nothing more to say. */
+const ABORT_SENT: AbortOutcome = { serverGone: false, transportError: undefined };
+
+export function abortSession(target: AbortTarget, sessionId: string): Promise<AbortOutcome> {
+  const { client, store, callerSessionId } = target;
+  // Decided before any transport is touched, and answered without an await: a
+  // refusal must cost nothing and must hold when the server is gone, because a
+  // dead server is exactly when a wrong target id is most likely to be guessed.
+  const refusal = stopRefusal(store, sessionId, callerSessionId);
+  if (refusal !== undefined) return Promise.resolve({ ...ABORT_SENT, refusal });
+
+  // Bounded, and the bound answers with the SAME shape the transport failure does.
+  // That is the whole argument for the bound existing: a stop that never answers is
+  // ignorance, not a death — the request may never have reached the server — so it
+  // has to arrive as the thing callers already know how to read, or a dead server
+  // would get two spellings of "possibly still running".
+  const dial = (): Promise<AbortOutcome> =>
+    client.session
+      .abort({ path: { id: sessionId } })
+      .then((): AbortOutcome => ABORT_SENT)
+      .catch((error: unknown): AbortOutcome => {
+        const message = errorMessage(error);
+        return message.includes("not found")
+          ? { serverGone: true, transportError: undefined }
+          : { serverGone: false, transportError: message };
+      });
+
+  return withBound(
+    WRITE_BOUNDS.abort,
+    dial,
+    (): AbortOutcome => ({ serverGone: false, transportError: `no answer within ${WRITE_BOUNDS.abort}ms` }),
+  ).then((bounded) => bounded.value);
 }
 
 // Session id lives at properties.info.id (host) or properties.sessionID

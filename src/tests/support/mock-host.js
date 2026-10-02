@@ -319,7 +319,10 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *   promptSyncThrowIds?: Set<string>,    // synchronous throws
  *   abortThrowsOnce?: boolean,
  *   abortFailIds?: Set<string>,
+ *   abortLoseOnceIds?: Set<string>,     // first abort per id never answers; later ones do
+ *   abortHangIds?: Set<string>,         // never-settling aborts
  *   statusThrows?: Error,               // the status channel itself is down
+ *   statusHang?: boolean,               // the status channel accepts and never answers
  *   hostStatusSeed?: Record<string, "busy" | "idle">,  // live at boot, before any event
  *   messages?: (args: { path: { id: string } }) => unknown,
  *   questionReplyThrows?: boolean,
@@ -351,6 +354,13 @@ export function createMockClient(hooks = {}) {
     transcripts: new Map(),
     logs: [],
     aborted: [],
+    // Every abort the plugin ASKED for, refused ones included. `aborted` above
+    // records what the host actually did, which is the wrong question for an
+    // ownership suite: a plugin that must never stop a session it did not
+    // dispatch is caught by the request reaching the server at all, and against a
+    // host that would 404 the target the two records diverge exactly where the
+    // bug lives.
+    abortAttempts: [],
     questionCalls: [],
     promptBodies: [],
     sessionBodies: new Map(),
@@ -371,6 +381,8 @@ export function createMockClient(hooks = {}) {
     // sequence the server would have produced. `at` is when the status last
     // changed — the clock behind the child's last-message time.
     hostStatus: new Map(),
+    // Ids whose first abort was lost, so a "loses once" fixture is spent.
+    abortsLost: new Set(),
   };
 
   // Sessions the host already knows about when the test starts, for boot-time
@@ -513,6 +525,7 @@ export function createMockClient(hooks = {}) {
       // whole fleet in one. The count is the only proof a view did not do it.
       status: async () => {
         state.statusReads += 1;
+        if (hooks.statusHang) return new Promise(() => {});
         if (hooks.statusThrows) throw hooks.statusThrows;
         return SDK_ENVELOPE(
           Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
@@ -543,6 +556,21 @@ export function createMockClient(hooks = {}) {
       // status guess this mock also once invented a status field for — both are
       // gone, and a mock surface nobody calls is a lie waiting to mislead.
       abort: async ({ path }) => {
+        state.abortAttempts.push(path.id);
+        // A transport that never answers. The plugin bounds every other host
+        // call, so a hang here is the one shape a caller cannot survive unless
+        // the abort path carries its own deadline.
+        if (hooks.abortHangIds?.has(path.id)) return new Promise(() => {});
+        // The lost packet: ONE abort per id never comes back, and every later one
+        // is answered normally. `abortHangIds` is the wrong shape for a deadline
+        // test — a hang that never lifts also hangs the harness's teardown, so the
+        // suite would stop reporting anything after the case it was written for.
+        // This is the shape a real network failure has: the request is lost once,
+        // and a retry gets through.
+        if (hooks.abortLoseOnceIds?.has(path.id) && !state.abortsLost.has(path.id)) {
+          state.abortsLost.add(path.id);
+          return new Promise(() => {});
+        }
         if (hooks.abortThrowsOnce && !state.abortThrown) {
           state.abortThrown = true;
           throw new Error("abort failed");

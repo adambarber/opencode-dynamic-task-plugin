@@ -504,8 +504,8 @@ export function transitionState(
     if (!allowed.includes(to)) {
       throw new Error(`Invalid transition: ${active.state} → ${to}`);
     }
-          const retained = retainedRecord(active, to, Date.now());
     notifyRunning(store, store.stopRunning(childSessionId));
+    const retained = retainedRecord(active, to, Date.now());
     store.markRetained(childSessionId, retained);
     emitRetainedChange(store, { kind: LedgerChangeKind.Settled, id: childSessionId, record: retained });
     return { state: to, completed: true, task: retained };

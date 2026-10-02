@@ -1,7 +1,7 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
-import { abortSession } from "../shared/session-lifecycle.js";
+import { abortSession, stopRefusal } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
@@ -23,6 +23,7 @@ import {
   steerSettledMidway,
   steerAbortFailed,
   steerSent,
+  steerSelfRefused,
   untrackedSession,
   followupSent,
   steerAutoRevived,
@@ -33,7 +34,7 @@ import type { ContinueArgs } from "./args.js";
 export type { ContinueArgs } from "./args.js";
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
-  const { client, store, config, sessionId } = scope;
+  const { client, store, config, sessionId, callerSessionId } = scope;
 
   // The shared opening for a prompt-bearing tool: validate the prompt and model
   // before anything moves (a bad id fails without touching the task), then
@@ -50,6 +51,16 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
 
   const active = store.activeTasks.get(sessionId);
   if (active) {
+    // A steer is an abort and a prompt, so it is stopped by the same rule that stops
+    // a child from interrupting itself — and it has to be asked BEFORE
+    // `markTurnReplacement`, because that stamp is what suppresses the live turn's
+    // terminal echo. A refused self-steer that armed it first would kill the child's
+    // turn and then wait forever for a replacement turn that the refusal just said
+    // would not be sent: the child reads `active` and the store reads mid-steer, and
+    // neither fact points at the tool call that caused it.
+    const selfSteer = stopRefusal(store, sessionId, callerSessionId);
+    if (selfSteer !== undefined) return steerSelfRefused(sessionId, selfSteer);
+
     // Steer: the parent speaks to a running child as a turn
     // replacement — stop, append, re-submit. Turn attribution is armed
     // synchronously (before any await) so the pre-steer turn's terminal
@@ -59,7 +70,10 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // This path never settles: only the replacement turn's genuine
     // terminal event, or operator interruption, ends the task.
     markTurnReplacement(store, sessionId);
-    const { serverGone, transportError: abortError } = await abortSession(client, sessionId);
+    const { serverGone, transportError: abortError } = await abortSession(
+      { client, store, callerSessionId },
+      sessionId,
+    );
     if (serverGone) {
       // Nothing left to steer: the session is gone. Settle error so
       // the ledger never strands an active task with no server side —

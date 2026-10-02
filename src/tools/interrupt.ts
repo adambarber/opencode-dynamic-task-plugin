@@ -13,7 +13,7 @@
 // Then each target is aborted in turn, and each reports its own outcome: the
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
-import { abortSession } from "../shared/session-lifecycle.js";
+import { abortSession, stopRefusal } from "../shared/session-lifecycle.js";
 import type { OpenCodeClient } from "../shared/client.js";
 import { safeLog } from "../shared/notify.js";
 import {
@@ -29,6 +29,7 @@ import type { Refusal } from "../shared/verdict.js";
 import {
   interruptReport,
   interruptScopeRefused,
+  interruptStopRefused,
   interruptSubtreeReport,
   type InterruptOutcome,
 } from "../shared/voice.js";
@@ -102,7 +103,16 @@ async function abortClaimed(
 ): Promise<InterruptOutcome> {
   const { client, store, config } = scope;
   const { claimed } = claim;
-  const { serverGone, transportError: abortMessage } = await abortSession(client, sessionId);
+  // `refusal` is destructured away, and that is the handling: a record that has
+  // vanished between the pre-check above and this call leaves the task in neither
+  // half of the store, so it falls through to `untracked` below — nothing stopped,
+  // reported as nothing stopped. A branch of its own would claim the funnel can
+  // disagree with itself here, which is the one thing the pre-check exists to
+  // make impossible.
+  const { serverGone, transportError: abortMessage } = await abortSession(
+    { client, store, callerSessionId: scope.callerSessionId },
+    sessionId,
+  );
 
   const retained = store.retainedTasks.get(sessionId);
   if (!claimed && !retained) {
@@ -149,16 +159,26 @@ async function abortClaimed(
 }
 
 export async function executeTaskInterrupt(scope: ResolvedSessionScope, args?: unknown): Promise<string> {
-  const { store, sessionId } = scope;
+  const { store, sessionId, callerSessionId } = scope;
   const reach = readInterruptScope(args);
   if (!reach.ok) return reach.error;
 
-  // The root is always a target — even untracked, because a caller that names a
-  // session wants a definite answer about it. Descendants are targets only while
-  // they are still running: aborting settled history is a no-op on the server
-  // and a line of noise in the report. The walk itself passes through settled
-  // records (subtreeTaskIds), so a live grandchild under a finished child is
-  // still reached.
+  // Ownership, before anything is claimed. A stop aimed at the session the caller
+  // is speaking in, or at a session this process has no record of, is refused here
+  // rather than sent and reported on — the request itself is the damage, and a
+  // server that obeys it is not what makes it a mistake. Asking the funnel (rather
+  // than re-reading the store) is what keeps the pre-check and the request the same
+  // decision: they were two separate reads once, and they came to disagree about
+  // exactly the case that matters, a caller naming its own session.
+  const refusal = stopRefusal(store, sessionId, callerSessionId);
+  if (refusal !== undefined) return interruptStopRefused(sessionId, refusal);
+
+  // The named session is always a target — it is tracked, or this returned above.
+  // Descendants are targets only while they are still running: aborting settled
+  // history is a no-op on the server and a line of noise in the report. The walk
+  // itself passes through settled records (subtreeTaskIds), so a live grandchild
+  // under a finished child is still reached. Every descendant is by construction a
+  // child of the tracked root, so it needs no ownership check of its own.
   const targets = (reach.scope === InterruptScope.Self
     ? [sessionId]
     : subtreeTaskIds(store, sessionId)).filter((id) => id === sessionId || store.activeTasks.has(id));

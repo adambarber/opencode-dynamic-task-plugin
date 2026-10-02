@@ -46,13 +46,18 @@ export function buildToolMap(deps: ToolDeps) {
   // (each site would assert its own type) and no safer: the resolver above has
   // already established that the value's shape, which is the whole reason the raw
   // arguments can be handed over un-narrowed.
-  const registeredTool = <T>(resolve: (raw: unknown) => Verdict<T>) =>
+  const registeredTool = <T>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<T>) =>
     (description: string, args: ToolArgs, execute: (input: T, args: never, ctx: ToolContext) => Promise<string>) =>
       tool({
         description,
         args,
         async execute(raw, ctx: ToolContext) {
-          const resolved = resolve(raw);
+          // ctx goes to the resolver because the resolved scope is how a
+          // session-scoped tool learns who is calling it — a fact the arguments
+          // cannot carry, and the fact that lets a stop tell a caller from its
+          // own session. Passing it here rather than threading it past the resolver
+          // is what keeps that decision at the one door.
+          const resolved = resolve(raw, ctx);
           if (!resolved.ok) return resolved.error;
           return execute(resolved.input, raw as never, ctx);
         },
@@ -61,8 +66,8 @@ export function buildToolMap(deps: ToolDeps) {
   // A tool that acts on a named child resolves the session id here, once per
   // call. The two tools that run against the PLUGIN rather than a session scope
   // have no session id to resolve, and the whole dependency set is the input.
-  const sessionInput = (raw: unknown): Verdict<ResolvedSessionScope> => {
-    const opened = openSessionScope(deps, raw);
+  const sessionInput = (raw: unknown, ctx: ToolContext): Verdict<ResolvedSessionScope> => {
+    const opened = openSessionScope(deps, raw, ctx);
     return opened.ok ? { ok: true, input: opened.scope } : opened;
   };
   const pluginInput = (): Verdict<ToolDeps> => ({ ok: true, input: deps });

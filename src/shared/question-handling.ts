@@ -15,6 +15,7 @@ import { errorMessage } from "./host-shape.js";
 import { isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import { hasQuestionCall, type OpenCodeClient } from "./client.js";
+import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 
 /**
  * What answering a question amounts to. An enum rather than a string-literal
@@ -63,10 +64,18 @@ export function decideQuestion(
 // which is all the background task wanted. Reply and reject differ only in which
 // host method they invoke and what body they send, so the guard and the failure
 // meaning cannot drift apart between them.
-function sendQuestionSettlement(questionId: string, send: () => Promise<unknown>): Promise<QuestionResult> {
-  return send()
-    .then(() => ({ succeeded: true }))
-    .catch((error: unknown) => classifySettlementFailure(questionId, error));
+async function sendQuestionSettlement(questionId: string, send: () => Promise<unknown>): Promise<QuestionResult> {
+  try {
+    // Bounded like every other write, and for the same reason as the create: the
+    // caller awaits this to decide what happens to a child's turn. A timeout
+    // travels the throw path so the failure is classified as one, rather than
+    // being a second kind of answer that every caller must learn.
+    const settled = await withBound(WRITE_BOUNDS.question, send, () => undefined);
+    if (settled.timedOut) throw new Error(`question settlement unanswered after ${WRITE_BOUNDS.question}ms`);
+    return { succeeded: true };
+  } catch (error: unknown) {
+    return classifySettlementFailure(questionId, error);
+  }
 }
 
 // A question that is already closed still counts as closed, and the host says so

@@ -3,11 +3,10 @@
 // nothing except read-path TTL pruning.
 import { errorMessage } from "../shared/host-shape.js";
 import { eventField } from "../shared/host-shape.js";
-import { getLatestAssistantText, touchedFiles } from "../shared/prompt.js";
+import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
   readLiveness,
-  readSessionMessages,
   statusFromHostState,
   type LivenessReading,
 } from "../shared/liveness.js";

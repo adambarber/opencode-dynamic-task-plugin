@@ -11,6 +11,7 @@ import {
 import { agentCanNotify } from "../shared/task-policy.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
+import { withBound, WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import {
   activeRecord,
@@ -126,10 +127,16 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       sessionBody.parentID = parentSessionId;
     }
 
-    const sessionResult = await client.session.create({
-      body: sessionBody,
-      query: { directory: directory || ctx.directory },
-    });
+    // Bounded like every other outbound call: this one is awaited by the CALLER'S
+    // turn, so a create the host never answers is not a slow dispatch — it is a
+    // `dynamic_task` that never returns, with the parent's turn open behind it.
+    const created = await withBound(
+      WRITE_BOUNDS.create,
+      () => client.session.create({ body: sessionBody, query: { directory: directory || ctx.directory } }),
+      () => null,
+    );
+    if (created.timedOut) throw new Error(`session create unanswered after ${WRITE_BOUNDS.create}ms`);
+    const sessionResult = created.value;
 
     const childSessionId = validateSessionResult(sessionResult);
     if (!childSessionId) {

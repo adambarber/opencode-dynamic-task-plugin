@@ -77,10 +77,47 @@ export const ABORT_BOUND_MS = 2_000;
 
 // Deadlines named per KIND, not per call site: a new read or write that must not
 // outlive its caller says which bound it wants instead of inventing a number.
-export const READ_BOUNDS: { transcript: number } = { transcript: READ_BOUND_MS };
-export const WRITE_BOUNDS: { parentPrompt: number; abort: number } = {
+// The agent list is a read on the same terms as a transcript: one call to a local
+// server, whose absence must cost the caller a THINNER answer, never a hung turn.
+// It had no bound at all, and the retry loop beside it only catches throws — a host
+// that accepts the call and never answers left every dispatch waiting on the list.
+export const READ_BOUNDS: { transcript: number; agents: number; status: number } = {
+  transcript: READ_BOUND_MS,
+  agents: READ_BOUND_MS,
+  status: READ_BOUND_MS,
+};
+// Creating the child's session. The same bound and the same argument as the abort:
+// the create is awaited by the CALLER'S turn, so a host that accepts it and never
+// answers does not return a late session, it returns nothing at all, and the
+// parent's turn stays open for as long as the server feels like holding it.
+export const CREATE_BOUND_MS = 2_000;
+
+// Answering a child's question. The caller AWAITS the answer and decides the
+// child's fate from it, so a reply the host accepts and never returns is not a slow
+// answer — it is a settlement that never settles, with the child's turn open.
+export const QUESTION_BOUND_MS = 2_000;
+
+// A log line. The shortest of them all, because the log is the least valuable
+// thing the plugin asks for: it is diagnostics, its own contract is best-effort,
+// and it is the one write that happens BEFORE anything else — boot awaits it,
+// every settlement path awaits it. Unbounded, a host that accepted the line and
+// never answered it left the plugin's entry function never returning, which is
+// the one failure with no symptom at all: the session exists, the tools are
+// never registered, and nothing logs the reason because the log is what hung.
+export const LOG_BOUND_MS = 1_000;
+
+export const WRITE_BOUNDS: {
+  parentPrompt: number;
+  abort: number;
+  create: number;
+  question: number;
+  log: number;
+} = {
   parentPrompt: PARENT_WRITE_BOUND_MS,
   abort: ABORT_BOUND_MS,
+  create: CREATE_BOUND_MS,
+  question: QUESTION_BOUND_MS,
+  log: LOG_BOUND_MS,
 };
 
 /**
@@ -94,14 +131,26 @@ export const WRITE_BOUNDS: { parentPrompt: number; abort: number } = {
  */
 export function shrinkBoundsForTesting(ms: number): () => void {
   const read = READ_BOUNDS.transcript;
+  const agents = READ_BOUNDS.agents;
+  const status = READ_BOUNDS.status;
   const write = WRITE_BOUNDS.parentPrompt;
   const abort = WRITE_BOUNDS.abort;
+  const create = WRITE_BOUNDS.create;
+  const question = WRITE_BOUNDS.question;
   READ_BOUNDS.transcript = ms;
+  READ_BOUNDS.agents = ms;
+  READ_BOUNDS.status = ms;
   WRITE_BOUNDS.parentPrompt = ms;
   WRITE_BOUNDS.abort = ms;
+  WRITE_BOUNDS.create = ms;
+  WRITE_BOUNDS.question = ms;
   return () => {
     READ_BOUNDS.transcript = read;
+    READ_BOUNDS.agents = agents;
+    READ_BOUNDS.status = status;
     WRITE_BOUNDS.parentPrompt = write;
     WRITE_BOUNDS.abort = abort;
+    WRITE_BOUNDS.create = create;
+    WRITE_BOUNDS.question = question;
   };
 }

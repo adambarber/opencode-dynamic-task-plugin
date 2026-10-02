@@ -32,6 +32,7 @@ import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import type { Verdict } from "./verdict.js";
 import { hostPayload } from './session-lifecycle.js';
 import { errorMessage, isEventRecord } from "./host-shape.js";
+import { withBound, READ_BOUNDS } from "./execution-bound.js";
 import {
   validateAgent,
   validateLineage,
@@ -395,7 +396,12 @@ async function fetchAgentListing(client: AgentLister, cacheTtlMs: number = CACHE
   // re-dial; persistent failure keeps the warn-and-stale behavior below.
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const result: unknown = await client.app.agents();
+      // Bounded like every other read: a timeout becomes a THROW, so a host that
+      // accepts the call and never answers lands on the same warn-and-serve-stale
+      // path as a host that refuses it. Both facts are "the list is unknown".
+      const listed = await withBound(READ_BOUNDS.agents, () => client.app.agents(), () => undefined);
+      if (listed.timedOut) throw new Error(`agent list unanswered after ${READ_BOUNDS.agents}ms`);
+      const result: unknown = listed.value;
       const entry: AgentCacheEntry = {
         agents: parseAgentList(result).filter((a) => isDispatchableAgent(a)),
         at: Date.now(),

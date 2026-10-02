@@ -74,11 +74,13 @@ export async function safeLog(
 ): Promise<void> {
   const log = hostLogCall(client);
   if (!log) return;
-  try {
-    await log({ body: { service: "dynamic-task", level, message } });
-  } catch {
-    // logging is best-effort by design
-  }
+  // Bounded at THIS chokepoint, for every caller, because a best-effort write
+  // that can be held open is not best-effort — it is a dependency. Boot awaits
+  // it, so an unbounded log sink stopped the plugin from loading at all, with no
+  // symptom to read and no log line explaining why.
+  await withBound(WRITE_BOUNDS.log, () => log({ body: { service: "dynamic-task", level, message } }), () => null).catch(
+    () => null,
+  );
 }
 
 /**

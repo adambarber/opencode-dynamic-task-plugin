@@ -326,6 +326,30 @@ export function touchedFiles(messages: unknown): FileTouch[] {
   return touches;
 }
 
+/**
+ * Read-only session message fetch, shared by every reader of a child.
+ *
+ * ONE chokepoint, bounded, and strict: a caller that reports what it read
+ * (task_result) must be able to say a read failed, and a swallowed error would
+ * print "(none yet)" for a child whose work exists. The tolerant reader is
+ * `readLiveness`, which catches. It lived here and in `liveness` at once, with a
+ * deadline on only one side, so the two readers of a child's transcript could
+ * disagree about how long that child gets to describe itself.
+ */
+export async function readSessionMessages(
+  client: OpenCodeClient,
+  sessionId: string,
+  query?: { limit?: number },
+): Promise<unknown[]> {
+  const bounded = await withBound(
+    READ_BOUNDS.transcript,
+    () => client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
+    () => null,
+  );
+  if (bounded.timedOut) throw new Error(`transcript unanswered after ${READ_BOUNDS.transcript}ms`);
+  return extractMessages(bounded.value);
+}
+
 // ─── extractMessages ───────────────────────────────────────────────
 // (Moved verbatim from index.ts — message-shape handling belongs here.)
 
@@ -423,13 +447,10 @@ export async function hydrateLatestOutcome(
 ): Promise<HydratedOutcome> {
   const blank: HydratedOutcome = { text: "", errorDetail: "", unreadable: true };
   try {
-    const bounded = await withBound(
-      READ_BOUNDS.transcript,
-      () => client.session.messages({ path: { id: sessionId } }),
-      () => null,
-    );
-    if (bounded.timedOut) return blank;
-    const messages = extractMessages(bounded.value);
+    // Through the shared transcript read, which is where the bound lives. It used
+    // to be a second chokepoint with its own deadline, so the two could disagree
+    // about how long a child gets to describe itself.
+    const messages = await readSessionMessages(client, sessionId);
     return {
       text: getLatestAssistantText(messages),
       errorDetail: latestMessageErrorDetail(messages),

@@ -12,7 +12,8 @@
 import type { OpenCodeClient } from "./client.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { eventField } from "./host-shape.js";
-import { extractMessages, isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE } from "./prompt.js";
+import { isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE, readSessionMessages } from "./prompt.js";
+import { withBound, READ_BOUNDS } from "./execution-bound.js";
 
 // The server's own words for a session's turn. They are the SERVER's vocabulary,
 // not this plugin's: it cannot add a member, and a test pinning one would be a
@@ -134,7 +135,7 @@ export async function readLiveness(
   // empty list is the answer, and refusing it would let one vanished child
   // abandon a whole reconciliation pass.
   const list = messages ?? await readSessionMessages(client, childSessionId).catch(() => []);
-  const statusMap = await client.session.status();
+  const statusMap = await readStatusMap(client);
   return {
     hostState: hostTurnState(statusMap, childSessionId),
     lastMessageAt: lastMessageAt(list),
@@ -157,7 +158,7 @@ export async function readLiveness(
  * is a silent stall wearing a safety check's name.
  */
 export async function hostTurnInFlight(client: OpenCodeClient, sessionId: string): Promise<boolean> {
-  const statusMap = await client.session.status().catch(() => null);
+  const statusMap = await readStatusMap(client).catch(() => null);
   const state = statusMap === null ? null : hostTurnState(statusMap, sessionId);
   return state !== null && RUNNING_HOST_STATES.has(state);
 }
@@ -211,10 +212,9 @@ const WEDGE_TAIL_MESSAGES = 5;
  * means the turn is open on purpose, and this reads an open turn as a wedge.
  */
 export async function parentTurnStuck(client: OpenCodeClient, sessionId: string): Promise<boolean> {
-  const list = await client.session
-    .messages({ path: { id: sessionId }, query: { limit: WEDGE_TAIL_MESSAGES } })
-    .then(extractMessages)
-    .catch(() => null);
+  // The same bounded read, asking for less: the tail is all this question needs,
+  // and the host does the trimming.
+  const list = await readSessionMessages(client, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
   if (list === null) return false;
   for (let i = list.length - 1; i >= 0; i -= 1) {
     const message = list[i];
@@ -224,11 +224,18 @@ export async function parentTurnStuck(client: OpenCodeClient, sessionId: string)
   return false;
 }
 
-// Read-only session message fetch, shared by every reader of a child. Strict by
-// design: callers that report what they read (task_result) must be able to say
-// a read failed, and a swallowed error would print "(none yet)" for a child
-// whose work exists. The tolerant reader is readLiveness, above.
-export async function readSessionMessages(client: OpenCodeClient, sessionId: string): Promise<unknown[]> {
-  const messagesResult = await client.session.messages({ path: { id: sessionId } });
-  return extractMessages(messagesResult);
+/**
+ * What the host says about every session's turn state, in one call.
+ *
+ * Two readers want this and they want different things from a failure, so the
+ * READ is here and the interpretation stays with each caller: a liveness read
+ * reports the absence, a parent-write gate refuses to read a transport failure as
+ * congestion. What neither gets to do is wait forever for the answer — an
+ * unbounded status read turned `task_status` and `task_result` into tool calls
+ * that never returned.
+ */
+async function readStatusMap(client: OpenCodeClient): Promise<unknown> {
+  const bounded = await withBound(READ_BOUNDS.status, () => client.session.status(), () => null);
+  if (bounded.timedOut) throw new Error(`status unanswered after ${READ_BOUNDS.status}ms`);
+  return bounded.value;
 }

@@ -27,6 +27,8 @@ export const FAULTS = Object.freeze([
   "silentHost",
   "statusHang",
   "statusThrows",
+  "presenceHang",
+  "presenceThrows",
   "agentsListThrows",
   "createThrowsOnce",
   "createReturnsIdless",
@@ -96,6 +98,44 @@ export function armHookFaults(state, hooks) {
 export const armedFlag = (state, hooks, flag) => {
   if (hooks[flag] === true) armFault(state, flag);
   return hooks[flag];
+};
+
+/**
+ * A call that never answers, which is what every `*Hang` fault means.
+ *
+ * A factory and not a shared promise on purpose: an unresolved promise with handlers
+ * attached is collectable only once nothing refers to it, so one module-level instance
+ * would hold every handler ever attached to it for the life of the process.
+ */
+export const neverAnswers = () => new Promise(() => {});
+
+/**
+ * One endpoint's hostile answer, if one was armed — a hang, or the error it throws,
+ * each RECORDED so a case that armed it has a witness and the teardown can fail one
+ * that never fired.
+ *
+ * Returns a function to CALL when a fault applies, rather than performing it: the caller
+ * is inside an async arrow and has to leave through `return`, so a helper that threw on
+ * its behalf would be unreachable code at every site that uses it.
+ *
+ * The two flag names are passed IN, and that is not a convenience: the registry gate
+ * checks that every declared fault is spoken in the fake by name, because a fault that
+ * lives only in the registry is one no branch can record. Building the names from a
+ * prefix would have satisfied that gate's letter while breaking its point — the witness
+ * is worth two extra words at a call site.
+ */
+export const armedHostFault = (state, hooks, hangFlag, throwsFlag) => {
+  if (armedFlag(state, hooks, hangFlag)) {
+    fault(state, hangFlag);
+    return neverAnswers;
+  }
+  if (armedFlag(state, hooks, throwsFlag)) {
+    fault(state, throwsFlag);
+    return () => {
+      throw hooks[throwsFlag];
+    };
+  }
+  return undefined;
 };
 
 /**

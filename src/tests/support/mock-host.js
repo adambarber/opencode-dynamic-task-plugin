@@ -18,7 +18,12 @@
 import assert from "node:assert";
 
 import { readFileSync } from "node:fs";
-import { FAULTS, armFault, armHookFaults, armedFlag, fault, forId } from "./faults.js";
+import { FAULTS, armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
+// The host's status vocabulary and not-found spelling, parsed out of the SDK
+// declaration the production code compiles against — so the fake is held to the
+// host's own words rather than to a hand-kept list that drifts in the one
+// direction which hides a defect.
+import { hostStatusWords, idleWord, notFoundName, notFoundStatus } from "./sdk-contract.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
@@ -156,11 +161,15 @@ export function recordingClient(respond) {
   const transcripts = new Map();
   return {
     calls,
-    setStatus: (id, type) => hostStatus.set(id, type),
+    setStatus: (id, type) => putHostStatus(hostStatus, id, type),
     setMessages: (id, list) => transcripts.set(id, list),
     client: {
       session: {
-        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, type]) => [id, { type }]))),
+                // Project the map's ENTRY down to the word the SDK declares. It holds `{type, at}`
+        // so the liveness code can read "when did this session last change"; projecting the
+        // entry itself would hand the word to production as an object, which reads as a word
+        // no host has ever said.
+        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, entry]) => [id, { type: entry.type }]))),
         messages: async (args) => SDK_ENVELOPE(transcripts.get(args.path.id) ?? []),
         prompt: async (args) => {
           calls.push(args);
@@ -212,15 +221,47 @@ export function armGate(state, name, { fails = false, maybe = false } = {}) {
 }
 
 /**
+ * The host's `session.get` answer: the fields the SDK's `Session` declares
+ * required. A fake that answers with `{id}` alone is a fake answering a smaller
+ * question than the one production asked, and the missing fields are exactly where
+ * a real divergence shows up.
+ */
+const sessionObject = (id) => ({
+  id,
+  projectID: "ses_project_mock",
+  directory: "/mock/project",
+  title: `mock ${id}`,
+  version: "1.18.30",
+  time: { created: 0, updated: 0 },
+});
+
+/**
  * What an entry in the host's status map IS: the word the host published and
  * the clock it published it at. Declared once because the map is read by
  * liveness code as "when did this session last change", and a second way of
  * spelling an entry is a second answer to that question.
  */
-const hostWord = (type) => ({ type, at: Date.now() });
+const hostWord = (type) => {
+  // The fake may only say what the SDK declares. A mock inventing a word is the one
+  // infidelity the compiler cannot see, because the mock is JavaScript: production
+  // reads it through a type that does not exist, and every assertion still passes.
+  if (!hostStatusWords().includes(type)) {
+    throw new Error(
+      `mock-host: "${type}" is not a host status word (declared: ${hostStatusWords().join(", ")}) — the fake may not invent vocabulary`,
+    );
+  }
+  return { type, at: Date.now() };
+};
 
-/** Put an entry in the host's status map, creating it for a session the host does not yet list. */
-export const putHostStatus = (state, id, type) => state.hostStatus.set(id, hostWord(type));
+/**
+ * Put an entry in the host's status map — or, for the one word the host answers by
+ * DELETING, remove it. It takes the MAP, not the state, so a client of this module with
+ * a map of its own obeys this rule instead of copying it. opencode v1.18.30 `session/status.ts` publishes `idle` and
+ * drops the key, so a map that could hold `idle` would be a map no read can trust:
+ * absence would stop meaning "nothing running" and start meaning two things at once.
+ */
+export const putHostStatus = (map, id, type) =>
+  type === idleWord() ? map.delete(id) : map.set(id, hostWord(type));
 
 /**
  * The one place the mock MOVES a session's host status word: an abort parks the
@@ -232,7 +273,7 @@ export const putHostStatus = (state, id, type) => state.hostStatus.set(id, hostW
  * come back from a status write.
  */
 export function setHostTurn(state, id, type) {
-  if (state.hostStatus.has(id)) putHostStatus(state, id, type);
+  if (state.hostStatus.has(id)) putHostStatus(state.hostStatus, id, type);
 }
 
 /**
@@ -254,13 +295,14 @@ export function applyHostStatus(state, event) {
   if (!current) return;
   const status = event.properties?.status;
   const word = typeof status === "string" ? status : status?.type;
-  if (event.type === SESSION_ERROR) {
-    setHostTurn(state, id, "error");
-  } else if (event.type === SESSION_IDLE || (event.type === SESSION_STATUS && word)) {
+  // `error` is NOT a word this map can hold: the host writes only `busy` and `retry`,
+  // and answers `idle` by deleting. An error event is not a status word at all, so
+  // the map is left alone — exactly as the host leaves it.
+  if (event.type === SESSION_IDLE || (event.type === SESSION_STATUS && word)) {
     // The idle event carries no word of its own — the event's name IS the word.
-    setHostTurn(state, id, event.type === SESSION_IDLE ? "idle" : word);
+    putHostStatus(state.hostStatus, id, event.type === SESSION_IDLE ? idleWord() : word);
   } else if (current.type === "busy") {
-    setHostTurn(state, id, "busy");
+    putHostStatus(state.hostStatus, id, "busy");
   }
 }
 
@@ -401,6 +443,8 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *   abortHangIds?: Set<string>,         // never-settling aborts
  *   statusThrows?: Error,               // the status channel itself is down
  *   statusHang?: boolean,               // the status channel accepts and never answers
+ *   presenceThrows?: Error,             // the presence read fails in a way that is not a 404
+ *   presenceHang?: boolean,             // the presence read accepts and never answers
  *   hostStatusSeed?: Record<string, "busy" | "idle">,  // live at boot, before any event
  *   messages?: (args: { path: { id: string } }) => unknown,
  *   questionReplyThrows?: boolean,
@@ -442,7 +486,7 @@ const silence = (state, hooks, value, ns = "") =>
       const called = `${ns}${String(prop)}`;
           if (Array.isArray(hooks.silencedCalls)) hooks.silencedCalls.push(called);
           if (process.env.SILENCE_TRACE) appendFileSync(process.env.SILENCE_TRACE, `${called}\n`);
-          return new Promise(() => {});
+          return neverAnswers();
         };
       }
       if (inner !== null && typeof inner === "object") return silence(state, hooks, inner, `${ns}${String(prop)}.`);
@@ -453,6 +497,10 @@ const silence = (state, hooks, value, ns = "") =>
 export function createMockClient(hooks = {}) {
   const state = {
     sessions: new Set(),
+    // Sessions the host HAS but did not create in this run — a restore. Kept apart
+    // from `sessions` so a case can say "this session predates the test" without
+    // pretending the plugin's own dispatch created it.
+    foreignSessions: new Set(),
     notifications: [],
     // Every notification the plugin DIALS, held or not — the count that proves
     // a held write was never retried behind the parent's back.
@@ -486,6 +534,7 @@ export function createMockClient(hooks = {}) {
     // How many times the host's status channel was read. Views that already
     // know what they need must not spend a read per row.
     statusReads: 0,
+    presenceReads: 0,
     abortThrown: false,
     notifyAttempts: 0,
     childPromptFailed: false,
@@ -509,7 +558,7 @@ export function createMockClient(hooks = {}) {
   // by definition — a session in the host's map is a session it lists.
   for (const [id, type] of Object.entries(hooks.hostStatusSeed ?? {})) {
     state.sessions.add(id);
-    putHostStatus(state, id, type);
+    putHostStatus(state.hostStatus, id, type);
   }
   armHookFaults(state, hooks);
 
@@ -555,7 +604,7 @@ export function createMockClient(hooks = {}) {
         const prefix = hooks.sessionPrefix ? `ses_${hooks.sessionPrefix}_` : "ses_mock_";
         const id = `${prefix}${state.sessions.size + 1}`;
         state.sessions.add(id);
-        state.hostStatus.set(id, { type: "busy", at: Date.now() });
+        putHostStatus(state.hostStatus, id, "busy");
         state.sessionBodies.set(id, body);
         // The host created the session and then answered with something no id can
         // be read out of. The session is real — it is in `state.sessions`, so
@@ -588,7 +637,7 @@ export function createMockClient(hooks = {}) {
           throw new Error(`prompt sync-dead for ${path.id}`);
         });
         if (syncDead) return syncDead;
-        const hung = forId(state, "promptHang", hooks.promptHangIds, path.id, () => new Promise(() => {}));
+        const hung = forId(state, "promptHang", hooks.promptHangIds, path.id, neverAnswers);
         if (hung) return hung;
         const failed = forId(state, "promptFail", hooks.promptFailIds, path.id, () => {
           throw new Error(`prompt failed for ${path.id}`);
@@ -667,14 +716,8 @@ export function createMockClient(hooks = {}) {
       // whole fleet in one. The count is the only proof a view did not do it.
       status: async () => {
         state.statusReads += 1;
-        if (armedFlag(state, hooks, "statusHang")) {
-          fault(state, "statusHang");
-          return new Promise(() => {});
-        }
-        if (armedFlag(state, hooks, "statusThrows")) {
-          fault(state, "statusThrows");
-          throw hooks.statusThrows;
-        }
+        const hostile = armedHostFault(state, hooks, "statusHang", "statusThrows");
+        if (hostile) return hostile();
         return SDK_ENVELOPE(
           Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
         );
@@ -702,15 +745,29 @@ export function createMockClient(hooks = {}) {
         }
         return SDK_ENVELOPE([hostSaid("COMPLETED_OK", state.hostStatus.get(path.id)?.at ?? Date.now())]);
       },
-      // No session.get: the plugin does not call it. It was here to back the
-      // status guess this mock also once invented a status field for — both are
-      // gone, and a mock surface nobody calls is a lie waiting to mislead.
+      // Does the host still HAVE this session — the only endpoint whose contract
+      // answers that. The status map cannot: "nothing running" and "never existed"
+      // are the same absence there, and reading one as the other is what made a
+      // restart invent errors for children the host still had. So the fake answers
+      // it, refusing with the host's OWN declared not-found.
+      get: async ({ path }) => {
+        state.presenceReads += 1;
+        const hostile = armedHostFault(state, hooks, "presenceHang", "presenceThrows");
+        if (hostile) return hostile();
+        if (state.sessions.has(path.id) || state.foreignSessions.has(path.id)) {
+          return SDK_ENVELOPE(sessionObject(path.id));
+        }
+        const error = new Error(`Session "${path.id}" not found.`);
+        error.name = notFoundName();
+        error.status = notFoundStatus();
+        throw error;
+      },
       abort: async ({ path }) => {
         state.abortAttempts.push(path.id);
         // A transport that never answers. The plugin bounds every other host
         // call, so a hang here is the one shape a caller cannot survive unless
         // the abort path carries its own deadline.
-        const abortHung = forId(state, "abortHang", hooks.abortHangIds, path.id, () => new Promise(() => {}));
+        const abortHung = forId(state, "abortHang", hooks.abortHangIds, path.id, neverAnswers);
         if (abortHung) return abortHung;
         // The lost packet: ONE abort per id never comes back, and every later one
         // is answered normally. `abortHangIds` is the wrong shape for a deadline
@@ -721,7 +778,7 @@ export function createMockClient(hooks = {}) {
         if (!state.abortsLost.has(path.id)) {
           const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, path.id, () => {
             state.abortsLost.add(path.id);
-            return new Promise(() => {});
+            return neverAnswers();
           });
           if (lost) return lost;
         }

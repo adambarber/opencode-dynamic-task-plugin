@@ -1,7 +1,6 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { REPO_ROOT, listProdFiles } from "./corpus.js";
+import { listProdFiles, readSource } from "./corpus.js";
 
 /**
  * Every outbound host call in production, as sites — the enumeration both halves of the
@@ -14,7 +13,8 @@ import { REPO_ROOT, listProdFiles } from "./corpus.js";
 export function hostCallSites() {
   const sites = [];
   for (const file of listProdFiles()) {
-    readFileSync(file, "utf8")
+    const source = readSource(file);
+    source.text
       .split("\n")
       .forEach((content, i) => {
         const match = HOST_CALL.exec(content);

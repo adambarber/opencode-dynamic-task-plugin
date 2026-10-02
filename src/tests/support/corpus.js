@@ -5,7 +5,7 @@
 // directory or a new gate script would leave one suite's corpus quietly empty
 // while it reported green. One walk, one answer to "what counts as a file here".
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +27,19 @@ export const SCRIPTS_DIR = path.join(SRC_DIR, "..", "scripts");
  * uses, so every reader of a checked-in file starts from the same place.
  */
 export const REPO_ROOT = path.join(TESTS_DIR, "..", "..");
+
+/**
+ * A source file's text, read the one way a corpus reads it.
+ *
+ * Every gate that inspects a file as its SUBJECT — the scanners, the word lists, the
+ * fake's own source — wants the same two things: the text, and a name short enough to
+ * name in a failure. Asking for them separately meant each module imported `node:fs`,
+ * `node:path` and `REPO_ROOT` to hand-roll the same two lines, and those two lines
+ * were the only thing several of those modules had in common.
+ */
+export function readSource(file) {
+  return { file: path.relative(REPO_ROOT, file), text: readFileSync(file, "utf8") };
+}
 
 /**
  * Every file under `dir` that `accept` claims, sorted. The ONE walk.
@@ -82,6 +95,18 @@ export function listTestFiles() {
   return readdirSync(TESTS_DIR)
     .filter((f) => f.endsWith(".test.js"))
     .map((f) => path.join(TESTS_DIR, f))
+    .sort();
+}
+
+/**
+ * The support modules beside the suites, which is where the fakes live: a client
+ * handed to production in place of the host is a support file, and a fidelity gate
+ * that listed only `*.test.js` would scan the suites and miss every mock in the tree.
+ */
+export function listTestSupportFiles() {
+  return readdirSync(path.join(TESTS_DIR, "support"))
+    .filter((f) => f.endsWith(".js"))
+    .map((f) => path.join(TESTS_DIR, "support", f))
     .sort();
 }
 

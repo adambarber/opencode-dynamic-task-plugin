@@ -1,8 +1,7 @@
 import assert from 'node:assert';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { REPO_ROOT } from './support/corpus.js';
+import { REPO_ROOT, readSource } from './support/corpus.js';
 import { hostCallSites } from './support/host-calls.js';
 import { createMockClient, hostCallArgs, hostSaid, isSDKEnvelope } from './support/mock-host.js';
 import { describe, it } from './support/runner.js';
@@ -49,17 +48,27 @@ describe("invariant: every host call is bounded (Tenet 2)", () => {
       "sendQuestionSettlement owns the bound for every question write, so no caller can skip it",
   };
 
+  /**
+   * The call forms that put a host call inside a bound. A list rather than one name,
+   * because a bound is a claim the scanner cannot verify — it reads a shape and believes
+   * it — so the belief has to be written down in one place. Add a bounding function
+   * without adding it here and every site that uses it goes red, which is the safe
+   * direction: the scanner cannot tell an unbounded call from one bound by a function
+   * it has never heard of.
+   */
+  const BOUNDS_A_CALL = ["withBound(", "boundedRead("];
+
   it("every host call site is inside a bound, or names the layer that bounds it", () => {
     const unbounded = [];
     for (const site of hostCallSites()) {
       // The bound is one or two lines above the call — `withBound(BOUND, () => call())`
       // is written that way everywhere, and a bound that needed its own paragraph of
       // explaining where it started is a bound worth moving.
-      const above = readFileSync(site.file, "utf8")
+      const above = readSource(site.file).text
         .split("\n")
         .slice(Math.max(0, site.line - 3), site.line)
         .join("\n");
-      if (above.includes("withBound(")) continue;
+      if (BOUNDS_A_CALL.some((bound) => above.includes(bound))) continue;
       if (BOUND_UPSTREAM[site.where] !== undefined) continue;
       unbounded.push(`${path.relative(REPO_ROOT, site.file)}:${site.line} :: ${site.content}`);
     }

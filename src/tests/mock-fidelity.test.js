@@ -1,5 +1,8 @@
 import assert from "node:assert";
-import { createMockClient, FAKE_SOURCE } from "./support/mock-host.js";
+
+import { createMockClient, FAKE_SOURCE, putHostStatus } from "./support/mock-host.js";
+import { listTestSupportFiles, readSource } from "./support/corpus.js";
+import { busyWord, hostStatusWords, idleWord } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";
 import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
 import { describe, it } from "./support/runner.js";
@@ -69,5 +72,60 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     assert.deepStrictEqual(unengagedFaults(client._state), ["statusHang"], "the silent host engaged");
+  });
+});
+
+/**
+ * The half of fidelity that is about VOCABULARY rather than shape: may a fake put a
+ * word in the host's status map that the host never says?
+ *
+ * It could not before, and nothing noticed. The word `idle` was the live example —
+ * tests published `session.status idle` and the fake STORED it, while the real host
+ * publishes `idle` and deletes the key. A fake that can hold a word the host cannot
+ * say is not a smaller claim about the host, it is a different host: absence from the
+ * map stopped meaning "nothing running", and every read of absence with it.
+ *
+ * Two gates, and the pairing is the point. The funnel's own teeth are behavioural
+ * (below): an undeclared word is refused and `idle` deletes. The scan beside it is
+ * what keeps those teeth load-bearing — a fake that wrote its own map would be a
+ * perfectly good test and a lie, and only a scan finds it.
+ */
+describe("invariant: only the host's own words can go in a fake's status map", () => {
+  it("refuses a word the host does not declare, through the one funnel every write uses", () => {
+    const map = new Map();
+
+    assert.throws(
+      () => putHostStatus(map, "ses_x", "compacting"),
+      /is not a host status word/,
+      `a fake may not answer with vocabulary the host lacks. declared: ${hostStatusWords().join(", ")}`,
+    );
+    assert.strictEqual(map.size, 0, "and the refusal left nothing behind");
+  });
+
+  it("answers `idle` by DELETING, the way the host's status map does", () => {
+    const map = new Map();
+
+    putHostStatus(map, "ses_x", busyWord());
+    assert.deepStrictEqual([...map.keys()], ["ses_x"], "a running turn is listed");
+
+    putHostStatus(map, "ses_x", idleWord());
+    assert.strictEqual(map.size, 0, "and idle is answered by removing it, never by storing idle");
+  });
+
+  it("finds no fake putting a word into a status map any other way", () => {
+    // A direct SET, in any spelling: it is the only way a fake can end up holding a word
+    // the host never said, or an `idle` entry the real map can never have. A delete is not
+    // in scope and cannot be — removing a key cannot invent vocabulary, and two of these
+    // are the host's own (a deleted session leaves the map; so does `forgetHostStatus`).
+    //
+    // Found by reading the support modules as the subject rather than by trusting a
+    // registry of them: a registry is a list someone has to remember to add to, and the
+    // whole failure here was a fake nobody had listed anywhere.
+    const direct = listTestSupportFiles()
+      .map(readSource)
+      .filter((source) => /hostStatus\.set\(/.test(source.text))
+      .map((source) => source.file);
+
+    assert.deepStrictEqual(direct, [], "these fakes write a status word directly instead of through putHostStatus");
   });
 });

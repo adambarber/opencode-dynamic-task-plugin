@@ -202,7 +202,7 @@ describe("Background Task Settlement", () => {
     // silent since spawn.
     await harness.fireEvent({
       type: "message.part.updated",
-      properties: { sessionID: childId, part: { type: "tool", state: { status: "running" } } },
+      data: { sessionID: childId, part: { type: "tool", state: { status: "running" } } },
     });
 
     const detail = await harness.tool.task_status.execute({ session_id: childId });

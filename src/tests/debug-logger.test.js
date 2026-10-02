@@ -12,17 +12,17 @@ import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
-import { SESSION_STATUS } from "../../dist/shared/host-events.js";
+import { SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { withEnv } from "./support/harness.js";
 
 describe("safeDebugPayload", () => {
   it("keeps event metadata but removes blocked fields (prompt, fullPrompt)", () => {
     const payload = safeDebugPayload({
-      eventType: SESSION_STATUS,
+      eventType: SESSION_IDLE,
       prompt: "x".repeat(5000),
       latestText: "done",
     });
-    assert.strictEqual(payload.eventType, SESSION_STATUS);
+    assert.strictEqual(payload.eventType, SESSION_IDLE);
     assert.ok(!("prompt" in payload));
     assert.strictEqual(payload.latestText, "done");
   });

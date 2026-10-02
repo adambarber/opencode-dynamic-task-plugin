@@ -19,7 +19,7 @@ import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, Tas
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
-import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
+import { SESSION_DELETED, SESSION_IDLE, isTurnEnding } from "./host-events.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { TaskStore } from "./store.js";
@@ -192,19 +192,19 @@ export function abortSession(target: AbortTarget, sessionId: string): Promise<Ab
   ).then((bounded) => bounded.value);
 }
 
-// Session id lives at properties.info.id (host) or properties.sessionID
+// Session id lives at data.info.id (host) or data.sessionID
 // (tests); aggregate/top-level spellings are fallbacks. A missing prefix
 // means the payload is not a session event.
 export function getSessionIdFromEvent(event: unknown): string | null {
-  const properties = eventField(event, "properties");
+  const data = eventField(event, "data");
   const sid =
-    eventString(properties, "sessionID")
-    ?? eventString(properties, "sessionId")
-    ?? eventString(properties, "info", "id")
+    eventString(data, "sessionID")
+    ?? eventString(data, "sessionId")
+    ?? eventString(data, "info", "id")
     ?? eventString(event, "data", "sessionId")
     ?? eventString(event, "data", "sessionID")
     ?? eventString(event, "data", "info", "id")
-    ?? eventString(event, "properties", "aggregateID")
+    ?? eventString(event, "data", "aggregateID")
     ?? eventString(event, "aggregateID")
     ?? eventString(event, "id")
     ?? eventString(event, "sessionID");
@@ -212,26 +212,30 @@ export function getSessionIdFromEvent(event: unknown): string | null {
   return sid;
 }
 
-// Lifecycle status extraction for every observed event shape: properties
-// (host), data.info (sync updates), or type/name keywords as last resort.
-// The nested {type:"error"} spelling is host-real and must not be missed —
-// a failed child reported as success is the worst possible outcome.
+// Lifecycle status extraction for every observed event shape: the event's `data`
+// payload (host), data.info (sync updates), or the turn-ending vocabulary named in
+// host-events.ts as a last resort.
+//
+// The turn-ending names are READ FROM isTurnEnding, not matched as substrings. v2
+// renamed the failure event to `session.execution.failed`, so an `includes("error")`
+// guess missed it and the catch-all returned "failed" — a word `endedBadly` does not
+// contain, so a failed child turn settled as COMPLETED and the parent was told the
+// work succeeded. Same field bug as 2026-09-12, reached by a rename instead of a typo.
 export function getEventLifecycleStatus(event: unknown): string {
-  const properties = eventField(event, "properties");
+  const data = eventField(event, "data");
   const infoStatus =
-    eventString(properties, "info", "status")
-    ?? eventString(properties, "info", "status", "type")
+    eventString(data, "info", "status")
+    ?? eventString(data, "info", "status", "type")
     ?? eventString(event, "data", "info", "status")
     ?? eventString(event, "data", "info", "status", "type");
   if (infoStatus) return normalizeStatus(infoStatus);
-  const status =
-    eventString(properties, "status")
-    ?? eventString(properties, "status", "type");
+  const status = eventString(data, "status") ?? eventString(data, "status", "type");
   if (status) return normalizeStatus(status);
-  const source = eventWord(event, "type") + eventWord(event, "name");
-  if (source.includes("idle")) return "idle";
-  if (source.includes("error")) return "error";
-  if (source.includes("delet")) return "deleted";
+  const type = eventWord(event, "type");
+  if (type === SESSION_IDLE) return "idle";
+  if (isTurnEnding(type)) return "error";
+  if (type === SESSION_DELETED) return "deleted";
+  const source = type + eventWord(event, "name");
   return source.includes(".") ? (source.split(".").pop() ?? "").toLowerCase() : source.toLowerCase();
 }
 

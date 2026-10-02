@@ -14,7 +14,7 @@ import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminal
 // The host's event vocabulary, named by the module that owns it. A test firing a
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
-import { SESSION_ERROR, SESSION_IDLE, SESSION_STATUS } from "../../dist/shared/host-events.js";
+import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE } from "../../dist/shared/host-events.js";
 // The strip the writer applies to a durable record, read from production rather
 // than restated as a field list — a test that enumerates the advisories cannot
 // notice a fifth one.
@@ -119,7 +119,7 @@ describe("normalizeStatus", () => {
 
 describe("getSessionIdFromEvent", () => {
   it("extracts sessionID from properties", () => {
-    const event = { properties: { sessionID: "ses_123" } };
+    const event = { data: { sessionID: "ses_123" } };
     assert.strictEqual(getSessionIdFromEvent(event), "ses_123");
   });
 
@@ -151,7 +151,7 @@ describe("getSessionIdFromEvent", () => {
 describe("getEventLifecycleStatus", () => {
   it("prefers event.properties.status when present", () => {
     assert.strictEqual(
-      getEventLifecycleStatus({ properties: { status: { type: "completed" } } }),
+      getEventLifecycleStatus({ data: { status: { type: "completed" } } }),
       "completed"
     );
   });
@@ -175,9 +175,9 @@ describe("getEventLifecycleStatus", () => {
   // table: a new host event type is a new row, not a fourth copy of the same
   // three lines.
   for (const [why, event, expected] of [
-    ["a session.error event with no status field", { type: SESSION_ERROR, properties: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
-    ["a sync-wrapped session.error envelope", { type: "sync", name: "session.error.1", properties: { sessionID: "s1" } }, "error"],
-    ["a non-error event still reads its own status", { type: SESSION_IDLE, properties: { sessionID: "s1", status: "idle" } }, "idle"],
+    ["a session.error event with no status field", { type: SESSION_ERROR, data: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
+    ["a failure event carrying only a session id", { type: SESSION_ERROR, data: { sessionID: "s1" } }, "error"],
+    ["a non-error event still reads its own status", { type: SESSION_IDLE, data: { sessionID: "s1", status: "idle" } }, "idle"],
   ]) {
     it(`${why} reads as ${expected || "(nothing)"}`, () => {
       assertIs(getEventLifecycleStatus(event), expected, why);
@@ -191,13 +191,13 @@ describe("isTerminalSessionEvent", () => {
   const shapes = [
     ["treats sync session.updated idle as terminal", sessionUpdatedEnvelope("idle"), true],
     ["treats sync session.updated error as terminal", sessionUpdatedEnvelope({ type: "error" }), true],
-    ["treats sync session.deleted.1 as terminal", {
-      type: "sync",
-      name: "session.deleted.1",
+    ["treats a bare deletion as terminal", {
+      type: SESSION_DELETED,
+      data: { sessionID: "s1" },
     }, true],
     ["treats session.idle event as terminal", { type: SESSION_IDLE }, true],
     ["treats session.error event as terminal", { type: SESSION_ERROR }, true],
-    ["does not treat session.status with unknown status as terminal", { type: SESSION_STATUS, properties: { status: "running" } }, false],
+    ["does not treat an ordinary session event as terminal", { type: "message.updated", data: { sessionID: "ses_x" } }, false],
   ];
   for (const [name, event, expected] of shapes) {
     it(name, () => {
@@ -207,7 +207,7 @@ describe("isTerminalSessionEvent", () => {
 
   it("matches the broad catch-all", () => {
     assert.strictEqual(
-      isTerminalSessionEvent({ type: "session.custom", properties: { sessionID: "s1", status: "idle" } }),
+      isTerminalSessionEvent({ type: "session.custom", data: { sessionID: "s1", status: "idle" } }),
       true
     );
   });

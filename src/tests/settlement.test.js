@@ -11,7 +11,7 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
 import { deferred, events } from "./support/mock-host.js";
-import { answerMatches, answerSays, assertNoticeCount } from "./support/assertions.js";
+import { answerMatches, answerSays, assertNoticeCount, textDeclaresKind } from "./support/assertions.js";
 import { dispatchArgs, eventHarness, harnessRejectingPrompt, hostStatus, withSingleSlot } from "./support/integration.js";
 
 describe("settlement: the notification layer owns outcomes", () => {
@@ -59,7 +59,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     await sleep(50); // detached error-settlement delivery
     assertNoticeCount(h, 1, "the error settlement notifies");
     const note = h.noticeBodies()[0];
-    answerSays(note, "ended with an error", "error kind");
+    textDeclaresKind(note, "error", "error kind");
     });
 
   it("settlement does not hold the event pump on slow transport", async () => {
@@ -79,7 +79,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     await sleep(50); // the fire-and-forget catch schedules the settlement
     const notes = notifiedNotes(failing.client);
     assert.strictEqual(notes.length, 1, "exactly 1 prompt error notification");
-    answerMatches(notes[0].message, /ended with an error/i, "error-kind notification");
+    textDeclaresKind(notes[0].message, "error", "error-kind notification");
     const summary = await failing.tool.task_result.execute({ session_id: id });
     answerSays(summary, "error", "task must be retained as error");
     // The lifecycle event that follows must not double-settle.

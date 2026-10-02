@@ -1,11 +1,11 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
-import { abortSession, stopRefusal } from "../shared/session-lifecycle.js";
+import { abortSession, stopPlan } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
-import { NotifyKind } from "../shared/notify.js";
+import { NotifyKind } from "../shared/notification-text.js";
 import { textBlock } from "../shared/text-block.js";
 import {
   TaskState,
@@ -58,7 +58,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // turn and then wait forever for a replacement turn that the refusal just said
     // would not be sent: the child reads `active` and the store reads mid-steer, and
     // neither fact points at the tool call that caused it.
-    const selfSteer = stopRefusal(store, sessionId, callerSessionId);
+    const selfSteer = stopPlan({ store, callerSessionId }, sessionId, false).refusal;
     if (selfSteer !== undefined) return steerSelfRefused(sessionId, selfSteer);
 
     // Steer: the parent speaks to a running child as a turn

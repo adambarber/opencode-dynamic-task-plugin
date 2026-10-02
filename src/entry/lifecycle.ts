@@ -17,14 +17,13 @@ import {
   classifyPromptError,
   hydrateLatestOutcome,
 } from "../shared/prompt.js";
+import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import { classifyFailure, failureNote, FailureClass } from "../shared/failure-class.js";
 import {
   notifyParent,
   safeLog,
-  formatParentNotification,
   notifyRecord,
   recordNotification,
-  NotifyKind,
   settlementKind,
   gateLedger,
 } from "../shared/notify.js";
@@ -45,7 +44,7 @@ import {
 } from "../shared/task-state.js";
 import { releaseWaitsFor, type DependencyWait } from "../shared/dispatch-wait.js";
 import { resolveDependencies } from "../shared/admission.js";
-import { settlementFallback, waitsReleasedBody } from "../shared/voice.js";
+import { waitsReleasedBody } from "../shared/voice.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
 import { textBlock } from "../shared/text-block.js";
 import { errorMessage } from "../shared/host-shape.js";
@@ -314,7 +313,9 @@ export async function settleRunningChild(
   } else if (failure !== FailureClass.None) {
     recordSettledOutcome(store, childSessionId, verdict, failure);
   }
-  const latestText = outcome.text || settlementFallback(verdict, outcome.errorDetail);
+  // Empty when the child said nothing: the renderer says so and names the reader,
+  // which is truer than any stand-in word and cannot be mistaken for a quote.
+  const latestText = outcome.text || outcome.errorDetail || "";
 
   // The settlement has claimed the child, so the record is settled and the parent
   // is owed an answer. Before spending that answer: was this failure the

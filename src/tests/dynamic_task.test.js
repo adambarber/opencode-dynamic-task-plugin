@@ -8,7 +8,8 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, sessionIds, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
+import { abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
+import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 import { events } from "./support/mock-host.js";
 import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
 import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
@@ -308,17 +309,13 @@ describe("prompt routing contract", () => {
 
 describe("spawn resilience: no untracked child survives a failure", () => {
   it("a concurrency rejection leaves no orphan session behind", async () => {
-    const h = await withSingleSlot();
-    await h.spawn({ description: "one" });
-    const before = new Set(sessionIds(h.client));
-
-    const second = await h.trySpawn({ description: "two", subagent_type: "explore", prompt: "hi" });
+    const { h, second, created } = await withRefusedSecondSpawn();
     assert.ok(/cannot run more than|cannot register|concurrency|limit/i.test(second), `must reject. got: ${second}`);
 
-    // Orphan-free invariant: any session the rejection created must be
-    // aborted. (A pre-create check that never creates also passes.)
-    const created = sessionIds(h.client).filter((id) => !before.has(id));
+    // Orphan-free invariant, on the REQUEST and not on the host's obedience: a
+    // pre-create check that never creates also passes this.
     for (const id of created) {
+      assert.ok(abortWasRequestedFor(h.client, id), `orphan ${id} must be asked to abort`);
       assert.ok(wasAborted(h.client, id), `orphan ${id} must be aborted`);
       }
     });

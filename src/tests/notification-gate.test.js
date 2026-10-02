@@ -7,18 +7,21 @@
  * records say it was told, which is the only failure this plugin must not have.
  */
 
-import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
 import {
-  clearNotifyLedger,
-  getLatestNotification,
-  getPendingDeliveries,
-  notifyParent,
-  restorePendingDeliveries,
-} from "../../dist/shared/notify.js";
-import { bounded, setupHarness } from "./support/harness.js";
-import { recordingClient } from "./support/mock-host.js";
-import { deferred } from "./support/mock-host.js";
-import { refuseDispatch } from "./support/dispatch-wait-scenario.js";
+  afterEach,
+  assert,
+  beforeEach,
+  bounded,
+  deferred,
+  describe,
+  isolatedGate,
+  it,
+  PARENT,
+  recordingClient,
+  refuseDispatch,
+  setupHarness,
+} from "./support/index.js";
+import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
 
 const NO_SLEEP = async () => {};
 /** The gate's inputs with no real backoff — the retry count is never under test here. */
@@ -28,7 +31,6 @@ const gate = (childSessionId, kind, extra = {}) => ({
   sleep: NO_SLEEP,
   ...extra,
 });
-const PARENT = "parent_1";
 
 /** Drain the microtask queue: a late commit lands as a promise reaction, not a timer. */
 const settled = () => new Promise((resolve) => setImmediate(resolve));
@@ -70,19 +72,7 @@ describe("a parent owed the same notice twice", () => {
 });
 
 describe("a write the gate declined", () => {
-  let world;
-
-  beforeEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = recordingClient(async () => ({ ok: true }));
-  });
-
-  afterEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = undefined;
-  });
+  const world = isolatedGate();
 
   it("gives its key back, so a LATER obligation for the same child is still writable", async () => {
     const child = "ses_refused";
@@ -104,20 +94,6 @@ describe("a write the gate declined", () => {
 });
 
 describe("a write that answers late", () => {
-  let world;
-
-  beforeEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = recordingClient(() => ({ ok: true }));
-  });
-
-  afterEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = undefined;
-  });
-
   it("is billed ONE attempt when the host fails it after the bound has passed", async () => {
     const child = "ses_late";
     const late = deferred();
@@ -157,20 +133,7 @@ describe("a write that answers late", () => {
 });
 
 describe("the queue of undelivered debts", () => {
-  let world;
-
-  beforeEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = recordingClient(async () => ({ ok: true }));
-    world.setStatus(PARENT, "busy");
-  });
-
-  afterEach(() => {
-    clearNotifyLedger();
-    restorePendingDeliveries([]);
-    world = undefined;
-  });
+  const world = isolatedGate({ status: "busy" });
 
   it("stops growing, and the newest debt is the one it keeps", async () => {
     const offered = 260;

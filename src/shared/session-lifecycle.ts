@@ -20,6 +20,7 @@ import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, isTurnEnding } from "./host-events.js";
+import { subtreeTaskIds } from "./dispatch-tree.js";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import type { TaskStore } from "./store.js";
 
@@ -128,43 +129,41 @@ export interface AbortTarget {
 }
 
 /**
- * Whether the plugin will stop `sessionId` for this caller, and why not if it
- * will not. Answered from the store, so the question is settled by the only thing
- * that knows what this process started.
+ * Which sessions this caller may stop, or the refusal that stops them.
  *
- * "Tracked" means either half of the store holds a record. A settled task is
- * deliberately still stoppable: naming one is an explicit ask, and answering it
- * with silence would be a lie in the other direction — the parent asked what it
- * costs to stop something already stopped, and the answer is nothing at all. The
- * host settles the question of whether anything is actually running; the store
- * settles whether the plugin is willing to ask.
- *
- * Exported because two callers need the answer WITHOUT asking: a tool that must
- * refuse before it claims anything, and a report that must say why it stopped
- * nothing. Both were reading the store again instead of asking the funnel, which
- * is how the two halves came to disagree about a self-target.
+ * Ownership and reach are ONE question with one answer, and a stop needs both
+ * halves before it claims anything: the refusal decides whether to answer at all,
+ * and the target list decides what a subtree stop is allowed to reach. They lived
+ * apart — the rule here, the list in the tool — which is how a caller could be
+ * refused by one and still have the other build a request. Settled ancestors are
+ * still walked, so a live grandchild under a finished child is reached, while a
+ * descendant that has already settled is left alone.
  */
-export function stopRefusal(
-  store: TaskStore,
+export function stopPlan(
+  target: Pick<AbortTarget, "store" | "callerSessionId">,
   sessionId: string,
-  callerSessionId: string | undefined,
-): AbortRefusal | undefined {
-  if (callerSessionId !== undefined && callerSessionId === sessionId) return { kind: AbortRefusalKind.Self };
-  if (!store.activeTasks.has(sessionId) && !store.retainedTasks.has(sessionId)) {
-    return { kind: AbortRefusalKind.Unowned };
+  reachSubtree: boolean,
+): { refusal?: AbortRefusal; targets: string[] } {
+  const { store, callerSessionId } = target;
+  if (callerSessionId !== undefined && callerSessionId === sessionId) {
+    return { refusal: { kind: AbortRefusalKind.Self }, targets: [] };
   }
-  return undefined;
+  if (!store.activeTasks.has(sessionId) && !store.retainedTasks.has(sessionId)) {
+    return { refusal: { kind: AbortRefusalKind.Unowned }, targets: [] };
+  }
+  const candidates = reachSubtree ? subtreeTaskIds(store, sessionId) : [sessionId];
+  return { targets: candidates.filter((id) => id === sessionId || store.activeTasks.has(id)) };
 }
 
 /** The outcome an accepted request produces: stopped, and nothing more to say. */
 const ABORT_SENT: AbortOutcome = { serverGone: false, transportError: undefined };
 
 export function abortSession(target: AbortTarget, sessionId: string): Promise<AbortOutcome> {
-  const { client, store, callerSessionId } = target;
+  const { client } = target;
   // Decided before any transport is touched, and answered without an await: a
   // refusal must cost nothing and must hold when the server is gone, because a
   // dead server is exactly when a wrong target id is most likely to be guessed.
-  const refusal = stopRefusal(store, sessionId, callerSessionId);
+  const { refusal } = stopPlan(target, sessionId, false);
   if (refusal !== undefined) return Promise.resolve({ ...ABORT_SENT, refusal });
 
   // Bounded, and the bound answers with the SAME shape the transport failure does.

@@ -18,45 +18,23 @@
 // So this suite is a sweep. The control case is the funnel's own path, and the
 // rest name the ways a child can end without passing through it. Each one states
 // only how its edge dies; the assertion is identical, because the obligation is.
-import { describe, it } from "./support/runner.js";
-import assert from "node:assert";
+import { announcementAfterKill, assert, describe, failEdge, it } from "./support/index.js";
 
-import { setupHarness } from "./support/harness.js";
-import {
-  announcedAbout,
-  failEdge,
-  refusedOnOneEdge,
-} from "./support/dispatch-wait-scenario.js";
-
-const WAITING_FOR = "consume the edge";
-
-/**
- * A parent waiting on one edge, with the edge's ending left to the case.
- *
- * The fault sets are handed in EMPTY and filled after the spawn, because the
- * harness names sessions (`ses_mock_1`, `ses_mock_2`, …) and a fixture that had
- * to predict those would be asserting against the counter rather than the
- * behaviour. A set the mock reads at call time makes the arrangement independent
- * of what the counter happened to be.
- */
-async function parentWaitingOnAnEdge(hooks = {}) {
-  const faults = {
-    abortFailIds: new Set(),
-    promptFailIds: new Set(),
-    ...hooks,
-  };
-  const h = await setupHarness({ hooks: faults });
-  const edge = await refusedOnOneEdge(h, WAITING_FOR);
-  return { h, edge, faults };
-}
 
 // ── the control: the funnel's own path already kept the promise ───────────
 
+/**
+ * The obligation, stated once. Every case below is a different way the edge can die
+ * and the same promise to the parent, so the words are written once and each case
+ * only says HOW its edge died — otherwise the assertion drifts with the copy.
+ */
+const DEAD_EDGE = (hint) => assert.match(hint.message, /never run/i, "a dead edge is dead, not ready");
+/** A steer is the only kill here that needs a session id and a prompt. */
+const STEER = (ready, id) => ready.tool.task_continue.execute({ session_id: id, prompt: "keep going" }, { sessionID: "p1" });
+
 describe("a held wait survives every way a child can end", () => {
   it("a child that completes releases the parent", async () => {
-    const { h, edge } = await parentWaitingOnAnEdge();
-
-    const hint = await announcedAbout(h, WAITING_FOR, () => h.settle(edge.id));
+    const { hint } = await announcementAfterKill({ kill: (ready, id) => ready.settle(id) });
 
     assert.match(hint.message, /can go now/i);
   });
@@ -70,58 +48,34 @@ describe("a held wait survives every way a child can end", () => {
     // revived), so the promise it answers is "will never run", not "can go now":
     // handing the parent a dispatch the gate will refuse is the plugin
     // contradicting itself inside one message.
-    const { h, edge } = await parentWaitingOnAnEdge();
+    const { hint } = await announcementAfterKill({
+      kill: (ready, id) => ready.tool.task_interrupt.execute({ session_id: id }, { sessionID: "p1" }),
+    });
 
-    const hint = await announcedAbout(h, WAITING_FOR, () =>
-      h.tool.task_interrupt.execute({ session_id: edge.id }, { sessionID: "p1" }),
-    );
-
-    assert.match(hint.message, /never run/i, "an interrupted edge is dead, not ready");
+    DEAD_EDGE(hint);
   });
 
-  it("a child whose session the server has forgotten releases the parent", async () => {
-    // A steer cannot abort a session the server no longer has, so it settles the
-    // child itself and says so. A direct transition, from a tool, mid-conversation.
-    const { h, edge, faults } = await parentWaitingOnAnEdge();
-    faults.abortFailIds.add(edge.id);
+  // The same steer under two server failures: an abort the server cannot perform
+  // (so the tool settles the child itself) and a prompt the server refuses (so no
+  // terminal event will ever arrive for that turn). One arrangement, two deaths.
+  for (const [fault, story] of [
+    ["abortFailIds", "session the server has forgotten"],
+    ["promptFailIds", "prompt the server rejects"],
+  ]) {
+    it(`a child whose ${story} releases the parent`, async () => {
+      const { hint } = await announcementAfterKill({ fault, kill: STEER });
 
-    const hint = await announcedAbout(h, WAITING_FOR, () =>
-      h.tool.task_continue.execute(
-        { session_id: edge.id, prompt: "keep going" },
-        { sessionID: "p1" },
-      ),
-    );
-
-    assert.match(hint.message, /never run/i, "a lost edge is dead, not ready");
-  });
-
-  it("a child whose prompt the server rejects releases the parent", async () => {
-    // The steer fires a replacement prompt and the server refuses it outright.
-    // No terminal event will ever arrive for that turn — which is the whole
-    // reason the delivery-failure path settles — and the announcement rides on
-    // that settlement like any other.
-    const { h, edge, faults } = await parentWaitingOnAnEdge();
-    faults.promptFailIds.add(edge.id);
-
-    const hint = await announcedAbout(h, WAITING_FOR, () =>
-      h.tool.task_continue.execute(
-        { session_id: edge.id, prompt: "keep going" },
-        { sessionID: "p1" },
-      ),
-    );
-
-    assert.match(hint.message, /never run/i, "a dead edge is dead, not ready");
-  });
+      DEAD_EDGE(hint);
+    });
+  }
 
   it("a child that fails releases the parent, as dead rather than ready", async () => {
     // The control's error sibling, and the sibling the bypasses above get wrong:
     // an edge that ended in failure will not run again, so announcing it as
     // "can go now" hands the parent a dispatch whose gate will refuse — the
     // plugin contradicting itself in one message.
-    const { h, edge } = await parentWaitingOnAnEdge();
+    const { hint } = await announcementAfterKill({ kill: (ready, id) => failEdge(ready, id) });
 
-    const hint = await announcedAbout(h, WAITING_FOR, () => failEdge(h, edge.id));
-
-    assert.match(hint.message, /never run/i, "dead, not ready");
+    DEAD_EDGE(hint);
   });
 });

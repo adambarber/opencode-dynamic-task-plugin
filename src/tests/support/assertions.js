@@ -16,6 +16,7 @@
  */
 
 import assert from "node:assert";
+import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 
 /**
  * The failure line every claim helper here shares: the case's own claim, then
@@ -132,6 +133,27 @@ export function assertNoticeCount(h, count, why) {
  * "notified the right thing" are the two halves of a settlement's claim.
  */
 export const noticeSays = (h, index, reason, note) => answerSays(h.noticeBodies()[index], reason, note);
+
+/**
+ * What KIND the nth notice declared. The count is `assertNoticeCount`; the kind is
+ * how a settlement case says which of the four it is — so the tests that care
+ * "this is an error, not a success" claim THAT, and the prose that expresses it
+ * belongs to the payload's own honesty pins.
+ */
+/**
+ * That a delivered text DECLARES the kind the case is about — the claim, not a
+ * sentence about it.
+ *
+ * Settlement cases used to say "must report success" and pin the phrase that used
+ * to mean it, so every honest rewording of the payload turned twenty behavioural
+ * cases red while none of them was about the words. The kind is a field on the
+ * payload now, so these cases claim the field and the payload's own pins own the
+ * prose.
+ */
+export function textDeclaresKind(text, kind, note) {
+  const got = notificationKindOf(text);
+  assert.strictEqual(got, kind, proseFailure(note, String(got), `wanted ${kind}. `));
+}
 
 /**
  * The state line and nothing else. The status view also names the last

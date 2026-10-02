@@ -12,7 +12,7 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
 import { agentDeclaring } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, hostStatus } from "./support/integration.js";
 
 describe("task_notify: the child-to-parent channel", () => {
@@ -120,10 +120,12 @@ describe("a child that needs input is not a success", () => {
     await declareNeedsInput(c, "I need the API key to continue.");
     await h.settle(id);
     assert.strictEqual(await stateOf(c), "State: blocked", "the record says what happened");
-    const body = h.noticeBodies()[0];
-    answerMatches(body, /needs input|blocked/i, "the parent is told the task is waiting");
+    // The LAST notice is the settlement: the declaration arrived first as a
+    // mid-flight notice, and the case that used to read `notices[0]` matched
+    // that one, so a plugin which never settled at all would have passed.
+    const body = h.noticeBodies().at(-1);
+    textDeclaresKind(body, "blocked", "the settlement says the task is waiting");
     answerMatches(body, /task_continue/, "and how to answer it");
-    assert.ok(!/completed successfully/.test(body), `never a success claim. got: ${body}`);
   });
 
   // The guard on the whole change: the state is earned by a declaration, not

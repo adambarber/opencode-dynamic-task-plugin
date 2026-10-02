@@ -20,7 +20,7 @@ import assert from "node:assert";
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { isParentNotification } from "../../../dist/shared/notify.js";
+import { isParentNotification, notificationKindOf } from "../../../dist/shared/notification-text.js";
 // The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
 // is `satisfies Event["type"]` in host-events.ts, so this module cannot fire an
 // event the host does not publish — which is the one thing a fixture must never
@@ -332,6 +332,31 @@ export const events = {
 export const promptText = (args) => args?.body?.parts?.[0]?.text || "";
 
 /**
+ * One funnel for "the parent has now been sent this", and it classifies.
+ *
+ * Two capture sites typed the same record by hand, so the KIND rode nowhere: every
+ * settlement case then told a success from a failure by the REGISTER of the prose,
+ * which is how the corpus mis-read an ended turn as a finished job. A record is
+ * therefore built here once, carrying the kind the payload declares — and a
+ * parent-directed payload that declares none is a PLUGIN bug, so it throws at the
+ * capture rather than entering the ledger as an unlabelled notice.
+ */
+const noticeRecord = (to, text) => {
+  const kind = notificationKindOf(text);
+  if (!kind) {
+    throw new Error(`parent-directed payload carries no Kind field:\n${text}`);
+  }
+  return { to, kind, message: text };
+};
+
+/**
+ * …and the one place a notice joins the ledger, kept separate from classifying it
+ * so a REJECTED attempt stays undelivered. Classifying and capturing together
+ * counted a failed dial as a delivery and doubled every redelivery case.
+ */
+const captureNotice = (state, record) => state.notifications.push(record);
+
+/**
  * The ONE "this session is gone" error the mock transport reports. Three
  * conditions produce it — a session the host never had, a test-declared failure
  * id, and a gate released with `fails` — and they share the message on purpose:
@@ -506,6 +531,7 @@ export function createMockClient(hooks = {}) {
           // the plugin reaches it.
           const plan = hooks.notifyTransport;
           state.notifyCalls.push(text);
+          const record = noticeRecord(path.id, text);
           if (plan) {
             // An unrecognised plan is a FALSE GREEN, not a no-op. A mistyped
             // plan key is silently ignored, the write takes the success path,
@@ -530,14 +556,14 @@ export function createMockClient(hooks = {}) {
             // the promise can outlive the message by minutes. Modelling a hold
             // as "not delivered" (see `hang`, below) is what let the child be
             // told its message was not sent while the parent had read it.
-            state.notifications.push({ to: path.id, message: text });
+            captureNotice(state, record);
             return plan.hold;
           }
           if (plan?.hang) return plan.hang;
           if (plan?.failTimes && ++state.notifyAttempts <= plan.failTimes) {
             return Promise.reject(new Error("parent notify failed"));
           }
-          state.notifications.push({ to: path.id, message: text });
+          captureNotice(state, record);
         } else {
           if (hooks.childPromptFailOnce && !state.childPromptFailed) {
             state.childPromptFailed = true;

@@ -10,7 +10,7 @@
 
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
-import { TaskState, type SettlementVerdict } from "./task-state.js";
+import { TaskState } from "./task-state.js";
 import { AbortRefusalKind, type AbortRefusal } from "./session-lifecycle.js";
 import { textBlock } from "./text-block.js";
 
@@ -318,19 +318,10 @@ export const QUESTION_SETTLED =
   "This task has already settled. No response will be provided.";
 
 // ─── Settlement ──────────────────────────────────────────────────────────
-
-// What the child said, for when it said nothing. One function over the verdict
-// vocabulary, in the file that owns operator words: the alternative was a
-// ternary chain in the settlement funnel where a fallback reading "completed"
-// where the truth was "blocked" would be a false success claim about a task that
-// delivered no result. The verdict decides the words, always.
-export function settlementFallback(verdict: SettlementVerdict, errorDetail?: string | undefined): string {
-  switch (verdict) {
-    case TaskState.Error: return errorDetail || "(error — no detail)";
-    case TaskState.Blocked: return "(blocked — the child said nothing further)";
-    case TaskState.Completed: return "(completed)";
-  }
-}
+// (the verdict's wording used to live here, as a "(completed)" stand-in for a
+// turn that said nothing. It is gone: the placeholders read as CONTENT in the
+// corpus, and the renderer now owns "no text was captured" — so a verdict can no
+// longer be laundered into a quote the child never spoke.)
 
 // ─── Interrupt ───────────────────────────────────────────────────────────
 

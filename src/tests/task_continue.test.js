@@ -12,7 +12,7 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { bounded, dialCount, promptsSaying, promptsTo, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
 import { deferred, events, promptText } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusOmits, statusSays } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
 import { retainedEntry } from "./support/records.js";
 import { ENV } from "../../dist/shared/config.js";
@@ -63,7 +63,7 @@ async function echoesCannotSettle(h, c, id, arm) {
   assertNoticeCount(h, before, "no premature completion is notified");
   await h.fireEvent(events.working(id));
   const note = await h.settledNotice(id);
-  answerSays(note, "completed successfully", "the eventual ending is still a settlement");
+  textDeclaresKind(note.message, "completed", "the eventual ending is still a settlement");
 }
 
 /**
@@ -159,7 +159,7 @@ describe("task_continue branches", () => {
       answerSays(status, "active", "a non-terminal signal must not settle");
       assertNoticeCount(ctx.h, 0, "nothing is notified");
       const note = await ctx.h.settledNotice(ctx.id);
-      answerSays(note, "completed successfully", "the real event still settles");
+      textDeclaresKind(note.message, "completed", "the real event still settles");
     });
   }
 
@@ -185,7 +185,7 @@ describe("task_continue branches", () => {
     await sleep(20);
     const notice = h.noticeFor(id);
     assert.ok(notice, "the outcome is the parent's only route to the child — it cannot ride behind a read");
-    answerMatches(notice.message, /completed successfully/, "the settlement still notifies");
+    textDeclaresKind(notice.message, "completed", "the settlement still notifies");
     answerMatches(
       notice.message,
       /transcript could not be read/,
@@ -304,7 +304,7 @@ describe("task_continue branches", () => {
     await h.fireEvent(events.status(id, "busy"));
     await h.settle(id);
     assertNoticeCount(h, 2, "revival earns a fresh settlement");
-    noticeSays(h, 1, "completed successfully", "and the notice says so");
+    textDeclaresKind(h.noticeBodies()[1], "completed", "and the notice says so");
   });
 
   it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
@@ -408,9 +408,8 @@ describe("outcome correctness: failed turns never report success", () => {
       const h = await setupHarness({ hooks });
       const { id, c } = await h.spawn({ description: "unvouchable child" });
       const note = (await h.noticeAfter(terminal(id))).message;
-      answerSays(note, "ended with an error", "must report error");
+      textDeclaresKind(note, "error", "must report error");
       if (detail) assert.ok(note.includes(detail), `must carry provider detail. got: ${note}`);
-      answerOmits(note, "completed successfully", "must never claim success");
       assert.ok((await c.status()).includes("error"), `state settles error. got: ${await c.status()}`);
     });
   }
@@ -421,7 +420,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const note = (await h.noticeAfter(
       events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
     )).message;
-    answerSays(note, "ended with an error");
+    textDeclaresKind(note, "error", "the error event settles error");
     });
 
   it("a burst of terminal events notifies the parent exactly once", async () => {
@@ -436,7 +435,7 @@ describe("outcome correctness: failed turns never report success", () => {
     await sleep(30);
 
     assertNoticeCount(h, 1, "single winner must notify once");
-    noticeSays(h, 0, "ended with an error", "the winner's notice says what happened");
+    textDeclaresKind(h.noticeBodies()[0], "error", "the winner's notice says what happened");
     });
 
   // The poisoning window: turn 1's delivery fails attempt 1, the operator
@@ -489,15 +488,14 @@ describe("outcome correctness: failed turns never report success", () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ description: "clean" });
     const note = await h.settledNotice(id);
-    answerSays(note, "completed successfully");
-    answerSays(note, "COMPLETED_OK", "carries assistant text");
+    textDeclaresKind(note.message, "completed", "a clean completion settles completed");
+    answerSays(note.message, "COMPLETED_OK", "carries assistant text");
     });
 
   it("a deleted session settles as error, never as success", async () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ description: "deleted child" });
     const note = (await h.noticeAfter(events.deleted(id))).message;
-    answerSays(note, "ended with an error", "deletion is a failure");
-    answerOmits(note, "completed successfully", "must never claim success");
+    textDeclaresKind(note, "error", "deletion is a failure");
     });
 });

@@ -11,6 +11,7 @@
 import assert from "node:assert";
 
 import { events } from "./mock-host.js";
+import { setupHarness } from "./harness.js";
 
 /**
  * A dispatch the dependency gate refuses, which is what leaves a wait held.
@@ -80,4 +81,24 @@ export async function refusedOverEdges(h, description, count) {
   }
   await refuseDispatch(h, description, edges.map((e) => e.id));
   return edges;
+}
+/** What a waiting parent is told to remember, so cases do not each spell it out. */
+export const WAITING_FOR = "consume the edge";
+
+/**
+ * A parent waiting on one edge, and the announcement its edge's death produces.
+ *
+ * Every case in this family is one kill step against a held wait, and each spelled
+ * the arrangement out again — which is how three of them came to differ in what
+ * they set up while the obligation stayed identical. The fault sets are handed in
+ * EMPTY and filled after the spawn: the harness names sessions, and a fixture that
+ * had to predict those would be asserting against the counter, not the behaviour.
+ */
+export async function announcementAfterKill({ fault, kill }) {
+  const faults = { abortFailIds: new Set(), promptFailIds: new Set() };
+  const h = await setupHarness({ hooks: faults });
+  const edge = await refusedOnOneEdge(h, WAITING_FOR);
+  if (fault) faults[fault].add(edge.id);
+  const hint = await announcedAbout(h, WAITING_FOR, () => kill(h, edge.id));
+  return { h, edge, hint };
 }

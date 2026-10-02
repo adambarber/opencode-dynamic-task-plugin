@@ -6,8 +6,10 @@
  * the truncation and the recovery pointer are part of the contract.
  */
 
+import { cleanNotifyState } from "./support/gate-world.js";
 import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
-import { clearNotifyLedger, configurePendingPersistence, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
+import { clearNotifyLedger, configurePendingPersistence, gateLedger, getLatestNotification, getPendingDeliveries, noticeDedupKey, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
+import { formatParentNotification, isParentNotification, notificationTag } from "../../dist/shared/notification-text.js";
 import { bounded } from './support/harness.js';
 import { deferred, promptText, recordingClient } from './support/mock-host.js';
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
@@ -101,13 +103,6 @@ const writesTo = (calls, text) => calls.filter((call) => call.body.parts[0].text
  * isolation the file wants and the reason the duplication gate stopped
  * reporting the same two hook lines in every block.
  */
-const cleanNotifyState = () => {
-  clearNotifyLedger();
-  restorePendingDeliveries([]);
-  // `configurePendingPersistence` writes process-global state, so a case that
-  // installs a recorder takes it back out.
-  configurePendingPersistence(null);
-};
 
 beforeEach(cleanNotifyState);
 afterEach(cleanNotifyState);
@@ -783,22 +778,22 @@ describe("notify: the message the parent receives", () => {
   it("formats completion with the wire marker and output", () => {
     const message = formatParentNotification(state, "completed", "COMPLETED_OK");
     assert.match(message, /^\[dynamic-task-notify\]/);
-    assert.match(message, /Background task completed successfully\./);
     assert.match(message, /Session: ses_1/);
-    assert.match(message, /Latest output: COMPLETED_OK/);
+    assert.match(message, /Description: Quick task/);
+    assert.match(message, /COMPLETED_OK/);
   });
 
   it("formats error with recovery guidance", () => {
     const message = formatParentNotification(state, "error", "Something failed");
-    assert.match(message, /Background task ended with an error\./);
     assert.match(message, /Something failed/);
-    assert.match(message, /task_result or task_continue/);
+    assert.match(message, /task_result/);
+    assert.match(message, /task_continue/);
   });
 
   it("formats a child notice under its own tag with the reply path", () => {
     const noticeMessage = formatParentNotification(state, "notice", "blocked on credentials");
     assert.match(noticeMessage, /dynamic-task-notice/);
-    assert.match(noticeMessage, /Message from a running child task:/);
+    assert.match(noticeMessage, /Message from a running child task/);
     assert.match(noticeMessage, /blocked on credentials/);
     assert.match(noticeMessage, /task_continue/);
   });
@@ -817,8 +812,13 @@ describe("notify: the message the parent receives", () => {
     assert.ok(isParentNotification(formatParentNotification(state, "notice", "x")), "and is still parent-directed");
   });
 
-  it("renders the empty-output placeholder", () => {
-    assert.match(formatParentNotification(state, "completed", "   "), /\(No text output\)/);
+  it("says so when a turn ended with no text, and names the reader", () => {
+    // The old "(No text output)" placeholder read as content in the corpus; silence
+    // now reads as silence. What the payload owes a parent here is a reader.
+    const message = formatParentNotification(state, "completed", "   ");
+    assert.match(message, /No text was captured/);
+    assert.match(message, /task_result\(session_id=ses_1\)/);
+    assert.ok(!/\(No text output\)/.test(message));
   });
 
   it("passes mid-size payloads through whole — no silent cliff", () => {

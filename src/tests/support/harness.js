@@ -20,7 +20,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
-import { clearNotifyLedger, isParentNotification } from "../../../dist/shared/notify.js";
+import { clearNotifyLedger } from "../../../dist/shared/notify.js";
+import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { getDebugLogPath } from "../../../dist/debug-logger.js";
@@ -205,6 +206,43 @@ export const abortWasRequestedFor = (client, sessionId) =>
 /** Every session the host was asked to abort, in order. */
 export const abortRequests = (client) => client._state.abortAttempts;
 
+/**
+ * `task_interrupt` with the CALLER named, because in every ownership case the
+ * caller is the subject rather than a fixture: naming the caller as an argument is
+ * what lets a suite ask "what if the caller is this?" instead of re-stating the
+ * tool map's argument shape at every call site.
+ */
+export const interruptAs = (h, sessionId, caller = PARENT) =>
+  h.tool.task_interrupt.execute({ session_id: sessionId }, { sessionID: caller });
+
+/**
+ * That a stop was REFUSED and never reached the host — the one claim an
+ * ownership suite can make about every refusal at once, so it is stated once:
+ * no request for any named session, and an answer that says so. A refusal proven
+ * only by its wording still passes when the request went out and the host 404'd,
+ * which is the bug this funnel exists to catch.
+ */
+export function assertRefusedWithoutReachingTheHost(h, answer, targets, note) {
+  for (const id of [targets].flat()) {
+    assert.strictEqual(
+      abortWasRequestedFor(h.client, id),
+      false,
+      `${note}: the host must never be asked about ${id}. asked: ${JSON.stringify(abortRequests(h.client))}`,
+    );
+  }
+  assert.match(String(answer), /Refused/, `${note}: the answer names the refusal. got: ${answer}`);
+}
+
+/** The complement: a stop the plugin WAS entitled to make, named per session. */
+export function assertStopped(h, targets, _answer, note) {
+  for (const id of [targets].flat()) {
+    assert.ok(
+      abortWasRequestedFor(h.client, id),
+      `${note}: ${id} must have been stopped. asked: ${JSON.stringify(abortRequests(h.client))}`,
+    );
+  }
+}
+
 /** Every session the host has been asked to create. */
 export const sessionIds = (client) => [...client._state.sessions];
 
@@ -311,6 +349,11 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     // routing target is part of the contract, so it stays visible.
     notices: () => state.notifications,
     noticeBodies: () => state.notifications.map((n) => n.message),
+    // What KIND each notice declared. Classification rides on the payload's own
+    // field, so a settlement case asserts a kind instead of retyping the prose that
+    // tells one kind from another — the vocabulary that made twenty tests fail
+    // whenever a sentence was honestly reworded.
+    noticeKinds: () => state.notifications.map((n) => n.kind),
     // The notice that mentions a child session, or undefined. A child id is
     // in every settlement notice, so this is the handle for "the notice FOR
     // this child" — routing target included.
@@ -331,9 +374,12 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     },
     /**
      * Settle a child and hand back the single notice the parent received.
-     * Ends the turn the way the host does — see settle.
-     */    async settledNotice(id) {
-      return (await oneNotice(() => harness.settle(id)))[0].message;
+     * Ends the turn the way the host does — see settle. A NOTICE RECORD, like
+     * `noticeAfter`: one shape for one concept, so `.message` and `.kind` are the
+     * same two fields whichever of the two a case reached for.
+     */
+    async settledNotice(id) {
+      return (await oneNotice(() => harness.settle(id)))[0];
     },
     /**
      * Run an action and hand back every NEW notice whose message matches.
@@ -358,7 +404,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * to clean up. A refusal test states the whole request, so any default here
      * would fill in the very field under test.
      */
-    trySpawn(args, ctx = { sessionID: "p1" }) {
+    trySpawn(args, ctx = { sessionID: PARENT }) {
       return harness.tool.dynamic_task.execute(args, ctx);
     },
     /**
@@ -366,7 +412,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * bound tools — binding here means a test never restates which session it
      * is talking about, and it cannot bind the wrong one.
      */
-    async spawn(args = {}, ctx = { sessionID: "p1" }) {
+    async spawn(args = {}, ctx = { sessionID: PARENT }) {
       const out = await harness.tool.dynamic_task.execute(
         { description: "bg task", subagent_type: "explore", prompt: "Return DONE", ...args },
         ctx,
@@ -381,7 +427,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * triple is the suite's boilerplate — binding it once here is why no test
      * restates which session it is talking about. Use withChild() to spawn one.
      */
-    child(id, args = {}, ctx = { sessionID: "p1" }) {
+    child(id, args = {}, ctx = { sessionID: PARENT }) {
       return bindChild(harness, id, args, ctx);
     },
   };
@@ -394,7 +440,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
  * not exist yet (a steer that revives a settled turn, a list) — the binding is
  * lazy so the handle is usable either way.
  */
-function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: "p1" }) {
+function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: PARENT }) {
   const tool = (name) => (args = {}, callCtx) =>
     harness.tool[name].execute({ session_id: id, ...args }, callCtx ?? ctx);
   return {
@@ -426,7 +472,15 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: "p1" }) {
  * This is the suite's standard arrangement, so it is declared once here rather
  * than forty times as boot-then-spawn.
  */
-export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: "p1" } } = {}) {
+/**
+ * The session the harness calls the parent, stated ONCE. It was spelled as the
+ * literal "p1" in six places, so a suite that named its own parent could diverge
+ * from the fixtures it was built on and fail as a missing session rather than as
+ * a wrong one.
+ */
+export const PARENT = "p1";
+
+export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: PARENT } } = {}) {
   const h = await setupHarness(harness);
   const { id, out, c } = await h.spawn(spawn, ctx);
   return { h, c, id, out };
@@ -492,7 +546,7 @@ export async function withLoggedChild({ hooks = {} } = {}, body) {
       out,
       directory,
       /** The child's debug log, as the operator would read it. */
-      log: () => readFileSync(getDebugLogPath("p1", id), "utf8"),
+      log: () => readFileSync(getDebugLogPath(PARENT, id), "utf8"),
     });
   });
 }

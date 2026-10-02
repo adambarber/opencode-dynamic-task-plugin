@@ -11,8 +11,9 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { resultForChild, resultForUnreadableChild, setupHarness, sleep, statusReadCount, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
+import { withSettledMiddleChild } from "./support/stop-scenarios.js";
 import { events, hostSaid, unclockedSaid } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusSays, stillActive } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
 import { eventHarness } from "./support/integration.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
@@ -239,7 +240,7 @@ describe("task_result and task_interrupt paths", () => {
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
     assertNoticeCount(h, 1, "natural completion delivers");
-    noticeSays(h, 0, "completed successfully", "and it claims success");
+    textDeclaresKind(h.noticeBodies()[0], "completed", "and the natural event settles completed");
   });
 
   it("a failed abort on a settled task records the gap without disturbing history", async () => {
@@ -299,8 +300,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
   // the work an interrupt is for, and reporting only "already settled" would
   // hand back a clean answer over work that is still spending tokens.
   it("a settled task still has a live child below it, and the child is stopped", async () => {
-    const { h, child, grandchild } = await withDispatchTree();
-    await h.settle(child.id);
+    const { h, child, grandchild } = await withSettledMiddleChild();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     answerSays(out, "already settled as completed", "the root's own truth");
     answerSays(out, grandchild.id, "the live child below it is named");

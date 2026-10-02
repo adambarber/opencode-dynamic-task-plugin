@@ -20,7 +20,7 @@ import {
   type NewTaskRegistration,
 } from "../shared/task-state.js";
 import { notifyRunning } from "../shared/change-sinks.js";
-import { NotifyKind } from "../shared/notify.js";
+import { NotifyKind } from "../shared/notification-text.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";

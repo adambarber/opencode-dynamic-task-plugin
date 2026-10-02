@@ -13,7 +13,7 @@ import assert from "node:assert";
 import { existsSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
-import { answerMatches, answerOmits, answerSays } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support/integration.js";
 
 /**
@@ -28,7 +28,7 @@ import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support
 const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
-import { formatParentNotification } from "../../dist/shared/notify.js";
+import { formatParentNotification } from "../../dist/shared/notification-text.js";
 import { ENV } from "../../dist/shared/config.js";
 
 /**
@@ -511,7 +511,7 @@ describe("boot reconciles what the last boot was still running", () => {
     assert.deepStrictEqual(h.noticeBodies(), [], "no notice for a task that is not over");
 
     const notice = await h.settledNotice("ses_live");
-    answerMatches(notice, /completed successfully/, "its genuine terminal event settles it, once");
+    textDeclaresKind(notice.message, "completed", "its genuine terminal event settles it, once");
   });
 
   // The status channel is DOWN, which is a different thing from a channel that
@@ -561,7 +561,7 @@ describe("boot reconciles what the last boot was still running", () => {
     await noticeArrives(notices, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
-    answerMatches(notice.message, /ended with an error/, "an error the parent can act on");
+    textDeclaresKind(notice.message, "error", "an error the parent can act on");
     answerMatches(notice.message, /vanish/i, "the parent is told it vanished, not that its work failed");
     answerMatches(notice.message, /restart/i, "and when the loss of contact happened");
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [], "nothing is left pretending to run");
@@ -572,8 +572,7 @@ describe("boot reconciles what the last boot was still running", () => {
   it("a child that finished while the parent was down settles completed, not error", async () => {
     const { notices } = await bootWithRunners({ ses_idle: runningEntry("ses_idle") }, { ses_idle: "idle" });
     await waitFor(() => notices().length > 0, "the finished child to settle");
-    answerMatches(notices()[0].message, /completed successfully/, "the finished child settles as the success it was");
-    assert.doesNotMatch(notices()[0].message, /ended with an error/);
+    textDeclaresKind(notices()[0].message, "completed", "the finished child settles as the success it was");
   });
 
   // A fourth word on the status channel is not this plugin's to interpret, and

@@ -10,8 +10,8 @@
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
-import { textBlock } from "./text-block.js";
 import { evictOldest } from "./bounded-map.js";
+import { NotifyKind } from "./notification-text.js";
 import { errorMessage, hostRefusal } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
@@ -104,19 +104,6 @@ export async function containFailure(
   tail = "",
 ): Promise<void> {
   await safeLog(client, "warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
-}
-
-/**
- * What a settlement or a mid-flight notice tells the parent, as an enum rather
- * than a string-literal union: a union invites `kind === "notice"`, and a raw
- * literal in a comparison is a rename that compiles clean. The member is the
- * value; the literal is only what the parent reads on the wire.
- */
-export enum NotifyKind {
-  Completed = "completed",
-  Error = "error",
-  Blocked = "blocked",
-  Notice = "notice",
 }
 
 /**
@@ -897,68 +884,7 @@ export function noticeDedupKey(message: string): string {
 // Wire format the parent actually sees. Notification text is owned by the
 // gate; task-formatting only renders store reads. One renderer, params
 // everywhere the kinds differ: tag, header, body label, tail hint.
-// Settlement (completed/error) and mid-flight voice (notice) carry distinct
-// tags so orchestrators route them without parsing prose.
-
-const NOTIFICATION_KINDS: Record<NotifyKind, { tag: string; header: string; bodyLabel: string; tail: string }> = {
-  completed: { tag: "[dynamic-task-notify]", header: "Background task completed successfully.", bodyLabel: "Latest output", tail: "" },
-  error: { tag: "[dynamic-task-notify]", header: "Background task ended with an error.", bodyLabel: "Latest output", tail: "Use task_result or task_continue to inspect or recover." },
-  blocked: { tag: "[dynamic-task-notify]", header: "Background task needs input from you — it stopped with its question, having delivered no result.", bodyLabel: "What it needs", tail: "Answer with task_continue(session_id=...): the task is settled as blocked and runs again on your answer. If it cannot be answered, task_interrupt ends it." },
-  notice: { tag: "[dynamic-task-notice]", header: "Message from a running child task:", bodyLabel: "", tail: "If the child needs input, reply with task_continue(session_id=...); the task stays active until it settles." },
-};
-
-/**
- * The tag a kind of parent notification carries. Exported because the tag IS the
- * routing contract — a host orchestrator tells a settlement from a mid-flight notice
- * by it, without parsing prose — so the cases that pin that routing need the tag and
- * not a retyped copy of its two spellings.
- */
-export function notificationTag(kind: NotifyKind): string {
-  return NOTIFICATION_KINDS[kind].tag;
-}
-
-/**
- * Whether a parent-directed text is one of our notifications, by its tag. The tag IS
- * the routing contract — a host orchestrator that routes on it would not parse the
- * prose — so anything that has to tell a notification from child work asks here
- * rather than retyping the two spellings. The mock transport routes on it, which is
- * why a marker that changed without this would have left every test classifying its
- * own notifications as child work and passing.
- */
-export function isParentNotification(text: string): boolean {
-  return Object.values(NOTIFICATION_KINDS).some((shape) => text.includes(shape.tag));
-}
-
-export function formatParentNotification(
-  state: {
-    childSessionId: string;
-    description: string;
-  },
-  kind: NotifyKind,
-  resultText = "",
-): string {
-  const shape = NOTIFICATION_KINDS[kind];
-  const full = resultText.trim() ? resultText : "(No text output)";
-  const safeResult = full.length > NOTIFICATION_MAX_CHARS
-    ? `${full.slice(0, NOTIFICATION_MAX_CHARS)}... [truncated — full output via task_result(session_id=${state.childSessionId})]`
-    : full;
-  const body = shape.bodyLabel ? `${shape.bodyLabel}: ${safeResult}` : safeResult;
-  return textBlock(
-    shape.tag,
-    shape.header,
-    `Session: ${state.childSessionId}`,
-    `Description: ${state.description}`,
-    body,
-    shape.tail || undefined,
-  );
-}
-
 export function truncateText(text: string, maxChars = 1200): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}...`;
 }
-
-// Push-path bound: the notification is injected into the parent's
-// conversation, so it stays bounded — but truncation is never silent: the
-// tail names the full-text recovery path (the pull path is untruncated).
-export const NOTIFICATION_MAX_CHARS = 8000;

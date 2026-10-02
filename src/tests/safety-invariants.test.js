@@ -35,7 +35,8 @@ import {
 import { buildToolMap } from "../../dist/tools/index.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { TaskState, NoticeClaim } from "../../dist/shared/task-state.js";
-import { NotifyKind } from "../../dist/shared/notify.js";
+
+import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { InterruptScope } from "../../dist/tools/interrupt.js";
 import { QuestionAction } from "../../dist/shared/question-handling.js";

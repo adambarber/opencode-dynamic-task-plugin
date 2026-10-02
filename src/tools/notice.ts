@@ -3,7 +3,8 @@
 import type { ToolContext } from "@opencode-ai/plugin";
 import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless } from "../shared/session-lifecycle.js";
-import { notifyParent, formatParentNotification, noticeDedupKey, getLatestNotification, NotifyKind } from "../shared/notify.js";
+import { notifyParent, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
+import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import { pruneRetainedTasks, findTask, annotateNotice, isNoticeClaim, NoticeClaim, TaskState } from "../shared/task-state.js";
 import { callerSessionId, type ToolDeps } from "./context.js";
 import {

@@ -11,6 +11,7 @@
 import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
+import { textDeclaresKind } from "./support/assertions.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 describe("Background Task Settlement", () => {
@@ -45,10 +46,7 @@ describe("Background Task Settlement", () => {
     await harness.fireEvent(buildEvent(childId));
     assertNotices(1, "exactly 1 completion notification");
     const [note] = harness.noticeBodies();
-    assert.ok(
-      note.includes("Background task completed successfully"),
-      `success text. Got: ${note}`,
-    );
+    textDeclaresKind(note, "completed", "the success kind");
     return childId;
   }
 
@@ -76,7 +74,7 @@ describe("Background Task Settlement", () => {
       const note = await harness.noticeAfter(events.idle(childId));
       assert.strictEqual(note.to, parentId, `must notify parent [${childId}]`);
       assert.ok(note.message.includes("COMPLETED_OK"), `notification must carry the child result text [${childId}]`);
-      assert.ok(note.message.includes("Background task completed successfully"), `success notification [${childId}]`);
+      textDeclaresKind(note.message, "completed", `success notification [${childId}]`);
     }
   });
 
@@ -112,14 +110,13 @@ describe("Background Task Settlement", () => {
     await harness.fireEvent(events.errorUpdate(childId));
 
     assertNotices(1, "exactly 1 notification");
-    assert.match(harness.noticeBodies()[0], /ended with an error/i, "error-kind notification");
-    assert.ok(!harness.noticeBodies()[0].includes("completed successfully"), "must not be a success notification");
+    textDeclaresKind(harness.noticeBodies()[0], "error", "error-kind notification");
   });
 
   it("deleted session is a failure, never a success", async () => {
     const childId = await spawn("del_parent", "Deletion test");
     const note = await harness.noticeAfter(events.deleted(childId));
-    assert.match(note.message, /ended with an error/i, "deletion must read as failure");
+    textDeclaresKind(note.message, "error", "deletion must read as failure");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `retained state must be error. Got: ${detail}`);
   });
@@ -151,7 +148,7 @@ describe("Background Task Settlement", () => {
 
     await contradicts();
     assertNotices(2, "the contradicting failure is reported");
-    assert.match(harness.noticeBodies()[1], /ended with an error/i);
+    textDeclaresKind(harness.noticeBodies()[1], "error", "the contradiction is reported as one");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `record escalates completed→error. Got: ${detail}`);
 

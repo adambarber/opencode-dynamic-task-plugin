@@ -12,7 +12,7 @@ import type { OpenCodeClient } from "./client";
 import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
 import { textBlock } from "./text-block.js";
 import { evictOldest } from "./bounded-map.js";
-import { errorMessage } from "./host-shape.js";
+import { errorMessage, hostRefusal } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
 
@@ -304,13 +304,53 @@ function indexOfOwedEntry(entry: PendingDelivery): number {
   return indexOfOwed(owedIdentity(entry));
 }
 
-function queuePending(entry: PendingDelivery): void {
+/**
+ * Make room for one more debt, and hand back the one that was dropped.
+ *
+ * A parent that refuses every write owes a debt per notice, so the queue grows
+ * with the number of children this process told nothing about — and it is
+ * DURABLE, so an unbounded queue is an unbounded ledger file on every project
+ * the plugin has ever failed to reach. Bounded at the same size as the record
+ * ledger beside it.
+ *
+ * The debt dropped is the one CLOSEST TO ITS BOUND, oldest first on a tie: a
+ * debt that has already spent two of three attempts is one the next boot would
+ * retire anyway, while a fresh one is a notice the operator has not seen. Room
+ * for a fresh debt is therefore never made by dropping another fresh debt.
+ */
+function evictDebtRoomFor(entry: PendingDelivery): PendingDelivery | null {
+  if (pendingDeliveries.length < NOTIFY_LEDGER_MAX) return null;
+  let worstAt = 0;
+  let worst = pendingDeliveries[0];
+  for (let i = 1; i < pendingDeliveries.length; i++) {
+    const candidate = pendingDeliveries[i];
+    if (candidate !== undefined && worst !== undefined && candidate.attempts > worst.attempts) {
+      worstAt = i;
+      worst = candidate;
+    }
+  }
+  if (worst === entry) return null;
+  return pendingDeliveries.splice(worstAt, 1)[0] ?? null;
+}
+
+function queuePending(entry: PendingDelivery): PendingDelivery | null {
   const at = indexOfOwedEntry(entry);
-  if (at === -1) pendingDeliveries.push(entry);
-  else pendingDeliveries[at] = entry;
+  if (at === -1) {
+    // Evicted BEFORE the push, so the ledger is told about the loss in the same
+    // change list as the debt that took the room — a queue and a ledger that
+    // disagree here resurrect the dropped debt on the next boot.
+    const dropped = evictDebtRoomFor(entry);
+    pendingDeliveries.push(entry);
+    const changes: LedgerChange[] = [{ kind: LedgerChangeKind.Owed, record: entry }];
+    if (dropped !== null) changes.unshift({ kind: LedgerChangeKind.Delivered, record: dropped });
+    persistPending?.(changes);
+    return dropped;
+  }
+  pendingDeliveries[at] = entry;
   // The notice itself is the change, so the shared ledger is told which one was
   // owed rather than being handed this process's whole queue to re-serialize.
   persistPending?.([{ kind: LedgerChangeKind.Owed, record: entry }]);
+  return null;
 }
 
 function dropPending(entry: PendingDelivery): void {
@@ -617,9 +657,15 @@ export async function notifyParent(
   const sleep = opts.sleep ?? defaultSleep;
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
+  // The key the GATE keeps, which is not the caller's: a notice is owed to a
+  // PARENT, so the recipient is part of what makes it the same notice. Without
+  // it two parents waiting on one edge share (child, kind), the first release
+  // reserves the key, and the second parent is never told its dispatch can go —
+  // silently, and for the life of the process.
+  const gateKey = `${parentSessionId}|${dedupKey}`;
   const emit = (outcome: DeliveryOutcome): void =>
     record(notifyRecord({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, outcome));
-  const generation = gateLedger.claim(opts.childSessionId, dedupKey);
+  const generation = gateLedger.claim(opts.childSessionId, gateKey);
   const epoch = gateEpoch;
   if (generation === null) {
     emit({ delivered: false, attempts: 0, suppressed: true });
@@ -629,12 +675,20 @@ export async function notifyParent(
   // it was taken for, so nothing downstream can pass the right pieces in the
   // wrong order, and a revival that bumps the generation makes every later use
   // of this value visibly stale.
-  const claim: Claim = { childSessionId: opts.childSessionId, dedupKey, generation };
-  const attempt = () =>
-    client.session.prompt({
+  const claim: Claim = { childSessionId: opts.childSessionId, dedupKey: gateKey, generation };
+  const attempt = async () => {
+    const result = await client.session.prompt({
       path: { id: parentSessionId },
       body: { parts: [{ type: "text", text: message }] },
     });
+    // A REFUSED write is a failed write. The SDK resolves an API error in the
+    // envelope rather than throwing, so this is the only place the answer is
+    // read at all; treating it as delivered retires the debt on the host's
+    // refusal and leaves the parent told nothing with nothing to retry.
+    const refusal = hostRefusal(result);
+    if (refusal !== null) throw new Error(`host refused the write: ${refusal}`);
+    return result;
+  };
   // The owed write, built once: the queue holds the exact text, so a boot that
   // redelivers it has nothing to reconstruct and no way to say something else.
   // Attempts count from the last boot's, so the record and the queue agree on
@@ -680,8 +734,20 @@ export async function notifyParent(
   }
   // Owed BEFORE the dial, every attempt: the debt must be on disk while the
   // request is in flight, because that window is the crash this exists for.
+  // A dropped debt is a notice the operator will never be told exists, so it is
+  // said out loud here rather than only in the queue's shape: the one channel an
+  // operator has without setting an environment variable first is the host log.
+  const announceDropped = (client: OpenCodeClient, dropped: PendingDelivery | null): void => {
+    if (dropped === null) return;
+    void safeLog(
+      client,
+      "warn",
+      `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
+        `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`,
+    );
+  };
   const dial = async (attempts: number) => {
-    queuePending({ ...owed, attempts: carried + attempts });
+    announceDropped(client, queuePending({ ...owed, attempts: carried + attempts }));
     return attempt();
   };
   const commit = (outcome: DeliveryOutcome) => {
@@ -747,13 +813,19 @@ export async function notifyParent(
         // window where a notification exists in memory and on no disk is the crash
         // the queue exists for, and a refusal is not a reason to lose it. The
         // re-armed count is the one this boot spent.
-        queuePending({ ...owed, attempts: carried + 1 });
+        const dropped = queuePending({ ...owed, attempts: carried + 1 });
         if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
         void safeLog(
           client,
           "warn",
           `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`,
         );
+        announceDropped(client, dropped);
+        // The claim goes back, because nothing was written and the debt is still
+        // live: holding it would make every LATER obligation for this child and
+        // kind permanently unwritable, because this is a refusal rather than a
+        // delivery and no revival is coming to clear it.
+        if (epoch === gateEpoch) gateLedger.release(claim);
         return false;
       }
     }
@@ -773,7 +845,10 @@ export async function notifyParent(
       // the host finally answers.
       void request.then(
         () => commit({ delivered: true, attempts: carried + 1 }),
-        () => commit({ delivered: false, attempts: carried + 2 }),
+        // ONE write was made, so ONE attempt is billed: the second dial never
+        // happened, and a record that counts it is a record that spends the
+        // parent's budget on attempts that were not made.
+        () => commit({ delivered: false, attempts: carried + 1 }),
       );
       return false;
     }

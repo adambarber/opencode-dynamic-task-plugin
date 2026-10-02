@@ -138,13 +138,47 @@ const questionEndpoint = (state, hooks, { method, carriesAnswers, throws: throwH
  * message is `{ info, parts }`, with the role and the clock on `info`. A mock
  * that put `time` on the item made a finished child read as "(none yet)".
  */
+/**
+ * A client whose only method is the parent write, plus the list of writes that
+ * actually reached it. Every test in this file needs the same two things — a
+ * transport whose answer the test decides, and the count of writes that got
+ * there — and they were two hand-written client literals per test, so "dialed
+ * exactly once" was answered by whichever literal that test happened to copy. One
+ * wrapper, one recording: a test that wants the write to park, to throw, or to
+ * note its own ordering says so in `respond`, and the record is the same record.
+ */
+export function recordingClient(respond) {
+  const calls = [];
+  const hostStatus = new Map();
+  const transcripts = new Map();
+  return {
+    calls,
+    setStatus: (id, type) => hostStatus.set(id, type),
+    setMessages: (id, list) => transcripts.set(id, list),
+    client: {
+      session: {
+        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, type]) => [id, { type }]))),
+        messages: async (args) => SDK_ENVELOPE(transcripts.get(args.path.id) ?? []),
+        prompt: async (args) => {
+          calls.push(args);
+          return respond(args);
+        },
+      },
+    },
+  };
+}
+
 export const SDK_ENVELOPE = (data) => ({ data, request: {}, response: { status: 200 } });
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {
   let resolve;
-  const promise = new Promise((r) => { resolve = r; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 /**

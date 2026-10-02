@@ -9,7 +9,7 @@
 import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
 import { clearNotifyLedger, configurePendingPersistence, formatParentNotification, gateLedger, getLatestNotification, getPendingDeliveries, isParentNotification, noticeDedupKey, notificationTag, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { bounded } from './support/harness.js';
-import { deferred, promptText, SDK_ENVELOPE } from './support/mock-host.js';
+import { deferred, promptText, recordingClient } from './support/mock-host.js';
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 const NO_SLEEP = async () => {};
@@ -64,35 +64,6 @@ function gatedClient(gate, options = {}) {
   };
 }
 
-/**
- * A client whose only method is the parent write, plus the list of writes that
- * actually reached it. Every test in this file needs the same two things — a
- * transport whose answer the test decides, and the count of writes that got
- * there — and they were two hand-written client literals per test, so "dialed
- * exactly once" was answered by whichever literal that test happened to copy. One
- * wrapper, one recording: a test that wants the write to park, to throw, or to
- * note its own ordering says so in `respond`, and the record is the same record.
- */
-function recordingClient(respond) {
-  const calls = [];
-  const hostStatus = new Map();
-  const transcripts = new Map();
-  return {
-    calls,
-    setStatus: (id, type) => hostStatus.set(id, type),
-    setMessages: (id, list) => transcripts.set(id, list),
-    client: {
-      session: {
-        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, type]) => [id, { type }]))),
-        messages: async (args) => SDK_ENVELOPE(transcripts.get(args.path.id) ?? []),
-        prompt: async (args) => {
-          calls.push(args);
-          return respond(args);
-        },
-      },
-    },
-  };
-}
 
 /** The transport that answers at once — the default, and a script of outcomes when asked for one. */
 function answeredClient(script = []) {

@@ -84,6 +84,25 @@ export function errorMessage(error: unknown): string {
 }
 
 /**
+ * Did the host REFUSE this call, in words, or did it answer?
+ *
+ * The SDK does not throw on an API error — it resolves the envelope with an
+ * `error` field on it (and a non-2xx `response.status`), so a caller that only
+ * catches is reading half the transport. A write treated as delivered because
+ * nothing threw is the worst answer this plugin can give: the debt is retired
+ * and the record says delivered, so the parent is never told and nothing is left
+ * to retry.
+ */
+export function hostRefusal(result: unknown): string | null {
+  if (!isEventRecord(result)) return null;
+  const status = isEventRecord(result["response"]) ? result["response"]["status"] : undefined;
+  if (typeof status === "number" && status >= 400) return `HTTP ${status}`;
+  const error = result["error"];
+  if (error === undefined || error === null) return null;
+  return errorMessage(error);
+}
+
+/**
  * An agent as the host's API describes it: a name, and whatever else it said.
  *
  * It lives in the shape layer rather than beside the admission gate that first

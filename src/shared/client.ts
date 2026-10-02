@@ -20,6 +20,7 @@
 
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { QuestionReplyData, QuestionRejectData } from "@opencode-ai/sdk/v2/types";
+import type { SessionGetErrors, SessionStatus, SessionStatusResponses } from "@opencode-ai/sdk";
 
 /**
  * The question namespace, typed from the host's generated request data. `body`
@@ -36,6 +37,52 @@ export interface QuestionNamespace {
 export type OpenCodeClient = PluginInput["client"] & {
   question: QuestionNamespace;
 };
+
+/**
+ * The host's status map, as the host's own generated type declares it: session id to
+ * that session's turn object.
+ *
+ * Derived from the ROOT entry, which re-exports the v1 generation wholesale — and v1
+ * is the generation this plugin's client actually is, because `PluginInput` hands us
+ * a v1 client. (The v1 declarations have no deep import path; `exports` maps
+ * `/gen/types` nowhere. Only the root reaches them.)
+ *
+ * It earns its keep in one specific way. The declared 200 is an INDEX SIGNATURE, so
+ * under `noUncheckedIndexedAccess` a session id the host does not list reads as
+ * `SessionStatus | undefined` — the absence of a KEY, which is the only honest shape
+ * for "no turn is running here". The hand-written `string | null` this replaces had no
+ * such distinction: its `null` stood for BOTH "the map lists no entry" and "there is
+ * no such session", and that second meaning is what invented failures for children the
+ * host was merely not working on. The index signature cannot be coerced into a value,
+ * so the coercion has nowhere to go.
+ */
+export type HostStatusMap = SessionStatusResponses[200];
+
+/**
+ * One entry of that map: the host's own turn object, verbatim.
+ *
+ * The vocabulary is deliberately OPEN at the reading boundary and CLOSED at every
+ * decision. The host may add a word this plugin has never heard of, and the reading
+ * has to be able to carry it: a type that could only hold known words would force an
+ * unrecognised one to be dropped, and dropping it collapses "listed, and I do not
+ * understand this" into "not listed" — the exact confusion this type exists to end.
+ * What is closed is the decision, because `RUNNING_HOST_WORDS` in `liveness.ts` is a
+ * `ReadonlySet<HostTurn["type"]>` seeded from literals: a host that renames or drops
+ * `busy` breaks the BUILD there instead of leaving every working child reading as not
+ * running, everywhere, silently.
+ */
+export type HostTurn = SessionStatus;
+
+/**
+ * The host's own "no such session", as the SDK DECLARES it.
+ *
+ * `SessionGetErrors[404]` is `NotFoundError`, so existence is answered by an endpoint
+ * whose contract answers it — which is why no plugin-invented existence field appears
+ * anywhere in this codebase, and why none is needed here. The name the error carries is
+ * typed against this alias wherever it is compared, so a rename upstream becomes a build
+ * error rather than a presence read that silently never fires.
+ */
+export type HostSessionMissing = SessionGetErrors[404];
 
 /**
  * Whether this host's client really carries a question call.

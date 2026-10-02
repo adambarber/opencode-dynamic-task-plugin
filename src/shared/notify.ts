@@ -14,7 +14,7 @@ import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { evictOldest } from "./bounded-map.js";
 import { NotifyKind } from "./notification-text.js";
-import { errorMessage, hostRefusal } from "./host-shape.js";
+import { errorMessage } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
 
@@ -677,12 +677,11 @@ export async function notifyParent(
       // host; a timeout that predates it would be the bound firing before the
       // request was ever made, and `request` is the honest stand-in.
       if (bounded.timedOut) return { held: true, request: inFlight ?? request };
-      // A REFUSED write is a failed write. The SDK resolves an API error in the
-      // envelope rather than throwing, so this is the only place the answer is
-      // read at all; treating it as delivered retires the debt on the host's
-      // refusal and leaves the parent told nothing with nothing to retry.
-      const refusal = hostRefusal(bounded.value);
-      if (refusal !== null) throw new Error(`host refused the write: ${refusal}`);
+      // A REFUSED write arrives as a REJECTION, not as an answer carrying an error:
+      // every v2 client method returns Promise<T> and rejects on an API error, so
+      // there is no envelope here to inspect. It travels out of this promise and is
+      // caught where the retry already lives — which is what keeps a refusal from
+      // retiring the debt and reading as delivered.
       return { held: false, result: bounded.value };
     });
   };

@@ -125,8 +125,12 @@ export const harnessThrowingPrompt = (sessionId) => harnessWithFailingPrompt("pr
  * case that means "the host says this session is busy" says it here rather than
  * assembling the event inline — the two spellings had begun to drift on which
  * session the word was for.
+ *
+ * The word is REQUIRED and no longer defaults to idle, because the host cannot say
+ * it: it publishes `session.idle` and deletes the key. A case that means "this turn
+ * ended" says that instead.
  */
-export const hostStatus = (h, id, type = "idle") => h.fireEvent(events.status(id, type));
+export const hostStatus = (h, id, type) => h.fireEvent(events.status(id, type));
 
 /**
  * Wait for an observable, and fail rather than hang. The bound is the only clock

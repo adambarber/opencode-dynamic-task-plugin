@@ -10,7 +10,7 @@ import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { errorMessage } from "./host-shape.js";
 import { eventField, eventString, isEventRecord } from "./host-shape.js";
-import { withBound, READ_BOUNDS } from "./execution-bound.js";
+import { boundedRead, READ_BOUNDS } from "./execution-bound.js";
 import type { Verdict } from "./verdict.js";
 
 // ─── invokePrompt ──────────────────────────────────────────────────
@@ -341,10 +341,8 @@ export async function readSessionMessages(
   sessionId: string,
   query?: { limit?: number },
 ): Promise<unknown[]> {
-  const bounded = await withBound(
-    READ_BOUNDS.transcript,
-    () => client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
-    () => null,
+  const bounded = await boundedRead(READ_BOUNDS.transcript, () =>
+    client.session.messages({ path: { id: sessionId }, ...(query ? { query } : {}) }),
   );
   if (bounded.timedOut) throw new Error(`transcript unanswered after ${READ_BOUNDS.transcript}ms`);
   return extractMessages(bounded.value);

@@ -544,7 +544,9 @@ describe("boot reconciles what the last boot was still running", () => {
     for (const id of ["ses_first", "ses_second"]) {
       assert.ok(said.includes(id), `${id} was attempted: the failure is reported per child, so a catch around the loop would leave this name out`);
     }
-    assert.match(said, /Could not reconcile restored task/, "and the failure says what could not be done");
+    assert.match(said, /status channel unanswered; left active/,
+      "and the log says which kind of gap it was — the word names the reason, so a reader can tell " +
+        "a channel that was down from a host that listed nothing");
   });
 
   /**
@@ -584,15 +586,13 @@ describe("boot reconciles what the last boot was still running", () => {
   // invented for it. Not knowing leaves it active, which is the same safe
   // reading the failed-read branch already takes: its own terminal event still
   // settles it, and nothing is notified that was not observed.
-  it("a status word this plugin does not recognise leaves the child active rather than settling it", async () => {
-    const { directory, notices } = await bootWithRunners(
-      { ses_odd: runningEntry("ses_odd") },
-      { ses_odd: "compacting" },
-    );
-    await sleep(150);
-    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), ["ses_odd"], "an unknown word settles nothing");
-    assert.deepStrictEqual(notices(), [], "and the parent is told nothing that was not observed");
-  });
+  // A child that finished while the parent was down settles completed, not error
+  // (above). There is deliberately no case here for a status word this plugin does
+  // not recognise: the host's word list is a closed union that production compiles
+  // against, and the fake refuses to hold a word that is not in it — so the state is
+  // unreachable, not merely untested. Its successor is liveness.test.js's "reads every
+  // word the host declares": if the host ever adds one, that case fails until the new
+  // word's meaning is decided in writing.
 
   it("a spawned task is on disk while it runs, and gone from the active set once it settles", async () => {
     const directory = tmpProjectDir();

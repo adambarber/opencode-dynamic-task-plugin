@@ -9,7 +9,7 @@
 // "never" are the same call from inside the gate.
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import type { OpenCodeClient } from "./client";
-import { withBound, WRITE_BOUNDS } from "./execution-bound.js";
+import { boundedRead, WRITE_BOUNDS } from "./execution-bound.js";
 import { evictOldest } from "./bounded-map.js";
 import { NotifyKind } from "./notification-text.js";
 import { errorMessage, hostRefusal } from "./host-shape.js";
@@ -78,7 +78,7 @@ export async function safeLog(
   // that can be held open is not best-effort — it is a dependency. Boot awaits
   // it, so an unbounded log sink stopped the plugin from loading at all, with no
   // symptom to read and no log line explaining why.
-  await withBound(WRITE_BOUNDS.log, () => log({ body: { service: "dynamic-task", level, message } }), () => null).catch(
+  await boundedRead(WRITE_BOUNDS.log, () => log({ body: { service: "dynamic-task", level, message } })).catch(
     () => null,
   );
 }
@@ -822,7 +822,7 @@ export async function notifyParent(
     // same call from here: its answer may arrive long after this returns, and
     // the ledger must be able to say so rather than guess which it was.
     const request = dial(1);
-    const bounded = await withBound(WRITE_BOUNDS.parentPrompt, () => request, () => null).catch(() => null);
+    const bounded = await boundedRead(WRITE_BOUNDS.parentPrompt, () => request).catch(() => null);
     if (bounded?.timedOut) {
       // Same epoch rule as commit(): the held write is recorded only while the
       // gate still knows the child it belongs to.

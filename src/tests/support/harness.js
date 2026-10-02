@@ -334,9 +334,21 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * states a test cannot reach by delivering events (a session the plugin
      * never saw, or one the host has already forgotten).
      */
-    setHostStatus: (id, type) => putHostStatus(state, id, type),
+    setHostStatus: (id, type) => putHostStatus(state.hostStatus, id, type),
     /** Drop a session from the host's map entirely — no turn, no entry. */
     forgetHostStatus: (id) => state.hostStatus.delete(id),
+    /**
+     * Say the host HAS this session, without pretending this run created it — the
+     * shape of a restore. Distinct from `forgetHostSession` because the status map
+     * cannot answer the question: "no turn running" and "never existed" are the
+     * same absence there, so a case that needs to separate them says so here.
+     */
+    rememberHostSession: (id) => state.foreignSessions.add(id),
+    /** The host's own not-found: it has no such session, and will say so. */
+    forgetHostSession: (id) => {
+      state.foreignSessions.delete(id);
+      state.sessions.delete(id);
+    },
     // The settlement funnel: a task settles only by the event the server
     // would emit, delivered straight to the handler.
     /**

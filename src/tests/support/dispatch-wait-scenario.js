@@ -31,13 +31,19 @@ export async function refuseDispatch(h, description, depends_on, depends_on_sett
 }
 
 /**
- * Settle an edge the way a FAILURE does: the host says error, then the turn
- * ends. Separate from the harness's `settle` because the error word is the whole
- * difference between a dependency that releases a wait and one that kills it,
- * and it is not a thing a test should spell out twice.
+ * Settle an edge the way a FAILURE does: the host publishes the failure, then the
+ * turn ends. Separate from the harness's `settle` because a failure is the whole
+ * difference between a dependency that releases a wait and one that kills it, and
+ * it is not a thing a test should spell out twice.
+ *
+ * The failure is `session.error` with an error detail — the host's own event. It
+ * used to be a `session.status` carrying the word "error", which is a shape the host
+ * cannot emit: `SessionStatus` declares idle | retry | busy and nothing else, and the
+ * host writes the map only for the running ones. The mock's word gate refused it,
+ * which is the gate working.
  */
 export async function failEdge(h, id) {
-  await h.fireEvent(events.status(id, "error"));
+  await h.fireEvent(events.error(id, { name: "Error", data: { message: "child failed" } }));
   await h.settle(id);
 }
 

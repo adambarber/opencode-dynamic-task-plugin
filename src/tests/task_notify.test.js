@@ -11,9 +11,9 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
-import { agentDeclaring } from "./support/mock-host.js";
+import { agentDeclaring, events } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
-import { bootOn, hostStatus } from "./support/integration.js";
+import { bootOn } from "./support/integration.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 
@@ -157,7 +157,10 @@ describe("a child that needs input is not a success", () => {
   it("a failed turn outranks a needs-input declaration", async () => {
     const { h, c, id } = await withChild();
     await declareNeedsInput(c, "blocked on the key");
-    await hostStatus(h, id, "error");
+    // A failed turn is the host's `session.error`, not a status word. It used to be
+    // written as `session.status` carrying the word "error", which the host cannot
+    // emit — its status map holds running turns and nothing else.
+    await h.fireEvent(events.error(id));
     assert.strictEqual(await stateOf(c), "State: error", "a failure is not a question");
   });
 

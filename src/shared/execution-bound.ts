@@ -52,6 +52,18 @@ export function withBound<T>(
   });
 }
 
+/**
+ * A bounded read whose "the host did not answer" answer is `null` — which is what most
+ * of them want, and which each used to spell at its own call site.
+ *
+ * Named because the spelling was the thing that drifted: a timeout arm written five
+ * times is five decisions that happened to agree, and the two that agreed by accident
+ * were the two a reader could no longer tell apart from a genuine answer of `null`.
+ * A caller that needs a different timeout meaning passes the arm it means.
+ */
+export const boundedRead = <T>(ms: number, work: () => T | Promise<T>): Promise<Bounded<T | null>> =>
+  withBound<T | null>(ms, work, () => null);
+
 // A transcript read is one call to a local server. Generous enough to survive a
 // loaded machine, far short of the minutes a parent waits before assuming its
 // child is stuck.
@@ -81,10 +93,16 @@ export const ABORT_BOUND_MS = 2_000;
 // server, whose absence must cost the caller a THINNER answer, never a hung turn.
 // It had no bound at all, and the retry loop beside it only catches throws — a host
 // that accepts the call and never answers left every dispatch waiting on the list.
-export const READ_BOUNDS: { transcript: number; agents: number; status: number } = {
+// `presence` is the existence read — one `session.get` against the same local
+// server, same bound, and a key of its own because it is a distinct call with a
+// distinct failure mode: it is the ONLY read whose answer is a refusal, and a
+// bound shared with the status read would let a slow status map be mistaken for
+// an unanswered existence question.
+export const READ_BOUNDS: { transcript: number; agents: number; status: number; presence: number } = {
   transcript: READ_BOUND_MS,
   agents: READ_BOUND_MS,
   status: READ_BOUND_MS,
+  presence: READ_BOUND_MS,
 };
 // Creating the child's session. The same bound and the same argument as the abort:
 // the create is awaited by the CALLER'S turn, so a host that accepts it and never

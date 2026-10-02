@@ -22,6 +22,9 @@ import {
   setupHarness,
 } from "./support/index.js";
 import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
+// The host's own not-found name, read from production rather than retyped: a literal
+// here would pass on a day the host renames it and fail on no day at all.
+import { NOT_FOUND_NAME } from "../../dist/shared/liveness.js";
 
 const NO_SLEEP = async () => {};
 /** The gate's inputs with no real backoff — the retry count is never under test here. */
@@ -115,7 +118,7 @@ describe("a write that answers late", () => {
   it("is not a delivery when the host answers with a REFUSAL envelope", async () => {
     const child = "ses_refused_envelope";
     const refusing = recordingClient(async () => ({
-      error: { name: "NotFoundError", message: `Session not found: ${PARENT}` },
+      error: { name: NOT_FOUND_NAME, message: `Session not found: ${PARENT}` },
       request: {},
       response: { status: 404 },
     }));

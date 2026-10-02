@@ -23,7 +23,7 @@ import { FAULTS, armFault, armHookFaults, armedFlag, armedHostFault, fault, forI
 // declaration the production code compiles against — so the fake is held to the
 // host's own words rather than to a hand-kept list that drifts in the one
 // direction which hides a defect.
-import { hostStatusWords, idleWord, notFoundName, notFoundStatus } from "./sdk-contract.js";
+import { busyWord, hostStatusWords, idleWord, notFoundName, notFoundStatus } from "./sdk-contract.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
@@ -38,13 +38,12 @@ import { isParentNotification, notificationKindOf } from "../../../dist/shared/n
 // second list: a suite that named a raw event type would be naming it from a
 // hand-kept copy of this import, which is the drift the import exists to prevent.
 import {
-  QUESTION_ASKED,
-  QUESTION_REJECTED,
-  QUESTION_REPLIED,
+  FORM_CANCELLED,
+  PERMISSION_ASKED,
+  PERMISSION_REPLIED,
   SESSION_DELETED,
   SESSION_ERROR,
   SESSION_IDLE,
-  SESSION_STATUS,
 } from "../../../dist/shared/host-events.js";
 
 /**
@@ -87,47 +86,31 @@ export const sessionUpdatedEnvelope = (status) => ({
  * HERE is what makes the harness a check on the plugin's host calls, not just a
  * record of them.
  */
-function assertQuestionSettlement(method, path, body, { carriesAnswers }) {
+function assertPermissionReply({ sessionID, requestID, decision }) {
+  assert.ok(typeof sessionID === "string", `permission.reply must name the session it answers in (got ${JSON.stringify(sessionID)})`);
+  assert.ok(typeof requestID === "string", `permission.reply must address the request by requestID (got ${JSON.stringify(requestID)})`);
   assert.ok(
-    path !== null && typeof path === "object" && typeof path.requestID === "string",
-    `${method} must address /question/{requestID} — path.requestID, not path.id (got ${JSON.stringify(path)})`,
-  );
-  if (!carriesAnswers) {
-    assert.strictEqual(
-      body,
-      undefined,
-      `the reject endpoint declares body?: never — no reason can reach the asking session (got ${JSON.stringify(body)})`,
-    );
-    return;
-  }
-  assert.ok(
-    body !== null && typeof body === "object" && Array.isArray(body.answers),
-    `${method} must send body.answers (got ${JSON.stringify(body)})`,
-  );
-  assert.ok(
-    body.answers.every((answer) => Array.isArray(answer) && answer.every((label) => typeof label === "string")),
-    `each entry of body.answers is a list of labels, not a bare string (got ${JSON.stringify(body.answers)})`,
+    PERMISSION_DECISIONS.includes(decision),
+    `decision must be one of ${PERMISSION_DECISIONS.join(" | ")} — the host answers a whole request, not one question of it (got ${JSON.stringify(decision)})`,
   );
 }
 
+/** v2 answers a permission with one word; literals here mean a typo cannot pass. */
+const PERMISSION_DECISIONS = ["once", "always", "reject"];
+
 /**
- * One of the two question endpoints, as the host's own contract makes them: the
- * route is /question/{requestID} (`path.requestID`, not `path.id`), a reply
- * carries `answers`, and a reject carries no body at all. A mock that accepts any
- * shape is exactly what let four wrong field names (`path.id`, `body.answer`, a
- * reject body) pass as a green suite, so this one refuses them the way a real
- * host would, and records the call the plugin actually made.
+ * `permission.reply` as v2's contract makes it: flat `{sessionID, requestID,
+ * decision}`, and the decision answers the whole request rather than one question
+ * of it. A mock that accepts any shape is what let four wrong field names pass as
+ * a green suite, so this one refuses them and records the call actually made.
  */
-const questionEndpoint = (state, hooks, { method, carriesAnswers, throws: throwHook }) =>
-  async ({ path, body }) => {
-    if (hooks[throwHook]) throw new Error(`${method} failed`);
-    assertQuestionSettlement(method, path, body, { carriesAnswers });
-    state.questionCalls.push({
-      method,
-      requestID: path.requestID,
-      ...(carriesAnswers ? { answers: body.answers } : {}),
-    });
-    return SDK_ENVELOPE({ ok: true });
+const permissionEndpoint = (state, hooks) =>
+  async (args) => {
+    const { sessionID, requestID, decision } = args;
+    if (hooks.permissionReplyThrows) throw new Error("permission.reply failed");
+    assertPermissionReply(args);
+    state.permissionCalls.push({ sessionID, requestID, decision });
+    return { ok: true };
   };
 
 /**
@@ -157,20 +140,21 @@ const questionEndpoint = (state, hooks, { method, carriesAnswers, throws: throwH
  */
 export function recordingClient(respond) {
   const calls = [];
-  const hostStatus = new Map();
-  const transcripts = new Map();
+  const turns = new Map();
   return {
     calls,
-    setStatus: (id, type) => putHostStatus(hostStatus, id, type),
-    setMessages: (id, list) => transcripts.set(id, list),
+    // the same two facts the big fake keeps, written to the same place: a turn running
+    // is an assistant message with no `completed`. A private map here would be a second
+    // copy of a fact production reads from the transcript.
+    setStatus: (id, type) => turns.set(id, [type === idleWord() ? hostSaid("") : hostSaying("")]),
+    setMessages: (id, list) => turns.set(id, list),
     client: {
       session: {
                 // Project the map's ENTRY down to the word the SDK declares. It holds `{type, at}`
         // so the liveness code can read "when did this session last change"; projecting the
         // entry itself would hand the word to production as an object, which reads as a word
         // no host has ever said.
-        status: async () => SDK_ENVELOPE(Object.fromEntries([...hostStatus].map(([id, entry]) => [id, { type: entry.type }]))),
-        messages: async (args) => SDK_ENVELOPE(transcripts.get(args.path.id) ?? []),
+        context: async (args) => turns.get(args.sessionID) ?? [],
         prompt: async (args) => {
           calls.push(args);
           return respond(args);
@@ -187,12 +171,6 @@ export function recordingClient(respond) {
  * refuse by throwing cannot express a refusal, and why a case written against it
  * tested the wrong branch.
  */
-export const SDK_ENVELOPE = (data, refusal) => ({
-  data,
-  request: {},
-  response: { status: refusal?.status ?? 200 },
-  ...(refusal?.error ? { error: refusal.error } : {}),
-});
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {
@@ -241,17 +219,6 @@ const sessionObject = (id) => ({
  * liveness code as "when did this session last change", and a second way of
  * spelling an entry is a second answer to that question.
  */
-const hostWord = (type) => {
-  // The fake may only say what the SDK declares. A mock inventing a word is the one
-  // infidelity the compiler cannot see, because the mock is JavaScript: production
-  // reads it through a type that does not exist, and every assertion still passes.
-  if (!hostStatusWords().includes(type)) {
-    throw new Error(
-      `mock-host: "${type}" is not a host status word (declared: ${hostStatusWords().join(", ")}) — the fake may not invent vocabulary`,
-    );
-  }
-  return { type, at: Date.now() };
-};
 
 /**
  * Put an entry in the host's status map — or, for the one word the host answers by
@@ -260,8 +227,7 @@ const hostWord = (type) => {
  * drops the key, so a map that could hold `idle` would be a map no read can trust:
  * absence would stop meaning "nothing running" and start meaning two things at once.
  */
-export const putHostStatus = (map, id, type) =>
-  type === idleWord() ? map.delete(id) : map.set(id, hostWord(type));
+
 
 /**
  * The one place the mock MOVES a session's host status word: an abort parks the
@@ -273,8 +239,24 @@ export const putHostStatus = (map, id, type) =>
  * come back from a status write.
  */
 export function setHostTurn(state, id, type) {
-  if (state.hostStatus.has(id)) putHostStatus(state.hostStatus, id, type);
+  if (!hostStatusWords().includes(type)) {
+    throw new Error(
+      `mock-host: "${type}" is not a host status word (declared: ${hostStatusWords().join(", ")}) — the fake may not invent vocabulary`,
+    );
+  }
+  const said = type === idleWord() ? hostSaid("") : hostSaying("");
+  state.transcripts.set(id, [...(state.transcripts.get(id) ?? []), said]);
 }
+
+/**
+ * A turn the host has NOT finished. v2 gave a plugin no status channel, so the only
+ * durable answer to "is a turn running?" is the transcript: an assistant message with
+ * no `completed`. Its finished twin is `hostSaid`, and the pair is all liveness now.
+ */
+export const hostSaying = (text, at = Date.now()) => ({
+  info: { role: ASSISTANT_ROLE, time: { created: at } },
+  parts: [{ type: "text", text }],
+});
 
 /**
  * Fold a delivered event into the host's status map, the way the server keeps
@@ -285,25 +267,13 @@ export function setHostTurn(state, id, type) {
  */
 export function applyHostStatus(state, event) {
   if (typeof event !== "object" || event === null) return;
-  const id = event.properties?.sessionID;
+  const id = event.data?.sessionID;
   if (typeof id !== "string") return;
-  const current = state.hostStatus.get(id);
   if (event.type === SESSION_DELETED) {
-    state.hostStatus.delete(id);
+    state.transcripts.delete(id);
     return;
   }
-  if (!current) return;
-  const status = event.properties?.status;
-  const word = typeof status === "string" ? status : status?.type;
-  // `error` is NOT a word this map can hold: the host writes only `busy` and `retry`,
-  // and answers `idle` by deleting. An error event is not a status word at all, so
-  // the map is left alone — exactly as the host leaves it.
-  if (event.type === SESSION_IDLE || (event.type === SESSION_STATUS && word)) {
-    // The idle event carries no word of its own — the event's name IS the word.
-    putHostStatus(state.hostStatus, id, event.type === SESSION_IDLE ? idleWord() : word);
-  } else if (current.type === "busy") {
-    putHostStatus(state.hostStatus, id, "busy");
-  }
+  if (event.type === SESSION_IDLE) setHostTurn(state, id, idleWord());
 }
 
 /**
@@ -312,7 +282,7 @@ export function applyHostStatus(state, event) {
  * this, and tests used to spell the literals inline, which is how a test can end
  * up asserting against a shape the host never emits.
  */
-const hostEvent = (type, id, properties) => ({ type, properties: { sessionID: id, ...properties } });
+const hostEvent = (type, id, properties) => ({ type, data: { sessionID: id, ...properties } });
 
 /**
  * The server's lifecycle event shapes, declared once. `updated` and `error` take
@@ -337,14 +307,14 @@ export const events = {
   // A sync update. `status` is the string, or the host's error object.
   updated: (id, status = "idle") => ({
     ...sessionUpdatedEnvelope(status),
-    properties: { sessionID: id },
+    data: { sessionID: id },
   }),
   errorUpdate: (id) => events.updated(id, { type: "error" }),
   deleted: (id, properties = {}) => hostEvent(SESSION_DELETED, id, properties),
   // EventSessionError carries an error detail, never a status field.
   error: (id, error) => ({
     type: SESSION_ERROR,
-    properties: { sessionID: id, ...(error ? { error } : {}) },
+    data: { sessionID: id, ...(error ? { error } : {}) },
   }),
   /**
    * A question the child asked. `answers: []` is the answerless variant; an
@@ -361,8 +331,8 @@ export const events = {
    * so the fixture is the host's own shape verbatim.
    */
   questionAsked: (sessionID, properties) => ({
-    type: QUESTION_ASKED,
-    properties: { ...(sessionID ? { sessionID } : {}), ...properties },
+    type: PERMISSION_ASKED,
+    data: { ...(sessionID ? { sessionID } : {}), ...properties },
   }),
   /** A question the host published, spelled as the SDK types it. */
   hostQuestion: (text, options) => ({
@@ -380,8 +350,8 @@ export const events = {
   ask: (sessionID, questionId, ...options) =>
     events.questionAsked(sessionID, { id: questionId, questions: [events.hostQuestion("Ship it?", options)] }),
   /** The reply that retires a question — the host spells the id `requestID`. */
-  questionReplied: (props) => ({ type: QUESTION_REPLIED, properties: props }),
-  questionRejected: (props) => ({ type: QUESTION_REJECTED, properties: props }),
+  questionReplied: (props) => ({ type: PERMISSION_REPLIED, data: props }),
+  questionRejected: (props) => ({ type: FORM_CANCELLED, data: props }),
 };
 
 /**
@@ -390,7 +360,7 @@ export const events = {
  * marker run before anything knows the body has parts at all — a strict reader there
  * throws inside a mock instead of reporting the prompt as not-a-notification.
  */
-export const promptText = (args) => args?.body?.parts?.[0]?.text || "";
+export const promptText = (args) => args?.text || "";
 
 /**
  * One funnel for "the parent has now been sent this", and it classifies.
@@ -445,7 +415,7 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  *   statusHang?: boolean,               // the status channel accepts and never answers
  *   presenceThrows?: Error,             // the presence read fails in a way that is not a 404
  *   presenceHang?: boolean,             // the presence read accepts and never answers
- *   hostStatusSeed?: Record<string, "busy" | "idle">,  // live at boot, before any event
+
  *   messages?: (args: { path: { id: string } }) => unknown,
  *   questionReplyThrows?: boolean,
  *   questionRejectThrows?: boolean,
@@ -471,7 +441,7 @@ const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
  * each endpoint because the point of the case is that NOTHING answers: a sweep over
  * a hand-written list of hung methods proves only that the list is current.
  */
-const SILENCED = new Set(["app", "question", "session"]);
+const SILENCED = new Set(["agent", "permission", "session"]);
 
 const silence = (state, hooks, value, ns = "") =>
   new Proxy(value, {
@@ -527,7 +497,8 @@ export function createMockClient(hooks = {}) {
     // host that would 404 the target the two records diverge exactly where the
     // bug lives.
     abortAttempts: [],
-    questionCalls: [],
+    permissionCalls: [],
+    transcriptReads: 0,
     promptBodies: [],
     sessionBodies: new Map(),
     createThrown: false,
@@ -547,8 +518,7 @@ export function createMockClient(hooks = {}) {
     // deletion removes it), so a read that consults it exercises the same
     // sequence the server would have produced. `at` is when the status last
     // changed — the clock behind the child's last-message time.
-    hostStatus: new Map(),
-    // Ids whose first abort was lost, so a "loses once" fixture is spent.
+      // Ids whose first abort was lost, so a "loses once" fixture is spent.
     abortsLost: new Set(),
   };
 
@@ -558,27 +528,27 @@ export function createMockClient(hooks = {}) {
   // by definition — a session in the host's map is a session it lists.
   for (const [id, type] of Object.entries(hooks.hostStatusSeed ?? {})) {
     state.sessions.add(id);
-    putHostStatus(state.hostStatus, id, type);
+    setHostTurn(state, id, type);
   }
   armHookFaults(state, hooks);
 
   const endpoints = {
     _state: state,
-    app: {
+    // v2 names this domain `agent` and its reader `list`, and the answer is a bare
+    // array: there is no envelope to unwrap, so a reader reaching for `.data` now
+    // fails on an array rather than quietly finding nothing.
+    agent: {
       // A host that cannot answer is a case the plugin has to survive, and a
       // mock that can only ever succeed cannot express one.
-      agents: async () => {
+      list: async () => {
         if (armedFlag(state, hooks, "agentsListThrows")) {
           fault(state, "agentsListThrows");
           throw new Error("agent list unavailable");
         }
-        return SDK_ENVELOPE(hooks.agentsList ?? [
+        return hooks.agentsList ?? [
           { name: "explore", mode: "subagent" },
           { name: "general", mode: "subagent" },
-        ]);
-      },
-      log: async ({ body }) => {
-        state.logs.push(body);
+        ];
       },
     },
     // The question namespace, modelled on the host's generated contract rather
@@ -587,12 +557,11 @@ export function createMockClient(hooks = {}) {
     // a reject body) pass as a green suite, so this one refuses them the way a
     // real host would: the route is /question/{requestID}, a reply carries
     // `answers: Array<QuestionAnswer>`, and a reject carries no body at all.
-    question: {
-      reply: questionEndpoint(state, hooks, { method: "reply", carriesAnswers: true, throws: "questionReplyThrows" }),
-      reject: questionEndpoint(state, hooks, { method: "reject", carriesAnswers: false, throws: "questionRejectThrows" }),
+    permission: {
+      reply: permissionEndpoint(state, hooks),
     },
     session: {
-      create: async ({ body }) => {
+      create: async ({ title, parentID }) => {
         if (armedFlag(state, hooks, "createThrowsOnce") && !state.createThrown) {
           fault(state, "createThrowsOnce");
           state.createThrown = true;
@@ -604,24 +573,23 @@ export function createMockClient(hooks = {}) {
         const prefix = hooks.sessionPrefix ? `ses_${hooks.sessionPrefix}_` : "ses_mock_";
         const id = `${prefix}${state.sessions.size + 1}`;
         state.sessions.add(id);
-        putHostStatus(state.hostStatus, id, "busy");
-        state.sessionBodies.set(id, body);
+        setHostTurn(state, id, busyWord());
+        state.sessionBodies.set(id, { title, parentID });
         // The host created the session and then answered with something no id can
         // be read out of. The session is real — it is in `state.sessions`, so
         // `sessionCount` counts it and nothing ever aborts it — which is the whole
         // shape of the orphan: a running child the plugin has no name for.
         if (armedFlag(state, hooks, "createReturnsIdless")) {
           fault(state, "createReturnsIdless");
-          return SDK_ENVELOPE({ info: { title: body.title } });
+          return { info: { title } };
         }
-        return SDK_ENVELOPE({ id });
+        return { id };
       },
       // session.prompt routes by marker: parent notifications carry the tag
       // production's own isParentNotification recognises; everything else is
       // child work.
       prompt: (args) => {
-        const { path, body } = args;
-        const text = promptText(args);
+        const { sessionID, text } = args;
         // The prompt gate: the next child prompt parks here until the test
         // releases it, then fails non-retryably. A turn's own prompt delivery
         // failing is the one settlement that can still land while a steer
@@ -633,14 +601,14 @@ export function createMockClient(hooks = {}) {
             throw new Error("prompt rejected by the provider");
           });
         }
-        const syncDead = forId(state, "promptSyncThrow", hooks.promptSyncThrowIds, path.id, () => {
-          throw new Error(`prompt sync-dead for ${path.id}`);
+        const syncDead = forId(state, "promptSyncThrow", hooks.promptSyncThrowIds, sessionID, () => {
+          throw new Error(`prompt sync-dead for ${sessionID}`);
         });
         if (syncDead) return syncDead;
-        const hung = forId(state, "promptHang", hooks.promptHangIds, path.id, neverAnswers);
+        const hung = forId(state, "promptHang", hooks.promptHangIds, sessionID, neverAnswers);
         if (hung) return hung;
-        const failed = forId(state, "promptFail", hooks.promptFailIds, path.id, () => {
-          throw new Error(`prompt failed for ${path.id}`);
+        const failed = forId(state, "promptFail", hooks.promptFailIds, sessionID, () => {
+          throw new Error(`prompt failed for ${sessionID}`);
         });
         if (failed) return failed;
         if (isParentNotification(text)) {
@@ -650,7 +618,7 @@ export function createMockClient(hooks = {}) {
           fault(state, "notifyTransport");
           const plan = hooks.notifyTransport;
           state.notifyCalls.push(text);
-          const record = noticeRecord(path.id, text);
+          const record = noticeRecord(sessionID, text);
           if (plan) {
             // An unrecognised plan is a FALSE GREEN, not a no-op. A mistyped
             // plan key is silently ignored, the write takes the success path,
@@ -693,81 +661,67 @@ export function createMockClient(hooks = {}) {
               }),
             );
           }
-          state.promptBodies.push({ to: path.id, body });
+          state.promptBodies.push({ to: sessionID, text });
         }
         if (hooks.promptRefusal) {
-          // A host that SAYS NO, in the shape it says it: a resolved envelope with
-          // a non-2xx status and an error beside it. Every production reader of a
-          // write answer goes through `hostRefusal`, so this is the only way a case
-          // can put that branch under test through the harness.
+          // v2 says NO by REJECTING: every client method returns Promise<T> and an
+          // API error throws, so a refusal is a thrown value and there is no
+          // envelope to resolve. Production's retry catches exactly this.
           fault(state, "promptRefusal");
           const { status, message } = hooks.promptRefusal;
-          return Promise.resolve(
-            SDK_ENVELOPE(undefined, { status, error: { name: "ApiError", message } }),
-          );
+          throw Object.assign(new Error(message), { name: "ApiError", status });
         }
-        return Promise.resolve(SDK_ENVELOPE({ parts: [{ type: "text", text: "PROMPT_OK" }] }));
+        return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
       },
-      // The server's status channel: a map of every session with a turn the
-      // host knows about. A session absent from it has no turn running.
-      //
-      // Counted, because a read that fans out into one call per task turns a
-      // fleet view into a burst of transport against a host that answers the
-      // whole fleet in one. The count is the only proof a view did not do it.
-      status: async () => {
-        state.statusReads += 1;
-        const hostile = armedHostFault(state, hooks, "statusHang", "statusThrows");
-        if (hostile) return hostile();
-        return SDK_ENVELOPE(
-          Object.fromEntries([...state.hostStatus].map(([id, entry]) => [id, { type: entry.type }])),
-        );
-      },
-      messages: async ({ path }) => {
+      // v2 gives a plugin NO status channel, so the fake does not serve one: keeping
+      // a map here would keep a v1 belief alive that production has already given up.
+      context: async ({ sessionID }) => {
+        state.transcriptReads += 1;
         if (state.messageReadGate && !state.messageReadGate.used) {
           fault(state, "messageReadGate");
           state.messageReadGate.used = true;
           await state.messageReadGate.promise;
         }
-        if (state.unreadable.has(path.id)) {
+        if (state.unreadable.has(sessionID)) {
           fault(state, "unreadableTranscript");
-          const error = new Error(`Session "${path.id}" transcript unavailable.`);
+          const error = new Error(`Session "${sessionID}" transcript unavailable.`);
           error.status = 500;
           throw error;
         }
-        if (state.transcripts.has(path.id)) {
-          return SDK_ENVELOPE(state.transcripts.get(path.id));
+        if (state.transcripts.has(sessionID)) {
+          return state.transcripts.get(sessionID);
         }
-        if (hooks.messages) return SDK_ENVELOPE(hooks.messages({ path }));
-        if (!state.sessions.has(path.id)) {
-          const error = new Error(`Session "${path.id}" not found.`);
+        if (hooks.messages) return hooks.messages({ sessionID });
+        if (!state.sessions.has(sessionID)) {
+          const error = new Error(`Session "${sessionID}" not found.`);
           error.status = 404;
           throw error;
         }
-        return SDK_ENVELOPE([hostSaid("COMPLETED_OK", state.hostStatus.get(path.id)?.at ?? Date.now())]);
+        return [hostSaid("COMPLETED_OK")];
       },
       // Does the host still HAVE this session — the only endpoint whose contract
       // answers that. The status map cannot: "nothing running" and "never existed"
       // are the same absence there, and reading one as the other is what made a
       // restart invent errors for children the host still had. So the fake answers
       // it, refusing with the host's OWN declared not-found.
-      get: async ({ path }) => {
+      get: async ({ sessionID }) => {
         state.presenceReads += 1;
         const hostile = armedHostFault(state, hooks, "presenceHang", "presenceThrows");
         if (hostile) return hostile();
-        if (state.sessions.has(path.id) || state.foreignSessions.has(path.id)) {
-          return SDK_ENVELOPE(sessionObject(path.id));
+        if (state.sessions.has(sessionID) || state.foreignSessions.has(sessionID)) {
+          return sessionObject(sessionID);
         }
-        const error = new Error(`Session "${path.id}" not found.`);
+        const error = new Error(`Session "${sessionID}" not found.`);
         error.name = notFoundName();
         error.status = notFoundStatus();
         throw error;
       },
-      abort: async ({ path }) => {
-        state.abortAttempts.push(path.id);
+      interrupt: async ({ sessionID }) => {
+        state.abortAttempts.push(sessionID);
         // A transport that never answers. The plugin bounds every other host
         // call, so a hang here is the one shape a caller cannot survive unless
         // the abort path carries its own deadline.
-        const abortHung = forId(state, "abortHang", hooks.abortHangIds, path.id, neverAnswers);
+        const abortHung = forId(state, "abortHang", hooks.abortHangIds, sessionID, neverAnswers);
         if (abortHung) return abortHung;
         // The lost packet: ONE abort per id never comes back, and every later one
         // is answered normally. `abortHangIds` is the wrong shape for a deadline
@@ -775,9 +729,9 @@ export function createMockClient(hooks = {}) {
         // suite would stop reporting anything after the case it was written for.
         // This is the shape a real network failure has: the request is lost once,
         // and a retry gets through.
-        if (!state.abortsLost.has(path.id)) {
-          const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, path.id, () => {
-            state.abortsLost.add(path.id);
+        if (!state.abortsLost.has(sessionID)) {
+          const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, sessionID, () => {
+            state.abortsLost.add(sessionID);
             return neverAnswers();
           });
           if (lost) return lost;
@@ -799,9 +753,9 @@ export function createMockClient(hooks = {}) {
         // scripts a failing abort gets the same 404 shape as a case that names a
         // session that was never there.
         const serverLostIt = (id) => !state.sessions.has(id) || Boolean(hooks.abortFailIds?.has(id));
-        if (serverLostIt(path.id)) {
-          if (hooks.abortFailIds?.has(path.id)) fault(state, "abortFail");
-          throw sessionNotFound(path.id);
+        if (serverLostIt(sessionID)) {
+          if (hooks.abortFailIds?.has(sessionID)) fault(state, "abortFail");
+          throw sessionNotFound(sessionID);
         }
         // The abort gate: the first abort parks here until the test releases
         // it, so a racing call can be arranged without monkey-patching. With
@@ -812,12 +766,12 @@ export function createMockClient(hooks = {}) {
           state.abortGate.used = true;
           await state.abortGate.promise;
           if (state.abortGate.fails) {
-            throw sessionNotFound(path.id);
+            throw sessionNotFound(sessionID);
           }
         }
-        state.aborted.push(path.id);
-        setHostTurn(state, path.id, "idle");
-        return SDK_ENVELOPE({ ok: true });
+        state.aborted.push(sessionID);
+        setHostTurn(state, sessionID, "idle");
+        return { ok: true };
       },
     },
     // Hold the next abort open. Returns the release, awaited by the test.
@@ -881,8 +835,6 @@ export const FAKE_SOURCE = readFileSync(new URL(import.meta.url), "utf8");
  * in? Beside the builder because a producer and a recogniser of one shape are one fact,
  * and two copies of it would drift the way everything else here did.
  */
-export const isSDKEnvelope = (answer) =>
-  answer !== null && typeof answer === "object" && "data" in answer && "response" in answer;
 
 /**
  * The arguments one endpoint answers, by namespace and method — the shape the
@@ -895,12 +847,12 @@ export const isSDKEnvelope = (answer) =>
  * knows its routes better than the probe did.
  */
 export function hostCallArgs(ns, method, probeId) {
-  const path = ns === "question" ? { requestID: "prb_shape_probe" } : { id: probeId };
-  if (method === "reject") return { path };
-  if (method === "reply") return { path, body: { answers: [["probe"]] } };
-  if (method === "prompt") return { path, body: { parts: [{ type: "text", text: "probe" }] } };
-  if (method === "create") return { body: { title: "probe" } };
-  return { path };
+  if (ns === "permission" && method === "reply")
+    return { sessionID: probeId, requestID: "prb_shape_probe", decision: "once" };
+  if (ns === "session" && method === "prompt") return { sessionID: probeId, text: "probe" };
+  if (ns === "session" && method === "create") return { title: "probe" };
+  if (ns === "session") return { sessionID: probeId };
+  return {};
 }
 
 /**

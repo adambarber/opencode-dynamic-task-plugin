@@ -7,8 +7,8 @@
 // execution-bound, including the one on the parent prompt itself — the host
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
-import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { appendLogLine } from "../debug-logger.js";
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
@@ -63,14 +63,7 @@ export type LogLevel = "info" | "warn" | "error";
  * of holding plugin boot open against a silent host.
  */
 export function safeLog(level: LogLevel, message: string): void {
-  try {
-    const root = pluginLogRoot();
-    mkdirSync(root, { recursive: true });
-    appendFileSync(path.join(root, "plugin.log"), `${new Date().toISOString()} ${level} ${message}\n`, "utf8");
-  } catch {
-    // A failing fs write must never break the turn that noticed a problem worth
-    // recording; observability is never worth losing the work it was observing.
-  }
+  appendLogLine(path.join(pluginLogRoot(), "plugin.log"), `${new Date().toISOString()} ${level} ${message}`);
 }
 
 /**

@@ -39,7 +39,6 @@ import { TaskState, NoticeClaim } from "../../dist/shared/task-state.js";
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { InterruptScope } from "../../dist/tools/interrupt.js";
-import { QuestionAction } from "../../dist/shared/question-handling.js";
 import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath } from "../../scripts/cross-boundary.mjs";
 
 // Non-global regexes per line (avoids lastIndex statefulness). A line that
@@ -932,7 +931,6 @@ const DISCRIMINANT_VALUES = [
   ...Object.values(NoticeClaim),
   ...Object.values(LedgerChangeKind),
   ...Object.values(InterruptScope),
-  ...Object.values(QuestionAction),
 ];
 
 const RAW_TAG_COMPARISON = DISCRIMINANT_VALUES.map((value) => new RegExp(`(===|!==)\\s*"${value}"`));

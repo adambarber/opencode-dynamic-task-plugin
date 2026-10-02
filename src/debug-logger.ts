@@ -33,6 +33,24 @@ export function getDebugLogPath(parentSessionId: string, childSessionId: string)
   return path.join(debugRoot, `parent-${sanitize(parentSessionId)}__child-${sanitize(childSessionId)}.log`);
 }
 
+/**
+ * The one file write this plugin makes, for every line it keeps.
+ *
+ * v2 took the host's log sink away, so `safeLog` had to keep its own line — and
+ * the first version of that opened a second `appendFileSync` in `notify.ts`,
+ * which the write-funnel gate correctly refused. A second writer is two places
+ * to learn that a failing write must be swallowed and two places to forget.
+ */
+export function appendLogLine(targetPath: string, line: string): void {
+  try {
+    mkdirSync(path.dirname(targetPath), { recursive: true });
+    appendFileSync(targetPath, `${line}\n`, "utf8");
+  } catch {
+    // A failing fs write (permissions, disk) must never break the caller —
+    // observability is never worth losing the work it was observing.
+  }
+}
+
 export function safeDebugPayload(payload: Record<string, unknown>): Record<string, unknown> {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return {};
   const blocklist = currentBlocklist();
@@ -48,17 +66,10 @@ export function safeDebugPayload(payload: Record<string, unknown>): Record<strin
 
 export function debugLog(parentSessionId: string, childSessionId: string, eventName: string, payload: Record<string, unknown> = {}): void {
   if (process.env.DYNAMIC_TASK_DEBUG !== "1") return;
-  // Best-effort: a failing fs write (permissions, disk) must never break the
-  // event handler that calls it — debug output is never worth a dropped event.
-  try {
-    mkdirSync(debugRoot, { recursive: true });
-    const line = JSON.stringify({
-      ts: new Date().toISOString(),
-      eventName,
-      ...safeDebugPayload(payload),
-    });
-    appendFileSync(getDebugLogPath(parentSessionId, childSessionId), `${line}\n`, "utf8");
-  } catch {
-    // debug logging degrades to silence
-  }
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    eventName,
+    ...safeDebugPayload(payload),
+  });
+  appendLogLine(getDebugLogPath(parentSessionId, childSessionId), line);
 }

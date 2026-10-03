@@ -15,6 +15,7 @@ import {
 import { opaqueHost } from "./support/opaque-host.js";
 import { PERMISSION_ASKED, readHostAsk } from "../../dist/shared/host-events.js";
 import { truncateText } from "../../dist/shared/notify.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { assertAnswer, assertIs, assertNothing } from "./support/assertions.js";
 
 // One verb survives the v2 rename: the gate DENIES. `permission.reply` takes a
@@ -99,7 +100,7 @@ describe("question gate: decideAsk", () => {
   it("an active child is denied with the PARENT-s remedy", () => {
     const reason = decideAsk("active");
     assert.ok(reason.startsWith("task_continue"), `leads with what the reader can do. got: ${reason}`);
-    assert.ok(!reason.includes("task_notify"), `never points at a child-only tool. got: ${reason}`);
+    assert.ok(!reason.includes(NOTIFY_TOOL), `never points at a child-only tool. got: ${reason}`);
     assert.ok(!/when it resumes/.test(reason), `never tells anyone to wait. got: ${reason}`);
   });
 

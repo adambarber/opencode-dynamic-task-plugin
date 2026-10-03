@@ -14,7 +14,7 @@ import { denyAsk, decideAsk } from "../shared/question-handling.js";
 
 // One reporting tail for every denial: a denied ask is logged by outcome and the tag
 // names which arm of the gate refused it. The reason is logged rather than sent — the
-// host's deny endpoint takes no body, so a reason can only ever reach the operator here.
+// host's decision carries no body, so a reason can only ever reach the operator here.
 //
 // The parent to tell is read off the record rather than passed beside it: a refusal
 // reported to the wrong parent is the one mistake this tail cannot be asked to make

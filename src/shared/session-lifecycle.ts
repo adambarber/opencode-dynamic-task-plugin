@@ -19,7 +19,7 @@ import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, Tas
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
-import { SESSION_DELETED, SESSION_IDLE, isTurnEnding } from "./host-events.js";
+import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, isTurnEnding, SESSION_EXECUTION_INTERRUPTED, SESSION_EXECUTION_STARTED, SESSION_EXECUTION_SUCCEEDED } from "./host-events.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { TaskStore } from "./store.js";
@@ -235,6 +235,17 @@ export function getEventLifecycleStatus(event: unknown): string {
   if (type === SESSION_IDLE) return "idle";
   if (isTurnEnding(type)) return "error";
   if (type === SESSION_DELETED) return "deleted";
+  // v2's four execution events, NAMED rather than guessed. The fallback below
+  // splits the type on `.` and takes the last segment, which for `session.execution.
+  // failed` yields "failed" — a word `ENDED_BADLY` does not contain, so a failed child
+  // settled as COMPLETED and the parent was told its work succeeded. A guess is what
+  // made that reachable, and the fix is to stop guessing a vocabulary the host declares.
+  // `SESSION_ERROR` IS the failed execution event (`session.execution.failed`);
+  // it is named for its role, which predates v2 splitting these four apart.
+  if (type === SESSION_ERROR) return "error";
+  if (type === SESSION_EXECUTION_SUCCEEDED) return "completed";
+  if (type === SESSION_EXECUTION_INTERRUPTED) return "interrupted";
+  if (type === SESSION_EXECUTION_STARTED) return "started";
   const source = type + eventWord(event, "name");
   return source.includes(".") ? (source.split(".").pop() ?? "").toLowerCase() : source.toLowerCase();
 }

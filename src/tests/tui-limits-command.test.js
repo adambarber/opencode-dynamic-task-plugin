@@ -38,7 +38,7 @@ import { displayName } from "../../dist/tui/agent-editor.js";
 import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps } from "../../dist/tui/index.js";
 
 import {
-  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, choose, clearRow, chooseValue, dialogRowText, rowsText,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, backToCaps, capRow, capText, choose, clearRow, chooseValue, dialogRowText, rowsText,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
   row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
@@ -570,19 +570,16 @@ describe("choosing a cap", () => {
   });
 
   it("has a way back that writes nothing, because its only other exit is escape", () =>
-    // The gap this closes. Every other row on a picker either SETS THE FILE or cannot
-    // be pressed, and the host's `replace` leaves no previous dialog to pop back to — so
-    // before this row existed, a picker had no non-destructive exit at all. Changing
-    // your mind meant closing the whole manager and navigating back in, or picking a
-    // value you did not want under a success toast.
-    //
-    // The file is asserted as well as the landing screen, because "go back" that wrote
-    // would land on a screen showing a number the operator never chose.
     withPickerOpen(async (host, directory) => {
-      assert.equal(titlesOf(top(host.seen)).at(-1), BACK_LABEL,
+      // The gap this closes. Every other row on a picker either SETS THE FILE or cannot
+      // be pressed, and the host's `replace` leaves no previous dialog to pop back to —
+      // so before this row existed, a picker had no non-destructive exit at all.
+      // Changing your mind meant closing the whole manager and navigating back in, or
+      // picking a value you did not want under a success toast.
+      const rows = titlesOf(top(host.seen));
+      assert.equal(rows.at(-1), BACK_LABEL,
         "the way out is the LAST row, below the values: a navigation row sitting above ten numbers reads as a value, and the host replaces the screen under a press");
-      await choose(host, backRow(host));
-      assert.equal(top(host.seen).title, "explore", "and it lands on the agent's own two caps, one level up");
+      await backToCaps(host, "explore", "and it lands on the agent's own two caps, one level up");
       assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 2 } } },
         "the overlay is untouched — abandoning a picker is not an edit");
       assert.equal(host.seen.toasts.length, 0, "and nothing is announced about a change that did not happen");
@@ -647,8 +644,7 @@ describe("the flow, end to end on disk", () => {
       for (const cap of AGENT_CAP_NAMES) {
         await choose(host, capRow(host, cap));
         assert.match(top(host.seen).title, new RegExp(`explore — ${CAP_LABEL[cap]}`), `${cap} opens its picker`);
-        await choose(host, backRow(host));
-        assert.equal(top(host.seen).title, "explore", "and the way back is one level up, on the agent's own caps");
+        await backToCaps(host, "explore", "and the way back is one level up, on the agent's own caps");
       }
     }));
 

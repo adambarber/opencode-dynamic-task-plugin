@@ -400,6 +400,19 @@ export const chooseValue = async (host, value) => {
 };
 
 /**
+ * Press the picker's way out and land one level up.
+ *
+ * Two cases press Back off a value picker and both need the landing screen named, so
+ * the pair is one step: the press, and the proof it went up one level rather than out
+ * to the list. The message stays the caller's, because the two cases press Back for
+ * different reasons and a shared message would say neither.
+ */
+export const backToCaps = async (host, agent, why) => {
+  await choose(host, backRow(host));
+  assert.equal(top(host.seen).title, agent, why);
+};
+
+/**
  * The rows on whatever screen is up.
  *
  * The ONE way a case reaches the current dialog's rows. Four finders were each

@@ -183,10 +183,7 @@ describe("prompt dance: invokePrompt", () => {
     // the TRANSPORT rather than in a return value the caller never had.
     invokePrompt(client, "ses_1", "hello");
     await settled();
-    assert.deepStrictEqual(captured, {
-      path: { id: "ses_1" },
-      body: { parts: [{ type: "text", text: "hello" }] },
-    });
+    assert.deepStrictEqual(captured, { sessionID: "ses_1", text: "hello" });
   });
 
   it("rejects with the raw client error (callers classify)", async () => {
@@ -341,7 +338,7 @@ describe("prompt dance: getLatestAssistantText", () => {
 // these clients declare: a reader that grew a second dependency would have to
 // be faked differently, and this is where that would show.
 describe("prompt dance: hydrateLatestOutcome", () => {
-  const clientReading = (read) => opaqueHost({ session: { messages: async () => read() } });
+  const clientReading = (read) => opaqueHost({ session: { context: async () => read() } });
 
   // The outcome is a fixed shape — text, errorDetail, unreadable — and a case
   // states only the part that moved. The full default is written once, so a new

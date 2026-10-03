@@ -26,7 +26,7 @@ import { childFailingWith } from "./support/integration.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 /** The prompts sent TO a child, as text. The spawn prompt is always the first. */
-const childPrompts = (h, id) => promptsTo(h.client, id).map((p) => p.body?.parts?.[0]?.text ?? "");
+const childPrompts = (h, id) => promptsTo(h.client, id).map((p) => p.text ?? "");
 
 /**
  * End the child's turn, then assert how much the parent was told.

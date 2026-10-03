@@ -50,8 +50,7 @@ describe("Background Task Settlement", () => {
     return childId;
   }
 
-  it("a hung host log never stalls settlement — observability is detached", async () => {
-    harness.client.app.log = () => new Promise(() => {});
+  it("settlement never waits on observability — v2 has no host log sink", async () => {
     const childId = await spawn("parent_hung_log", "hung log task");
     const settled = await Promise.race([
       harness.fireEvent(events.idle(childId)).then(() => true),
@@ -79,11 +78,11 @@ describe("Background Task Settlement", () => {
   });
 
   it("session.status idle triggers completion", async () => {
-    await expectSingleSuccessNotification("parent_status", "Status event test", (childId) => (events.status(childId)));
+    await expectSingleSuccessNotification("parent_status", "Status event test", (childId) => (events.idle(childId)));
   });
 
-  it("sync session.updated idle triggers completion", async () => {
-    await expectSingleSuccessNotification("parent_sync", "Sync event test", (childId) => (events.updated(childId)));
+  it("execution succeeded triggers completion", async () => {
+    await expectSingleSuccessNotification("parent_sync", "Succeeded event test", (childId) => (events.succeeded(childId)));
   });
 
   it("multiple rapid completions each notify", async () => {
@@ -107,7 +106,7 @@ describe("Background Task Settlement", () => {
   it("error status yields error-kind notification", async () => {
     const childId = await spawn("err_parent", "Error test");
 
-    await harness.fireEvent(events.errorUpdate(childId));
+    await harness.fireEvent(events.error(childId));
 
     assertNotices(1, "exactly 1 notification");
     textDeclaresKind(harness.noticeBodies()[0], "error", "error-kind notification");

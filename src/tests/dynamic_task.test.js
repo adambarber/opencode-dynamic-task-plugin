@@ -12,6 +12,7 @@ import { abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessio
 import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 import { events } from "./support/mock-host.js";
 import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
 import {
   announcedAbout,
@@ -274,7 +275,7 @@ describe("admission lineage", () => {
 });
 
 describe("prompt routing contract", () => {
-  it("model override travels on the prompt, not the create call", async () => {
+  it("model override travels on the switch calls, not the create call", async () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ description: "model task", model: "prov/model-x" });
     await sleep(0); // the fire-and-forget prompt records one microtask later
@@ -282,18 +283,16 @@ describe("prompt routing contract", () => {
     assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
     const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1, "child prompt recorded");
-    assert.strictEqual(bodies[0].body.agent, "explore");
-    assert.deepStrictEqual(bodies[0].body.model, { providerID: "prov", modelID: "model-x" });
+    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore", providerID: "prov", modelID: "model-x" });
     });
 
-  it("prompts without override carry the agent and no model", async () => {
+  it("prompts without override route the agent and no model", async () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ description: "plain task" });
     await sleep(0);
     const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1);
-    assert.strictEqual(bodies[0].body.agent, "explore");
-    assert.ok(!("model" in bodies[0].body), `no model key. got: ${JSON.stringify(bodies[0].body)}`);
+    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore" });
     });
 
   it("child prompts carry the background-task wrapper instructions", async () => {
@@ -302,7 +301,7 @@ describe("prompt routing contract", () => {
     await sleep(0);
     const text = promptTextsTo(h.client, id)[0];
     answerSays(text, "background child task", "wrapped");
-    answerSays(text, "task_notify", "teaches the notify channel");
+    answerSays(text, NOTIFY_TOOL, "teaches the notify channel");
     answerSays(text, "Review for bugs", "carries the payload");
     });
 });

@@ -97,12 +97,16 @@ async function bootWithUnwritableLedger({ debug = false } = {}) {
 }
 
 describe("a ledger write that cannot land is recorded, not swallowed", () => {
-  it("a ledger that cannot be read is refused, not replaced, and says so on the host log", async () => {
+  it("a ledger that cannot be read is refused, not replaced, and says so on the log", async () => {
+    // v2 gives a plugin no log sink, so the log is the plugin's own structured file
+    // and a case names the EVENT rather than the prose — a writer that stopped
+    // logging altogether fails this, and one that merely reworded a sentence does
+    // not, which is the only split that makes a log claim testable.
     const { h } = await bootWithUnwritableLedger();
-    const said = JSON.stringify(h.logs());
-    answerMatches(said, /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "the cause is on the host log, where an operator will look");
-    answerMatches(said, /not writing the task ledger/i, "and it says the write was refused rather than attempted");
-    answerSays(said, ".dynamic-task-ledger.json", "and which project's ledger is being left alone");
+    const refused = h.events("ledger-write-refused");
+    assert.ok(refused.length > 0, "the refusal is on the log, where an operator will look");
+    answerSays(JSON.stringify(refused), ".dynamic-task-ledger.json", "and which project's ledger is being left alone");
+    answerMatches(JSON.stringify(refused), /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "and it names the cause");
   });
 
   it("a readable ledger in an unwritable project fails loudly on the host log", async () => {
@@ -120,10 +124,10 @@ describe("a ledger write that cannot land is recorded, not swallowed", () => {
     } finally {
       chmodSync(directory, 0o755);
     }
-    const said = JSON.stringify(h.logs());
-    answerMatches(said, /write to the task ledger.*failed/i, "a lost write is on the host log, not only in a debug file");
-    answerMatches(said, /EACCES|EPERM/, "and it names the cause");
-    answerSays(said, ".dynamic-task-ledger.json", "and which project's ledger lost the write");
+    const failed = h.events("ledger-write-failed");
+    assert.ok(failed.length > 0, "a lost write is on the log");
+    answerMatches(JSON.stringify(failed), /EACCES|EPERM/, "and it names the cause");
+    answerSays(JSON.stringify(failed), ".dynamic-task-ledger.json", "and which project's ledger lost the write");
   });
 
   it("settles the child anyway — a failed write must not strand it", async () => {
@@ -149,9 +153,9 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   // was set before the process started is one most operators will never see.
   const bootOnCorrupt = (contents) => bootOn(() => contents);
 
-  it("a torn file is named on the host log, where an operator will actually look", async () => {
+  it("a torn file is named on the log, where an operator will actually look", async () => {
     const h = await bootOnCorrupt('{"version":3,"tasks":{"ses_a":{"state":"comp');
-    const said = JSON.stringify(h.logs());
+    const said = JSON.stringify(h.events("ledger-read-discarded"));
     answerMatches(said, /discarded/i, "the log says the file was thrown away, not merely empty");
     answerMatches(said, /unparseable/i, "and says which failure it was");
     answerMatches(said, /\.dynamic-task-ledger\.json/, "and which file lost what");
@@ -159,7 +163,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
 
   it("a file this build cannot speak is reported by version, not swallowed", async () => {
     const h = await bootOnCorrupt(JSON.stringify({ version: 2, tasks: {}, active: {}, pending: [] }));
-    const said = JSON.stringify(h.logs());
+    const said = JSON.stringify(h.events("ledger-read-discarded"));
     answerMatches(said, /discarded/i, "an old version is still a discarded file");
     answerMatches(said, /version/i, "and the version is what an operator needs to act on");
   });
@@ -171,7 +175,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
 
   it("a good ledger reports nothing — silence must still mean healthy", async () => {
     const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
-    const aboutTheLedger = h.logs().filter((entry) => /discarded|unparseable/i.test(JSON.stringify(entry)));
+    const aboutTheLedger = h.events("ledger-read-discarded");
     assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
   });
 
@@ -196,11 +200,8 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
     await settledOnDisk(h, id);
 
     assert.deepStrictEqual(fileSays(ledgerPath), lost, "the unreadable file is exactly as the operator was told it was");
-    answerMatches(
-      JSON.stringify(h.logs()),
-      /will not (be )?(over)?write/i,
-      "and the operator is told the file is being left alone, not merely that it was read badly",
-    );
+    assert.ok(h.events("ledger-write-refused").length > 0,
+      "and the operator is told the file is being left alone, not merely that it was read badly");
   });
 
   // The other direction, and the reason the guard is not simply "discarded means
@@ -382,7 +383,7 @@ describe("boot redelivers what the last boot owed", () => {
     // the debt never reached its budget. The boot pass is the one moment every
     // debt is visible at once, so it is the one moment that has to say so.
     const h = await bootWithOwed([owedDebt()]);
-    const said = JSON.stringify(h.logs());
+    const said = h.pluginLog();
 
     answerMatches(said, /owed|outstanding|unpaid/i, "the boot says it is carrying a debt from the last run");
     answerMatches(said, /ses_owed/, "and names the child it is owed for");
@@ -391,7 +392,7 @@ describe("boot redelivers what the last boot owed", () => {
 
   it("a healthy boot still says nothing about debts — silence must keep meaning healthy", async () => {
     const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
-    const aboutDebts = h.logs().filter((entry) => /owed|outstanding|unpaid/i.test(JSON.stringify(entry)));
+    const aboutDebts = h.pluginLog().match(/owed|outstanding|unpaid/gi) ?? [];
     assert.deepStrictEqual(aboutDebts, [], `a boot with nothing owed reports no debt. got: ${JSON.stringify(aboutDebts)}`);
   });
 
@@ -473,7 +474,15 @@ describe("boot redelivers what the last boot owed", () => {
 // happened to it. No clocks, no polling: the host's own status words are the
 // answer, and each cell below is a different set of words.
 describe("boot reconciles what the last boot was still running", () => {
-  const bootWithRunners = (actives, hostStatusSeed) => bootWithLedger({ active: actives }, { hooks: { hostStatusSeed } });
+  /**
+   * Boot with restored children and the host's own verdict about each one.
+   *
+   * `hostTurnSeed` is the v2 turn record: an entry means the host has recorded a
+   * verdict for that turn, its absence means a turn is still open. The v1 spelling
+   * of this — a status map the host deletes on idle — is gone, and a fixture that
+   * still seeds it proves nothing: the map nothing reads cannot fail a case.
+   */
+  const bootWithRunners = (actives, hostTurnSeed) => bootWithLedger({ active: actives }, { hooks: { hostTurnSeed } });
 
   // A record file is a document a person can edit and a crash can tear, and
   // admission cannot produce a parent link that points back up the tree — but
@@ -492,7 +501,7 @@ describe("boot reconciles what the last boot was still running", () => {
         ses_a: runningEntry("ses_a", { parentSessionId: "ses_b" }),
         ses_b: runningEntry("ses_b", { parentSessionId: "ses_a" }),
       },
-      { ses_a: "busy", ses_b: "busy" },
+      { ses_a: "succeeded", ses_b: "succeeded" },
     );
     const list = await h.tool.task_list.execute({});
     for (const id of ["ses_a", "ses_b"]) {
@@ -505,7 +514,7 @@ describe("boot reconciles what the last boot was still running", () => {
   const ledgerActive = (directory) => JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active;
 
   it("a child the host is still working stays active and settles on its own event", async () => {
-    const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "busy" });
+    const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "open" });
     const status = await h.tool.task_status.execute({ session_id: "ses_live" }, { sessionID: "ses_parent" });
     answerMatches(status, /State: active/, "still running is still active");
     assert.deepStrictEqual(h.noticeBodies(), [], "no notice for a task that is not over");
@@ -527,9 +536,9 @@ describe("boot reconciles what the last boot was still running", () => {
   // reported per child — and that both were left running, since a child's own
   // terminal event is what settles it and nothing else may.
   it("a status channel that is down leaves every restored child active, and attempts each one", async () => {
-    const { directory, notices, logs } = await bootWithLedger(
+    const { directory, notices, pluginLog } = await bootWithLedger(
       { active: { ses_first: runningEntry("ses_first"), ses_second: runningEntry("ses_second") } },
-      { hooks: { statusThrows: true } },
+      { hooks: { presenceThrows: true } },
     );
     await sleep(150);
 
@@ -540,7 +549,7 @@ describe("boot reconciles what the last boot was still running", () => {
     );
     assert.deepStrictEqual(notices(), [], "and nothing is notified that was not observed");
 
-    const said = JSON.stringify(logs());
+    const said = pluginLog();
     for (const id of ["ses_first", "ses_second"]) {
       assert.ok(said.includes(id), `${id} was attempted: the failure is reported per child, so a catch around the loop would leave this name out`);
     }
@@ -572,7 +581,7 @@ describe("boot reconciles what the last boot was still running", () => {
   // The host says the turn is over and the transcript still reads: this is
   // finished work, and settling it error would invent a failure nobody saw.
   it("a child that finished while the parent was down settles completed, not error", async () => {
-    const { notices } = await bootWithRunners({ ses_idle: runningEntry("ses_idle") }, { ses_idle: "idle" });
+    const { notices } = await bootWithRunners({ ses_idle: runningEntry("ses_idle") }, { ses_idle: "succeeded" });
     await waitFor(() => notices().length > 0, "the finished child to settle");
     textDeclaresKind(notices()[0].message, "completed", "the finished child settles as the success it was");
   });

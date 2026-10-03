@@ -301,7 +301,7 @@ describe("task_continue branches", () => {
     // The settled turn published its ending more than once, and the extra copy
     // can still be in flight when the revival fires — so the revived turn runs
     // its own events before it can end.
-    await h.fireEvent(events.status(id, "busy"));
+    await h.fireEvent(events.working(id));
     await h.settle(id);
     assertNoticeCount(h, 2, "revival earns a fresh settlement");
     textDeclaresKind(h.noticeBodies()[1], "completed", "and the notice says so");
@@ -335,8 +335,9 @@ describe("task_continue branches", () => {
     await h.settle(id);
     const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "other/thing-1" });
     answerSays(out, "Follow-up sent");
-    const routed = promptsTo(h.client, id);
-    assert.deepStrictEqual(routed[routed.length - 1].body.model, { providerID: "other", modelID: "thing-1" });
+    // v2 routes via `switchModel`, not a model key on the prompt body — the prompt
+    // itself carries only text, and the route is the host's own record of it.
+    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore", providerID: "other", modelID: "thing-1" });
     await statusSays(c, "Model: other/thing-1", "persists on the record");
     });
 
@@ -429,7 +430,7 @@ describe("outcome correctness: failed turns never report success", () => {
     // The field log showed three terminal events within 1ms for one failure.
     await Promise.all([
     h.fireEvent(events.error(id)),
-    h.fireEvent(events.status(id)),
+    h.fireEvent(events.idle(id)),
     h.fireEvent(events.idle(id, {})),
     ]);
     await sleep(30);

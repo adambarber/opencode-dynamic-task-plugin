@@ -11,9 +11,10 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
-import { agentDeclaring, events } from "./support/mock-host.js";
+import { agentDeclaring, allowAction, denyAction, events } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
 import { bootOn } from "./support/integration.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 
@@ -236,25 +237,28 @@ describe("the background prompt tells a child the truth about its own voice", ()
     return promptTextsTo(h.client, id)[0];
   };
 
-  it("omits the task_notify order when the agent declares the tool absent", async () => {
-    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true, glob: true }) } });
+  it("omits the task_notify order when the agent's ruleset denies it", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring([allowAction("read"), denyAction(NOTIFY_TOOL)]) } });
     const prompt = await openingFor(h, "read-only worker");
     // Asserted on the ORDER, not the bare word: the replacement text names the
     // tool in order to explain its absence, which is more useful to the child
-    // than a sentence about a tool it has never heard of.
-    answerOmits(prompt, "call task_notify", "a channel the child provably lacks is not offered as an option");
+    // than a sentence about a tool it has never heard of. The ruleset that denies
+    // it is the only v2 declaration that deprives the child — an unmentioned tool
+    // is a tool the child may still call and be asked about.
+    answerOmits(prompt, `call ${NOTIFY_TOOL}`, "a channel the child provably lacks is not offered as an option");
     answerOmits(prompt, "needs_input", "and it is not promised an outcome it cannot reach");
     answerSays(prompt, "final message", "it is told where to put what it would have said");
   });
 
-  it("honours an explicit false, not just an omission", async () => {
-    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ task_notify: false }) } });
-    answerOmits(await openingFor(h, "tool switched off"), "call task_notify", "declared off is absent, not merely unlisted");
+  it("offers the channel when the ruleset simply does not mention it", async () => {
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring([allowAction("read"), allowAction("glob")]) } });
+    answerSays(await openingFor(h, "tool not ruled on"), NOTIFY_TOOL,
+      "a ruleset silent on the tool leaves it callable — the host's no-match answer is `ask`, not `deny`");
   });
 
   it("keeps the instruction when the agent says nothing about its tools", async () => {
-    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent" }] } });
-    answerSays(await openingFor(h, "unknown tool set"), "task_notify", "no declaration means no reason to hide the channel");
+    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent", permissions: [] }] } });
+    answerSays(await openingFor(h, "unknown tool set"), NOTIFY_TOOL, "no declaration means no reason to hide the channel");
   });
 });
 
@@ -268,21 +272,21 @@ describe("the background prompt tells a child the truth about its own voice", ()
 // workers whose output is worth waiting for.
 describe("the spawn confirmation tells the parent what its child cannot report", () => {
   it("names the limit when the agent declares the tool absent", async () => {
-    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true }) } });
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring([allowAction("read"), denyAction(NOTIFY_TOOL)]) } });
     const out = await confirmationFor(h, "read-only worker");
-    answerSays(out, "no task_notify", "the parent is told the child has no voice at all");
+    answerSays(out, `no ${NOTIFY_TOOL}`, "the parent is told the child has no voice at all");
     answerSays(out, "settle as completed", "because that is the failure the parent is otherwise blind to");
   });
 
   it("says nothing extra when the agent has the tool", async () => {
-    const h = await setupHarness({ hooks: { agentsList: agentDeclaring({ read: true, task_notify: true }) } });
+    const h = await setupHarness({ hooks: { agentsList: agentDeclaring([allowAction("read"), allowAction(NOTIFY_TOOL)]) } });
     const out = await confirmationFor(h, "ordinary worker");
-    answerOmits(out, "no task_notify", "a child that can report is not warned about reporting");
+    answerOmits(out, `no ${NOTIFY_TOOL}`, "a child that can report is not warned about reporting");
   });
 
   it("says nothing extra when the tool set is unknown", async () => {
-    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent" }] } });
+    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent", permissions: [] }] } });
     const out = await confirmationFor(h, "undeclared worker");
-    answerOmits(out, "no task_notify", "absence of knowledge must not manufacture a warning either");
+    answerOmits(out, `no ${NOTIFY_TOOL}`, "absence of knowledge must not manufacture a warning either");
   });
 });

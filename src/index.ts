@@ -56,7 +56,11 @@ async function setup(context: Context): Promise<void> {
 
   // The event head, on v2's own registration surface. `transform` registers the
   // editor pass; `subscribe` is the stream itself.
-  context.tool.transform((editor) => {
+  // AWAITED, not fire-and-forget: `transform` returns `Promise<Registration>` and the
+  // registration applies asynchronously, so an un-awaited transform lets the `reload`
+  // below publish the tool list BEFORE our `editor.add` calls land — observed live as
+  // zero `tool.updated` events and sessions with none of the seven tools.
+  await context.tool.transform((editor) => {
     for (const [name, info] of Object.entries(tools)) editor.add({ ...info, name });
   });
   await context.tool.reload();

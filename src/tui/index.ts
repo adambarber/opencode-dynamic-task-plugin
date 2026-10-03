@@ -33,7 +33,8 @@
  * path already reads, so there is no second source of truth to reconcile and no server
  * endpoint added to read a number a file already holds.
  */
-import type { TuiDialogSelectProps, TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import type { Plugin } from "@opencode/plugin/tui";
+import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { depthLimits } from "../shared/task-policy.js";
@@ -69,8 +70,8 @@ import {
 } from "./agent-editor.js";
 import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 
-/** The api shape, named once. The plugin function is a long way down a type. */
-type TuiApi = Parameters<TuiPlugin>[0];
+/** The host side this screen talks to, named once. The flows below take it everywhere. */
+type Host = Plugin.Context;
 
 /**
  * The command name. It carries "limits" because the palette's fuzzy search runs over
@@ -122,80 +123,66 @@ enum ChoiceKind {
   CeilingValue = "ceilingValue",
 }
 
-export const tui: TuiPlugin = async (api) => {
-  api.keymap.registerLayer({
+// The palette entry. `keymap.layer` reads Solid context, so it runs in a slot
+// render the host owns — never in module scope, never in `setup`, where there is
+// no owner and the hooks throw. The render draws nothing; registering is its job.
+function registerLimitsCommand(ctx: Host): null {
+  ctx.keymap.layer(() => ({
+    mode: "global",
     commands: [
       {
-        name: COMMAND,
-        // REQUIRED for the command to appear in ctrl+p at all. The host surfaces
-        // palette commands BY NAMESPACE; a command without one is registered,
-        // runnable by keybinding and dispatchable by name, and listed nowhere. This
-        // one field is the whole difference between a working palette entry and an
-        // empty panel, and nothing about it is enforced by the type.
-        namespace: "palette",
+        id: COMMAND,
         title: "Task limits",
-        // `desc`, not `description` — the host reads `desc` for the palette's
-        // second line, and a `description` is a custom field it never looks at.
-        desc: "How many of each agent run at once, and how deep it may nest",
-        category: "Dynamic Task",
+        description: "How many of each agent run at once, and how deep it may nest",
+        group: "Dynamic Task",
         // The slash spelling is the same command, so there is one entry to
-        // discover and not a second one to keep in step. `slashName`, not
-        // `slash: { name }` — the nested form belongs to the legacy `api.command`
-        // API, which the host keeps only so v1 plugins initialize.
-        slashName: "limits",
-        // Async because the row set is the HOST'S agents, which is a client call:
-        // a screen that listed the overlay's own entries would be showing a
-        // hand-maintained index of agents rather than the ones this project can
-        // actually dispatch to, and would omit every agent nobody had capped yet —
-        // which is all of them, on a fresh project.
+        // discover and not a second one to keep in step.
+        slash: { name: "limits" },
+        palette: true,
+        // The row set is the HOST'S agents, which is a client call: a screen that
+        // listed the overlay's own entries would be showing a hand-maintained
+        // index of agents rather than the ones this project can actually dispatch
+        // to, and would omit every agent nobody had capped yet — which is all of
+        // them, on a fresh project.
         run: () => {
-          void openLimits(api);
+          void openLimits(ctx);
         },
       },
     ],
-  });
-  // No escape binding. A plugin that registers one owns `escape` for the whole app,
-  // and escape is the operator's way to STOP AN IN-FLIGHT REQUEST — a key whose
-  // failure is not a lost dialog but a turn that will not end. The host's own
-  // handler already closes the whole dialog stack, so duplicating it bought nothing
-  // except the one case it was written for (a text selection switches the host's
-  // handler off), and it charged for that by owning a key that must never be
-  // interceptable. The Back rows are the way out of every screen.
-  //
-  // Not a gated layer either. A gate can only be as good as the flag behind it: one
-  // that desynchronises from the dialog turns an interrupt into a swallowed key, and
-  // the failure it causes is a turn that never ends rather than a dialog that does.
-  // A plugin that binds no `escape` at all cannot break interrupt, whatever the
-  // dialog is doing — a property no predicate can offer.
-  //
-  // No `onDispose` for the one layer above. The host already disposes keymap
-  // registrations when a plugin deactivates, and the spec says so explicitly;
-  // wiring it a second time is not belt-and-braces, it is a second owner for one
-  // teardown.
-};
+  }));
+  return null;
+}
+
+// No escape binding. A plugin that binds one owns `escape` for the whole app,
+// and escape is the operator's way to STOP AN IN-FLIGHT REQUEST — a key whose
+// failure is not a lost dialog but a turn that will not end. The host's own
+// dialogs dismiss on escape, so duplicating it bought nothing except the one case
+// it was written for, and it charged for that by owning a key that must never be
+// interceptable. The Back rows are the way out of every screen. A `global` layer
+// with no `bind` claims no key at all, so interrupt is untouched whatever the
+// dialog is doing — a property no predicate can offer.
 
 /**
- * Every list of ours goes through here, and there is nothing to funnel: the host
- * takes a dialog with `replace` and takes it down itself.
- *
- * The WIDTH is deliberately not set. `replace` resets the dialog to `medium` (60
- * columns) on its way through, so a `setSize` would have to come after the mount —
- * and every screen here wants the host's default anyway, which is what every other
+ * Every select below goes through the host's promise dialog, which resolves with
+ * the chosen row's value and `undefined` on dismiss. The width is deliberately not
+ * set: every screen here wants the host's default, which is what every other
  * dialog in opencode gets. The budget that has to survive a row is enforced where
- * the content is built (`rowWidth`), not by making this one select the odd width out
- * in the app.
+ * the content is built (`fitsItsDialog`), not by making this one select the odd
+ * width out in the app.
  */
-function mountLimitsSelect<T>(api: TuiApi, build: () => TuiDialogSelectProps<T>): void {
-  api.ui.dialog.replace(() => api.ui.DialogSelect(build()));
+function selectLimitsRow<T>(ctx: Host, dialog: DialogSelectOptions<T>): Promise<T | undefined> {
+  return ctx.ui.dialog.select(dialog);
 }
 
 /**
- * The module the host actually loads: `{ id, tui }` as the DEFAULT export, with no
- * `server` alongside it. Target-exclusive is a loader REJECTION, not a preference.
+ * The module the host actually loads: `{ id, setup }` as the DEFAULT export. The
+ * command's layer needs a Solid owner, so `setup` claims the root slot with a
+ * render that registers it and draws nothing — and returns the claim's cleanup,
+ * so deactivating the plugin takes the palette entry with it.
  */
-const plugin: TuiPluginModule & { id: string } = {
+const plugin = {
   id: PLUGIN_ID,
-  tui,
+  setup: (ctx: Host) => ctx.ui.slot({ append: "app", render: () => registerLimitsCommand(ctx) }),
 };
 
 export default plugin;
@@ -216,10 +203,7 @@ export default plugin;
  * filter", which describes the widget rather than the vocabulary, so the box above the
  * list read as a form field that had lost its label.
  */
-export function limitsListProps(
-  dialog: AgentDialog,
-  ask: (choice: ListChoice) => void,
-): TuiDialogSelectProps<ListChoice> {
+export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListChoice> {
   return {
     title: "Task limits",
     // The filter stays ON here, and this is the one screen of the four that keeps it. A
@@ -235,7 +219,6 @@ export function limitsListProps(
         title: `${displayName(CEILING_LABEL)}:`,
         description: terseCell(dialog.ceiling) + " " + CAP_NOUN.maxConcurrent,
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
-        onSelect: () => ask({ kind: ChoiceKind.Ceiling }),
       },
       ...dialog.rows.map((row) => ({
         title: `${displayName(row.name)}:`,
@@ -259,7 +242,6 @@ export function limitsListProps(
         // has found out that the screen does not care.
         ...(fitsItsDialog({ title: row.name, description: plainSummary(row) }, DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
         value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
-        onSelect: () => ask({ kind: ChoiceKind.Agent, agent: row.name }),
       })),
     ],
   };
@@ -274,22 +256,12 @@ export function limitsListProps(
  * per-agent cap can reach, and neither screen explains the asymmetry.
  */
 /**
- * The two things a picker can be asked to do, named.
- *
- * A pair of trailing callbacks said `confirm, back` on both picker builders, and the
- * duplication gate called the two signatures one piece of code — correctly, because the
- * duplication was real: two positional slots at the tail of two signatures, growing a
- * third input in the middle. Naming them is the fix rather than a restyle, and it says
- * the thing the pair means: one of these leaves the screen having changed the file, and
- * one of them leaves it having changed nothing. A reader of the old signature had to
- * check the body to learn that, and a caller could swap them by accident.
+ * No callbacks on the builders below: each option carries a choice VALUE and the flow
+ * switches on what `select` resolves with. The old `confirm/back` pair said which
+ * press writes the file; now the flow reads the kind and only a value kind writes.
+ * A reader of a builder signature learns what the rows ARE, and the flow owns what
+ * they DO — one place each, which is what the pair was for.
  */
-type PickerActions<Choice> = {
-  /** A value was chosen. It writes the file, so the screen that follows is the write's. */
-  confirm: (choice: Choice) => void;
-  /** The way out was chosen. It writes nothing, so the screen that follows is a re-read. */
-  back: () => void;
-};
 
 /**
  * A picker's title: what the screen is FOR, then parenthesised facts about the number.
@@ -313,17 +285,13 @@ function pickerTitle(subject: string, ...clauses: (string | null)[]): string {
   return [subject, ...clauses.filter((clause) => clause !== null).map((clause) => `(${clause})`)].join(" ");
 }
 
-export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<CeilingChoice>): TuiDialogSelectProps<PickerChoice> {
-  const { confirm, back } = actions;
+export function ceilingPickerProps(ceiling: CapCell): DialogSelectOptions<PickerChoice> {
   return {
     title: pickerTitle(CEILING_LABEL, ceiling.stated ? null : FROM_CONFIG),
-    ...NO_FILTER,
     ...valuePicker(
       CAP_CHOICES.maxConcurrent,
       ceiling.stated ? ceiling.value : null,
       (value) => ({ kind: ChoiceKind.CeilingValue, value } as const satisfies PickerChoice),
-      (value) => confirm({ value }),
-      back,
       BACK_TO_LIST,
     ),
   };
@@ -348,21 +316,14 @@ export function ceilingPickerProps(ceiling: CapCell, actions: PickerActions<Ceil
  * list row does: one mark, one vocabulary, and a reader is never counting separators
  * to work out which kind of row they are on.
  */
-export function agentCapsProps(
-  agent: string,
-  row: AgentEntry,
-  ask: (cap: AgentCapName) => void,
-  back: () => void,
-): TuiDialogSelectProps<CapsChoice> {
+export function agentCapsProps(agent: string, row: AgentEntry): DialogSelectOptions<CapsChoice> {
   return {
     title: agent,
-    ...NO_FILTER,
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
         title: CAP_LABEL[cap],
         description: namedCell(capCellOf(row, cap)),
         value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
-        onSelect: () => ask(cap),
       })),
       // The way out LAST, below both caps — and it stays a ROW. Escape cannot do this
       // job and the reason is structural rather than a matter of trying harder: the
@@ -370,25 +331,19 @@ export function agentCapsProps(
       // the stack has no push, so escape closes the whole drill-down. A plugin binding
       // that intercepted it either loses the key outright or — with the host's marked
       // `fallthrough` — fires first and lets the host's close what it had just opened.
-      // Both halves are proved in `tui-limits-command.test.js` with the keymap's own
-      // harness, and this row is what is left over.
+      // The way out LAST — and it stays a ROW rather than an escape binding. Escape
+      // dismisses the host's dialog wherever the operator stands, so without this row
+      // the only way back up is to reopen the palette.
       {
         title: ALL_AGENTS_LABEL,
         description: "back to every agent's caps",
         value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
-        onSelect: back,
       },
     ],
   };
 }
 
-export function capPickerProps(
-  agent: string,
-  cap: AgentCapName,
-  row: AgentEntry,
-  actions: PickerActions<CapChoice>,
-): TuiDialogSelectProps<PickerChoice> {
-  const { confirm, back } = actions;
+export function capPickerProps(agent: string, cap: AgentCapName, row: AgentEntry): DialogSelectOptions<PickerChoice> {
   const cell = capCellOf(row, cap);
   const stated = cell.stated ? cell.value : null;
   const bound = ceilingOf(row.depth, cap, cell.value);
@@ -400,7 +355,6 @@ export function capPickerProps(
   // decides to overwrite one.
   return {
     title: pickerTitle(`${agent} — ${CAP_LABEL[cap]}`, bound === null ? null : boundClause(bound), stated === null ? FROM_CONFIG : null),
-    ...NO_FILTER,
     // The value in force, handed to the HOST rather than painted beside the number. The
     // host matches `current` to a row with `isDeepEqual` (dialog-select.tsx), so this is
     // the same object shape every row below carries — structural identity, not reference
@@ -410,8 +364,6 @@ export function capPickerProps(
       CAP_CHOICES[cap],
       stated,
       (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
-      (value) => confirm({ cap, value }),
-      back,
       `back to ${agent}'s caps`,
     ),
   };
@@ -445,10 +397,8 @@ function valuePicker(
   choices: readonly number[],
   current: number | null,
   asChoice: (value: number | null) => PickerChoice,
-  onPick: (value: number | null) => void,
-  back: () => void,
   backTo: string,
-) {
+): Pick<DialogSelectOptions<PickerChoice>, "options"> {
   return {
     options: [
       ...choices.map((value) => ({
@@ -459,7 +409,6 @@ function valuePicker(
         // before, hand-painted in a fixed tier that could not follow the selection bar
         // and sat 60 columns from the number it described. The host already had it.
         value: asChoice(value),
-        onSelect: () => onPick(value),
       })),
       ...(current === null
         ? []
@@ -471,7 +420,6 @@ function valuePicker(
             // files.
             description: "use the config file's number",
             value: asChoice(null),
-            onSelect: () => onPick(null),
           }]),
       // The way out LAST, below the values and below the fallback. A list of things to
       // act on is read top-down and the exit belongs after what it exits; a `Back` row
@@ -482,34 +430,11 @@ function valuePicker(
         title: BACK_LABEL,
         description: backTo,
         value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
-        onSelect: back,
       },
     ],
   };
 }
 
-
-/**
- * No `Search` box, on every one of these screens.
- *
- * The host draws a filter input above the rows unless this is false (dialog-select.tsx:
- * the `<Show when={props.renderFilter !== false}>` around it), and the default is to draw
- * it. It was on every screen of this drill-down, including a picker whose entire option
- * set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent typing to narrow ten
- * numbers.
- *
- * NOT on the agent list, deliberately. Every other select in this host has the box, a
- * long agent list is the one screen here worth typing into, and its absence would have
- * been the thing that looked unlike the rest of opencode. It goes on the three screens
- * below the list and not on the list.
- *
- * The field is absent from the published `TuiDialogSelectProps` although the host reads
- * it, exactly as `details` is, so it is set by SPREAD — not excess-property checked,
- * which is the only reason it can be set at all. One constant rather than four literals,
- * because a screen that grows a fifth and forgets would be a different screen for no
- * reason anyone could name.
- */
-const NO_FILTER = { renderFilter: false } as Record<string, unknown>;
 
 /**
  * The word on a picker's way out, and the destination the ceiling picker's names.
@@ -666,66 +591,75 @@ type LimitsView = {
   agents: readonly string[] | null;
 };
 
-async function openLimits(api: TuiApi): Promise<void> {
+async function openLimits(ctx: Host): Promise<void> {
   // The agent set is the host's own, so the screen has one row per agent this project
   // can actually dispatch to. A failed read is a WARNING over the capped agents, not
   // an empty list — see `agentDialogFrom`.
-  const view = await readLimits(api);
+  let view = await readLimits(ctx);
+  if (view === undefined) return;
   if (view.dialog.problem) {
     // Said BEFORE the dialog opens rather than instead of it: showing nothing because
     // the file is odd would leave the operator with no way to REPAIR it, and repair is
     // the most likely reason they opened this.
-    api.ui.toast({ variant: "warning", title: "Task limits", message: view.dialog.problem });
+    ctx.ui.toast.show({ variant: "warning", title: "Task limits", message: view.dialog.problem });
   }
-  showLimits(api, view);
+  // One loop, not a stack of screens: each drill-down returns the view to show next,
+  // and a dismiss (`undefined`) ends the command. The old stack of `replace`d dialogs
+  // had one entry and no push, so "back" was always a re-mount anyway — the loop just
+  // says so.
+  for (;;) {
+    const choice = await selectLimitsRow(ctx, limitsListProps(view.dialog));
+    if (choice === undefined) return;
+    if (choice.kind === ChoiceKind.Ceiling) view = await openCeiling(ctx, view);
+    else view = await openAgentCaps(ctx, view, choice.agent);
+  }
 }
 
 /**
- * One list's press, dispatched on the row's own choice.
- *
- * The list takes ONE callback for every row rather than one per row KIND, and the
- * signature is the reason: a callback per kind means a new kind is a new positional
- * parameter, and a caller that has not been updated does not fail to compile — it
- * passes its tokens where the new callback belongs, and the screen fails on a theme
- * role three frames away from the mistake. A row carrying its own choice makes the
- * row kind a property of the row, so adding one is adding a case here and nothing
- * else.
+ * The cross-agent total, open. Returns the view the list shows next: the RE-READ one
+ * after a write — the total bounds every row above it, so the screen that follows an
+ * edit to it is the one that shows what it now bounds — and the view in hand when
+ * the operator leaves without writing.
  */
-function askListChoice(api: TuiApi, view: LimitsView, choice: ListChoice): void {
-  if (choice.kind === ChoiceKind.Ceiling) return openCeiling(api, view);
-  openAgentCaps(api, view, choice.agent);
-}
-
-/** The list, over a view already read. The re-open path, so a second read is not paid for. */
-function showLimits(api: TuiApi, view: LimitsView): void {
-  mountLimitsSelect(api, () => limitsListProps(view.dialog, (choice) => askListChoice(api, view, choice)));
+async function openCeiling(ctx: Host, view: LimitsView): Promise<LimitsView> {
+  for (;;) {
+    const choice = await selectLimitsRow(ctx, ceilingPickerProps(view.dialog.ceiling));
+    if (choice === undefined || choice.kind === ChoiceKind.Back) return view;
+    return applyEdit(ctx, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, { value: choice.value } satisfies CeilingChoice));
+  }
 }
 
 /**
- * The cross-agent total, open.
- *
- * Lands on the LIST rather than on a per-agent screen, because there is no per-agent
- * screen for it: the total bounds every row above it, so the screen that follows an
- * edit to it is the one that shows what it now bounds.
+ * One agent's caps, open. The way out is the "All agents" row: dismissing the dialog
+ * leaves the whole drill-down, so without that row the only way back up is to reopen
+ * the palette.
  */
-function openCeiling(api: TuiApi, view: LimitsView): void {
-  const confirm = (choice: CeilingChoice) =>
-    applyEdit(api, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, choice), (fresh) => showLimits(api, fresh));
-  mountLimitsSelect(api, () => ceilingPickerProps(view.dialog.ceiling, { confirm, back: () => showLimits(api, view) }));
+async function openAgentCaps(ctx: Host, view: LimitsView, agent: string): Promise<LimitsView> {
+  for (;;) {
+    const choice = await selectLimitsRow(ctx, agentCapsProps(agent, rowOf(view, agent)));
+    if (choice === undefined || choice.kind === ChoiceKind.Back) return readLimitsOr(ctx, view);
+    return openCapPicker(ctx, view, choice.agent, choice.cap);
+  }
 }
 
-/**
- * One agent's caps, open.
- *
- * Every visible way out of here leads somewhere on purpose. The host's `replace` sets
- * the stack to a single entry, so there is no previous dialog to pop back to, and
- * escape from any of these leaves the manager entirely — which is why "All agents" is a
- * row and not a nicety: without it the only way back is to reopen the palette.
- */
-function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
+async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: AgentCapName): Promise<LimitsView> {
   const row = rowOf(view, agent);
-  mountLimitsSelect(api, () =>
-    agentCapsProps(agent, row, (cap) => openCapPicker(api, view, agent, cap), () => showLimits(api, view)));
+  for (;;) {
+    const choice = await selectLimitsRow(ctx, capPickerProps(agent, cap, row));
+    // Back goes UP one level, to the agent's own caps — not out to the list. The old
+    // stack had no push, so "back" was always a re-mount; the loop just says which
+    // screen is re-mounted, and from the picker that is the caps screen.
+    if (choice === undefined) return view;
+    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent);
+    // Lands back on THIS agent's caps, re-read: the other cap of the same pair has to
+    // be one choice away, and the row just written is stale the moment the file moves.
+    return openAgentCaps(ctx, await applyEdit(ctx, view, agent, () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice)), agent);
+  }
+}
+
+/** The list re-read, or the view in hand when the host cannot be reached. */
+async function readLimitsOr(ctx: Host, view: LimitsView): Promise<LimitsView> {
+  return (await readLimits(ctx)) ?? view;
 }
 
 /**
@@ -737,24 +671,25 @@ function openAgentCaps(api: TuiApi, view: LimitsView, agent: string): void {
  * file, neither of which the TUI can see. So the inherited caps are the DEFAULTS, and
  * the cells that say "from config" say so for the numbers this process can see — which
  * is why a stated cap, the thing this screen edits, is unaffected.
+ *
+ * `undefined` when there is no project directory to read: the command is reachable
+ * from anywhere, and an overlay path without a directory is not a path.
  */
-async function readLimits(api: TuiApi): Promise<LimitsView> {
-  const directory = api.state.path.directory;
+async function readLimits(ctx: Host): Promise<LimitsView | undefined> {
+  const directory = ctx.location?.directory;
+  if (!directory) {
+    ctx.ui.toast.show({ variant: "error", title: "Task limits", message: "no project directory" });
+    return undefined;
+  }
   const read = readAgentOverlay(directory);
-  // The dispatch path's own reader, not a second derivation of it. This used to be
-  // `normalizeDynamicTaskConfig(null)` — DEFAULTS only, with the hand-authored config
-  // file never read — so a project that put caps in that file saw the defaults here
-  // while its dispatches were judged against the file, and every "from config" on this
-  // screen was a claim about the defaults. The one source the TUI still cannot see is
-  // the registration tuple, which `readDynamicTaskPolicy` states rather than leaves to
-  // be discovered. The path itself is named in ONE place, and a source-count pin in the
-  // config suite holds that: a comment spelling it here would be a second place to
-  // change, so it does not spell it.
+  // The dispatch path's own reader, not a second derivation of it. The one source the
+  // TUI still cannot see is the registration tuple, which `readDynamicTaskPolicy`
+  // states rather than leaves to be discovered.
   const base = readDynamicTaskPolicy(directory, null);
   // `null` here is the FAILED read, not an empty project: it makes the screen show the
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
-  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(api.client) }, base);
+  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(ctx.client) }, base);
   return {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree
@@ -768,18 +703,6 @@ async function readLimits(api: TuiApi): Promise<LimitsView> {
     agents,
   };
 }
-
-function openCapPicker(api: TuiApi, view: LimitsView, agent: string, cap: AgentCapName): void {
-  const row = rowOf(view, agent);
-  // The landing screen takes the RE-READ view, which is why `confirm` ignores its own
-  // `view` argument: a write makes the view the caller is holding out of date, and
-  // landing on that one shows the number the operator just replaced.
-  const confirm = (choice: CapChoice) =>
-    applyEdit(api, view, agent, () => applyCapEdit(view.overlay, agent, choice), (fresh) => openAgentCaps(api, fresh, agent));
-  mountLimitsSelect(api, () =>
-    capPickerProps(agent, cap, row, { confirm, back: () => openAgentCaps(api, view, agent) }));
-}
-
 /**
  * The row for an agent, by the host's spelling — the one the list drew.
  *
@@ -809,7 +732,8 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
 }
 
 /**
- * Write one outcome and say what happened, in one place.
+ * Write one outcome and say what happened, in one place, and hand back the view the
+ * caller shows next.
  *
  * Every edit in this dialog ends here, so the two things that must be said together —
  * a refusal that writes nothing, and a success that only means "in force on the next
@@ -822,40 +746,28 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
  * computed here, after the shared `unchanged` check, from the same object the write
  * below uses.
  *
- * The list is re-opened afterwards, RE-READ: a write makes the dialog the caller is
- * holding stale, and answering a second cap from that stale row would write from caps
- * the file no longer has — silently dropping the cap just set. The picker is the only
- * screen showing one cap of one agent, so it is also the only place that bug could
- * hide.
+ * A write RE-READS before returning: the view in hand was read before the write, so
+ * showing it again re-mounts the number the operator just replaced — and the next cap
+ * answered from that row would then be written from caps the file no longer has. The
+ * write, the read-back, and the screen the operator is left looking at are one thing.
  */
-async function applyEdit(api: TuiApi, view: LimitsView, title: string, edit: () => EditOutcome, land: (fresh: LimitsView) => void): Promise<void> {
+async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () => EditOutcome): Promise<LimitsView> {
   const outcome = edit();
-  if (outcome.kind === "unchanged") return land(view);
+  if (outcome.kind === "unchanged") return view;
   if (outcome.kind === "invalid") {
-    api.ui.toast({ variant: "error", title, message: outcome.problem });
-    return;
+    ctx.ui.toast.show({ variant: "error", title, message: outcome.problem });
+    return view;
   }
   try {
     writeAgentOverlay(view.directory, outcome.overlay);
   } catch (error) {
-    api.ui.toast({
+    ctx.ui.toast.show({
       variant: "error",
       title,
       message: `could not write ${agentOverlayPath(view.directory)}: ${errorMessage(error)}`,
     });
-    return;
+    return view;
   }
-  api.ui.toast({ variant: "success", title: "Task limits", message: `${outcome.summary} — in force on the next dispatch` });
-  // Where a confirmed answer LANDS is an argument because the value screen is reached
-  // from one place and the other cap of the same agent has to be one keypress from it.
-  // Landing on the list instead would make changing both caps two round trips through
-  // the whole screen, which is the cost a per-agent cap pair is supposed to avoid.
-  //
-  // RE-READ before landing, and that is the load-bearing part of this function rather
-  // than a courtesy: the view in hand was read before the write, so landing on it
-  // re-mounts the number the operator just replaced — and the next cap answered from
-  // that row would then be written from caps the file no longer has. The write, the
-  // read-back, and the screen the operator is left looking at are one thing.
-  land(await readLimits(api));
+  ctx.ui.toast.show({ variant: "success", title: "Task limits", message: `${outcome.summary} — in force on the next dispatch` });
+  return (await readLimits(ctx)) ?? view;
 }
-

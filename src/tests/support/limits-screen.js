@@ -159,13 +159,11 @@ export function hostApi(directory, { withFooter = true } = {}) {
       },
       renderer: renderer.api,
       // The row set is the HOST's registered agents, so the client has to answer —
-      // and `app.agents` is the one call the shared reader makes. A bare array is
-      // what `parseAgentList` reads, which is the shape the SDK returns through the
-      // envelope.
+      // and `agent.list` is the one call the shared reader makes. A bare array of
+      // v2 Agent.Info records is what the host returns, with no envelope.
       client: {
-        app: {
-          agents: async () => ({ data: REGISTERED.map((name) => ({ name })) }),
-          log: async () => undefined,
+        agent: {
+          list: async () => REGISTERED.map((name) => ({ name, mode: "subagent", permissions: [] })),
         },
       },
       // Slots are where the LIVE counter is mounted, so the double has to accept a

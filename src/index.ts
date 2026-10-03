@@ -22,18 +22,21 @@ import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
-import { safeLog, containFailure, configurePluginLogRoot } from "./shared/notify.js";
+import { safeLog, containFailure } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { noteActivity } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
-async function setup(context: Context, options?: PluginOptions): Promise<void> {
+async function setup(context: Context): Promise<void> {
   const directory = context.location.directory;
+  // v2 carries plugin options ON the context (`context.options`), not as a second
+  // argument — the host calls `setup(context)` with one argument. A two-parameter
+  // signature here would typecheck while silently receiving `undefined`.
+  const options = context.options as PluginOptions | undefined;
   // The one mint. Past this line nothing downstream can name a host namespace.
   const host = asOpaqueHost(context);
-  configurePluginLogRoot(directory);
 
   if (!probeHost(host, hasCoreApis)) {
     safeLog("warn", "Missing required host APIs, plugin disabled");
@@ -107,5 +110,8 @@ async function setup(context: Context, options?: PluginOptions): Promise<void> {
 
 export default {
   id: "dynamic-task",
+  // The loader calls `setup(context)` with ONE argument (promise/adapter.js) —
+  // options ride on `context.options`. A two-parameter forwarding signature would
+  // typecheck while receiving `undefined` forever.
   setup: (context: Context) => setup(context),
 } satisfies Plugin;

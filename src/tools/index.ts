@@ -11,6 +11,7 @@ import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
 import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import { NOTIFY_TOOL } from "../shared/notification-text.js";
 import type { Verdict } from "../shared/verdict.js";
 import { NOTICE_CLAIMS } from "../shared/task-state.js";
 import {
@@ -127,7 +128,7 @@ export function buildToolMap(deps: ToolDeps) {
       executeTaskContinue,
     ),
 
-    task_notify: pluginTool(
+    [NOTIFY_TOOL]: pluginTool(
       {
         type: "object",
         properties: {

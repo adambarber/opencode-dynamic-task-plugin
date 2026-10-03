@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
-const DEBUG_DIR = ".dynamic-task-logs";
+export const DEBUG_DIR = ".dynamic-task-logs";
 // Same scoping rule as the ledger: logs land in the project the host gave
 // the plugin, not the process CWD. initPluginState sets this once per boot;
 // the default keeps the pure path helper usable without boot.
@@ -25,6 +25,17 @@ function currentBlocklist(): string[] {
 
 export function configureDebugRoot(directory: string): void {
   debugRoot = directory ? path.join(directory, DEBUG_DIR) : DEBUG_DIR;
+}
+
+/**
+ * The one file an operator reads for prose warnings, beside the per-child records.
+ *
+ * Two directories for one plugin's diagnostics was a split nobody could hold in
+ * their head: an operator who found the per-child log never learned the warnings
+ * lived somewhere else. One directory, one writer, one place to look.
+ */
+export function getPluginLogPath(): string {
+  return path.join(debugRoot, "plugin.log");
 }
 
 export function getDebugLogPath(parentSessionId: string, childSessionId: string): string {

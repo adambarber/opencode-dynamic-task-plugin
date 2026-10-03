@@ -26,10 +26,13 @@ describe("settlement: the notification layer owns outcomes", () => {
   // streamed normally on the same host.
   it("the event head charges the host nothing per event", async () => {
     const h = await eventHarness();
-    const before = h.logs().length;
+    // v2 removed the host log sink, so "no host log call" is now structural rather
+    // than behavioral — the instrument that still has teeth is the transcript-read
+    // counter: a non-terminal event must not cost a host round-trip either.
+    const before = h.client._state.transcriptReads;
     for (let i = 0; i < 50; i += 1) await h.fireEvent(events.working("ses_hot"));
-    assert.deepStrictEqual(h.logs().slice(before), [],
-      "delivering 50 events wrote host log lines: the per-event head is paid once per part, and one turn in a large session has thousands of parts");
+    assert.strictEqual(h.client._state.transcriptReads, before,
+      "delivering 50 events cost transcript reads: the per-event head is paid once per part, and one turn in a large session has thousands of parts");
   });
   it("parentless settlements leave a visible non-delivery record", async () => {
     const { h, c, id, out } = await withChild({
@@ -96,9 +99,12 @@ describe("settlement: the notification layer owns outcomes", () => {
 
   it("init guard disables the plugin without required client APIs", async () => {
     const mod = await import("../../dist/index.js");
-    const pluginFn = mod.default || mod;
-    const result = await pluginFn({ client: {}, directory: "/tmp" }, {});
-    assert.deepStrictEqual(result, {});
+    const { v2Context } = await import("./support/harness.js");
+    // v2 entry is `{id, setup}` and the host calls `setup(context)` — a context
+    // whose client lacks the core domains must register nothing, not throw.
+    const { context, rawTools } = v2Context({}, "/tmp");
+    await mod.default.setup(context);
+    assert.ok(!rawTools.has("dynamic_task"), "no tools registered without the core APIs");
     });
 });
 

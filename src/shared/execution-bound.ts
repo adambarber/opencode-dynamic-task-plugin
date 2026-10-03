@@ -171,6 +171,7 @@ export function shrinkBoundsForTesting(ms: number): () => void {
   const read = READ_BOUNDS.transcript;
   const agents = READ_BOUNDS.agents;
   const status = READ_BOUNDS.status;
+  const presence = READ_BOUNDS.presence;
   const write = WRITE_BOUNDS.parentPrompt;
   const abort = WRITE_BOUNDS.abort;
   const create = WRITE_BOUNDS.create;
@@ -178,6 +179,9 @@ export function shrinkBoundsForTesting(ms: number): () => void {
   READ_BOUNDS.transcript = ms;
   READ_BOUNDS.agents = ms;
   READ_BOUNDS.status = ms;
+  // Shortened like every other read: the seam changes patience, not the
+  // production separation between the presence question and the status one.
+  READ_BOUNDS.presence = ms;
   WRITE_BOUNDS.parentPrompt = ms;
   WRITE_BOUNDS.abort = ms;
   WRITE_BOUNDS.create = ms;
@@ -186,6 +190,7 @@ export function shrinkBoundsForTesting(ms: number): () => void {
     READ_BOUNDS.transcript = read;
     READ_BOUNDS.agents = agents;
     READ_BOUNDS.status = status;
+    READ_BOUNDS.presence = presence;
     WRITE_BOUNDS.parentPrompt = write;
     WRITE_BOUNDS.abort = abort;
     WRITE_BOUNDS.create = create;

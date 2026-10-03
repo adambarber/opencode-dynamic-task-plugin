@@ -24,6 +24,7 @@
  */
 
 import assert from "node:assert";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 
 import {
   answerMatches,
@@ -70,17 +71,23 @@ const answered = async (what, call) => {
 describe("a host that accepts every call and answers none", () => {
   it("the plugin still loads against a host that has not spoken yet", async () => {
     // A read that hangs BEFORE load leaves a session that looks alive and cannot
-    // work — the shape of a session that never dispatches. What "loads" means here
-    // is narrow and checkable: the tool map exists. Whether each tool then ANSWERS
-    // is the sweep's claim, not this one's, and a case that tried to prove both
-    // proved neither.
-    const h = await bounded(IMPATIENT_MS, () => setupHarness({ hooks: { silentHost: true } }));
+    // work — the shape of a session that never dispatches. Boot dials nothing: the
+    // probe is a synchronous shape check, agents are fetched lazily, and the log
+    // is local since v2 removed the host sink. So silence cannot stop the load, and
+    // the case proves that structurally — zero calls reached the host — rather than
+    // by arming a fault boot never touches, which the engagement rule would rightly
+    // refuse. Whether each tool then ANSWERS is the sweep's claim, not this one's.
+    const h = await bounded(IMPATIENT_MS, () => setupHarness());
+    const state = h.client._state;
 
     const tools = Object.keys(h.tool ?? {}).sort();
     assert.ok(
       tools.includes("dynamic_task"),
       `a silent host at boot must not stop the plugin loading; tools seen: ${JSON.stringify(tools)}`,
     );
+    assert.strictEqual(state.transcriptReads, 0, "boot reads no transcript");
+    assert.strictEqual(state.agentListReads, 0, "boot lists no agents — discovery is lazy");
+    assert.deepStrictEqual(state.promptBodies, [], "boot sends no prompt");
   });
 
   /** Boot against a live host, then go silent for the call under test. */
@@ -110,7 +117,7 @@ describe("a host that accepts every call and answers none", () => {
       ],
       ["task_interrupt", (h) => h.tool.task_interrupt.execute({ session_id: "ses_mock_1" })],
       ["task_continue", (h) => h.tool.task_continue.execute({ session_id: "ses_mock_1", prompt: "again" })],
-      ["task_notify", (h) => h.tool.task_notify.execute({ message: "still here" })],
+      [NOTIFY_TOOL, (h) => h.tool.task_notify.execute({ message: "still here" })],
     ];
 
     for (const [name, call] of CASES) {

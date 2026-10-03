@@ -105,7 +105,7 @@ export function dispatchableAgentNames(
   agents: readonly AgentRecord[],
   config: Pick<DynamicTaskConfig, "blockedAgents">,
 ): string[] {
-  return agents.filter((agent) => validateAgent(agent.name, config).ok).map((agent) => agent.name);
+  return agents.filter((agent) => validateAgent(agent.id, config).ok).map((agent) => agent.id);
 }
 
 export function resolveAdmission(
@@ -121,12 +121,15 @@ export function resolveAdmission(
     return { ok: false, reason: noSubagentType(available) };
   }
 
-  const agent = agents.find((a) => a.name.toLowerCase() === normalized);
+  // Either key spends: the registry id is what the host routes by, the display name
+  // is what a person types. Both fold the same way, so neither spelling can admit
+  // an agent the other would refuse.
+  const agent = agents.find((a) => a.id.toLowerCase() === normalized || a.name.toLowerCase() === normalized);
   if (!agent) {
     return { ok: false, reason: unknownAgent(requestedName, available) };
   }
 
-  const agentCheck = validateAgent(agent.name, config);
+  const agentCheck = validateAgent(agent.id, config);
   if (!agentCheck.ok) {
     return { ok: false, reason: policyRefused(agentCheck.error) };
   }
@@ -136,10 +139,10 @@ export function resolveAdmission(
   // a dispatch supplies IS the key space, and `unknownAgent` above has already
   // checked it against the host's registered set, so a second gate asking "is this
   // key declared" would only be able to disagree with the first.
-  const policy = resolveAgentCaps(liveAgentCaps(config), agent.name);
+  const policy = resolveAgentCaps(liveAgentCaps(config), agent.id);
   const lineageCheck = validateLineage(
     lineage,
-    agent.name,
+    agent.id,
     { maxDepth: policy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
     dispatchableAgentNames(agents, config),
   );
@@ -147,7 +150,7 @@ export function resolveAdmission(
     return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
 
-  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
+  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.id) };
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
@@ -293,7 +296,9 @@ const CACHE_TTL = 300000;
  */
 export function buildAgentList(agents: AgentRecord[]): string {
   if (!Array.isArray(agents)) return "(none discovered)";
-  const names = agents.map((a) => a.name);
+  // The registry ids: those are the keys a dispatch can spend, and the display
+  // label is not one of them — listing labels here is how a label got routed.
+  const names = agents.map((a) => a.id);
   if (names.length === 0) return "(none discovered)";
   return names.join(", ");
 }

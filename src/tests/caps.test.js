@@ -28,6 +28,7 @@ import {
   retiredOverlayPresent,
 } from "../../dist/shared/caps.js";
 import { resolveAdmission } from "../../dist/shared/admission.js";
+import { toAgentRecords } from "../../dist/shared/agent-record.js";
 import { activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState, TaskState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
@@ -380,13 +381,13 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     // a grandchild — which is the whole meaning of a per-agent depth as a placement
     // limit: `explore` may be sent work, and may not be sent work that itself has work.
     live(projectWith({ agents: { explore: { maxDepth: 1 } } }));
-    assert.strictEqual(resolveAdmission([{ name: "explore" }], "explore", [], defaultConfig).ok, true,
+    assert.strictEqual(resolveAdmission(toAgentRecords([{ name: "explore" }]), "explore", [], defaultConfig).ok, true,
       "a depth of 1 admits a direct child");
-    const refusal = resolveAdmission([{ name: "explore" }], "explore", ["general"], defaultConfig);
+    const refusal = resolveAdmission(toAgentRecords([{ name: "explore" }]), "explore", ["general"], defaultConfig);
     assert.strictEqual(refusal.ok, false, "and refuses it one generation down, which is the placement work");
     assert.match(refusal.reason.refusal, /for agent "explore"/, "the refusal names the agent, not a lane");
     // The cap is the AGENT's, so the same dispatch of a different agent is unaffected.
-    assert.strictEqual(resolveAdmission([{ name: "explore" }, { name: "general" }], "general", ["explore"], defaultConfig).ok, true,
+    assert.strictEqual(resolveAdmission(toAgentRecords([{ name: "explore" }, { name: "general" }]), "general", ["explore"], defaultConfig).ok, true,
       "a depth cap on one agent does not spend another's");
   });
 

@@ -601,6 +601,13 @@ export function createMockClient(hooks = {}) {
     abortsLost: new Set(),
   };
 
+  // The registry when a case seeds no agents: the same two the live host publishes,
+  // named once so the list reader and the routing guard cannot disagree.
+  const defaultAgents = () => [
+    { id: "explore", name: "Explore", mode: "subagent", permissions: [] },
+    { id: "general", name: "General", mode: "subagent", permissions: [] },
+  ];
+
   // Sessions the host already knows about when the test starts, for boot-time
   // work that must ask the host BEFORE any event has been delivered (reconciling
   // what the last process left running). The seed is the host's TURN RECORD: a
@@ -629,11 +636,9 @@ export function createMockClient(hooks = {}) {
         // The real client answers the `AgentListOutput` envelope, not a bare array —
         // a fake answering the array let the reader believe a shape the host never
         // sends, which is exactly how live dispatch failed admission unnoticed.
-        const data =
-          hooks.agentsList ?? [
-            { name: "explore", mode: "subagent", permissions: [] },
-            { name: "general", mode: "subagent", permissions: [] },
-          ];
+        // The host's own records: a lowercase registry id plus a display label, which
+        // are NOT interchangeable — routing resolves the id, case-sensitively.
+        const data = hooks.agentsList ?? defaultAgents();
         return { location: { directory: state.directory }, data };
       },
     },
@@ -805,6 +810,17 @@ export function createMockClient(hooks = {}) {
       // prompt goes out with `parts` alone, so an unset route is a real failure
       // the fake can express.
       switchAgent: async ({ sessionID, agent }) => {
+        // The host resolves by registry id, case-sensitively: a fake accepting
+        // anything let production route display labels uncaught, which is how live
+        // dispatch died with `Agent not found` under a green suite.
+        const known = (hooks.agentsList ?? defaultAgents()).some(
+          (a) => a?.id === agent || (a?.id === undefined && a?.name === agent),
+        );
+        if (!known) {
+          const err = new Error(`Agent not found: "${agent}"`);
+          err.name = "Session.AgentNotFoundError";
+          throw err;
+        }
         state.routed.set(sessionID, { ...(state.routed.get(sessionID) ?? {}), agent });
         return { ok: true };
       },

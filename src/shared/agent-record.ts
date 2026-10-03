@@ -17,6 +17,11 @@ import type { Agent } from "@opencode/schema/agent";
 type Unbrand<T> = T extends string ? string : T;
 
 export interface AgentRecord {
+  // The registry key the host routes by — `Agent.ID`, NOT the display label. Live
+  // dispatch once sent `name` ("General") to `switchAgent` and the host answered
+  // `Agent not found`, because resolution is by id ("general") and case-sensitive.
+  // Absent only on payloads older than the field; the fallback keeps those routable.
+  readonly id: Unbrand<Agent.Info["id"]>;
   readonly name: Unbrand<Agent.Info["name"]>;
   readonly mode: Agent.Info["mode"];
   readonly permissions: Agent.Info["permissions"];
@@ -50,7 +55,13 @@ export function toAgentRecord(raw: unknown): AgentRecord | null {
   const name = item["name"];
   if (typeof name !== "string" || name === "") return null;
   const mode = AGENT_MODES.has(item["mode"]) ? (item["mode"] as Agent.Info["mode"]) : DEFAULT_AGENT_MODE;
-  return { name, mode, permissions: permissionRules(item["permissions"]) };
+  const id = item["id"];
+  return {
+    id: typeof id === "string" && id !== "" ? id : name,
+    name,
+    mode,
+    permissions: permissionRules(item["permissions"]),
+  };
 }
 
 /** Every agent in a payload the host built, in the order it published them. */

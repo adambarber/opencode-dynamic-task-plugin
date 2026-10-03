@@ -83,7 +83,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     const waitingParent = resolveParentSessionId(ctx);
     if (waitingParent) {
       holdDispatchWait(store, {
-        description: args.description || `Task: ${agent.name}`,
+        description: args.description || `Task: ${agent.id}`,
         parentSessionId: waitingParent,
         dependsOn: args.depends_on ?? [],
         dependsOnSettled: args.depends_on_settled ?? [],
@@ -99,7 +99,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // The judgment is the store's, not ours — this is the same function the
   // authoritative re-check calls, so an advisory pass and the gate that
   // overrides it cannot come to disagree about what "full" means.
-  const limitError = agentCapacityRefusal(store, agent.name, config);
+  const limitError = agentCapacityRefusal(store, agent.id, config);
   if (limitError) return `ERROR: ${limitError}`;
 
   let createdSessionId: string | null = null;
@@ -111,8 +111,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // described differently from the task it was.
   const registration = {
     parentSessionId: parentSessionId || UNKNOWN_PARENT,
-    agentName: agent.name,
-    description: args.description || `Task: ${agent.name}`,
+    // The registry id, not the display label: this field is the routing key the host
+    // resolves, and sending the label is how live dispatch died with `Agent not found`.
+    agentName: agent.id,
+    description: args.description || `Task: ${agent.id}`,
     lineage: admission.newLineage,
     ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
     ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
@@ -164,14 +166,14 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     fireChildPrompt(host, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent, NOTIFY_TOOL) }));
 
     debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
-      description: args.description || `Task: ${agent.name}`,
+      description: args.description || `Task: ${agent.id}`,
     });
 
     // One confirmation for both shapes: a child with no parent to name is still
     // a tracked child, and `parentSessionId` is already nullable in the report —
     // deciding here what that field means is the one place that can decide it.
     return spawnConfirmation({
-      agentName: agent.name,
+      agentName: agent.id,
       childSessionId,
       model: requestedModelLabel,
       parentSessionId: parentSessionId || null,
@@ -225,7 +227,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       ).then((delivered) => debugLog(parentSessionId || UNKNOWN_PARENT, failedChildSessionId, "spawn-error-notify", { delivered }));
     }
     if (message.includes("not found")) {
-      return agentGone(agent.name);
+      return agentGone(agent.id);
     }
     if (message.includes("permission") || message.includes("denied")) {
       return PERMISSION_DENIED;

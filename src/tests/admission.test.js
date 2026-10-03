@@ -21,10 +21,10 @@ import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./
 
 describe("buildAgentList", () => {
   it("returns agent names joined by comma", () => {
-    const agents = [
+    const agents = toAgentRecords([
       { name: "explore", description: "test" },
       { name: "general", permissions: [] },
-    ];
+    ]);
     assert.strictEqual(buildAgentList(agents), "explore, general");
   });
 
@@ -94,6 +94,13 @@ describe("fetchAgents", () => {
       (await agentNames(mockClient)).sort(),
       ["architect", "explore", "unannotated"]
     );
+  });
+
+  it("admits by label but carries the registry id, which is what the host routes", () => {
+    const [agent] = toAgentRecords([{ id: "general", name: "General", mode: "subagent", permissions: [] }]);
+    const admitted = resolveAdmission([agent], "General", [], defaultConfig);
+    assert.strictEqual(admitted.ok, true);
+    assert.strictEqual(admitted.agent.id, "general");
   });
 
   it("handles error gracefully", async () => {
@@ -213,10 +220,10 @@ describe("fetchAgents", () => {
 // --- The rules a dispatch is admitted under -----------------------------------
 
 describe("admission gate: resolveAdmission", () => {
-  const agents = [
+  const agents = toAgentRecords([
     { name: "explore", permissions: [] },
     { name: "architect", mode: DEFAULT_AGENT_MODE, permissions: [] },
-  ];
+  ]);
 
   it("admits a known agent with extended lineage", () => {
     const result = resolveAdmission(agents, "explore", ["planner"], defaultConfig);
@@ -234,7 +241,7 @@ describe("admission gate: resolveAdmission", () => {
     // It is now a PLACEMENT limit — the cap belongs to the agent being dispatched, so
     // it can only be right if the gate resolves the cap from the agent the dispatch
     // already names rather than from a second key the caller had to supply.
-    const agents = [{ name: "architect", permissions: [] }, { name: "coder", permissions: [] }, { name: "explore", permissions: [] }];
+    const agents = toAgentRecords([{ name: "architect", permissions: [] }, { name: "coder", permissions: [] }, { name: "explore", permissions: [] }]);
     const capped = normalizeDynamicTaskConfig({ maxDepth: 5, agents: { explore: { maxDepth: 2 } } });
 
     it("admits a chain the agent's cap allows, where the top-level cap would also allow", () => {
@@ -283,7 +290,7 @@ describe("admission gate: resolveAdmission", () => {
   });
 
   it("denies blocked agents", () => {
-    const result = resolveAdmission([{ name: "general", permissions: [] }], "general", [], blockingConfig());
+    const result = resolveAdmission(toAgentRecords([{ name: "general", permissions: [] }]), "general", [], blockingConfig());
     refuses(result, "a blocked agent is refused");
     said(result.reason?.refusal, "general", "the refusal names the agent that was refused");
     said(result.reason?.refusal, "blockedAgents", "and the config key that is responsible, which is the remedy");
@@ -302,16 +309,16 @@ describe("admission gate: allowSameAgentRecursion", () => {
   const lenient = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true });
 
   it("blocks same-agent recursion by default", () => {
-    refuses(resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["explore"], strict), "the agent is already in the lineage");
+    refuses(resolveAdmission(toAgentRecords([{ name: "explore", permissions: [] }]), "explore", ["explore"], strict), "the agent is already in the lineage");
   });
 
   it("honors the recursion flag", () => {
-    admits(resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["explore"], lenient), "recursion allowed, so the repeat is fine");
+    admits(resolveAdmission(toAgentRecords([{ name: "explore", permissions: [] }]), "explore", ["explore"], lenient), "recursion allowed, so the repeat is fine");
   });
 
   it("still enforces depth when recursion is allowed", () => {
     const shallow = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true, maxDepth: 1 });
-    const result = resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["a", "b"], shallow);
+    const result = resolveAdmission(toAgentRecords([{ name: "explore", permissions: [] }]), "explore", ["a", "b"], shallow);
     assert.strictEqual(result.ok, false);
   });
 });
@@ -383,7 +390,7 @@ describe("admission gate: there is no second key to ask for", () => {
   // the one check on it. These cases pin what that leaves: an agent needs no
   // declaration to be dispatchable, and an unrecognised one is refused against the
   // host's list rather than a config's.
-  const agents = [{ name: "explore", permissions: [] }, { name: "general", permissions: [] }];
+  const agents = toAgentRecords([{ name: "explore", permissions: [] }, { name: "general", permissions: [] }]);
 
   it("an agent nobody declared is admitted, because the key space is not the operator's", () => {
     admits(resolveAdmission(agents, "explore", [], normalizeDynamicTaskConfig({ maxConcurrent: 1 })),

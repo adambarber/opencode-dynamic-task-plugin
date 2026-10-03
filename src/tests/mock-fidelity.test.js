@@ -94,30 +94,30 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
  * does not exist.
  */
 describe("invariant: only the host's own words can describe a turn", () => {
+  // Both cases start from the same empty turn record and differ only in the
+  // word they write through the funnel.
+  const emptyTurnState = () => ({ transcripts: new Map(), turns: new Map() });
+
   it("refuses a word the host does not declare, through the one funnel every write uses", () => {
-    const transcripts = new Map();
-    const turns = new Map();
-    const state = { transcripts, turns };
+    const state = emptyTurnState();
 
     assert.throws(
       () => setHostTurn(state, "ses_x", "compacting"),
       /is not a v2 turn state/,
       `a fake may not describe a turn with a word the host lacks. declared: open, ${hostOutcomeWords().join(", ")}`,
     );
-    assert.strictEqual(transcripts.size, 0, "and the refusal left nothing behind");
+    assert.strictEqual(state.transcripts.size, 0, "and the refusal left nothing behind");
   });
 
   it("describes an open turn by no verdict and a settled one by a completed one", () => {
-    const transcripts = new Map();
-    const turns = new Map();
-    const state = { transcripts, turns };
+    const state = emptyTurnState();
 
     setHostTurn(state, "ses_x", "open");
-    assert.strictEqual(turns.get("ses_x").outcome, undefined, "a turn with no verdict is a turn still open");
+    assert.strictEqual(state.turns.get("ses_x").outcome, undefined, "a turn with no verdict is a turn still open");
 
     setHostTurn(state, "ses_x", "succeeded");
-    assert.strictEqual(turns.get("ses_x").outcome, "succeeded", "the verdict the turn ended with is the one production reads");
-    const last = transcripts.get("ses_x").at(-1);
+    assert.strictEqual(state.turns.get("ses_x").outcome, "succeeded", "the verdict the turn ended with is the one production reads");
+    const last = state.transcripts.get("ses_x").at(-1);
     assert.notStrictEqual(last.info.time?.completed, undefined, "and the message it was writing is finished");
   });
 

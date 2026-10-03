@@ -45,6 +45,10 @@ const absent = () => ({ ...UNANSWERED_LIVENESS, existence: SessionExistence.Miss
 const resultRecord = (overrides = {}) =>
   taskResultRecord({ sessionId: "s", status: "completed", latestText: "hi", tracked: true, ...overrides });
 
+// A settled store record beside a stated turn reading: the shape two cases below
+// share, which differ only in the reading they place beside it.
+const settledRecord = (liveness) => resultRecord({ status: "completed", task: taskRecord({ state: "completed" }), liveness });
+
 /**
  * formatTaskResultSummary over a settled record carrying this notification, and
  * the notification itself is the gate's own builder — a case names the delivery
@@ -213,14 +217,10 @@ describe("formatTaskResultSummary", () => {
   });
 
   it("never infers a status the sources did not state", () => {
-    const result = formatTaskResultSummary(resultRecord({
-      status: "completed",
-      task: taskRecord({ state: "completed" }),
-      // "Quiet" in v2 is a turn the host CLOSED, not a turn it never finished
-      // recording. An open turn is a positive claim, and the case above is about
-      // the absence of a question — which is the closed turn.
-      liveness: reading("succeeded", null),
-    }));
+    // "Quiet" in v2 is a turn the host CLOSED, not a turn it never finished
+    // recording. An open turn is a positive claim, and this case is about
+    // the absence of a question — which is the closed turn.
+    const result = formatTaskResultSummary(settledRecord(reading("succeeded", null)));
     assert.match(result, /Status: completed/);
     assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);
     // A settled record with a quiet server has no liveness question left, so
@@ -233,11 +233,7 @@ describe("formatTaskResultSummary", () => {
   // saying opposite things, and the view that hides it is the view an operator
   // consults precisely when the two disagree.
   it("surfaces a settled record the host still calls a running turn", () => {
-    const result = formatTaskResultSummary(resultRecord({
-      status: "completed",
-      task: taskRecord({ state: "completed" }),
-      liveness: reading(undefined, Date.now() - 1000),
-    }));
+    const result = formatTaskResultSummary(settledRecord(reading(undefined, Date.now() - 1000)));
     assert.match(result, /Server turn: in progress/,
       "the host's open turn is stated even though the store says the task is done");
     assert.match(result, /Status: completed/, "and the store's own state is not overwritten by it");

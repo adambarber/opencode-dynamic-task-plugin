@@ -188,6 +188,19 @@ describe("liveness: what the host did not say is not a reading", () => {
 // Both shapes are below, so the case cannot be satisfied by a reader that returns
 // either answer unconditionally.
 describe("liveness: a turn is not a message", () => {
+  // One builder for the three cases below: the transcript is the constant, the
+  // session object is the variable — which is the whole claim of the describe.
+  const hostWithMessages = (messages, session) =>
+    opaqueHost({ session: { get: async () => session, context: async () => messages } });
+
+  // Both open-turn cases below read the same shape — no verdict on the session —
+  // and differ only in the transcript they hand it.
+  const readOpenTurn = async (messages, why) => {
+    const reading = await readLiveness(hostWithMessages(messages, { id: "ses_x" }), "ses_x");
+    assert.strictEqual(reading.hostTurn, undefined, why);
+    return reading;
+  };
+
   const step = (seq, completedAt) => ({
     info: {
       role: ASSISTANT_ROLE,
@@ -199,29 +212,18 @@ describe("liveness: a turn is not a message", () => {
   it("calls a RUNNING turn running while every one of its messages has completed", async () => {
     // The live shape: seven finished steps, an eighth in flight, no verdict recorded.
     const messages = [...Array.from({ length: 7 }, (_, i) => step(i, i * 30)), step(7)];
-    const host = opaqueHost({
-      session: {
-        get: async () => ({ id: "ses_x" }),
-        context: async () => messages,
-      },
-    });
 
-    const reading = await readLiveness(host, "ses_x");
-    assert.strictEqual(reading.hostTurn, undefined, "the host has recorded no verdict for the turn");
+    const reading = await readOpenTurn(messages, "the host has recorded no verdict for the turn");
     assert.strictEqual(hostTurnRunning(reading), true,
       "a turn whose every message has completed is still a turn in progress — that is the shape a live child has");
-    assert.strictEqual(await hostTurnInFlight(host, "ses_x"), true);
-    assert.strictEqual(await parentTurnStuck(host, "ses_x"), true);
+    const live = hostWithMessages(messages, { id: "ses_x" });
+    assert.strictEqual(await hostTurnInFlight(live, "ses_x"), true);
+    assert.strictEqual(await parentTurnStuck(live, "ses_x"), true);
 
     // The contrast, and the falsification. Identical transcript, one field apart on
     // the SESSION: a reader that looked at the transcript at all, or that returned
     // either answer unconditionally, fails this.
-    const finished = opaqueHost({
-      session: {
-        get: async () => ({ id: "ses_x", outcome: "succeeded", time: { idle: 900 } }),
-        context: async () => messages,
-      },
-    });
+    const finished = hostWithMessages(messages, { id: "ses_x", outcome: "succeeded", time: { idle: 900 } });
     const done = await readLiveness(finished, "ses_x");
     assert.strictEqual(done.hostTurn, "succeeded");
     assert.strictEqual(hostTurnRunning(done), false, "the same messages, with a verdict, are a turn that ended");
@@ -233,12 +235,8 @@ describe("liveness: a turn is not a message", () => {
     // verdict. The turn is the host's to close; a reader that promoted a message's
     // error into a finished turn would settle a child that is still running.
     const messages = [{ ...step(1, 1), info: { role: ASSISTANT_ROLE, time: { created: 1, completed: 2 }, error: { name: "Error" } } }];
-    const host = opaqueHost({
-      session: { get: async () => ({ id: "ses_x" }), context: async () => messages },
-    });
 
-    const reading = await readLiveness(host, "ses_x");
-    assert.strictEqual(reading.hostTurn, undefined);
+    const reading = await readOpenTurn(messages);
     assert.strictEqual(hostTurnRunning(reading), true, "a message error is not a turn verdict");
   });
 });

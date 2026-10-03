@@ -41,14 +41,17 @@ describe("Background Task Settlement", () => {
     assert.strictEqual(notes.length, expected, `${why}. got ${notes.length}: ${JSON.stringify(notes)}`);
   };
 
-  async function expectSingleSuccessNotification(parentId, description, buildEvent) {
+  async function expectSingleNotification(parentId, description, buildEvent, kind, kindWhy) {
     const childId = await spawn(parentId, description);
     await harness.fireEvent(buildEvent(childId));
-    assertNotices(1, "exactly 1 completion notification");
+    assertNotices(1, "exactly 1 notification");
     const [note] = harness.noticeBodies();
-    textDeclaresKind(note, "completed", "the success kind");
+    textDeclaresKind(note, kind, kindWhy);
     return childId;
   }
+
+  const expectSingleSuccessNotification = (parentId, description, buildEvent) =>
+    expectSingleNotification(parentId, description, buildEvent, "completed", "the success kind");
 
   it("settlement never waits on observability — v2 has no host log sink", async () => {
     const childId = await spawn("parent_hung_log", "hung log task");
@@ -104,12 +107,7 @@ describe("Background Task Settlement", () => {
   });
 
   it("error status yields error-kind notification", async () => {
-    const childId = await spawn("err_parent", "Error test");
-
-    await harness.fireEvent(events.error(childId));
-
-    assertNotices(1, "exactly 1 notification");
-    textDeclaresKind(harness.noticeBodies()[0], "error", "error-kind notification");
+    await expectSingleNotification("err_parent", "Error test", (childId) => events.error(childId), "error", "error-kind notification");
   });
 
   it("deleted session is a failure, never a success", async () => {

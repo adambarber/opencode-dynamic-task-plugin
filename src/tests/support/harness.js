@@ -882,8 +882,19 @@ export function v2Context(client, directory, options = {}) {
     location: { directory },
     options,
     tool: {
-      transform: (fn) => fn({ add: (info) => tools.set(info.name, info) }),
-      reload: async () => true,
+      // Async across a MACROTASK like the real registration: the editor writes land
+      // after `reload` has already published unless setup awaits `transform` first. A
+      // microtask-only fake would let the defect pass — microtasks drain before the
+      // awaited reload resumes — the way the data-store double did.
+      transform: (fn) =>
+        Promise.resolve().then(() => {
+          fn({ add: (info) => tools.set(info.name, info) });
+          return { dispose: async () => {} };
+        }),
+      reload: async () => {
+        context.toolsAtReload = tools.size;
+        return true;
+      },
     },
     event: {
       subscribe: () => ({

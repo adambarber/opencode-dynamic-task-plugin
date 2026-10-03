@@ -279,10 +279,17 @@ const fleetShowsOnlyTheRunningRow = (list) => {
 // every dropped record precisely so a case like this can read it.
 describe("a ledger claiming one task is both running and finished", () => {
   it("drops the settled duplicate, keeps the running row, and names the loss", async () => {
-    const h = await bootWithLedger({
-      tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
-      active: { ses_both: runningEntry("ses_both") },
-    });
+    // The open turn is SEEDED, not raced for: reconcile runs detached from boot, so an
+    // unseeded host settles the restored row as gone whenever reconcile wins — which is
+    // a scheduling accident, not the overlap case. The seed states what the host
+    // corroborates, and the case is about the file, not the race.
+    const h = await bootWithLedger(
+      {
+        tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
+        active: { ses_both: runningEntry("ses_both") },
+      },
+      { hooks: { hostTurnSeed: { ses_both: undefined } } },
+    );
     lossIsReported(h, "a record that contradicts its own file is thrown away");
     fleetShowsOnlyTheRunningRow(await h.tool.task_list.execute({}));
   });

@@ -15,8 +15,8 @@
  */
 
 import assert from "node:assert";
-import { appendFileSync, mkdtempSync, readFileSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import path, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
@@ -25,13 +25,13 @@ import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { getDebugLogPath } from "../../../dist/debug-logger.js";
+import { getDebugLogPath, DEBUG_DIR } from "../../../dist/debug-logger.js";
 import {
   applyHostStatus,
   createMockClient,
   events,
   promptText,
-  putHostStatus,
+  setHostTurn,
   unclockedSaid,
 } from "./mock-host.js";
 
@@ -71,6 +71,42 @@ export const bounded = (ms, fn) => withSeam(() => shrinkBoundsForTesting(ms), fn
  * its value, so this owns that too — and `undefined` means "unset", so a case
  * table can say "not set" without reaching past this seam.
  */
+/**
+ * The structured debug lines this project has written, as the operator reads them.
+ *
+ * v2 gave a plugin no log sink, so there are now two files where there was one
+ * host log: a per-(parent, child) file of JSON `debugLog` records, and one
+ * `plugin.log` of prose `safeLog` warnings. Reading them back off disk — rather than
+ * off a fake host array the host no longer writes — is what makes a log assertion
+ * mean anything: the writer under test is the one whose output is checked.
+ */
+export function debugLines(directory) {
+  return readLogDir(directory)
+    .filter((name) => name !== PLUGIN_LOG)
+    .flatMap((name) => readFileSync(path.join(directory, DEBUG_DIR, name), "utf8").split("\n"))
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
+/** The prose warnings the plugin leaves for an operator, from `plugin.log`. */
+export function pluginLog(directory) {
+  try {
+    return readFileSync(path.join(directory, DEBUG_DIR, PLUGIN_LOG), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+const PLUGIN_LOG = "plugin.log";
+
+function readLogDir(directory) {
+  try {
+    return readdirSync(path.join(directory, DEBUG_DIR));
+  } catch {
+    return [];
+  }
+}
+
 export const withEnv = (key, value, fn) =>
   withSeam(() => {
     const had = Object.hasOwn(process.env, key);
@@ -285,8 +321,6 @@ export const drain = async (chainOf, chainName = "unnamed") => {
 export const notifiedNotes = (client) => client._state.notifications;
 
 /** How many times the host's status channel was read. */
-export const statusReadCount = (client) => client._state.statusReads;
-
 /** A child declaring it cannot continue without something. The `needs_input` kind is the
  * production contract for that gesture, so it is spelled here once rather than at
  * every site that needs a child to be stuck. */
@@ -306,6 +340,11 @@ const liveHarnesses = [];
  * forgotten by a test that builds its harness inline.
  */
 export async function setupHarness({ hooks = {}, options = {}, directory = tmpProjectDir() } = {}) {
+  // v2 took the host's log sink away, so the plugin's debug log is a FILE and the
+  // only one. A reader pointed at a host array would read a sink nothing writes,
+  // and a log assertion against it passes against silence — so every harness test
+  // runs with debug logging ON and `logs()` reads the files off disk.
+  process.env.DYNAMIC_TASK_DEBUG = "1";
   const trace = (mark) => {
     if (process.env.HARNESS_TRACE) appendFileSync(process.env.HARNESS_TRACE, `${mark}\n`);
   };
@@ -338,30 +377,50 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   resetAgentCache();
   clearNotifyLedger();
   const mod = await import("../../../dist/index.js");
-  const pluginFn = mod.default || mod;
+  const plugin = mod.default;
   trace("setup:plugin-loaded");
-  const result = await pluginFn({ client, directory }, options);
+  // v2 hands the plugin a CONTEXT and registers through it: tools arrive by the
+  // editor transform, events by an async iterable. The fake drives those two
+  // surfaces for real rather than reaching past them, so a plugin that
+  // registered wrongly would fail here instead of in production.
+  const { context, rawTools, deliverEvent } = v2Context(client, directory, options);
+  // Options ride on the context itself (`context.options`) — the loader calls
+  // `setup(context)` with one argument, so a harness passing them positionally
+  // would exercise defaults while believing otherwise.
+  await plugin.setup(context);
   trace("setup:plugin-run");
-  assert.ok(result.tool?.dynamic_task, "dynamic_task tool must be registered");
+  assert.ok(rawTools.has("dynamic_task"), "dynamic_task tool must be registered");
   const spawned = [];
 
   const harness = {
     client,
-    tool: result.tool,
+    tool: textTools(rawTools),
+    rawTools,
     directory,
     spawned,
-    fireEvent: (event) => {
+    fireEvent: async (event) => {
       applyHostStatus(state, event);
-      return result.event({ event });
+      await deliverEvent(event);
     },
     /**
-     * Put a session's host status where the server's map would hold it, for
-     * states a test cannot reach by delivering events (a session the plugin
-     * never saw, or one the host has already forgotten).
+     * Say whether a session's turn is open, for states a test cannot reach by
+     * delivering events (a session the plugin never saw, or one the host has
+     * already forgotten). This writes the TRANSCRIPT, which is where production
+     * reads the answer from — a fixture holding the fact anywhere else is a
+     * second copy of it, and the two could disagree.
      */
-    setHostStatus: (id, type) => putHostStatus(state.hostStatus, id, type),
-    /** Drop a session from the host's map entirely — no turn, no entry. */
-    forgetHostStatus: (id) => state.hostStatus.delete(id),
+    setHostStatus: (id, type) => setHostTurn(state, id, type),
+
+    /**
+     * How many times production asked the host for a transcript. Counted because a
+     * view that fans out into one read per task turns a fleet view into a burst
+     * against a host that answers the whole fleet in one — and v2 left the transcript
+     * as the only place a turn's state is recorded, so that burst is now the one a
+     * fleet view can make. The count is the only proof a view did not make it.
+     */
+    transcriptReads: () => state.transcriptReads,
+    /** Drop the session's transcript entirely — no turn, no record. */
+    forgetHostStatus: (id) => state.transcripts.delete(id),
     /**
      * Say the host HAS this session, without pretending this run created it — the
      * shape of a restore. Distinct from `forgetHostSession` because the status map
@@ -403,8 +462,18 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     // in every settlement notice, so this is the handle for "the notice FOR
     // this child" — routing target included.
     noticeFor: (childId) => state.notifications.find((n) => n.message.includes(childId)),
-    questionCalls: () => state.questionCalls,
-    logs: () => state.logs,
+    permissionCalls: () => state.permissionCalls,
+    logs: () => debugLines(directory),
+    /**
+     * The log lines for one event name, as the writer spelled it.
+     *
+     * The debug log is structured — an `eventName` and its payload — so a case that
+     * greps for prose pins wording, and the sentence a writer happens to use today
+     * says nothing about whether it logs at all. Naming the event is the contract.
+     */
+    events: (name) => debugLines(directory).filter((entry) => entry.eventName === name),
+    /** The plugin's own prose warnings — the v2 stand-in for the host log. */
+    pluginLog: () => pluginLog(directory),
     aborted: () => state.aborted,
     /**
      * Deliver a terminal event and return the ONE notice it produced. Exactly
@@ -590,16 +659,16 @@ export async function withSettledChild(opts = {}) {
 }
 
 /**
- * Boot, spawn one child, and have the host ask it a question — the arrangement
- * every question-gate case starts from.
+ * Boot, spawn one child, and have the host ASK it a permission — the arrangement
+ * every permission-gate case starts from.
  *
  * Named because the preamble is load-bearing: the ask must reach the gate under
  * the session id the child was dispatched with, and a case that hand-rolled it
  * could use a different one without noticing. A gate that never sees the ask
  * never answers it, so the ask is part of the setup, not the test.
  */
-export async function withAskedChild(questionId, ...options) {
-  return withChildThen((h, id) => h.fireEvent(events.ask(id, questionId, ...options)));
+export async function withAskedChild(requestId) {
+  return withChildThen((h, id) => h.fireEvent(events.ask(id, requestId)));
 }
 
 /**
@@ -674,21 +743,22 @@ export async function withSettledDispatchTree(harness = {}) {
  * that asks it is one line of arrangement and one expectation.
  */
 export async function resultForChild(messages, opts = {}) {
-  return readForChild(() => messages, opts);
+  return readForChild((client, id) => client.setTranscript(id, messages), opts);
 }
 
-/** As resultForChild, for the child whose message read itself fails. */
+/**
+ * As resultForChild, for the child whose message read itself fails.
+ *
+ * The failure is armed as a fault rather than faked with a hook, so the teardown
+ * rule sees it fire: a fixture that cannot fail cannot prove the failure path.
+ */
 export async function resultForUnreadableChild(error = new Error("boom"), opts = {}) {
-  return readForChild(() => {
-    throw error;
-  }, opts);
+  return readForChild((client, id) => client.makeUnreadable(id, error), opts);
 }
 
-async function readForChild(messages, opts) {
-  const { c } = await withChild({
-    ...opts,
-    harness: { ...opts.harness, hooks: { ...opts.harness?.hooks, messages } },
-  });
+async function readForChild(arrange, opts) {
+  const { c, h, id } = await withChild(opts);
+  arrange(h.client, id);
   return c.result();
 }
 
@@ -788,3 +858,89 @@ export const darkTheme = () => ({
  */
 export const capCell = (value, stated = true, bounded = null) => ({ value, stated, bounded });
 import { RGBA } from "@opentui/core";
+
+/**
+ * The v2 plugin's own context, built over the fake host's namespaces.
+ *
+ * A v1 harness called the entry function and read the hook object it returned.
+ * v2 has no hook object: the plugin registers tools by handing an editor to
+ * `tool.transform` and reads events off an async iterable, so the only honest
+ * fake is one that serves those two surfaces and lets the plugin take them.
+ */
+export function v2Context(client, directory, options = {}) {
+  const tools = new Map();
+  const queue = [];
+  // FIFO waiter lists, not single slots: deliveries may overlap (`Promise.all` over
+  // a burst of terminal events is the real case), and one slot hands a promise to
+  // the wrong delivery — the burst hung forever. `parked` is woken by a delivery,
+  // `waiting` is signalled by the generator, both in push order.
+  const parked = [];
+  const waiting = [];
+
+  const context = {
+    ...client,
+    location: { directory },
+    options,
+    tool: {
+      transform: (fn) => fn({ add: (info) => tools.set(info.name, info) }),
+      reload: async () => true,
+    },
+    event: {
+      subscribe: () => ({
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
+            while (queue.length > 0) {
+              yield queue.shift();
+              // the loop body has run for this event; release its own delivery
+              waiting.shift()?.();
+            }
+          }
+        },
+      }),
+    },
+  };
+
+  return {
+    context,
+    rawTools: tools,
+    deliverEvent: async (event) => {
+      // Two SEPARATE wait lists, because the generator and the deliverer park at
+      // different moments. Sharing one slot lost the wake-up: the generator parked
+      // first writing its resolver, then this overwrote it, so the promise the
+      // generator sat on was never called and delivery hung — it survived only when
+      // the two happened to interleave the other way round.
+      queue.push(event);
+      const consumed = new Promise((resolve) => waiting.push(resolve));
+      parked.shift()?.();
+      await consumed;
+      // the subscriber has the event; give the turn it kicked off a tick to start
+      await sleep(0);
+    },
+  };
+}
+
+/**
+ * v2 a tool answers `{ content }`, not a bare string. Every suite here wants the
+ * string, so the harness unwraps once, at its own boundary, and keeps the tools
+ * exactly as the host received them on `rawTools` — the fidelity pin reads those,
+ * so this convenience cannot quietly become a different shape than the contract.
+ */
+export function textTools(rawTools) {
+  return Object.fromEntries(
+    [...rawTools].map(([name, info]) => [
+      name,
+      {
+        ...info,
+        execute: async (raw, ctx) => {
+          const answer = await info.execute(raw, ctx);
+          assert.ok(
+            answer && typeof answer === "object" && typeof answer.content === "string",
+            `tool ${name} answered ${JSON.stringify(answer)} — v2 returns { content }, not a string`,
+          );
+          return answer.content;
+        },
+      },
+    ]),
+  );
+}

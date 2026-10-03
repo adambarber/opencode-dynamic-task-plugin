@@ -22,26 +22,29 @@
  */
 import type { HostTurnWord } from "../shared/liveness.js";
 
-// ── the running word is the host's, so an invented one cannot be read as it ──
+// ── the turn verdict is the host's, so an invented one cannot be read as it ──
 declare const quiesced: { type: "quiesced" };
-// @ts-expect-error  v2 declares exactly one turn word (`SessionActive = {type:
-// "running"}`). A word the host has not declared cannot be read as one, which is the
-// pin that would have failed when a hand-written Set was consulted instead.
+// @ts-expect-error  v2 declares exactly three verdicts for a completed execution
+// ("succeeded" | "failed" | "interrupted"). A word the host has not declared cannot
+// be read as one — which is the mistake this file was rewritten for: the plugin had
+// its OWN "running" word for a MESSAGE field, and a verdict it could not declare.
 const refusedWord: HostTurnWord = quiesced.type;
 
-declare const running: HostTurnWord;
-const theOneWord: "running" = running;
+// ── every declared verdict is assignable, so the union cannot silently narrow ──
+declare const anyVerdict: HostTurnWord;
+const ended: "succeeded" | "failed" | "interrupted" = anyVerdict;
 
-// ── absence is NOT a word, so "not running" cannot be spelled as a turn ──
-// @ts-expect-error  `undefined` is the absence of the word, and the type says so by
-// not including it. Reading it as a word is how a working child reads as settled.
+// ── absence is NOT a verdict, so "no execution finished" cannot be spelled as one ──
+// @ts-expect-error  `undefined` is the ABSENCE of a verdict — the turn is still open —
+// and the type says so by not including it. Reading it as one is how a live child
+// reads as settled, which is the defect these pins now exist for.
 const invented: HostTurnWord = undefined;
 
-// ── and the word is CLOSED, so a rename upstream is a build error, not a silent miss ──
-// @ts-expect-error  A word the host added cannot be passed off as the declared one.
-const renamed: HostTurnWord = "busy";
+// ── and the union is CLOSED, so a verdict added upstream is a build error ──
+// @ts-expect-error  A verdict the host added cannot be passed off as a declared one.
+const renamed: HostTurnWord = "completed";
 
-export type _HostPins = [typeof refusedWord, typeof theOneWord, typeof invented, typeof renamed];
+export type _HostPins = [typeof refusedWord, typeof ended, typeof invented, typeof renamed];
 
 // ── BOUNDEDNESS IS A TYPE: production cannot reach a host namespace ──
 // Tenet 2 ("every outbound host call is bounded") was held by a scan reading

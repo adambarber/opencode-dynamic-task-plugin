@@ -222,10 +222,10 @@ export async function assertNeedsSessionId(toolUnderTest) {
  * reason is asserted where it lands instead — the operator's block claim, or the
  * debug log.
  */
-export function assertQuestionRejected(h) {
-  const calls = h.questionCalls();
-  assert.strictEqual(calls.length, 1, "one rejection, never a silent stall");
-  assert.strictEqual(calls[0].method, "reject");
+export function assertPermissionDenied(h) {
+  const calls = h.permissionCalls();
+  assert.strictEqual(calls.length, 1, "one denial, never a silent stall");
+  assert.strictEqual(calls[0].decision, "reject", "v2 answers a whole request with one decision word");
   return calls[0];
 }
 

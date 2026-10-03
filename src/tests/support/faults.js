@@ -25,8 +25,6 @@
  */
 export const FAULTS = Object.freeze([
   "silentHost",
-  "statusHang",
-  "statusThrows",
   "presenceHang",
   "presenceThrows",
   "agentsListThrows",

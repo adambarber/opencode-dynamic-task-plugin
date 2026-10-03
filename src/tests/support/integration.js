@@ -130,7 +130,10 @@ export const harnessThrowingPrompt = (sessionId) => harnessWithFailingPrompt("pr
  * it: it publishes `session.idle` and deletes the key. A case that means "this turn
  * ended" says that instead.
  */
-export const hostStatus = (h, id, type) => h.fireEvent(events.status(id, type));
+export const hostStatus = async (h, id, type) => {
+  h.setHostStatus(id, type);
+  await h.fireEvent(type === "idle" ? events.idle(id) : events.working(id));
+};
 
 /**
  * Wait for an observable, and fail rather than hang. The bound is the only clock

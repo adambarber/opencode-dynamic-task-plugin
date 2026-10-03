@@ -17,14 +17,29 @@ import path from "node:path";
 
 import { REPO_ROOT } from "./corpus.js";
 
-const SDK_ROOT = path.join(REPO_ROOT, "node_modules", "@opencode-ai", "sdk");
-const TYPES = path.join(SDK_ROOT, "dist", "gen", "types.gen.d.ts");
+const SCHEMA_ROOT = path.join(REPO_ROOT, "node_modules", "@opencode", "schema", "dist");
+const TYPES = path.join(SCHEMA_ROOT, "session.d.ts");
 
-/** The declared source, read once. A miss here is fatal by design — see `require`. */
-let declaration;
+const CLIENT_ROOT = path.join(REPO_ROOT, "node_modules", "@opencode", "client", "dist");
+
+/** A declared file's text, read once. A miss here is fatal by design — see `require`. */
+const readOnce = new Map();
+function read(path_) {
+  if (!readOnce.has(path_)) readOnce.set(path_, readFileSync(path_, "utf8"));
+  return readOnce.get(path_);
+}
+
+function file(name) {
+  return read(path.join(SCHEMA_ROOT, name));
+}
+
+/** The client's own declarations — where the transport's failure vocabulary lives. */
+function clientFile(name) {
+  return read(path.join(CLIENT_ROOT, name));
+}
+
 function source() {
-  declaration ??= readFileSync(TYPES, "utf8");
-  return declaration;
+  return file("session.d.ts");
 }
 
 /**
@@ -42,6 +57,26 @@ function require_(what, found) {
   return found;
 }
 
+/**
+ * The v2 domains a plugin may name, read out of the `Context` the published plugin
+ * package declares.
+ *
+ * This is the list the old scanner carried by hand as `app|session|question`, and it is
+ * why that scanner went blind: v2 renamed `question` to `permission` and added `agent`,
+ * and a hand-written allowlist cannot notice. Parsed instead, so the set is the host's.
+ */
+export function realDomainNames() {
+  const file = path.join(REPO_ROOT, "node_modules", "@opencode", "plugin", "dist", "promise", "plugin.d.ts");
+  const text = readFileSync(file, "utf8");
+  const start = text.indexOf("export interface Context {");
+  if (start < 0) throw new Error(`sdk-contract could not read Context out of ${file} — the declaration moved`);
+  const body = text.slice(start, text.indexOf("\n}", start));
+  return require_(
+    "Context",
+    [...new Set([...body.matchAll(/readonly (\w+):/g)].map((m) => m[1]))],
+  );
+}
+
 /** The members of a declared union, by its `type` discriminant. */
 function unionWords(typeName, endMarker) {
   const text = source();
@@ -57,70 +92,91 @@ function unionWords(typeName, endMarker) {
 }
 
 /**
- * Every word the host's status channel can hold — parsed from `SessionStatus`.
+ * Every verdict the host declares for a COMPLETED execution, parsed out of
+ * `Session.Info.outcome`.
  *
- * This is the list the fake is held to, so it is the list that also proves the
- * production switch is exhaustive: if the host adds a word, this grows, and the
- * compile-time pin in `type-invariants.ts` stops compiling.
+ * This is the list a turn-level reader must cover, and it is the reason the list is
+ * parsed: the plugin once derived "the turn is over" from a MESSAGE field instead,
+ * and a hand-kept word list is what let a fixture agree with that mistake. A host
+ * that adds a verdict now lands in the absence of the suite below and fails it,
+ * rather than passing as a word nothing reads.
  */
-export function hostStatusWords() {
-  return unionWords("SessionStatus", "export type EventSessionStatus");
+export function hostOutcomeWords() {
+  const at = source().indexOf("readonly outcome:");
+  if (at < 0) return require_("Session.Info.outcome", []);
+  const entry = source().slice(at).match(/Schema\.Literals<readonly \[([^\]]+)\]>/);
+  if (!entry) throw new Error(`sdk-contract: Session.Info.outcome declares no Literals list in ${TYPES}`);
+  return require_(
+    "Session.Info.outcome",
+    [...entry[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+  );
 }
 
 /**
- * The word whose arrival means the host DELETES a status entry rather than storing
- * one. opencode v1.18.30 `packages/opencode/src/session/status.ts`:
+ * The words a fixture may use to describe a TURN's state: `open`, or one of the
+ * verdicts the host declares for a completed execution.
  *
- *   if (status.type === "idle") { events.publish(Event.Idle, {sessionID}); data.delete(sessionID); return }
- *
- * So this word is the reason an absent key cannot be read as a missing session, and
- * the reason the fake is required to delete on it.
+ * Deliberately not the message words: a v2 turn is a SEQUENCE of messages that each
+ * carry their own completion, so a step ending is not a turn ending, and a
+ * vocabulary that could not tell them apart is how the two got confused.
  */
-export function idleWord() {
-  const words = hostStatusWords();
-  if (!words.includes("idle")) throw new Error(`sdk-contract: no "idle" member in SessionStatus (${words.join(", ")})`);
-  return "idle";
+export function turnStateWords() {
+  return ["open", ...hostOutcomeWords()];
 }
 
 /**
- * The word the host publishes when a turn is at work — the one every "is this child
- * running" question bottoms out in, and so the word a fixture naming "running" needs.
+ * Every reason the client declares it can FAIL, parsed out of `ClientErrorReason`.
  *
- * Parsed rather than typed because `idleWord()` sits beside it for exactly one reason:
- * a fixture that hardcodes either word passes on a day the host renames it and fails on
- * no day at all.
+ * v2 has no declared not-found error type at all: `session.get` rejects with a
+ * `ClientError`, which carries a `reason` from this union and the offending HTTP
+ * response on `cause`. So the reason a session is missing is a PAIR — this reason
+ * plus a 404 on the cause — and a reader that checks only one of them is a reader
+ * that reports a missing session as anything at all.
  */
-export function busyWord() {
-  const words = hostStatusWords();
-  if (!words.includes("busy")) throw new Error(`sdk-contract: no "busy" member in SessionStatus (${words.join(", ")})`);
-  return "busy";
+export function clientErrorReasons() {
+  const text = clientFile("promise/generated/client-error.d.ts");
+  const at = text.indexOf("ClientErrorReason =");
+  if (at < 0) return require_("ClientErrorReason", []);
+  const entry = text.slice(at).match(/=([^;]+);/);
+  if (!entry) throw new Error("sdk-contract: ClientErrorReason declares no union");
+  return require_(
+    "ClientErrorReason",
+    [...entry[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+  );
 }
 
-/** The declared name of the host's not-found: `SessionGetErrors[404]`'s type's `name`. */
-export function notFoundName() {
-  const errors = source().indexOf("export type SessionGetErrors =");
-  if (errors < 0) return require_("SessionGetErrors", []);
-  const slice = source().slice(errors);
-  const entry = slice.match(/\n\s*404:\s*([A-Za-z]+);/);
-  if (!entry) throw new Error(`sdk-contract: SessionGetErrors has no 404 member in ${TYPES}`);
-  // The named type may be declared BEFORE SessionGetErrors in the file, so it is
-  // looked up in the whole source rather than in the slice from the error map.
-  const at = source().indexOf(`export type ${entry[1]} =`);
-  if (at < 0) throw new Error(`sdk-contract: SessionGetErrors[404] names an undeclared ${entry[1]}`);
-  const body = source().slice(at);
-  const name = body.match(/name:\s*"([^"]+)"/);
-  if (!name) throw new Error(`sdk-contract: ${entry[1]} declares no name literal in ${TYPES}`);
-  return name[1];
+/**
+ * How the host says "no such session", as the v2 client actually says it.
+ *
+ * v2 declares no not-found error type: `session.get` rejects with a `ClientError`
+ * whose `reason` is declared in `ClientErrorReason` and whose `cause` carries the
+ * failing response. A fake that threw a v1 named error would be refused by the very
+ * reader it exists to exercise — which is the right outcome, and only visible if
+ * the fake builds the shape from the declaration rather than from memory.
+ */
+export function missingSessionError() {
+  const reason = clientErrorReasons().includes(NOT_FOUND_REASON) ? NOT_FOUND_REASON : clientErrorReasons()[0];
+  const error = Object.assign(new Error(`Session not found.`), {
+    name: CLIENT_ERROR_NAME,
+    reason,
+    cause: { status: NOT_FOUND_STATUS },
+  });
+  return error;
 }
 
-/** The status code `SessionGetErrors` pins for "not found". */
-export function notFoundStatus() {
-  const errors = source().indexOf("export type SessionGetErrors =");
-  if (errors < 0) throw new Error(`sdk-contract: no SessionGetErrors in ${TYPES}`);
-  const entry = source().slice(errors).match(/\n\s*(\d{3}):\s*NotFoundError;/);
-  if (!entry) throw new Error(`sdk-contract: SessionGetErrors pins no 404 in ${TYPES}`);
-  return Number(entry[1]);
-}
+/** The error's declared name, parsed rather than retyped. */
+export const CLIENT_ERROR_NAME = (() => {
+  const text = clientFile("promise/generated/client-error.d.ts");
+  const at = text.indexOf('readonly name = "');
+  if (at < 0) return "ClientError";
+  return text.slice(at).match(/readonly name = "([^"]+)"/)[1];
+})();
+
+/** The reason that pairs with a 404 to mean "no such session". */
+export const NOT_FOUND_REASON = "UnexpectedStatus";
+
+/** The HTTP status the host pairs with that reason. */
+export const NOT_FOUND_STATUS = 404;
 
 /** The installed SDK version, so a drifting dependency cannot pass unnoticed. */
 export function installedSdkVersion() {

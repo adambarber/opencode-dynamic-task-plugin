@@ -72,7 +72,7 @@ export async function withSettledMiddleChild() {
  * session idle, both would pass against a plugin that had no guard at all.
  */
 export async function withSelfStop({ note = "a caller naming its own session" } = {}) {
-  return withRefusedStop({ harness: { hostStatusSeed: { [PARENT]: "busy" } }, target: PARENT, note });
+  return withRefusedStop({ harness: { hostStatusSeed: { [PARENT]: "open" } }, target: PARENT, note });
 }
 
 /**

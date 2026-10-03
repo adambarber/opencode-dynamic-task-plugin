@@ -8,7 +8,7 @@
 import { truncateText, type NotificationRecord } from "./notify.js";
 import { TaskState, failureClassOf, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
-import { hostTurnRunning, type LivenessReading, UntrackedStatus } from "./liveness.js";
+import { hostTurnRunning, type LivenessReading, SessionExistence, UntrackedStatus } from "./liveness.js";
 import { FailureClass, failureNote } from "./failure-class.js";
 import type { FileTouch } from "./prompt.js";
 import { textBlock, present } from "./text-block.js";
@@ -314,14 +314,19 @@ function formatNotificationLine(notification: NotificationRecord): string {
  * agreed while the channel answered and could not agree about a failed one.
  */
 function hostStatusPhrase(liveness: LivenessReading): string {
-  if (!liveness.statusAnswered) return "(the server's transcript could not be read)";
-  return liveness.hostTurn ?? "(no unfinished turn in the server's transcript)";
+  if (!liveness.statusAnswered) return "(the host did not answer)";
+  if (liveness.existence !== SessionExistence.Present) return "(the host has no such session)";
+  // No verdict recorded is NOT "nothing running". The host records the outcome of
+  // a COMPLETED execution, so a session carrying none has a turn it has not closed —
+  // which is the common case for most of a live turn, and the reading that used to
+  // settle running children seconds into their first step.
+  return liveness.hostTurn ?? "in progress (no verdict recorded)";
 }
 
 function sourcedLivenessLines(task: TaskRecord, liveness: LivenessReading | null): string[] {
   if (!liveness || !(task.state === TaskState.Active || hostTurnRunning(liveness))) return [];
   return [
-    `Server status: ${hostStatusPhrase(liveness)}`,
+    `Server turn: ${hostStatusPhrase(liveness)}`,
     liveness.lastMessageAt === null
       ? "Last child message: (none yet)"
       : `Last child message: ${formatAge(liveness.lastMessageAt)} ago`,
@@ -554,7 +559,7 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   } else if (input.liveness) {
     // An untracked session has no store record to reconcile, so only the
     // sourced facts render — never a status inferred from message shapes.
-    lines.push(`Server status: ${hostStatusPhrase(input.liveness)}`);
+    lines.push(`Server turn: ${hostStatusPhrase(input.liveness)}`);
   }
 
   if (input.notification) {

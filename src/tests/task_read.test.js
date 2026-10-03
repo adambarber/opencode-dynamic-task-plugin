@@ -10,7 +10,7 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { resultForChild, resultForUnreadableChild, setupHarness, sleep, statusReadCount, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
+import { resultForChild, resultForUnreadableChild, setupHarness, sleep, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
 import { withSettledMiddleChild } from "./support/stop-scenarios.js";
 import { events, hostSaid, unclockedSaid } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
@@ -42,11 +42,11 @@ describe("task_result and task_interrupt paths", () => {
   // (or must not) be in the report for its state.
   const reports = [
     ["task_result reports store state for active tasks with the server's liveness beside it",
-      withChild, [["Status: active", true], ["Server status: busy", true], ["task_status", true], ["Tracked: yes", true]]],
+      withChild, [["Status: active", true], ["Server turn: in progress", true], ["task_status", true], ["Tracked: yes", true]]],
     ["task_result never guesses a status from the message stream",
       withChild, [["suggests", false], ["Last child message", true], ["Last plugin event", true]]],
     ["task_result reports a settled state with no liveness noise when the server is quiet",
-      withSettledChild, [["Status: completed", true], ["Server status", false], ["Last child message", false]]],
+      withSettledChild, [["Status: completed", true], ["Server turn", false], ["Last child message", false]]],
   ];
   for (const [name, scenario, expectations] of reports) {
     it(name, async () => {
@@ -69,7 +69,7 @@ describe("task_result and task_interrupt paths", () => {
     ["a running child reads the server's word and the child's own last message",
       async ({ c, id }) => {
         const out = await c.status();
-        return [out, [[/Server status: busy/, true], [/Last child message: \d+s ago/, true]]];
+        return [out, [[/Server turn: in progress/, true], [/Last child message: \d+s ago/, true]]];
       }],
     ["a just-steered turn waiting to start reads as pending, not as work in progress",
       async ({ c }) => {
@@ -79,20 +79,20 @@ describe("task_result and task_interrupt paths", () => {
         // a fake that stored `idle` here is the lie this whole fix removed.
         await c.steer("pivot");
         const out = await c.status();
-        return [out, [[/not listed by the server/, true], [/replacement turn has not started/i, true], [/stalled/i, false]]];
+        return [out, [[/Server turn: interrupted/, true], [/replacement turn has not started/i, true], [/stalled/i, false]]];
       }],
     ["a store the server has stopped reporting is flagged, not read as work",
       async ({ h, c }) => {
-        h.setHostStatus(c.id, "idle");
+        h.setHostStatus(c.id, "succeeded");
         const out = await c.status();
         return [out, [[/missed the ending/i, true], [/task_interrupt/, true]]];
       }],
     ["a settled child the server still calls busy says its settlement was premature",
       async ({ h, c }) => {
         await h.settle(c.id);
-        h.setHostStatus(c.id, "busy");
+        h.setHostStatus(c.id, "open");
         const out = await c.status();
-        return [out, [[/Server status: busy/, true], [/still working/i, true]]];
+        return [out, [[/Server turn: in progress/, true], [/still working/i, true]]];
       }],
   ];
   for (const [name, read] of liveness) {
@@ -129,21 +129,21 @@ describe("task_result and task_interrupt paths", () => {
     const summary = await resultForUnreadableChild();
     answerSays(summary, "Status: active", "the store is the authority");
     answerSays(summary, API_UNAVAILABLE, "the failed read says so");
-    answerOmits(summary, "Server status", "no reading, no liveness block");
+    answerOmits(summary, "Server turn", "no reading, no liveness block");
   });
 
   // Absence of a reading is not evidence of anything. The record renders; the
   // stall line may fire on the plugin's own clock, but nothing claims to know
   // what turn the server is on.
   it("a status channel that cannot be asked renders the record without a diagnosis", async () => {
-    const { c } = await withChild({ harness: { hooks: { statusThrows: new Error("status down") } } });
+    const { c } = await withChild({ harness: { hooks: { presenceThrows: new Error("status down") } } });
     const status = await statusSays(c, "State: active");
     answerSays(status, "Last plugin event:", "the plugin's own clock still reads");
     // A channel that failed is named as failed, and is NOT reported as one that
     // answered and found nothing: the reader has to be able to tell "the server has
     // no turn" from "nobody could ask", because those need different responses.
-    answerSays(status, "status channel could not be read", "the gap is named as a gap");
-    answerOmits(status, "not listed by the server", "an unread channel is not an empty one");
+    answerSays(status, "the host did not answer", "the gap is named as a gap");
+    answerOmits(status, "in progress", "an unread channel is not an open turn either");
     answerOmits(status, "missed the ending", "no reading, no verdict");
   });
 
@@ -177,15 +177,15 @@ describe("task_result and task_interrupt paths", () => {
   // session that is still working.
   it("an untracked session with no status channel is unknown, not idle", async () => {
     const h = await eventHarness({
-      statusThrows: new Error("status down"),
+      presenceThrows: new Error("status down"),
       messages: () => [{ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "working" }] }],
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
     // The gap is named, and it is not dressed up as the host having said the session
     // lists nothing — that inference ends children, so it must not reach a reader.
-    answerSays(summary, "status channel could not be read");
-    answerOmits(summary, "not listed by the server", "an unread channel is not an empty one");
+    answerSays(summary, "the host did not answer");
+    answerOmits(summary, "in progress", "an unread channel is not an open turn");
   });
 
   it("a retryable transport failure says so", async () => {
@@ -350,9 +350,9 @@ describe("task fleet views", () => {
     // depth follows from the case instead of from whatever the mock happens to
     // publish today.
     const AGENTS = [
-      { name: "architect", mode: "subagent" },
-      { name: "coder", mode: "subagent" },
-      { name: "explore", mode: "subagent" },
+      { name: "architect", mode: "subagent", permissions: [] },
+      { name: "coder", mode: "subagent", permissions: [] },
+      { name: "explore", mode: "subagent", permissions: [] },
     ];
 
     // One name for the three steps every case below is: build a harness, list,
@@ -486,8 +486,9 @@ describe("task fleet views", () => {
 
     it("the tree spends no host read", async () => {
       const { h } = await withDispatchTree();
+      const before = h.transcriptReads();
       await h.tool.task_list.execute({});
-      assert.strictEqual(statusReadCount(h.client), 0, "a view of records the store already holds must not read the host");
+      assert.strictEqual(h.transcriptReads(), before, "a view of records the store already holds must not read the host");
     });
   });
 

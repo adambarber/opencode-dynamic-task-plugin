@@ -1,8 +1,8 @@
 import assert from "node:assert";
 
-import { createMockClient, FAKE_SOURCE, putHostStatus } from "./support/mock-host.js";
+import { createMockClient, FAKE_SOURCE, setHostTurn } from "./support/mock-host.js";
 import { listTestSupportFiles, readSource } from "./support/corpus.js";
-import { busyWord, hostStatusWords, idleWord } from "./support/sdk-contract.js";
+import { hostOutcomeWords } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";
 import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
 import { describe, it } from "./support/runner.js";
@@ -45,8 +45,9 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
 
   it("reports nothing fired against a host that is answering, so a witness means something", async () => {
     const client = createMockClient({});
-    await client.app.agents();
-    await client.session.status();
+    await client.agent.list();
+    const made = await client.session.create({ title: "probe" });
+    await client.session.context({ sessionID: made.id });
 
     assert.deepStrictEqual(Object.fromEntries(client._state.faults), {});
   });
@@ -54,8 +55,8 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
   it("counts a fault once per application, so a witness cannot be satisfied by one call for many", async () => {
     const client = createMockClient({ silentHost: true });
     const swallowed = [];
-    client.app.agents().then(() => swallowed.push("a"));
-    client.session.status().then(() => swallowed.push("b"));
+    client.agent.list().then(() => swallowed.push("a"));
+    client.session.create({ title: "probe" }).then(() => swallowed.push("b"));
     await sleep(20);
 
     assert.strictEqual(client._state.faults.get("silentHost"), 2, "one count per swallowed call");
@@ -63,15 +64,15 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
   });
 
   it("reports an armed fault that never fired, which is what a passing case about nothing looks like", async () => {
-    const client = createMockClient({ statusHang: true });
+    const client = createMockClient({ presenceHang: true });
 
-    assert.deepStrictEqual(unengagedFaults(client._state), ["statusHang"], "armed, never engaged");
+    assert.deepStrictEqual(unengagedFaults(client._state), ["presenceHang"], "armed, never engaged");
 
     client.silenceHost();
-    client.app.agents();
+    client.agent.list();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.deepStrictEqual(unengagedFaults(client._state), ["statusHang"], "the silent host engaged");
+    assert.deepStrictEqual(unengagedFaults(client._state), ["presenceHang"], "the silent host engaged");
   });
 });
 
@@ -85,47 +86,51 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
  * say is not a smaller claim about the host, it is a different host: absence from the
  * map stopped meaning "nothing running", and every read of absence with it.
  *
- * Two gates, and the pairing is the point. The funnel's own teeth are behavioural
- * (below): an undeclared word is refused and `idle` deletes. The scan beside it is
- * what keeps those teeth load-bearing — a fake that wrote its own map would be a
- * perfectly good test and a lie, and only a scan finds it.
+ * v2 deleted the status channel a plugin could read, so this whole file's subject is
+ * gone and its replacement is the transcript: a turn is an assistant message with no
+ * `completed`. The gate is therefore restated as what the record can actually hold —
+ * one word, two states — because a fake able to say a third thing is still a fake
+ * inventing vocabulary, and inventing vocabulary is how a gate certifies a host that
+ * does not exist.
  */
-describe("invariant: only the host's own words can go in a fake's status map", () => {
+describe("invariant: only the host's own words can describe a turn", () => {
   it("refuses a word the host does not declare, through the one funnel every write uses", () => {
-    const map = new Map();
+    const transcripts = new Map();
+    const turns = new Map();
+    const state = { transcripts, turns };
 
     assert.throws(
-      () => putHostStatus(map, "ses_x", "compacting"),
-      /is not a host status word/,
-      `a fake may not answer with vocabulary the host lacks. declared: ${hostStatusWords().join(", ")}`,
+      () => setHostTurn(state, "ses_x", "compacting"),
+      /is not a v2 turn state/,
+      `a fake may not describe a turn with a word the host lacks. declared: open, ${hostOutcomeWords().join(", ")}`,
     );
-    assert.strictEqual(map.size, 0, "and the refusal left nothing behind");
+    assert.strictEqual(transcripts.size, 0, "and the refusal left nothing behind");
   });
 
-  it("answers `idle` by DELETING, the way the host's status map does", () => {
-    const map = new Map();
+  it("describes an open turn by no verdict and a settled one by a completed one", () => {
+    const transcripts = new Map();
+    const turns = new Map();
+    const state = { transcripts, turns };
 
-    putHostStatus(map, "ses_x", busyWord());
-    assert.deepStrictEqual([...map.keys()], ["ses_x"], "a running turn is listed");
+    setHostTurn(state, "ses_x", "open");
+    assert.strictEqual(turns.get("ses_x").outcome, undefined, "a turn with no verdict is a turn still open");
 
-    putHostStatus(map, "ses_x", idleWord());
-    assert.strictEqual(map.size, 0, "and idle is answered by removing it, never by storing idle");
+    setHostTurn(state, "ses_x", "succeeded");
+    assert.strictEqual(turns.get("ses_x").outcome, "succeeded", "the verdict the turn ended with is the one production reads");
+    const last = transcripts.get("ses_x").at(-1);
+    assert.notStrictEqual(last.info.time?.completed, undefined, "and the message it was writing is finished");
   });
 
-  it("finds no fake putting a word into a status map any other way", () => {
-    // A direct SET, in any spelling: it is the only way a fake can end up holding a word
-    // the host never said, or an `idle` entry the real map can never have. A delete is not
-    // in scope and cannot be — removing a key cannot invent vocabulary, and two of these
-    // are the host's own (a deleted session leaves the map; so does `forgetHostStatus`).
-    //
-    // Found by reading the support modules as the subject rather than by trusting a
-    // registry of them: a registry is a list someone has to remember to add to, and the
-    // whole failure here was a fake nobody had listed anywhere.
-    const direct = listTestSupportFiles()
+  it("finds no fake holding a turn word anywhere but that one funnel", () => {
+    // Found by reading the support modules as the subject rather than trusting a registry
+    // of them: a registry is a list someone has to remember to add to, and the whole
+    // failure here was a fake nobody had listed anywhere. A private status map is the
+    // thing this catches, because it is a SECOND copy of the fact production reads.
+    const secondCopies = listTestSupportFiles()
       .map(readSource)
-      .filter((source) => /hostStatus\.set\(/.test(source.text))
+      .filter((source) => /hostStatus\.set\(|statusMap\.set\(/.test(source.text))
       .map((source) => source.file);
 
-    assert.deepStrictEqual(direct, [], "these fakes write a status word directly instead of through putHostStatus");
+    assert.deepStrictEqual(secondCopies, [], "these fakes keep a second copy of the turn instead of writing the transcript");
   });
 });

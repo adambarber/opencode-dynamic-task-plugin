@@ -11,7 +11,7 @@ import { describe, it, assert } from "./support/runner.js";
 import { buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { noticeRecord } from "../../dist/shared/task-state.js";
 import { notifiedAs } from "./support/records.js";
-import { busyWord } from "./support/sdk-contract.js";
+import { SessionExistence, UNANSWERED_LIVENESS } from "../../dist/shared/liveness.js";
 
 /**
  * A liveness reading in the shape `readLiveness` returns.
@@ -23,11 +23,18 @@ import { busyWord } from "./support/sdk-contract.js";
  * `reading(undefined, …)` and a second factory, not one overloaded null.
  */
 const reading = (hostTurn, lastMessageAt) => ({
-  hostTurn: hostTurn === undefined ? undefined : { type: hostTurn },
+  existence: SessionExistence.Present,
+  hostTurn,
   statusAnswered: true,
   lastMessageAt,
   messageCount: 1,
 });
+
+/** A host that did not answer: no verdict, and not evidence of one. */
+const unread = () => ({ ...UNANSWERED_LIVENESS, lastMessageAt: 1, messageCount: 1 });
+
+/** A session the host says it does not have — a verdict it cannot record. */
+const absent = () => ({ ...UNANSWERED_LIVENESS, existence: SessionExistence.Missing, statusAnswered: true });
 
 // The record the view formatters read. Production owns the shape
 // (taskResultRecord) and the boring truth that goes with it; what is left here is
@@ -192,10 +199,12 @@ describe("formatTaskResultSummary", () => {
     const result = formatTaskResultSummary(resultRecord({
       status: "active",
       task: taskRecord(),
-      liveness: reading(busyWord(), Date.now() - 1000),
+      // A turn in progress is the host recording NO verdict — the outcome belongs
+      // to a COMPLETED execution, so an open turn has nothing on the session yet.
+      liveness: reading(undefined, Date.now() - 1000),
     }));
     assert.match(result, /Status: active/);
-    assert.match(result, /Server status: busy/);
+    assert.match(result, /Server turn: in progress/);
     assert.match(result, /Last child message: 1s ago/);
     assert.match(result, /Last plugin event: 0s ago/);
     // A working child carries no warning: silence is a claim the sources do not
@@ -207,13 +216,31 @@ describe("formatTaskResultSummary", () => {
     const result = formatTaskResultSummary(resultRecord({
       status: "completed",
       task: taskRecord({ state: "completed" }),
-      liveness: reading(undefined, null),
+      // "Quiet" in v2 is a turn the host CLOSED, not a turn it never finished
+      // recording. An open turn is a positive claim, and the case above is about
+      // the absence of a question — which is the closed turn.
+      liveness: reading("succeeded", null),
     }));
     assert.match(result, /Status: completed/);
     assert.ok(!result.includes("suggests"), `a guess must never render. got: ${result}`);
     // A settled record with a quiet server has no liveness question left, so
     // the block is absent rather than reporting the absence as a reading.
-    assert.ok(!result.includes("Server status"), `no question, no block. got: ${result}`);
+    assert.ok(!result.includes("Server turn"), `no question, no block. got: ${result}`);
+  });
+
+  // The disagreement v2 makes visible and v1 could not express. A settled record
+  // beside a turn the host has not closed is not a quiet server; it is two sources
+  // saying opposite things, and the view that hides it is the view an operator
+  // consults precisely when the two disagree.
+  it("surfaces a settled record the host still calls a running turn", () => {
+    const result = formatTaskResultSummary(resultRecord({
+      status: "completed",
+      task: taskRecord({ state: "completed" }),
+      liveness: reading(undefined, Date.now() - 1000),
+    }));
+    assert.match(result, /Server turn: in progress/,
+      "the host's open turn is stated even though the store says the task is done");
+    assert.match(result, /Status: completed/, "and the store's own state is not overwritten by it");
   });
 
   it("renders read failures in the same voice with the error as data", () => {

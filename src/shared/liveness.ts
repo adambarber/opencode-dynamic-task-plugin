@@ -7,17 +7,28 @@
 // used to live here were load-bearing and both were wrong.
 
 import { callHost, type OpaqueHost } from "./client.js";
-import { isMessage, messageRoleOf, messageTurnStuck, ASSISTANT_ROLE, readSessionMessages } from "./prompt.js";
+import { isMessage, readSessionMessages } from "./prompt.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { isPlainRecord } from "./host-shape.js";
+import type { Session } from "@opencode/schema/session";
+
+/** The host's own session object, by its declared type — never a local copy of it. */
+type SessionInfo = Session.Info;
 
 // v1 answered "is a turn running" from an in-memory status map that DELETED its
 // entry on idle, so absent meant "not running" and had also been misread as "no such
-// session". v2 has no such call on the plugin surface at all — and does not need one:
-// `SessionMessageAssistant.time.completed` is the durable record of a finished turn,
-// in the transcript this module already reads. Absence of a completion on the last
-// assistant message IS "the host is still working on it", and unlike the map it
-// survives a restart.
+// session". v2 has no such map. What it has instead is a TURN record on the session
+// itself: `Session.Info.outcome` is documented as the outcome of the last COMPLETED
+// execution, recorded at `time.idle` and absent until a run reaches a terminal
+// transition. So absence of an outcome is the turn-level "no turn has finished".
+//
+// The transcript cannot answer this, and the version of this module that said it
+// could settled live children as `completed` seconds into their first step. Measured
+// against a real v2 child (coda, `senior-engineer`, 47 minutes of work): EVERY
+// assistant message carries its own `time.completed` — seq 7 completed 30s in —
+// because a v2 turn is a SEQUENCE of messages that each finish individually.
+// "the last message completed" is therefore true for most of a running turn, which
+// is the worst possible answer: it reads as an ending where there is only a step.
 
 /** Our words for a session we track no record of — not the host's. */
 export enum UntrackedStatus {
@@ -26,29 +37,67 @@ export enum UntrackedStatus {
 }
 
 /**
- * The host's own turn word. v2 declares exactly one (`SessionActive = {type:
- * "running"}`), so presence of the word is the whole signal and its absence means no
- * turn is running — which says nothing about existence, because existence is read
- * from `session.get` and never from this.
+ * The host's own verdict on a TURN, not on a message. `Session.Info.outcome` is
+ * absent until an execution reaches a terminal transition, so this union plus
+ * `undefined` covers every turn state the host can be in. Derived from the SDK's
+ * declaration rather than restated: a host that adds a verdict must not leave this
+ * module quietly misreading one.
  */
-export type HostTurnWord = "running";
+export type HostTurnWord = NonNullable<SessionInfo["outcome"]>;
 
-export interface LivenessReading {
-  /** The host's turn word when the transcript says the last turn is unfinished. */
+/**
+ * The host's TURN record, as our reading of it. A session with no completed
+ * execution has an open turn; a session the host cannot answer for has neither a
+ * turn nor an answer, and those are kept apart on purpose.
+ */
+export enum SessionExistence {
+  Present = "present",
+  Missing = "missing",
+  Unread = "unread",
+}
+
+export interface SessionTurn {
+  /** Does the host still have this session? A verdict cannot answer that. */
+  existence: SessionExistence;
   hostTurn: HostTurnWord | undefined;
   /**
-   * Did the transcript read answer? Its silence is not evidence, so without this a
-   * settled reader cannot tell "no turn running" from "no reply".
+   * Did the host answer? Its silence is not evidence, so without this a settled
+   * reader cannot tell "no turn finished" from "no reply" — and the two must not
+   * collapse, because the second is a transport failure and reading it as the
+   * first would report a dead host as busy and defer every debt behind it.
    */
   statusAnswered: boolean;
+}
+
+export interface LivenessReading extends SessionTurn {
   /** When the child last wrote a message; null when it has written none. */
   lastMessageAt: number | null;
   messageCount: number;
 }
 
-/** A turn the server is running: an assistant message with no recorded completion. */
-export function hostTurnRunning(reading: LivenessReading): boolean {
-  return reading.hostTurn !== undefined;
+/** The one answer a host that did not reply gets, so no caller spells it twice. */
+export const UNANSWERED_LIVENESS: LivenessReading = Object.freeze({
+  existence: SessionExistence.Unread,
+  hostTurn: undefined,
+  statusAnswered: false,
+  lastMessageAt: null,
+  messageCount: 0,
+});
+
+/**
+ * Is a turn still open? The host has recorded no completed execution, and it did
+ * say so — an unanswered read is not an open turn.
+ */
+export function hostTurnRunning(reading: SessionTurn): boolean {
+  // Presence is part of the question. A session the host says it does not have has
+  // no verdict only because there is no session to hold one, and reading that as
+  // an open turn leaves a vanished child running for ever — the reconciler has no
+  // other way to end it, and the parent never hears what happened.
+  return (
+    reading.statusAnswered &&
+    reading.existence === SessionExistence.Present &&
+    reading.hostTurn === undefined
+  );
 }
 
 /**
@@ -56,8 +105,8 @@ export function hostTurnRunning(reading: LivenessReading): boolean {
  * "completed" — a plugin that does not track a session cannot witness its
  * completion, and "no running turn" is the only fact this read can see.
  */
-export function statusFromHostTurn(hostTurn: HostTurnWord | undefined): UntrackedStatus {
-  return hostTurn === undefined ? UntrackedStatus.Unknown : UntrackedStatus.Busy;
+export function statusFromHostTurn(reading: SessionTurn): UntrackedStatus {
+  return hostTurnRunning(reading) ? UntrackedStatus.Busy : UntrackedStatus.Unknown;
 }
 
 /**
@@ -86,8 +135,13 @@ function messageTime(message: unknown): { completed?: unknown; created?: unknown
 }
 
 /**
- * Read a child's liveness. `messages` is the caller's already-read list — task_result
- * needs it for its summary either way, and re-reading would fetch it twice.
+ * Read a child's liveness.
+ *
+ * The turn state comes from the host's TURN record; the message facts come from the
+ * caller's already-read transcript (task_result needs it for its summary either way,
+ * and re-reading would fetch it twice). Two reads, two questions — neither is asked
+ * to answer the other's, which is exactly how a turn came to be derived from a
+ * message field that means something else.
  *
  * Tolerant of a failed read on purpose: a transport that did not answer has said
  * nothing about any session, and `statusAnswered` is what lets a caller tell that
@@ -98,12 +152,13 @@ export async function readLiveness(
   childSessionId: string,
   messages?: unknown[],
 ): Promise<LivenessReading> {
+  const turn = await readSessionTurn(host, childSessionId);
+  if (!turn.statusAnswered) return UNANSWERED_LIVENESS;
   const read = messages === undefined ? await readSessionMessages(host, childSessionId).catch(() => null) : messages;
-  if (read === null) {
-    return { hostTurn: undefined, statusAnswered: false, lastMessageAt: null, messageCount: 0 };
-  }
+  if (read === null) return { ...UNANSWERED_LIVENESS, existence: turn.existence, statusAnswered: true };
   return {
-    hostTurn: transcriptTurnRunning(read) ? "running" : undefined,
+    existence: turn.existence,
+    hostTurn: turn.hostTurn,
     statusAnswered: true,
     lastMessageAt: lastMessageAt(read),
     messageCount: read.length,
@@ -116,75 +171,93 @@ export async function readLiveness(
  * running and a session that never existed look identical in the status map, which
  * is the whole defect.
  */
-export enum SessionExistence {
-  Present = "present",
-  Missing = "missing",
-  Unread = "unread",
-}
+
 
 export interface SessionPresence {
   readonly existence: SessionExistence;
   /** The host's own not-found, when it gave one — its declared type, not a copy. */
   readonly missing?: HostSessionMissing | undefined;
+  /** The host's own verdict on the last completed execution, when there was one. */
+  readonly hostTurn?: HostTurnWord | undefined;
+  /** Did the host answer at all? Absence is a transport failure, not an absence. */
+  readonly statusAnswered: boolean;
 }
 
 /**
- * The name the host's own not-found carries: `SessionGetErrors[404]["name"]`.
+ * The reason the client declares for "the server said no", and the status the host
+ * pairs it with to mean "no such session".
  *
- * Exported because it is a value the host and this plugin must agree on, and a
- * test that writes "NotFoundError" by hand is a test that passes on a day the
- * host renames it and fails on no day at all. The fake also needs it at runtime,
- * and it parses it out of the same declaration rather than keeping a copy here.
+ * v2 declares no not-found error type: `session.get` rejects with a `ClientError`
+ * carrying `reason` and the failing response on `cause`. The host's own client
+ * spells its missing-session test exactly this way, so a reader checking `name` or
+ * `status` at the top level — as the v1 shape allowed — matches nothing and reports
+ * every lost child as unread, which defers the question forever.
  */
-export const NOT_FOUND_NAME: HostSessionMissing["name"] = "NotFoundError";
+export const NOT_FOUND_REASON = "UnexpectedStatus" as const;
 
-/** The status code that same declaration pins: `SessionGetErrors[404]`. */
+/** The HTTP status that, paired with the reason above, means "no such session". */
 export const NOT_FOUND_STATUS = 404;
 
-/**
- * The host's own "no such session", narrowed to what we actually compare.
- *
- * v2 has no declared 404 type on the plugin surface — `session.get` REJECTS with a
- * `ClientError` — so the guard checks the two spellings that error carries. Reading
- * both is the same rule as before: trusting one would report every missing session
- * present whenever the host picked the other.
- */
+/** The host's own "no such session", narrowed to what we actually compare. */
 export type HostSessionMissing = Record<string, unknown>;
 
 function isHostSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
-  if (error["name"] === NOT_FOUND_NAME) return true;
-  return error["status"] === NOT_FOUND_STATUS;
+  if (error["reason"] !== NOT_FOUND_REASON) return false;
+  const cause = error["cause"];
+  return isPlainRecord(cause) && cause["status"] === NOT_FOUND_STATUS;
 }
 
 /**
+ * The session, as the host describes it: whether it exists AND where its last
+ * execution got to. One read, because the same object answers both — existence from
+ * the call succeeding, turn state from `outcome`. Reading them apart would mean two
+ * reads that can disagree, and that disagreement is a false settlement.
+ *
  * Bounded, because this sits on the reconcile path and an unbounded host call there
  * is a boot that never finishes. v2 has no `throwOnError`: the client rejects on a
  * 404 by itself, so existence is answered by the catch below.
  */
-export async function readSessionPresence(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
+export async function readSessionState(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
   try {
     const bounded = await callHost(host, READ_BOUNDS.presence, (client) => client.session.get({ sessionID: sessionId }), null);
-    if (bounded.timedOut) return { existence: SessionExistence.Unread };
-    return { existence: SessionExistence.Present };
+    if (bounded.timedOut) return { existence: SessionExistence.Unread, statusAnswered: false };
+    const info = isPlainRecord(bounded.value) ? bounded.value : undefined;
+    return {
+      existence: SessionExistence.Present,
+      statusAnswered: true,
+      ...(info ? { hostTurn: readHostOutcome(info) } : {}),
+    };
   } catch (error: unknown) {
-    if (isHostSessionMissing(error)) return { existence: SessionExistence.Missing, missing: error };
-    return { existence: SessionExistence.Unread };
+    if (isHostSessionMissing(error)) {
+      return { existence: SessionExistence.Missing, missing: error, statusAnswered: true };
+    }
+    return { existence: SessionExistence.Unread, statusAnswered: false };
   }
 }
 
+/** The host's own outcome word, or undefined when no execution has completed. */
+function readHostOutcome(info: Record<string, unknown>): HostTurnWord | undefined {
+  const outcome = info["outcome"];
+  return HOST_TURN_WORDS.has(outcome as HostTurnWord) ? (outcome as HostTurnWord) : undefined;
+}
+
+/** Every word the SDK declares, so an undeclared one cannot pass as a verdict. */
+const HOST_TURN_WORDS: ReadonlySet<unknown> = new Set<HostTurnWord>(["succeeded", "failed", "interrupted"]);
+
 /**
- * The host's own turn word, derived from the transcript: present when the last
- * assistant turn has recorded no completion. `finish` and `error` classify HOW a
- * turn ended; presence of `completed` is simply that it ended.
+ * Presence, for the callers that only ask that. Existence and turn state come from
+ * one read, so this is the same call with less of the answer asked for — not a
+ * second endpoint to keep in step.
  */
-export function transcriptTurnRunning(messages: unknown[]): boolean {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (!isMessage(message) || messageRoleOf(message) !== ASSISTANT_ROLE) continue;
-    return messageTime(message)?.completed === undefined;
-  }
-  return false;
+export async function readSessionPresence(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
+  return readSessionState(host, sessionId);
+}
+
+/** Bounded, because this sits on the write and wedge paths. */
+async function readSessionTurn(host: OpaqueHost, sessionId: string): Promise<SessionTurn> {
+  const state = await readSessionState(host, sessionId);
+  return { existence: state.existence, hostTurn: state.hostTurn, statusAnswered: state.statusAnswered };
 }
 
 /**
@@ -194,31 +267,23 @@ export function transcriptTurnRunning(messages: unknown[]): boolean {
  * down, a silent stall wearing a safety check's name.
  */
 export async function hostTurnInFlight(host: OpaqueHost, sessionId: string): Promise<boolean> {
-  const messages = await readSessionMessages(host, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
-  return messages === null ? false : transcriptTurnRunning(messages);
+  return hostTurnRunning(await readSessionTurn(host, sessionId));
 }
 
 /**
  * Has this parent stopped answering? A turn the host opened and never closed —
  * distinct from busy because a wedged parent holds its write forever, creating no
- * message and logging no line, and the status map cannot see it either since a
- * wedge has no run. Only the transcript can: an assistant message whose
- * `time.completed` is absent.
+ * message and logging no line. The host's own record draws the same line: an
+ * execution that reached a terminal transition settled it, and one that has not is
+ * still the host's to close.
  */
 export async function parentTurnStuck(host: OpaqueHost, sessionId: string): Promise<boolean> {
-  const list = await readSessionMessages(host, sessionId, { limit: WEDGE_TAIL_MESSAGES }).catch(() => null);
-  if (list === null) return false;
-  for (let i = list.length - 1; i >= 0; i -= 1) {
-    const message = list[i];
-    if (!isMessage(message) || messageRoleOf(message) !== ASSISTANT_ROLE) continue;
-    return messageTurnStuck(message);
-  }
-  return false;
+  // An open turn alone is not the evidence — a host that described nothing (no clock
+  // on the last message, or no transcript at all) has not said the turn failed. The
+  // wedge is an opened turn the host never closed: a clock with no completion.
+  const reading = await readLiveness(host, sessionId);
+  return hostTurnRunning(reading) && reading.lastMessageAt !== null;
 }
-
-// One message is the answer; a few are read so a reordered or partially returned tail
-// cannot hide the un-terminated turn behind a later one. Bounded at the HOST.
-const WEDGE_TAIL_MESSAGES = 5;
 
 /**
  * The transcript's last assistant turn completed on its own, or the host gave up.

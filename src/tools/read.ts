@@ -9,6 +9,7 @@ import {
   readLiveness,
   statusFromHostTurn,
   type LivenessReading,
+  UNANSWERED_LIVENESS,
 } from "../shared/liveness.js";
 import {
   formatTaskResultSummary,
@@ -48,7 +49,7 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     return formatTaskResultSummary(
       taskResultRecord({
         sessionId,
-        status: task ? task.state : statusFromHostTurn(liveness?.hostTurn),
+        status: task ? task.state : statusFromHostTurn(liveness),
         messageCount: messages.length,
         latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
         // Free: the transcript this already read for the count and the latest text
@@ -113,13 +114,14 @@ export async function executeTaskStatus(scope: ResolvedSessionScope): Promise<st
 // the difference between "the server says idle" and "the server did not answer".
 // The parameters are readLiveness's own, so this wrapper cannot answer a
 // different question than the reader it wraps if that reader grows an argument.
-async function readLivenessSafely(
-  ...args: Parameters<typeof readLiveness>
-): Promise<LivenessReading | null> {
+// A throw here is not a second kind of failure — it is the same one the reader
+// already reports as `statusAnswered: false` — so it collapses into that answer
+// rather than into a null every caller would have to remember to check.
+async function readLivenessSafely(...args: Parameters<typeof readLiveness>): Promise<LivenessReading> {
   try {
     return await readLiveness(...args);
   } catch {
-    return null;
+    return UNANSWERED_LIVENESS;
   }
 }
 

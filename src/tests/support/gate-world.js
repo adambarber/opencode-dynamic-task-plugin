@@ -56,7 +56,7 @@ export function isolatedGate({ respond = async () => ({ ok: true }), status } = 
     },
     /** The texts the world was actually asked to write, in order. */
     get wrote() {
-      return live().calls.map((call) => call.body.parts[0].text);
+      return live().calls.map((call) => call.text);
     },
     setStatus: (id, type) => live().setStatus(id, type),
   };

@@ -7,8 +7,7 @@
 // execution-bound, including the one on the parent prompt itself — the host
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
-import path from "node:path";
-import { appendLogLine } from "../debug-logger.js";
+import { appendLogLine, getPluginLogPath } from "../debug-logger.js";
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
@@ -16,22 +15,10 @@ import { evictOldest } from "./bounded-map.js";
 import { NotifyKind } from "./notification-text.js";
 import { errorMessage } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
-import { hostTurnInFlight, parentTurnStuck } from "./liveness.js";
+import { hostTurnRunning, readLiveness } from "./liveness.js";
 
 // Plugin logging that never throws: a dead log write must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
-
-/** Where the plugin's own log lives — the project directory, set once at boot. */
-let logRoot = ".dynamic-task-debug";
-
-/** Point the plugin log at the project, beside the durable ledger. */
-export function configurePluginLogRoot(directory: string): void {
-  logRoot = directory ? path.join(directory, ".dynamic-task-debug") : ".dynamic-task-debug";
-}
-
-function pluginLogRoot(): string {
-  return logRoot;
-}
 
 /**
  * The one host call logging needs — OPTIONAL, and that is the point.
@@ -63,7 +50,7 @@ export type LogLevel = "info" | "warn" | "error";
  * of holding plugin boot open against a silent host.
  */
 export function safeLog(level: LogLevel, message: string): void {
-  appendLogLine(path.join(pluginLogRoot(), "plugin.log"), `${new Date().toISOString()} ${level} ${message}`);
+  appendLogLine(getPluginLogPath(), `${new Date().toISOString()} ${level} ${message}`);
 }
 
 /**
@@ -609,9 +596,12 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
  * words, so a flaky channel defers nothing and loses nothing.
  */
 async function parentRefusal(host: OpaqueHost, sessionId: string): Promise<string | null> {
-  if (await hostTurnInFlight(host, sessionId)) return "mid-turn";
-  if (await parentTurnStuck(host, sessionId)) return "wedged — its last turn has no completion";
-  return null;
+  // One read for the one question. A refusal is an open turn the host DESCRIBED — a
+  // clock with no completion. A host that described nothing (no clock at all) refused
+  // nothing, and reading that as a refusal declares every undescribed parent dead.
+  const reading = await readLiveness(host, sessionId);
+  if (!hostTurnRunning(reading) || reading.lastMessageAt === null) return null;
+  return "mid-turn";
 }
 
 export async function notifyParent(

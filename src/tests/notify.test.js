@@ -92,7 +92,7 @@ const queuedFor = (childSessionId) =>
  * leaves other children's debts behind, so a bare call count would be a count of
  * every debt in the ledger rather than of the one under test.
  */
-const writesTo = (calls, text) => calls.filter((call) => call.body.parts[0].text === text);
+const writesTo = (calls, text) => calls.filter((call) => call.text === text);
 
 /**
  * The clean slate every case in this file starts from, defined once because the
@@ -665,7 +665,7 @@ describe("notify: the redelivery budget", () => {
   // described nothing — and reading the second as the first declares every parent
   // the plugin cannot fully describe dead. `ASSISTANT_ROLE`, not a retyped word.
   const stuckTurn = (at) => [{ role: ASSISTANT_ROLE, time: { created: at }, parts: [] }];
-  const BUSY = ({ setStatus }) => setStatus("parent_1", "busy");
+  const BUSY = ({ setStatus }) => setStatus("parent_1", "open");
   const WEDGED = ({ setMessages }) => setMessages("parent_1", stuckTurn(1));
   const CLOCKLESS = ({ setMessages }) => setMessages("parent_1", [{ role: ASSISTANT_ROLE, parts: [] }]);
   const RE_OFFER = { carriedAttempts: 1, maxAttempts: 3 };

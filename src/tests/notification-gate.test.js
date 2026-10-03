@@ -24,9 +24,9 @@ import {
   setupHarness,
 } from "./support/index.js";
 import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
+import { NOT_FOUND_REASON } from "../../dist/shared/liveness.js";
 // The host's own not-found name, read from production rather than retyped: a literal
 // here would pass on a day the host renames it and fail on no day at all.
-import { NOT_FOUND_NAME } from "../../dist/shared/liveness.js";
 
 const NO_SLEEP = async () => {};
 /** The gate's inputs with no real backoff — the retry count is never under test here. */
@@ -78,17 +78,17 @@ describe("a write the gate declined", () => {
 
   it("gives its key back, so a LATER obligation for the same child is still writable", async () => {
     const child = "ses_refused";
-    world.setStatus(PARENT, "busy");
+    world.setStatus(PARENT, "open");
     await notifyParent(opaqueHost(world.client), PARENT, "owed from an earlier boot", gate(child, "completed", { carriedAttempts: 1 }));
     assert.strictEqual(world.calls.length, 0, "a mid-turn parent is not dialed at all");
 
     // The parent goes idle, and a NEW obligation for this same child arises.
-    world.setStatus(PARENT, "idle");
+    world.setStatus(PARENT, "succeeded");
     const delivered = await notifyParent(opaqueHost(world.client), PARENT, "a different obligation", gate(child, "completed"));
 
     assert.strictEqual(delivered, true, "the second obligation is written");
     assert.deepStrictEqual(
-      world.calls.map((call) => call.body.parts[0].text),
+      world.calls.map((call) => call.text),
       ["a different obligation"],
       "and the refused one never became a write",
     );
@@ -116,11 +116,16 @@ describe("a write that answers late", () => {
 
   it("is not a delivery when the host answers with a REFUSAL envelope", async () => {
     const child = "ses_refused_envelope";
-    const refusing = recordingClient(async () => ({
-      error: { name: NOT_FOUND_NAME, message: `Session not found: ${PARENT}` },
-      request: {},
-      response: { status: 404 },
-    }));
+    // v2 has no error envelope: a refusal is a rejection carrying the ClientError
+    // shape, and the 404 is what distinguishes "no such session" from a transport
+    // fault. A fixture that resolved instead of rejecting would test nothing.
+    const refusing = recordingClient(async () => {
+      const error = new Error(`Session not found: ${PARENT}`);
+      error.name = "ClientError";
+      error.reason = NOT_FOUND_REASON;
+      error.cause = { status: 404 };
+      throw error;
+    });
 
     const delivered = await notifyParent(opaqueHost(refusing.client), PARENT, "owed", gate(child, "completed"));
 
@@ -135,7 +140,7 @@ describe("a write that answers late", () => {
 });
 
 describe("the queue of undelivered debts", () => {
-  const world = isolatedGate({ status: "busy" });
+  const world = isolatedGate({ status: "open" });
 
   it("stops growing, and the newest debt is the one it keeps", async () => {
     const offered = 260;

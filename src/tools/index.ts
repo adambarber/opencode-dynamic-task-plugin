@@ -90,6 +90,13 @@ export function buildToolMap(deps: ToolDeps) {
   // in the host's own config, bare ids refused) — a tool that restates that
   // sentence restates it wrong sooner or later, so a tool adds a clause instead.
   const PROMPT = (description: string) => string(description);
+  // One wrapper for the object schema every session-scoped tool shares: the same
+  // session_id plus whatever else that tool takes. Spelled twice it drifts.
+  const SESSION_SCHEMA = (properties: Record<string, unknown>, required: string[]) => ({
+    type: "object",
+    properties: { session_id: SESSION_ID, ...properties },
+    required,
+  });
   const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
 
   return {
@@ -115,15 +122,13 @@ export function buildToolMap(deps: ToolDeps) {
     ),
 
     task_continue: scopedTool(
-      {
-        type: "object",
-        properties: {
-          session_id: SESSION_ID,
+      SESSION_SCHEMA(
+        {
           prompt: PROMPT("Follow-up instructions"),
           model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
         },
-        required: ["session_id", "prompt"],
-      },
+        ["session_id", "prompt"],
+      ),
       TASK_CONTINUE_DESCRIPTION,
       executeTaskContinue,
     ),
@@ -153,10 +158,8 @@ export function buildToolMap(deps: ToolDeps) {
     ),
 
     task_interrupt: scopedTool(
-      {
-        type: "object",
-        properties: {
-          session_id: SESSION_ID,
+      SESSION_SCHEMA(
+        {
           scope: {
             type: "string",
             enum: ["subtree", "self"],
@@ -164,8 +167,8 @@ export function buildToolMap(deps: ToolDeps) {
               "How far the stop reaches: the whole subtree below this task (default), or this session only",
           },
         },
-        required: ["session_id"],
-      },
+        ["session_id"],
+      ),
       TASK_INTERRUPT_DESCRIPTION,
       executeTaskInterrupt,
     ),

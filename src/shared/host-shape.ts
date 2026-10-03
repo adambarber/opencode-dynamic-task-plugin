@@ -86,16 +86,9 @@ export function errorMessage(error: unknown): string {
 
 
 /**
- * An agent as the host's API describes it: a name, and whatever else it said.
+ * Re-exported so the policy can name the type without importing upward.
  *
- * It lives in the shape layer rather than beside the admission gate that first
- * needed it, because the dispatch policy reads the same record from the other
- * side and cannot import a module that imports it. Two spellings of "an agent,
- * unvalidated" meant two places for a field to be forgotten — and the second
- * spelling was anonymous, so the policy function's parameter said nothing about
- * what it was being handed.
+ * The dispatch policy needs to say what it is handed, and `agent-record.ts` sits above
+ * that layer. This is the seam, not a second spelling: one declaration, one name.
  */
-export interface AgentRecord {
-  name: string;
-  [key: string]: unknown;
-}
+export type { AgentRecord } from "./agent-record.js";

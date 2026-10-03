@@ -19,6 +19,16 @@ import { textBlock } from "./text-block.js";
 export const NOTIFICATION_MAX_CHARS = 8000;
 
 /**
+ * The tool a child is offered to reach its parent.
+ *
+ * Named once because two facts depend on agreeing: the registry that registers it,
+ * and the permission question that decides whether a child of a given agent is
+ * allowed to call it. Those are one name, and a second spelling would let the plugin
+ * offer a tool it then tested the child's access to under a different one.
+ */
+export const NOTIFY_TOOL = "task_notify";
+
+/**
  * What a settlement or a mid-flight notice tells the parent, as an enum rather
  * than a string-literal union: a union invites `kind === "notice"`, and a raw
  * literal in a comparison is a rename that compiles clean. The member is the

@@ -8,7 +8,8 @@ import {
   fetchAgents,
   admitToolPrompt,
 } from "../shared/admission.js";
-import { agentCanNotify } from "../shared/task-policy.js";
+import { agentCanNotify } from "../shared/agent-record.js";
+import { NOTIFY_TOOL } from "../shared/notification-text.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { WRITE_BOUNDS } from "../shared/execution-bound.js";
@@ -160,7 +161,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // The opening describes the child to itself, so it must describe the tools
     // the child actually has: `agent` is the admitted record, and its declared
     // tool map is the only evidence available about what its sessions can call.
-    fireChildPrompt(host, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent) }));
+    fireChildPrompt(host, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent, NOTIFY_TOOL) }));
 
     debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
       description: args.description || `Task: ${agent.name}`,
@@ -174,7 +175,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       childSessionId,
       model: requestedModelLabel,
       parentSessionId: parentSessionId || null,
-      canNotify: agentCanNotify(agent),
+      canNotify: agentCanNotify(agent, NOTIFY_TOOL),
     });
   } catch (error: unknown) {
     const message = errorMessage(error);

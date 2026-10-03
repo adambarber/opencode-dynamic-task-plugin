@@ -13,6 +13,8 @@ import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentLi
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
+import { toAgentRecords, toAgentRecord, DEFAULT_AGENT_MODE } from "../../dist/shared/agent-record.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 
 // --- What the host publishes -------------------------------------------------
@@ -21,7 +23,7 @@ describe("buildAgentList", () => {
   it("returns agent names joined by comma", () => {
     const agents = [
       { name: "explore", description: "test" },
-      { name: "general" },
+      { name: "general", permissions: [] },
     ];
     assert.strictEqual(buildAgentList(agents), "explore, general");
   });
@@ -40,9 +42,9 @@ describe("buildAgentList", () => {
     assert.strictEqual(buildAgentList("general"), "(none discovered)");
   });
 
-  it("drops non-record entries instead of printing undefined", () => {
-    assert.strictEqual(buildAgentList([{ name: "general" }, { nope: 1 }, "x", null]), "general");
-    assert.strictEqual(buildAgentList([{ nope: 1 }]), "(none discovered)");
+  it("reads the normalised names, so no caller sees a raw payload", () => {
+    assert.strictEqual(buildAgentList(toAgentRecords([{ name: "general", permissions: [] }, { nope: 1 }, "x", null])), "general");
+    assert.strictEqual(buildAgentList(toAgentRecords([{ nope: 1 }])), "(none discovered)");
   });
 });
 
@@ -52,21 +54,21 @@ describe("fetchAgents", () => {
   });
 
   /**
-   * A client whose app.agents() answers `respond` — a list, a wrapped host
-   * response ({data}/{agents}), or a function of the call number, which is how
-   * a test scripts a failure-then-success without a hand-kept counter that can
-   * drift from the assertion that reads it. `client.agentCalls` is the count
-   * those assertions actually want.
+   * A client whose `agent.list()` answers `respond` — a list, or a function of
+   * the call number, which is how a test scripts a failure-then-success without a
+   * hand-kept counter that can drift from the assertion that reads it.
+   * `client.agentCalls` is the count those assertions actually want.
    */
-  function clientWith(respond, log = async () => {}) {
+  function clientWith(respond) {
     const client = {
       agentCalls: 0,
-      app: {
-        agents: async () => {
+      // v2 spells this `agent.list` and answers a bare array — no envelope, no
+      // wrapper, and no second domain to reach for it.
+      agent: {
+        list: async () => {
           client.agentCalls++;
           return typeof respond === "function" ? respond(client.agentCalls) : respond;
         },
-        log,
       },
     };
     return client;
@@ -82,10 +84,10 @@ describe("fetchAgents", () => {
 
   it("dispatches subagent and all modes, rejects primary", async () => {
     const mockClient = clientWith([
-      { name: "explore", mode: "subagent" },
-      { name: "architect", mode: "all" },
-      { name: "unannotated" },
-      { name: "build", mode: "primary" },
+      { name: "explore", mode: "subagent", permissions: [] },
+      { name: "architect", mode: DEFAULT_AGENT_MODE, permissions: [] },
+      { name: "unannotated", permissions: [] },
+      { name: "build", mode: "primary", permissions: [] },
     ]);
 
     assert.deepStrictEqual(
@@ -113,7 +115,7 @@ describe("fetchAgents", () => {
   it("retries once after a transient failure", async () => {
     const mockClient = clientWith((calls) => {
       if (calls === 1) throw new Error("blip");
-      return [{ name: "explore", mode: "subagent" }];
+      return [{ name: "explore", mode: "subagent", permissions: [] }];
     });
 
     const names = await agentNames(mockClient);
@@ -121,20 +123,18 @@ describe("fetchAgents", () => {
     assert.deepStrictEqual(names, ["explore"]);
   });
 
-  // One hypothesis: whichever envelope the host wraps the list in, exactly the
-  // dispatchable agents come back — the server answers all three shapes.
-  const envelopes = [
-    ["handles wrapped response (result.data)", "data", "general"],
-    ["handles wrapped response (result.agents)", "agents", "review"],
+  // v2 answers a bare array. An answer that is not one is not a list of agents, and
+  // the reader says so by returning nothing rather than by unwrapping a shape the
+  // host no longer sends — an envelope branch is a fiction a test can keep green.
+  const notLists = [
+    ["a wrapped response", { data: [{ name: "general", mode: "subagent", permissions: [] }] }],
+    ["an envelope the SDK used to send", { agents: [{ name: "review", mode: "subagent", permissions: [] }] }],
+    ["a single record instead of a list", { name: "solo", mode: "subagent", permissions: [] }],
   ];
-  for (const [name, key, kept] of envelopes) {
-    it(name, async () => {
-      const mockClient = clientWith({ [key]: [
-        { name: kept, mode: "subagent" },
-        { name: "excluded", mode: "primary" },
-      ] });
-
-      assert.deepStrictEqual(await agentNames(mockClient), [kept], "primary agents are not dispatchable");
+  for (const [name, respond] of notLists) {
+    it(`yields nothing for ${name}`, async () => {
+      assert.deepStrictEqual(await agentNames(clientWith(respond)), [],
+        "an answer that is not a list of agents must not become a list of agents");
     });
   }
 
@@ -144,8 +144,8 @@ describe("fetchAgents", () => {
   it("caches per client: two clients keep distinct agent lists", async () => {
     // ONE mint per client, as production does at boot: the cache keys on host
     // identity, so re-minting per call would mint a fresh cache every read.
-    const clientA = clientWith([{ name: "alpha", mode: "subagent" }]);
-    const clientB = clientWith([{ name: "beta", mode: "subagent" }]);
+    const clientA = clientWith([{ name: "alpha", mode: "subagent", permissions: [] }]);
+    const clientB = clientWith([{ name: "beta", mode: "subagent", permissions: [] }]);
     const hostA = opaqueHost(clientA);
     const hostB = opaqueHost(clientB);
 
@@ -167,8 +167,8 @@ describe("fetchAgents", () => {
   it("stale entries refetch — TTL still bounds each client's cache", async () => {
     const mockClient = clientWith((calls) =>
       calls === 1
-        ? [{ name: "first", mode: "subagent" }]
-        : [{ name: "second", mode: "subagent" }]);
+        ? [{ name: "first", mode: "subagent", permissions: [] }]
+        : [{ name: "second", mode: "subagent", permissions: [] }]);
 
     assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 60000))[0].name, "first");
     assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 0))[0].name, "second", "expired TTL forces a fresh fetch");
@@ -176,7 +176,7 @@ describe("fetchAgents", () => {
   });
 
   it("resetAgentCache invalidates every client's cache", async () => {
-    const mockClient = clientWith([{ name: "explore", mode: "subagent" }]);
+    const mockClient = clientWith([{ name: "explore", mode: "subagent", permissions: [] }]);
     await fetchAgents({ host: opaqueHost(mockClient) }, 60000);
     resetAgentCache();
     await fetchAgents({ host: opaqueHost(mockClient) }, 60000);
@@ -195,7 +195,7 @@ describe("fetchAgents", () => {
     // for a whole TTL; the re-ask alone would pass against a read that reported
     // the empty list as UNKNOWN, which is the opposite error and the one that
     // sends an operator hunting for a project that cannot delegate.
-    const mockClient = clientWith([{ name: "primary", mode: "primary" }]);
+    const mockClient = clientWith([{ name: "primary", mode: "primary", permissions: [] }]);
     assert.deepStrictEqual(await dispatchableAgentNamesOrNull({ host: opaqueHost(mockClient) }, defaultConfig), [], "no subagent is a known empty list, not an unknown one");
     assert.deepStrictEqual(await dispatchableAgentNamesOrNull({ host: opaqueHost(mockClient) }, defaultConfig), [], "and it still knows it on the second read");
     assert.strictEqual(mockClient.agentCalls, 2, "the empty answer is re-asked rather than served from cache");
@@ -206,8 +206,8 @@ describe("fetchAgents", () => {
 
 describe("admission gate: resolveAdmission", () => {
   const agents = [
-    { name: "explore" },
-    { name: "architect", mode: "all" },
+    { name: "explore", permissions: [] },
+    { name: "architect", mode: DEFAULT_AGENT_MODE, permissions: [] },
   ];
 
   it("admits a known agent with extended lineage", () => {
@@ -226,7 +226,7 @@ describe("admission gate: resolveAdmission", () => {
     // It is now a PLACEMENT limit — the cap belongs to the agent being dispatched, so
     // it can only be right if the gate resolves the cap from the agent the dispatch
     // already names rather than from a second key the caller had to supply.
-    const agents = [{ name: "architect" }, { name: "coder" }, { name: "explore" }];
+    const agents = [{ name: "architect", permissions: [] }, { name: "coder", permissions: [] }, { name: "explore", permissions: [] }];
     const capped = normalizeDynamicTaskConfig({ maxDepth: 5, agents: { explore: { maxDepth: 2 } } });
 
     it("admits a chain the agent's cap allows, where the top-level cap would also allow", () => {
@@ -275,7 +275,7 @@ describe("admission gate: resolveAdmission", () => {
   });
 
   it("denies blocked agents", () => {
-    const result = resolveAdmission([{ name: "general" }], "general", [], blockingConfig());
+    const result = resolveAdmission([{ name: "general", permissions: [] }], "general", [], blockingConfig());
     refuses(result, "a blocked agent is refused");
     said(result.reason?.refusal, "general", "the refusal names the agent that was refused");
     said(result.reason?.refusal, "blockedAgents", "and the config key that is responsible, which is the remedy");
@@ -294,16 +294,16 @@ describe("admission gate: allowSameAgentRecursion", () => {
   const lenient = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true });
 
   it("blocks same-agent recursion by default", () => {
-    refuses(resolveAdmission([{ name: "explore" }], "explore", ["explore"], strict), "the agent is already in the lineage");
+    refuses(resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["explore"], strict), "the agent is already in the lineage");
   });
 
   it("honors the recursion flag", () => {
-    admits(resolveAdmission([{ name: "explore" }], "explore", ["explore"], lenient), "recursion allowed, so the repeat is fine");
+    admits(resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["explore"], lenient), "recursion allowed, so the repeat is fine");
   });
 
   it("still enforces depth when recursion is allowed", () => {
     const shallow = normalizeDynamicTaskConfig({ allowSameAgentRecursion: true, maxDepth: 1 });
-    const result = resolveAdmission([{ name: "explore" }], "explore", ["a", "b"], shallow);
+    const result = resolveAdmission([{ name: "explore", permissions: [] }], "explore", ["a", "b"], shallow);
     assert.strictEqual(result.ok, false);
   });
 });
@@ -375,7 +375,7 @@ describe("admission gate: there is no second key to ask for", () => {
   // the one check on it. These cases pin what that leaves: an agent needs no
   // declaration to be dispatchable, and an unrecognised one is refused against the
   // host's list rather than a config's.
-  const agents = [{ name: "explore" }, { name: "general" }];
+  const agents = [{ name: "explore", permissions: [] }, { name: "general", permissions: [] }];
 
   it("an agent nobody declared is admitted, because the key space is not the operator's", () => {
     admits(resolveAdmission(agents, "explore", [], normalizeDynamicTaskConfig({ maxConcurrent: 1 })),
@@ -402,29 +402,23 @@ describe("admission gate: there is no second key to ask for", () => {
 describe("admission gate: parseAgentList", () => {
   it("accepts bare arrays and drops nameless records", () => {
     const records = parseAgentList([
-      { name: "explore", mode: "subagent" },
+      { name: "explore", mode: "subagent", permissions: [] },
       { noName: true },
       null,
     ]);
     assert.deepStrictEqual(records.map((a) => a.name), ["explore"]);
   });
 
-  it("accepts data and agents envelopes", () => {
-    assert.deepStrictEqual(
-      parseAgentList({ data: [{ name: "a" }] }).map((a) => a.name),
-      ["a"]
-    );
-    assert.deepStrictEqual(
-      parseAgentList({ agents: [{ name: "b" }] }).map((a) => a.name),
-      ["b"]
-    );
+  it("normalises every field, so no reader has to ask the payload again", () => {
+    const [agent] = parseAgentList([{ name: "a", mode: "primary", permissions: [{ action: NOTIFY_TOOL, resource: "*", effect: "deny" }], extra: 1 }]);
+    assert.strictEqual(agent.mode, "primary");
+    assert.deepStrictEqual(agent.permissions, [{ action: NOTIFY_TOOL, resource: "*", effect: "deny" }]);
+    assert.ok(!("extra" in agent), "a field this plugin never asked for does not travel with the record");
   });
 
-  it("prefers the first non-empty list", () => {
-    assert.deepStrictEqual(
-      parseAgentList({ agents: [], data: [{ name: "c" }] }).map((a) => a.name),
-      ["c"]
-    );
+  it("drops a rule the host could not have sent", () => {
+    const [agent] = parseAgentList([{ name: "a", permissions: [{ action: "x", resource: "*" }, { action: "y", resource: "*", effect: "maybe" }] }]);
+    assert.deepStrictEqual(agent.permissions, [], "an unreadable rule is dropped, not guessed at");
   });
 
   it("rejects garbage", () => {

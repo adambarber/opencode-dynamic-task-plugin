@@ -29,8 +29,7 @@ export interface AgentLister<C = AgentCaller> {
 
 import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import type { Verdict } from "./verdict.js";
-import { hostPayload } from './session-lifecycle.js';
-import { errorMessage, isEventRecord } from "./host-shape.js";
+import { errorMessage } from "./host-shape.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import {
   validateAgent,
@@ -48,7 +47,7 @@ import {
   type NewTaskRegistration,
   type TaskStore,
 } from "./task-state.js";
-import type { AgentRecord } from "./host-shape.js";
+import { toAgentRecords, type AgentRecord } from "./agent-record.js";
 
 /**
  * A refusal, as the one value that carries both the decision and the words.
@@ -207,32 +206,14 @@ export function resolveDependencies(
 // Turns an untyped registry response into agent records. The envelope is
 // hostPayload's business (the client resolves to { data, request, response },
 // and a keyed map keyed by agent name is the other shape this endpoint
-// returns) — what is left here is the payload: a list, or a map whose values
-// are lists, and the first one holding valid records wins. Anything else
-// yields []. Records are validated minimally ({name: string}); mode policy
-// stays in isDispatchableAgent.
+// v2 answers a bare array from `agent.list` and nothing else, so the whole reader is
+// one constructor over that array. The envelope branches it replaces existed to unwrap
+// shapes the host no longer sends — and one of them silently DROPPED an agent whose
+// payload had a string field, because `Object.values` over a record returns its values
+// and a list is not what came back.
 
 export function parseAgentList(result: unknown): AgentRecord[] {
-  const payload = hostPayload(result);
-  const groups: unknown[] = Array.isArray(payload)
-    ? [payload]
-    : isEventRecord(payload)
-      ? [Object.values(payload)]
-      : [];
-  for (const group of groups) {
-    if (!Array.isArray(group)) continue;
-    const records = group.filter(isAgentRecord);
-    if (records.length > 0) return records;
-  }
-  return [];
-}
-
-function isAgentRecord(item: unknown): item is AgentRecord {
-  return (
-    !!item &&
-    typeof item === "object" &&
-    typeof (item as { name?: unknown }).name === "string"
-  );
+  return toAgentRecords(result);
 }
 
 // ─── registerAdmittedTask ──────────────────────────────────────────
@@ -310,9 +291,9 @@ const CACHE_TTL = 300000;
  * entry never ran), and a throw here fails the entire plugin boot. Never throw;
  * degrade to the empty-list marker.
  */
-export function buildAgentList(agents: unknown): string {
+export function buildAgentList(agents: AgentRecord[]): string {
   if (!Array.isArray(agents)) return "(none discovered)";
-  const names = agents.filter(isAgentRecord).map((a) => a.name);
+  const names = agents.map((a) => a.name);
   if (names.length === 0) return "(none discovered)";
   return names.join(", ");
 }

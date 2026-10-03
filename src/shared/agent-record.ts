@@ -55,9 +55,25 @@ export function toAgentRecord(raw: unknown): AgentRecord | null {
 
 /** Every agent in a payload the host built, in the order it published them. */
 export function toAgentRecords(raw: unknown): AgentRecord[] {
-  if (!Array.isArray(raw)) return [];
+  return toAgentRecordsFrom(listEntries(raw));
+}
+
+// The v2 client answers `agent.list` with its `AgentListOutput` envelope —
+// `{ location, data }` — and not a bare array, which an earlier comment here
+// claimed. The TUI store reader answers a bare array. The constructor takes both,
+// because both are shapes the plugin actually receives; anything else is nothing.
+function listEntries(raw: unknown): unknown {
+  if (Array.isArray(raw)) return raw;
+  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>)["data"])) {
+    return (raw as Record<string, unknown>)["data"];
+  }
+  return [];
+}
+
+function toAgentRecordsFrom(entries: unknown): AgentRecord[] {
+  if (!Array.isArray(entries)) return [];
   const records: AgentRecord[] = [];
-  for (const item of raw) {
+  for (const item of entries) {
     const agent = toAgentRecord(item);
     if (agent) records.push(agent);
   }

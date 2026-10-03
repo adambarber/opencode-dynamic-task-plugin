@@ -206,11 +206,11 @@ export function resolveDependencies(
 // Turns an untyped registry response into agent records. The envelope is
 // hostPayload's business (the client resolves to { data, request, response },
 // and a keyed map keyed by agent name is the other shape this endpoint
-// v2 answers a bare array from `agent.list` and nothing else, so the whole reader is
-// one constructor over that array. The envelope branches it replaces existed to unwrap
-// shapes the host no longer sends — and one of them silently DROPPED an agent whose
-// payload had a string field, because `Object.values` over a record returns its values
-// and a list is not what came back.
+// The reader is one constructor over whatever `agent.list` answered. The v2 client
+// answers its `AgentListOutput` envelope (`{ location, data }`); the TUI store answers
+// a bare array. An earlier revision claimed the bare array was the only shape, so every
+// live dispatch failed admission with "(none discovered)" — the envelope is not an
+// array, and there is no second chance: the refusal names what was (not) found.
 
 export function parseAgentList(result: unknown): AgentRecord[] {
   return toAgentRecords(result);

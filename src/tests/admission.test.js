@@ -62,8 +62,8 @@ describe("fetchAgents", () => {
   function clientWith(respond) {
     const client = {
       agentCalls: 0,
-      // v2 spells this `agent.list` and answers a bare array — no envelope, no
-      // wrapper, and no second domain to reach for it.
+      // v2 spells this `agent.list` and answers its `{ location, data }` envelope —
+      // or a bare array from the TUI store. Both are shapes the reader takes.
       agent: {
         list: async () => {
           client.agentCalls++;
@@ -123,12 +123,20 @@ describe("fetchAgents", () => {
     assert.deepStrictEqual(names, ["explore"]);
   });
 
-  // v2 answers a bare array. An answer that is not one is not a list of agents, and
-  // the reader says so by returning nothing rather than by unwrapping a shape the
-  // host no longer sends — an envelope branch is a fiction a test can keep green.
+  // The v2 client answers the `AgentListOutput` envelope (`{ location, data }`); the
+  // TUI store answers a bare array. Anything else is not a list of agents, and the
+  // reader says so by returning nothing. The `{ data }` case below is the live shape —
+  // an earlier revision of this table pinned the opposite and every live dispatch
+  // failed admission with "(none discovered)".
+  it("reads the client's envelope", async () => {
+    const respond = {
+      location: { directory: "/mock/project" },
+      data: [{ name: "general", mode: "subagent", permissions: [] }],
+    };
+    assert.deepStrictEqual(await agentNames(clientWith(respond)), ["general"]);
+  });
   const notLists = [
-    ["a wrapped response", { data: [{ name: "general", mode: "subagent", permissions: [] }] }],
-    ["an envelope the SDK used to send", { agents: [{ name: "review", mode: "subagent", permissions: [] }] }],
+    ["an envelope keyed by agents", { agents: [{ name: "review", mode: "subagent", permissions: [] }] }],
     ["a single record instead of a list", { name: "solo", mode: "subagent", permissions: [] }],
   ];
   for (const [name, respond] of notLists) {

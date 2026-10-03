@@ -626,10 +626,15 @@ export function createMockClient(hooks = {}) {
           fault(state, "agentsListThrows");
           throw new Error("agent list unavailable");
         }
-        return hooks.agentsList ?? [
-          { name: "explore", mode: "subagent", permissions: [] },
-          { name: "general", mode: "subagent", permissions: [] },
-        ];
+        // The real client answers the `AgentListOutput` envelope, not a bare array —
+        // a fake answering the array let the reader believe a shape the host never
+        // sends, which is exactly how live dispatch failed admission unnoticed.
+        const data =
+          hooks.agentsList ?? [
+            { name: "explore", mode: "subagent", permissions: [] },
+            { name: "general", mode: "subagent", permissions: [] },
+          ];
+        return { location: { directory: state.directory }, data };
       },
     },
     // The question namespace, modelled on the host's generated contract rather

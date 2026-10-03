@@ -47,7 +47,7 @@ import {
   type AgentCapName,
   type AgentOverlay,
 } from "../shared/caps.js";
-import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
+import { dispatchableAgentNamesOrNull, type AgentCaller } from "../shared/admission.js";
 import { asOpaqueHost } from "../shared/client.js";
 import {
   CAP_CHOICES,
@@ -675,6 +675,22 @@ async function readLimitsOr(ctx: Host, view: LimitsView): Promise<LimitsView> {
  * `undefined` when there is no project directory to read: the command is reachable
  * from anywhere, and an overlay path without a directory is not a path.
  */
+
+/**
+ * The agent list as the TUI host itself reads it: `ctx.data.location.agent`, the same
+ * store its own agent screens read. The TUI runtime client has no `agent` namespace.
+ */
+function tuiAgentCaller(ctx: Host): AgentCaller {
+  return {
+    agent: {
+      list: async () => {
+        const listed = ctx.data.location.agent.list(ctx.location ?? undefined);
+        if (!listed) throw new Error("agent store not yet synced");
+        return listed;
+      },
+    },
+  };
+}
 async function readLimits(ctx: Host): Promise<LimitsView | undefined> {
   const directory = ctx.location?.directory;
   if (!directory) {
@@ -689,7 +705,7 @@ async function readLimits(ctx: Host): Promise<LimitsView | undefined> {
   // `null` here is the FAILED read, not an empty project: it makes the screen show the
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
-  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(ctx.client) }, base);
+  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(tuiAgentCaller(ctx)) }, base);
   return {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree

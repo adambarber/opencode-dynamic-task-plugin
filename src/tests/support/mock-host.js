@@ -57,10 +57,14 @@ import {
  * written three. So the shape is stated once, here, and the mock that answers a
  * transcript read and the cases that seed one both read it from here.
  */
-export const hostSaid = (text, at = Date.now(), extra) => ({
-  info: { role: ASSISTANT_ROLE, time: { created: at, completed: at }, ...extra },
-  parts: [{ type: "text", text }],
+const textParts = (text) => [{ type: "text", text }];
+// One builder for every assistant message the fake writes: the role and the text
+// envelope never vary, only the clock (finished vs still writing) and the caller.
+const assistantMessage = (text, time, extra) => ({
+  info: { role: ASSISTANT_ROLE, time, ...extra },
+  parts: textParts(text),
 });
+export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { created: at, completed: at }, extra);
 
 /** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
 export const unclockedSaid = (text = "go", role = "user") => ({
@@ -146,13 +150,7 @@ export function recordingClient(respond) {
         // message's own error/absence of one names how it ended. A session this
         // client has no messages for at all is a NotFound like any other.
         get: async ({ sessionID }) => {
-          if (!turns.has(sessionID)) {
-            const error = new Error(`Session "${sessionID}" not found.`);
-            error.name = "ClientError";
-            error.reason = "UnexpectedStatus";
-            error.cause = { status: 404 };
-            throw error;
-          }
+          if (!turns.has(sessionID)) throw missingSessionError();
           const messages = turns.get(sessionID) ?? [];
           const lastAssistant = [...messages].reverse().find((m) => m?.info?.role === "assistant");
           if (!lastAssistant || lastAssistant.info?.time?.completed === undefined) {
@@ -268,12 +266,7 @@ export function setHostTurn(state, id, word) {
     openHostTurn(state, id);
     return;
   }
-  const have = state.transcripts.get(id) ?? [];
-  const last = have.at(-1);
-  const open = last?.info?.role === ASSISTANT_ROLE && last.info.time?.completed === undefined;
-  state.transcripts.set(id, open
-    ? [...have.slice(0, -1), { ...last, info: { ...last.info, time: { ...last.info.time, completed: Date.now() } } }]
-    : [...have, hostSaid("")]);
+  state.transcripts.set(id, finishOpenMessage(state.transcripts.get(id) ?? []));
   closeHostTurn(state, id, word);
 }
 
@@ -295,20 +288,25 @@ const stampHostTurn = (state, id, extra) => {
   // said". Manufacturing an empty message here would shadow that fallback with
   // silence, so a completion would notify with no result text.
   if (!state.transcripts.has(id)) return;
-  const have = state.transcripts.get(id) ?? [];
+  state.transcripts.set(id, finishOpenMessage(state.transcripts.get(id) ?? [], extra));
+};
+
+// One closer for the message a finished turn was writing: stamp it completed, or
+// append the host's own finished shape when nothing is open. Both turn writers
+// (verdict seeding and terminal events) finish the same message, so they share it.
+const finishOpenMessage = (have, extra) => {
   const last = have.at(-1);
   const open = last?.info?.role === ASSISTANT_ROLE && last.info.time?.completed === undefined;
-  state.transcripts.set(id, open ? [...have.slice(0, -1), { ...last, info: { ...last.info, time: { ...last.info.time, completed: Date.now() }, ...extra } }] : [...have, hostSaid("", undefined, extra)]);
+  return open
+    ? [...have.slice(0, -1), { ...last, info: { ...last.info, time: { ...last.info.time, completed: Date.now() }, ...extra } }]
+    : [...have, hostSaid("", undefined, extra)];
 };
 
 /**
  * A MESSAGE the host has not finished. One step of a turn, not the turn — a turn is
  * a sequence of these and stays open until the host records a verdict for it.
  */
-export const hostSaying = (text, at = Date.now()) => ({
-  info: { role: ASSISTANT_ROLE, time: { created: at } },
-  parts: [{ type: "text", text }],
-});
+export const hostSaying = (text, at = Date.now()) => assistantMessage(text, { created: at });
 
 /**
  * The host's TURN record, which is not the transcript.

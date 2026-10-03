@@ -24,7 +24,7 @@ import {
   setupHarness,
 } from "./support/index.js";
 import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
-import { NOT_FOUND_REASON } from "../../dist/shared/liveness.js";
+import { missingSessionError } from "./support/sdk-contract.js";
 // The host's own not-found name, read from production rather than retyped: a literal
 // here would pass on a day the host renames it and fail on no day at all.
 
@@ -120,11 +120,7 @@ describe("a write that answers late", () => {
     // shape, and the 404 is what distinguishes "no such session" from a transport
     // fault. A fixture that resolved instead of rejecting would test nothing.
     const refusing = recordingClient(async () => {
-      const error = new Error(`Session not found: ${PARENT}`);
-      error.name = "ClientError";
-      error.reason = NOT_FOUND_REASON;
-      error.cause = { status: 404 };
-      throw error;
+      throw missingSessionError();
     });
 
     const delivered = await notifyParent(opaqueHost(refusing.client), PARENT, "owed", gate(child, "completed"));

@@ -50,6 +50,12 @@ function source() {
  * word check would compare against nothing. So a parse that finds less than it
  * expects is a thrown error, never a default.
  */
+// Two parse idioms the readers below share: distinct capture-group words out of a
+// body, and every quoted word out of one. One spelling each, so a reader cannot
+// quietly change what "declared" means for its own word list.
+const requiredDistinct = (what, matches) => require_(what, [...new Set([...matches].map((m) => m[1]))]);
+const requiredQuoted = (what, text) => require_(what, [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+
 function require_(what, found) {
   if (found.length === 0) {
     throw new Error(`sdk-contract could not read ${what} out of ${TYPES} — the declaration moved`);
@@ -71,10 +77,7 @@ export function realDomainNames() {
   const start = text.indexOf("export interface Context {");
   if (start < 0) throw new Error(`sdk-contract could not read Context out of ${file} — the declaration moved`);
   const body = text.slice(start, text.indexOf("\n}", start));
-  return require_(
-    "Context",
-    [...new Set([...body.matchAll(/readonly (\w+):/g)].map((m) => m[1]))],
-  );
+  return requiredDistinct("Context", body.matchAll(/readonly (\w+):/g));
 }
 
 /** The members of a declared union, by its `type` discriminant. */
@@ -85,10 +88,7 @@ function unionWords(typeName, endMarker) {
   const rest = text.slice(start);
   const end = rest.indexOf(endMarker);
   const body = end < 0 ? rest : rest.slice(0, end);
-  return require_(
-    typeName,
-    [...new Set([...body.matchAll(/type:\s*"([a-z]+)"/g)].map((m) => m[1]))],
-  );
+  return requiredDistinct(typeName, body.matchAll(/type:\s*"([a-z]+)"/g));
 }
 
 /**
@@ -106,10 +106,7 @@ export function hostOutcomeWords() {
   if (at < 0) return require_("Session.Info.outcome", []);
   const entry = source().slice(at).match(/Schema\.Literals<readonly \[([^\]]+)\]>/);
   if (!entry) throw new Error(`sdk-contract: Session.Info.outcome declares no Literals list in ${TYPES}`);
-  return require_(
-    "Session.Info.outcome",
-    [...entry[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
-  );
+  return requiredQuoted("Session.Info.outcome", entry[1]);
 }
 
 /**
@@ -139,10 +136,7 @@ export function clientErrorReasons() {
   if (at < 0) return require_("ClientErrorReason", []);
   const entry = text.slice(at).match(/=([^;]+);/);
   if (!entry) throw new Error("sdk-contract: ClientErrorReason declares no union");
-  return require_(
-    "ClientErrorReason",
-    [...entry[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]),
-  );
+  return requiredQuoted("ClientErrorReason", entry[1]);
 }
 
 /**

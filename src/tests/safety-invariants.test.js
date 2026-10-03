@@ -27,6 +27,7 @@ import {
   listProdFiles,
   listSourceFiles,
   listTestFiles,
+  listTestSupportFiles,
   isTypeScript,
   isProductionOrSuite,
   walkSource,
@@ -952,5 +953,34 @@ describe("invariant: a discriminant is compared as a typed member, never a raw w
       "member fall through to whatever the final `else` was. Compare the enum member, or let\n" +
       "the value carry its own words (see AdmissionDenial, which has no discriminant at all).",
     skip: [PROSE],
+  });
+});
+
+describe("invariant: the TUI reads agents from the host data store, never client.agent", () => {
+  // Observed at the runtime, against the types: the TUI plugin client's `agent`
+  // namespace is undefined (`Cannot read properties of undefined (reading 'list')`
+  // in .dynamic-task-debug/plugin.log), while the generated types still declare
+  // `agent.list`. The host's own screens read `data.location.agent` instead, so
+  // this plugin does too — and the double models the store, not the fiction.
+  rule({
+    name: "no client.agent read in the TUI entry",
+    patterns: [/client\.agent/],
+    only: ["tui/index.ts"],
+    doc: "docs/tasks/07-admission-gate.md",
+    why:
+      "The TUI runtime client has no `agent` namespace, so a `client.agent.list()` reader\n" +
+      "throws on every call and the menu renders no agents — while the suite stays green\n" +
+      "if the double answers the same fictional call. Read the data store instead.",
+  });
+  rule({
+    name: "the TUI double answers the data store, not a fictional client namespace",
+    patterns: [/client:\s*\{/, /client\.agent/],
+    only: ["support/limits-screen.js"],
+    corpus: listTestSupportFiles,
+    skip: [PROSE],
+    doc: "docs/tasks/07-admission-gate.md",
+    why:
+      "A double that answers `client.agent.list()` proves a reader the host cannot run.\n" +
+      "The double carries `data.location.agent` because that is what production reads.",
   });
 });

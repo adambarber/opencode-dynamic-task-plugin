@@ -51,9 +51,11 @@ export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
  * `top`/`rowsOn` read the history; `pressRow`/`choose` answer the open question.
  *
  * It is PARTIAL by the same right the old one was: it carries what production reads
- * (location, client, keymap, ui) and nothing else. A case that needs more is a case
+ * (location, data, keymap, ui) and nothing else. A case that needs more is a case
  * about a production read this double does not model, and it should fail loudly here
- * rather than pass against a fuller fiction.
+ * rather than pass against a fuller fiction. In particular there is no `client.agent`:
+ * the TUI runtime client has no `agent` namespace, and a double that answers
+ * `client.agent.list()` proves a reader the host cannot run.
  */
 export function hostApi(directory, { agents = REGISTERED } = {}) {
   const seen = { layers: [], toasts: [], selects: [], slots: [] };
@@ -63,12 +65,13 @@ export function hostApi(directory, { agents = REGISTERED } = {}) {
     pending,
     api: {
       location: { directory },
-      // The row set is the HOST's registered agents, so the client has to answer —
-      // and `agent.list` is the one call the shared reader makes. A bare array of
-      // v2 Agent.Info records is what the host returns, with no envelope.
-      client: {
-        agent: {
-          list: async () => agents.map((name) => ({ name, mode: "subagent", permissions: [] })),
+      // The row set is the HOST's registered agents, read the way its own agent
+      // screens read them: the data store's per-location collection, synchronously.
+      data: {
+        location: {
+          agent: {
+            list: () => agents.map((name) => ({ name, mode: "subagent", permissions: [] })),
+          },
         },
       },
       keymap: {

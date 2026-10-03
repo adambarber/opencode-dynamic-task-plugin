@@ -24,8 +24,6 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
-import { createTestKeymap, captureKeymapDiagnostics } from "@opentui/keymap/testing";
-import { registerEnabledFields, registerMetadataFields } from "@opentui/keymap/addons";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,15 +33,14 @@ import { bothCaps, withTempDir } from "./support/fixtures.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
 import { REPO_ROOT } from "./support/corpus.js";
-import { footerText } from "./support/assertions.js";
 import { BETWEEN, FROM_CONFIG, boundClause, namedCell, plainSummary } from "../../dist/tui/theme.js";
 import { displayName } from "../../dist/tui/agent-editor.js";
-import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps, tui } from "../../dist/tui/index.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps } from "../../dist/tui/index.js";
 
 import {
-  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, clearRow, chooseValue, dialogStack, dialogRowText, rowsText,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, capRow, capText, choose, clearRow, chooseValue, dialogRowText, rowsText,
   everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
-  rendererDouble, row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
+  row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
   withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
   withProject, booted,
 } from "./support/limits-screen.js";
@@ -62,14 +59,14 @@ const WHOLE_SCREEN = [`${displayName(CEILING_LABEL)}:`, ...REGISTERED.map((name)
 
 
 /**
- * The registration, read from the repo's own `tui.json`.
+ * The registration, read from the package the host resolves.
  *
- * The half of the contract that cannot be reached from the module: the host loads TUI
- * modules from `tui.json`, not from opencode's `plugin` array, and there is no
- * directory auto-discovery — so an unregistered module is not degraded, it is never
- * loaded, and it fails silently as an empty command palette. The module can be
- * perfectly shaped and still go nowhere, which is exactly what happened, so the
- * registration is pinned here rather than left to a config file nobody checks.
+ * The half of the contract that cannot be reached from the module: the host resolves
+ * the TUI entrypoint off the SAME package as the server plugin (`<dir>/tui`), so a
+ * TUI module that builds but that no entrypoint reaches is never loaded, and it fails
+ * silently as an empty command palette. The module can be perfectly shaped and still
+ * go nowhere, which is exactly what happened, so the entrypoint is pinned here rather
+ * than left to a path nobody checks.
  */
 /**
  * The harness, checked against itself.
@@ -109,34 +106,25 @@ describe("the harness reports a failing case body", () => {
 });
 
 describe("the TUI module is registered where the host looks for it", () => {
-  it("is listed in .opencode/tui.json, and the path resolves to a loadable module", async () => {
-    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, ".opencode", "tui.json"), "utf8"));
-    const specs = (manifest.plugin ?? []).map((entry) => (Array.isArray(entry) ? entry[0] : entry));
-    assert.ok(specs.length > 0, "an empty tui.json plugin array loads nothing at all");
+  it("the package exposes a tui entrypoint, and it loads to the shape the loader decodes", async () => {
+    const entrypoint = join(REPO_ROOT, "dist", "tui", "index.js");
+    assert.ok(existsSync(entrypoint), `${entrypoint} is absent — the host resolves <package>/tui and finds nothing, so the palette entry cannot load`);
 
-    // Relative specs resolve against the config file that declared them, so the
-    // repo's own manifest can be portable rather than carrying one machine's path.
-    const resolved = specs.map((spec) => resolve(REPO_ROOT, ".opencode", spec));
-    for (const file of resolved) {
-      assert.ok(existsSync(file), `${file} is listed but absent — the palette entry cannot load`);
-    }
-
-    const loaded = await import(pathToFileURL(resolved[0]).href);
-    assert.ok(loaded.default?.id, "a listed file plugin must default-export a non-empty id");
-    assert.ok(!("server" in loaded.default), "a listed TUI module must not export server alongside tui");
+    const loaded = await import(pathToFileURL(entrypoint).href);
+    assert.ok(loaded.default?.id, "a TUI module must default-export a non-empty id");
+    assert.equal(typeof loaded.default?.setup, "function", "and a setup the loader can call — anything else is an invalid module");
   });
 });
 
 describe("the module the host loads", () => {
-  it("default-exports a non-empty id, and no server beside it", () => {
-    // The loader reads the DEFAULT export and ignores named exports, and a file
-    // plugin with no id has no runtime identity to be enabled or rejected against.
-    // A module exporting BOTH is refused rather than preferred, so this is the whole
-    // of what the loader needs — and none of it is a type error, since a named
-    // export typechecks exactly as well.
-    assert.ok(tuiModule.id, "a file plugin must export a non-empty id");
-    assert.equal(typeof tuiModule.tui, "function");
-    assert.ok(!("server" in tuiModule), "a module is server OR tui; a module that is both is refused");
+  it("default-exports a non-empty id and a setup, which is the whole of what the loader needs", () => {
+    // The loader reads the DEFAULT export and ignores named exports, and a module
+    // with no id has no runtime identity to be enabled or rejected against. A
+    // default that is not `{ id, setup }` is refused rather than preferred, so this
+    // is the whole of what the loader needs — and none of it is a type error, since
+    // a mis-shaped default typechecks exactly as well.
+    assert.ok(tuiModule.id, "a TUI module must export a non-empty id");
+    assert.equal(typeof tuiModule.setup, "function");
   });
 });
 
@@ -154,26 +142,24 @@ describe("the limits command reaches the palette", () => {
     withProject(async (directory) => {
       const { command } = await booted(directory);
 
-      // LISTED. The host surfaces palette commands BY NAMESPACE; without this the
-      // command is registered, dispatchable by name and runnable from a keybinding,
+      // LISTED. The host surfaces palette commands by the `palette` flag; without it
+      // the command is registered, dispatchable by name and runnable from a keybinding,
       // and appears in no list — an empty ctrl+p with no error anywhere.
-      assert.equal(command.namespace, "palette",
-        "no namespace means registered but listed nowhere, which is the empty panel");
+      assert.equal(command.palette, true,
+        "no palette flag means registered but listed nowhere, which is the empty panel");
 
-      // READ. `Command` carries an index signature, so a misspelled field is silently
-      // a custom property the palette ignores. The legacy `slash: { name }` form
-      // belongs to the deprecated `api.command` API and is never read here.
-      assert.equal(command.slashName, "limits", "the palette's slash spelling is `slashName`");
-      assert.ok(command.desc, "the palette's second line is `desc`");
-      assert.ok(!("description" in command), "`description` is a custom field the host never reads");
-      assert.ok(!("slash" in command), "`slash` is the legacy api.command shape, not a palette field");
+      // READ. A misspelled field is silently a property the palette ignores, so the
+      // names are the host's: `description` for the second line, `group` for the
+      // section, `slash.name` for the slash spelling.
+      assert.equal(command.slash?.name, "limits", "the palette's slash spelling is `slash.name`");
+      assert.ok(command.description, "the palette's second line is `description`");
+      assert.ok(command.group, "and the section is `group`");
 
       // FOUND. Which fields the palette fuzzy-searchs is the host's configuration, so
-      // the word is in all three we set rather than in the one we guessed. It is no
-      // longer "lanes", because nothing here is a lane any more.
-      assert.match(command.name, /limits/);
+      // the word is in all three we set rather than in the one we guessed.
+      assert.match(command.id, /limits/);
       assert.match(command.title, /limits/i);
-      assert.match(command.desc, /agent|limits/i);
+      assert.match(command.description, /agent|limits/i);
     }));
 });
 
@@ -259,8 +245,7 @@ describe("the limits list is the question the operator came with", () => {
   it("every row is a distinguishable choice, so an agent named after a cap is still an agent", () =>
     withList(undefined, (list) => {
       for (const option of list.options) {
-        assert.equal(typeof option.onSelect, "function", `${option.title} has no way to be chosen`);
-        assert.ok(option.value, `${option.title} carries no value, so the host cannot filter on it`);
+        assert.ok(option.value !== undefined, `${option.title} carries no choice value, so pressing it answers nothing`);
       }
       // Agent rows name the AGENT they edit, and the total names no agent at all — the
       // two are disjoint claims, and a total row that borrowed an agent's key would open
@@ -353,31 +338,6 @@ describe("the host's own layout, as measured rather than modelled", () => {
   });
 });
 
-describe("the filter box", () => {
-  // The host draws a filter input above the rows unless `renderFilter` is false, and the
-  // default is to draw it. It was on all four screens, above a picker whose entire option
-  // set is `1 2 3 4 6 8 12 16 24 32` — a third of a screen spent typing to narrow ten
-  // numbers. Found by RENDERING the whole dialog rather than its rows: rendered as a bare
-  // column of options the screens read fine, and the real thing still had a search box on
-  // it, because the input is drawn by a layer the row-level proof never drew.
-  it("is on the agent list, where a long list is worth typing into", () =>
-    withTempDir((dir) => {
-      const listed = listOver(dir);
-      assert.equal(listed.renderFilter, undefined, "left to the host, which draws it");
-    }));
-
-  it("and off on the three screens below it, which is every screen there is", () => {
-    const screens = [
-      agentCapsProps("explore", agentEntry("explore"), () => {}, () => {}),
-      capPickerProps("explore", "maxConcurrent", agentEntry("explore"), { confirm: () => {}, back: () => {} }),
-      ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} }),
-    ];
-    for (const screen of screens) {
-      assert.equal(screen.renderFilter, false, `${screen.title} offers no Search box`);
-    }
-  });
-});
-
 describe("a row fits the dialog it is drawn in", () => {
   it("for an agent carrying both caps, stated and inherited", () =>
     withList({ agents: { explore: bothCaps(2, 3) } }, (list) => {
@@ -433,12 +393,12 @@ describe("a row fits the dialog it is drawn in", () => {
     // So the screen asks the width gate, and the gate's verdict is acted on here rather
     // than reported and ignored. It is the gate's one caller that consumes its answer,
     // which is the only arrangement in which it can be one.
-    withList(undefined, (list) => {
+    withList(undefined, async (list) => {
       const wide = row(list, LONG_AGENT_NAME);
       assert.ok(wide, "the host published it, so it is a row");
       assert.equal(wide.description, undefined, "and the caps went with it, whole — a clipped figure is a lie about a bound");
       assert.equal(wide.title, `${displayName(LONG_AGENT_NAME)}:`, "the name itself is never cut");
-      assert.equal(typeof wide.onSelect, "function", "and the row still opens, which is where the caps are in full");
+      assert.ok(wide.value !== undefined && wide.value.kind !== undefined, "and the row still opens — it carries the choice that opens it, which is where the caps are in full");
       assertEveryRowFits(list);
     }, { agentNames: [...REGISTERED, LONG_AGENT_NAME] }));
 
@@ -490,7 +450,7 @@ describe("choosing a cap", () => {
     // exits. A "Back" row above the two caps reads as a third cap — and the host
     // replaces the screen under a press, so a mistimed press on it would throw away the
     // place the operator was standing, which is the one thing an exit must never cost.
-    withCapsOpen((host) => {
+    withCapsOpen(async (host) => {
       const titles = titlesOf(top(host.seen));
       assert.equal(titles.at(-1), ALL_AGENTS_LABEL, "the exit is the last row, not a third cap above them");
       const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
@@ -499,7 +459,7 @@ describe("choosing a cap", () => {
         AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + namedCell(capCellOf(row2, cap))),
         "and the two caps are still the whole list, each carrying its own figure beside its label",
       );
-      backRow(host, ALL_AGENTS_LABEL).onSelect();
+      await choose(host, backRow(host, ALL_AGENTS_LABEL));
       assert.equal(top(host.seen).title, "Task limits", "which lands on the list, not on a value");
     }));
 
@@ -535,7 +495,7 @@ describe("choosing a cap", () => {
     // the screen shorter and the defect invisible, and costs an operator a cap they set
     // legitimately the moment a fourth agent exists.
     withPickerOpen((host) => {
-      everyRowClaims(rowsOn(host), (option) => typeof option.onSelect === "function",
+      everyRowClaims(rowsOn(host), (option) => option.value !== undefined,
         "every value the picker offers is settable, reachable or not");
     }, "maxDepth", BOUND_DEPTH));
 
@@ -564,9 +524,9 @@ describe("choosing a cap", () => {
     // where the fact belongs.
     const stated = { agents: { explore: { maxConcurrent: 2, maxDepth: 3 } } };
     for (const cap of AGENT_CAP_NAMES) {
-      const owned = capPickerProps("explore", cap, agentEntry("explore", stated), { confirm: () => {}, back: () => {} });
+      const owned = capPickerProps("explore", cap, agentEntry("explore", stated));
       assert.equal(owned.title, `explore — ${CAP_LABEL[cap]}`, "a cap the overlay states claims nothing about the file");
-      const inherited = capPickerProps("explore", cap, agentEntry("explore"), { confirm: () => {}, back: () => {} });
+      const inherited = capPickerProps("explore", cap, agentEntry("explore"));
       assert.equal(inherited.title, `explore — ${CAP_LABEL[cap]} (${FROM_CONFIG})`, "and a cap it does not says so, in the one place the operator is choosing a number");
       assert.doesNotMatch(owned.title, /lane/i);
     }
@@ -589,8 +549,8 @@ describe("choosing a cap", () => {
     }));
 
   it("offers NO way to clear a cap the overlay does not state, because that row could only be inert", () =>
-    withOpen((host) => {
-      row(top(host.seen), "general").onSelect();
+    withOpen(async (host) => {
+      await choose(host, row(top(host.seen), "general"));
       assert.equal(clearRow(host), undefined, "there is nothing to clear on an agent that never stated one");
     }, { overlay: { agents: { explore: { maxConcurrent: 2 } } } }));
 
@@ -604,9 +564,9 @@ describe("choosing a cap", () => {
     // Not a behavioural claim: a compile-time one, reached from JS. The prop builder
     // is exported so this can be called at all, and calling it is what a reader of the
     // production file would do.
-    const picker = capPickerProps("explore", "maxConcurrent", agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } }), { confirm: () => {}, back: () => {} });
+    const picker = capPickerProps("explore", "maxConcurrent", agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } }));
     assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default", BACK_LABEL]);
-    assert.ok(picker.options.every((option) => typeof option.onSelect === "function"));
+    assert.ok(picker.options.every((option) => option.value !== undefined));
   });
 
   it("has a way back that writes nothing, because its only other exit is escape", () =>
@@ -621,7 +581,7 @@ describe("choosing a cap", () => {
     withPickerOpen(async (host, directory) => {
       assert.equal(titlesOf(top(host.seen)).at(-1), BACK_LABEL,
         "the way out is the LAST row, below the values: a navigation row sitting above ten numbers reads as a value, and the host replaces the screen under a press");
-      backRow(host).onSelect();
+      await choose(host, backRow(host));
       assert.equal(top(host.seen).title, "explore", "and it lands on the agent's own two caps, one level up");
       assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 2 } } },
         "the overlay is untouched — abandoning a picker is not an edit");
@@ -632,7 +592,7 @@ describe("choosing a cap", () => {
     // The failure this shape rules out: a row whose `onSelect` is absent is a row the
     // operator can see, focus, and do nothing with. The agent screen's own Back row
     // already has that guarantee and the pickers did not, which is the drift.
-    withPickerClaimed((option) => typeof option.onSelect === "function", "a visible row that does nothing is worse than no row"));
+    withPickerClaimed((option) => option.value !== undefined, "a visible row that does nothing is worse than no row"));
 });
 
 describe("the flow, end to end on disk", () => {
@@ -666,13 +626,13 @@ describe("the flow, end to end on disk", () => {
     // both caps, so the second write happens on a re-read of a view the first write
     // invalidated — and a flow that wrote from the pre-write view would drop the
     // first cap with nothing to show for it.
-    withPickerOpen(havingWritten((host) => chooseValue(host, 4))((host, directory) => {
+    withPickerOpen(havingWritten((host) => chooseValue(host, 4))(async (host, directory) => {
       // Back on the agent's caps, re-read. The DEPTH row is right there — which is
       // the whole claim: the second write happens on a re-read, and it is one keypress
       // away rather than a trip through the list.
-      capRow(host, "maxDepth").onSelect();
+      await choose(host, capRow(host, "maxDepth"));
       assert.equal(top(host.seen).title, `explore — ${CAP_LABEL.maxDepth} (${FROM_CONFIG})`, "the OTHER cap of the same agent, and the file still holding its number");
-      valueRow(host, 3).onSelect();
+      await choose(host, valueRow(host, 3));
       assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4, maxDepth: 3 } } },
         "the cap set first survives the second, which is the whole claim");
     })));
@@ -682,10 +642,13 @@ describe("the flow, end to end on disk", () => {
     // cap to open — so the row opened the concurrency picker and the depth cap had no
     // way in at all. The pair was VISIBLE and half of it was editable, which is worse
     // than showing one, because the screen had said both were settings.
-    withCapsOpen((host) => {
+    withCapsOpen(async (host) => {
       assert.deepEqual(capRowsAsDrawn(top(host.seen)), AGENT_CAP_ROWS, "both caps are rows of the agent's own screen, each with its figure");
       for (const cap of AGENT_CAP_NAMES) {
-        assert.equal(typeof capRow(host, cap).onSelect, "function", `${cap} can be opened`);
+        await choose(host, capRow(host, cap));
+        assert.match(top(host.seen).title, new RegExp(`explore — ${CAP_LABEL[cap]}`), `${cap} opens its picker`);
+        await choose(host, backRow(host));
+        assert.equal(top(host.seen).title, "explore", "and the way back is one level up, on the agent's own caps");
       }
     }));
 
@@ -696,18 +659,18 @@ describe("the flow, end to end on disk", () => {
     // and the entry go. A `null` would be the same file with a second shape every
     // reader would have to recognise, and an empty body would be a dead entry per
     // experiment — the two ways an overlay rots.
-    withPickerOpen((host, directory) => {
-      clearRow(host).onSelect();
+    withPickerOpen(async (host, directory) => {
+      await choose(host, clearRow(host));
       assert.deepEqual(readOverlay(directory), { agents: {} },
         "an absent key and a zero are different statements, and only one of them means 'no cap'");
     }));
 
   it("a write that fails says so and confirms nothing, rather than reporting a cap that was not applied", () =>
-    withPickerOpen((host, directory) => {
+    withPickerOpen(async (host, directory) => {
       // A read-only directory: the overlay's temp-then-rename has nowhere to land.
       chmodSync(directory, 0o500);
       try {
-        valueRow(host, 4).onSelect();
+        await choose(host, valueRow(host, 4));
         assert.ok(!host.seen.toasts.some((toast) => toast.variant === "success"),
           "a refused write must not be confirmed as a cap in force");
         assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
@@ -726,81 +689,31 @@ describe("the flow, end to end on disk", () => {
 });
 
 /**
- * What this suite now observes for real, having stopped for the escape path: the
- * layer objects below are the module's own, handed to a real @opentui/keymap
- * dispatcher, with the host's own dialog guard registered alongside them. The
- * palette's fuzzy search is still the host's configuration and still unobserved.
- */
-export const PALETTE_REMAINS_UNOBSERVED = true;
-
-/**
- * Escape, pressed for real.
+ * Escape is the host's key, and this plugin does not take it.
  *
- * The module's layers go into an actual @opentui/keymap, and the host's dialog
- * guard is registered with them — `enabled: stack.length > 0 &&
- * !renderer.getSelection()?.getSelectedText()`, transcribed from
- * packages/tui/src/ui/dialog.ts:106 at the tag the running binary was built from.
- * Everything that decides WHICH handler runs — the per-layer `enabled` gate, the
- * priority/order tiebreak, the ambiguity resolver — is the library's own code, so
- * these cases cannot pass by agreeing with a stand-in.
+ * The v2 keymap has no library double to drive: layers are plain objects the host
+ * interprets, so the property is stated over the objects themselves. A layer with no
+ * `bindings` owns no key whatever the dialog is doing — and escape, the operator's way
+ * to stop an in-flight request, is the key that must never be interceptable. A gate
+ * cannot offer this: a gate is only as good as the state it reads, and a
+ * desynchronised one turns "stop this request" into a swallowed keypress, whose failure
+ * is a turn that never ends rather than a lost dialog.
  *
- * The host's layer is registered LAST because that is when the host registers it:
- * the dialog component mounts after the plugin loads. Getting that order backwards
- * would make the module's binding win every tie and quietly take the key from every
- * other plugin's dialog, which is the failure this ordering exists to rule out.
+ * The Back rows are the way out of every screen, because a dialog the host dismisses
+ * needs no key of ours to leave.
  */
-function pressEscapeForReal(host, { selectedText = "" } = {}) {
-  const { keymap, host: keys, root } = createTestKeymap({ defaultKeys: true });
-  registerEnabledFields(keymap);
-  registerMetadataFields(keymap);
-  const diagnostics = captureKeymapDiagnostics(keymap);
-
-  host.renderer.selection = selectedText ? { getSelectedText: () => selectedText } : null;
-
-  let hostClosed = 0;
-  const register = (layer) => keymap.registerLayer({ target: root, ...layer });
-  for (const layer of host.seen.layers) register(layer);
-  register({
-    enabled: () => host.dialog.depth > 0 && !host.renderer.selection?.getSelectedText(),
-    bindings: [{ key: "escape", desc: "Close dialog", group: "Dialog", cmd: () => { hostClosed++; host.dialog.clear(); } }],
-  });
-
-  keys.press("escape");
-  return { hostClosed, stillOpen: host.dialog.open, diagnostics };
-}
-
 describe("escape is the host's key, and this plugin does not take it", () => {
-  it("the plugin registers NO binding on any key the host needs, so interrupt cannot be ours to break", () =>
-    // The structural property, stated as a property: whatever the dialogs are doing,
-    // whatever the flag behind a gate would have said, there is nothing of ours on
-    // the key. A gate cannot offer this — a gate is only as good as the state it
-    // reads, and a desynchronised one turns "stop this request" into a swallowed
-    // keypress, whose failure is a turn that never ends rather than a lost dialog.
+  it("the plugin registers NO bindings, so interrupt cannot be ours to break", () =>
     withBooted(({ bindings }) => {
-      const keys = bindings.map((binding) => String(binding.key).toLowerCase());
+      const keys = bindings.map((binding) => String(binding.key ?? binding).toLowerCase());
       assert.deepEqual(keys, [],
         `the plugin must register no key bindings at all; it has: ${JSON.stringify(keys)}`);
     }));
 
-  it("and the HOST's own handler is the one that acts, so the key is not taken from every other dialog", () =>
-    withOpen((host) => {
-      const { hostClosed, stillOpen, diagnostics } = pressEscapeForReal(host);
-      assert.equal(hostClosed, 1, "the host's dialog handler ran, because the plugin registered nothing");
-      assert.equal(stillOpen, false, "and the list is closed");
-      assert.deepEqual([...diagnostics.warnings, ...diagnostics.errors], [],
-        "two layers on one key must resolve without an ambiguity warning");
-    }));
-
-  it("a text selection switches the HOST's handler off — which is why every screen carries a Back row", () =>
-    // Not a defect to be fixed here, and the reason is now visible: the host gates its
-    // own escape on there being no text selection (packages/tui/src/ui/dialog.ts:106),
-    // so a filtered dialog with a selection has no escape at all. A plugin cannot
-    // repair that by binding `escape` — that is the same key, and owning it is what
-    // breaks interrupt. The Back row is the repair, and this is the case it exists for.
-    withOpen((host) => {
-      const { hostClosed, stillOpen } = pressEscapeForReal(host, { selectedText: "explore" });
-      assert.equal(hostClosed, 0, "the host's handler is disabled while text is selected — the trap");
-      assert.equal(stillOpen, true, "so escape alone cannot get out, which is what the Back row is for");
+  it("and no layer carries bindings either, so a second registration path cannot hide one", () =>
+    withBooted((host) => {
+      for (const layer of host.seen.layers) {
+        assert.ok(layer.bindings === undefined, "a layer with bindings owns a key, whatever the bindings say");
+      }
     }));
 });
-

@@ -26,7 +26,7 @@ import { readAgentOverlay } from "../../dist/shared/caps.js";
 import { capRow } from "./support/limits-screen.js";
 
 import {
-  BASE, backRow, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn, readOverlay,
+  BASE, backRow, choose, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn, readOverlay,
   rowText, settle, titlesOf, top, withList, withOpen, row,
 } from "./support/limits-screen.js";
 
@@ -78,7 +78,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // information would be gone rather than moved — which is why the assertion is HERE and
     // not only about the list's silence.
     withOpen(async (host) => {
-      pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
+      await pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
       assert.equal(top(host.seen).title, `${CEILING_LABEL} (${FROM_CONFIG})`, "the picker's own title says the number in force is the file's, and not the operator's");
     }));
 
@@ -91,7 +91,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // Two different lists for one concept is how an operator ends up able to set a total
     // no per-agent cap can reach, with neither screen explaining the asymmetry. Stated,
     // so the way back to the config file is on the screen too.
-    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null }, { confirm: () => {}, back: () => {} });
+    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null });
     assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default", BACK_LABEL]);
     assert.doesNotMatch(picker.title, /lane/i);
   });
@@ -103,8 +103,8 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // written an overlay, because that is the state where a read that creates a file
     // would be least expected.
     withOpen(async (host, directory) => {
-      pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
-      backRow(host).onSelect();
+      await pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
+      await choose(host, backRow(host));
       assert.equal(top(host.seen).title, "Task limits", "the list, whose FIRST row is the total it bounds");
       assert.equal(existsSync(join(directory, AGENT_OVERLAY_FILE)), false,
         "no overlay was written, so abandoning the picker wrote nothing at all");
@@ -123,8 +123,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
       // The screen is the LIST after a write, so the picker has to be re-entered to
       // clear it — the same two round trips any cap takes.
       await pressRowOn(host, CEILING_LABEL);
-      clearRow(host).onSelect();
-      await settle();
+      await choose(host, clearRow(host));
       assert.equal(readAgentOverlay(directory).raw.maxConcurrent, undefined,
         "the key is gone rather than null, so the reader stops treating it as stated");
     }));

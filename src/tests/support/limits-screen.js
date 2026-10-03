@@ -21,19 +21,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
 import { withTempDir } from "./fixtures.js";
-import { renderTree } from "./render-tree.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import { namedCell, plainSummary, terseCell } from "../../../dist/tui/theme.js";
-import { darkTheme } from "./harness.js";
-import { footerText } from "./assertions.js";
-import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps, tui } from "../../../dist/tui/index.js";
+import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
-
-/** Nothing asked, for the cases about what a row SAYS rather than what choosing it does. */
-export const NO_ASKS = () => {};
 
 /** The agents this project has, as the host would report them. */
 export const REGISTERED = ["explore", "general", "review"];
@@ -48,142 +42,56 @@ export const REGISTERED = ["explore", "general", "review"];
 export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
 
 /**
- * The dialog stack, modelled on the host's own `useDialog` rather than on what a
- * test would like it to do.
+ * The host, for the cases that genuinely have to press something.
  *
- * Three properties are the host's, and each was measured against the source at the
- * tag the running binary was built from (packages/tui/src/ui/dialog.ts):
+ * A v2 promise double: `dialog.select` records the options and parks a promise, and a
+ * press resolves the open one with the row's VALUE. There is no dialog stack to model
+ * — the host owns its dialogs and the plugin only ever awaits one question at a time,
+ * so the only state here is the one open question and the history of questions asked.
+ * `top`/`rowsOn` read the history; `pressRow`/`choose` answer the open question.
  *
- *  - `replace` SETS the stack to a single entry. There is no push, so depth never
- *    exceeds one and a second dialog cannot bury the first.
- *  - `replace` and `clear` both walk the outgoing entries calling their `onClose`.
- *    That is why an `onClose` which itself cleared would recurse forever.
- *  - the escape and ctrl+c handlers pop the top entry and call its `onClose`.
- *
- * The earlier double had none of these: it ignored `onClose` entirely, which is what
- * let a suite "prove" a way out of every dialog that the host does not offer.
+ * It is PARTIAL by the same right the old one was: it carries what production reads
+ * (location, client, keymap, ui) and nothing else. A case that needs more is a case
+ * about a production read this double does not model, and it should fail loudly here
+ * rather than pass against a fuller fiction.
  */
-export function dialogStack() {
-  const mounted = [];
-  let stack = [];
-  const notifyOutgoing = () => {
-    for (const entry of stack) entry.onClose?.();
-  };
-  return {
-    stack: {
-      replace: (render, onClose) => {
-        notifyOutgoing();
-        stack = [{ render, onClose }];
-        mounted.push(render());
-      },
-      clear: () => {
-        notifyOutgoing();
-        stack = [];
-        mounted.length = 0;
-      },
-      setSize: () => {},
-      get depth() {
-        return stack.length;
-      },
-      get open() {
-        return stack.length > 0;
-      },
-    },
-    mounted,
-  };
-}
-
-/**
- * The renderer, as the plugin meets it.
- *
- * This is `api.renderer`, a `CliRenderer`, and it is handed over under THAT name, so it has
- * to answer for the members the plugin reads off it — not just the ones an earlier suite
- * happened to need. A double named `renderer` that is really a selection double is the
- * worst kind of collaborator: it passes a case while leaving a real code path unrun, and
- * when production then reads `renderer.root` the suite breaks for a reason that has nothing
- * to do with what it claims to be testing. So it carries a `root` too, built by
- * `renderTree`, which means the counter's real mount — the tree walk, the `TextRenderable`,
- * the add to the host's own line — is exercised here rather than nowhere.
- *
- * `getSelection` returning an object whose `getSelectedText` is non-empty is what disables
- * the host's own escape binding, so the tests can put that state in place — and take it
- * away again — rather than assume it.
- */
-export function rendererDouble({ footer = true } = {}) {
-  const state = { selection: null };
-  return {
-    state,
-    api: {
-      // The real `CliRenderer` exposes both, and a tree the counter can walk. `footer:
-      // false` renames the hint, which is the case where the walk finds nothing and the
-      // slot has to carry the counter instead.
-      root: renderTree({ footer }).root,
-      getSelection: () => state.selection,
-      clearSelection: () => {
-        state.selection = null;
-      },
-    },
-  };
-}
-
-/**
- * A host, for the cases that genuinely have to press something.
- *
- * `DialogSelect` returns nothing, and nothing IS a valid `JSX.Element`: Solid's
- * element type is a loose union, so a stand-in that renders nothing satisfies the
- * host's real signature with no cast anywhere. What it hands back is the host's props
- * object, unchanged, so the suite reads the same shape the host would.
- */
-export function hostApi(directory, { withFooter = true } = {}) {
+export function hostApi(directory, { agents = REGISTERED } = {}) {
   const seen = { layers: [], toasts: [], selects: [], slots: [] };
-  const dialog = dialogStack();
-  const renderer = rendererDouble({ footer: withFooter });
+  const pending = [];
   return {
     seen,
-    mounted: dialog.mounted,
-    dialog: dialog.stack,
-    renderer: renderer.state,
+    pending,
     api: {
-      state: { ready: true, config: {}, provider: [], path: { state: "", config: "", worktree: "", directory }, vcs: undefined },
-      // The host's theme, because the screen resolves its design tokens from it. The
-      // host derives `text` from the TERMINAL's own default foreground (theme.ts
-      // `generateSystem`), so a double carrying a dark terminal's foreground and a
-      // muted gray is the shape that actually occurs — not a theme the suite invented
-      // to suit the assertions.
-      theme: HOST_THEME,
-      keymap: {
-        registerLayer: (layer) => {
-          seen.layers.push(layer);
-          return () => {};
-        },
-      },
-      renderer: renderer.api,
+      location: { directory },
       // The row set is the HOST's registered agents, so the client has to answer —
       // and `agent.list` is the one call the shared reader makes. A bare array of
       // v2 Agent.Info records is what the host returns, with no envelope.
       client: {
         agent: {
-          list: async () => REGISTERED.map((name) => ({ name, mode: "subagent", permissions: [] })),
+          list: async () => agents.map((name) => ({ name, mode: "subagent", permissions: [] })),
         },
       },
-      // Slots are where the LIVE counter is mounted, so the double has to accept a
-      // registration and keep it. It does not call the slot's function: doing so needs
-      // an active renderer, which is the same absence that keeps the gauge's element
-      // construction out of every case here. What a case CAN check is that the module
-      // registers exactly one, under the name it claims — a counter mounted in a slot
-      // the host never draws is not a failing test, it is a number that never appears.
-      slots: {
-        register: (plugin) => {
-          seen.slots.push(plugin);
-          return "dynamic-task";
+      keymap: {
+        layer: (build) => {
+          seen.layers.push(build());
+          return () => {};
         },
       },
       ui: {
-        dialog: dialog.stack,
-        DialogSelect: (props) => {
-          seen.selects.push(props);
+        dialog: {
+          select: (options) => {
+            seen.selects.push(options);
+            return new Promise((resolve) => pending.push({ options, resolve }));
+          },
         },
-        toast: (input) => seen.toasts.push(input),
+        toast: { show: (input) => seen.toasts.push(input) },
+        // The palette entry lives in a render the HOST calls, inside its own tree —
+        // so this records the claim and the boot below performs it, the way a mount
+        // would. A slot the host never draws is a command that never appears.
+        slot: (claim) => {
+          seen.slots.push(claim);
+          return () => {};
+        },
       },
     },
   };
@@ -195,17 +103,6 @@ export function readOverlay(directory) {
 }
 
 /**
- * The host's theme, once, because the api double reads it.
- *
- * It used to also resolve a `ScreenTokens` for the prop builders, and a case could not
- * then pass a hand-made token object and prove something the screen would never paint.
- * There are no tokens to resolve: no screen of ours paints a figure, so the prop builders
- * take no theme and a case cannot hand one to them even by accident.
- */
-export const HOST_THEME = darkTheme();
-
-
-/**
  * The dialog's content, as the host's own props, with no host in sight.
  *
  * The real reader, the real view, the real prop builders. This is what most cases
@@ -215,7 +112,7 @@ export const HOST_THEME = darkTheme();
 export function listOver(directory, agentNames = REGISTERED) {
   const read = readAgentOverlay(directory);
   const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
-  return limitsListProps(dialog, NO_ASKS);
+  return limitsListProps(dialog);
 }
 
 export { dialogRowText };
@@ -281,15 +178,17 @@ export const titlesOf = (dialog) => dialog.options.map((option) => option.title)
  * ONE place the module is booted, because booting IS a production interaction and
  * two call sites spelling it out is two places to forget the plugin's own id.
  *
- * The command has to be dispatchable while no dialog is up, and the host owns
- * every key the plugin must not take.
+ * `setup` only CLAIMS the slot; the layer is registered when the host performs the
+ * render, so this performs it — a command asserted without its render is a command
+ * the palette never saw. The command has to be dispatchable while no dialog is up,
+ * and the host owns every key the plugin must not take.
  */
-export async function booted(directory) {
-  const host = hostApi(directory);
-  // The host hands the plugin its OWN declared id as meta, so this reads the
-  // module's id rather than repeating the string: a test that retyped it would be a
-  // second place to change, and the suite already gates on exactly that.
-  await tui(host.api, undefined, { id: tuiModule.id });
+export async function booted(directory, opts) {
+  const host = hostApi(directory, opts);
+  await tuiModule.setup(host.api);
+  const app = host.seen.slots.find((slot) => slot.append === "app");
+  assert.ok(app, "the palette command is mounted where the host draws every screen");
+  app.render({});
   const command = host.seen.layers.find((layer) => layer.commands)?.commands[0];
   assert.ok(command, "the palette command is registered");
   // Every binding the plugin owns, as the keymap would see them. Not a specific
@@ -419,18 +318,35 @@ export const havingWritten = (step) => (fn) => given(async (host) => {
 }, fn);
 
 /**
+ * Answer the open question with a row's VALUE.
+ *
+ * The ONE press in the whole harness: every row carries a choice value and the flow
+ * switches on what `select` resolves with, so pressing IS resolving. Asserting the
+ * option EXISTS is not a formality — a screen that dropped a row makes every step
+ * after it fail on `undefined` with a message about the step rather than about the
+ * screen, and the suite then reads as though the flow were broken rather than the
+ * row having gone. Asserting a question is OPEN is the same half: a press with no
+ * dialog up resolves nothing and hangs the flow's next screen, so it fails HERE with
+ * the press named rather than later with a screen missing.
+ */
+export const choose = async (host, option, what = "the row") => {
+  assert.ok(option, `${what} is on screen, so it is reachable at all`);
+  const question = host.pending.pop();
+  assert.ok(question, `a dialog is open to press ${what} on`);
+  question.resolve(option.value);
+  await settle();
+};
+
+/**
  * Press a row by its title, as a scenario step.
  *
  * The shape every screen-opening step here is: find the row, insist it is there, press
- * it. Asserting the row EXISTS is not a formality - a screen that dropped a row makes
- * every step after it fail on `undefined` with a message about the step rather than
- * about the screen, and the suite then reads as though the flow were broken rather than
- * the row having gone.
+ * it. A screen that dropped a row makes every step after it fail on `undefined` with
+ * a message about the step rather than about the screen, and the suite then reads as
+ * though the flow were broken rather than the row having gone.
  */
-export const pressRow = (title, why) => (host) => {
-  const opened = row(top(host.seen), title);
-  assert.ok(opened, why ?? `${title} is on screen, so it is reachable at all`);
-  opened.onSelect();
+export const pressRow = (title, why) => async (host) => {
+  await choose(host, row(top(host.seen), title), why ?? title);
 };
 
 /**
@@ -449,14 +365,13 @@ export const pressRowOn = async (host, title) => {
 
 /** …with the value list open on ONE named cap of `explore`. */
 export const withPickerOpen = (fn, cap = "maxConcurrent", overlay = { agents: { explore: { maxConcurrent: 2 } } }) =>
-  withCapsOpen(given((host) => {
+  withCapsOpen(given(async (host) => {
     // By the cap's label, which is the row's FIRST WORD rather than its whole title: the
     // caps screen carries the value in the title now (`at once 2`), so matching the whole
     // string would re-report this screen as broken every time a cap changed shape. The
     // label is the part that says WHICH cap, and it is the part worth pinning.
     const opened = rowsOn(host).find((option) => option.title === CAP_LABEL[cap] || option.title.startsWith(`${CAP_LABEL[cap]} `));
-    assert.ok(opened, `${cap} is one of the two rows, so the cap is reachable at all`);
-    opened.onSelect();
+    await choose(host, opened, `${cap} is one of the two rows, so the cap is reachable at all`);
   }, fn), overlay);
 
 /**
@@ -481,8 +396,7 @@ export const withPickerClaimed = (about, why, cap = "maxConcurrent") =>
  * many awaits the production path has.
  */
 export const chooseValue = async (host, value) => {
-  valueRow(host, value).onSelect();
-  await settle();
+  await choose(host, valueRow(host, value), String(value));
 };
 
 /**

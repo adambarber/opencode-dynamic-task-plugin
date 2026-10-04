@@ -129,7 +129,7 @@ export function resolveAdmission(
     return { ok: false, reason: unknownAgent(requestedName, available) };
   }
 
-  const agentCheck = validateAgent(agent.id, config);
+  const agentCheck = validateAgent(agent.name, config);
   if (!agentCheck.ok) {
     return { ok: false, reason: policyRefused(agentCheck.error) };
   }
@@ -142,7 +142,7 @@ export function resolveAdmission(
   const policy = resolveAgentCaps(liveAgentCaps(config), agent.id);
   const lineageCheck = validateLineage(
     lineage,
-    agent.id,
+    agent.name,
     { maxDepth: policy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
     dispatchableAgentNames(agents, config),
   );
@@ -150,7 +150,7 @@ export function resolveAdmission(
     return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
 
-  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.id) };
+  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
@@ -296,9 +296,9 @@ const CACHE_TTL = 300000;
  */
 export function buildAgentList(agents: AgentRecord[]): string {
   if (!Array.isArray(agents)) return "(none discovered)";
-  // The registry ids: those are the keys a dispatch can spend, and the display
-  // label is not one of them — listing labels here is how a label got routed.
-  const names = agents.map((a) => a.id);
+  // The display labels: either spelling spends (admission matches id or name), so the
+  // list shows the human one. The ROUTING key stays the id — see `AgentRecord`.
+  const names = agents.map((a) => a.name);
   if (names.length === 0) return "(none discovered)";
   return names.join(", ");
 }

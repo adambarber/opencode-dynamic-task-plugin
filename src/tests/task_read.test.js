@@ -343,6 +343,7 @@ describe("task fleet views", () => {
     assert.ok(list.includes(one.id) && list.includes(two.id), "both fleets visible");
     answerSays(list, "Active: 1/4");
     answerSays(list, "Retained: 1");
+    answerSays(list, "@Explore", "rows read the stored label, not the routing id");
     });
 
   describe("the agents line", () => {
@@ -497,7 +498,7 @@ describe("task fleet views", () => {
     const { id, c } = await h.spawn({ description: "status probe" });
     const detail = await c.status();
     answerSays(detail, id);
-    answerSays(detail, "explore");
+    answerSays(detail, "Agent: Explore", "the status names the label");
     const missing = await h.tool.task_status.execute({ session_id: "ses_ghost" });
     answerSays(missing, "unknown");
     await assertNeedsSessionId(h.tool.task_status);

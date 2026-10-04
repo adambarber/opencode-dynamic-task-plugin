@@ -12,6 +12,7 @@ import {
   UNANSWERED_LIVENESS,
 } from "../shared/liveness.js";
 import {
+  agentDisplayName,
   formatTaskResultSummary,
   formatTaskListSummary,
   formatTaskStatusDetail,
@@ -135,7 +136,7 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   // record it reads, which is also what lets it carry the settled-only class.
   const toRow = (t: TaskRecord): FleetRow => ({
     childSessionId: t.childSessionId,
-    agentName: t.agentName,
+    agentName: agentDisplayName(t),
     description: t.description,
     state: t.state,
     startedAt: t.startedAt,

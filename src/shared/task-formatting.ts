@@ -84,6 +84,13 @@ export interface FleetRow extends Pick<TaskIdentity, "childSessionId" | "agentNa
   failureClass?: FailureClass | undefined;
 }
 
+// What an operator reads where a task names its agent: the display label
+// snapshotted at dispatch, with the routing id behind it for rows written
+// before the label existed. One spelling, because two fallbacks can disagree.
+export function agentDisplayName(task: { agentName: string; agentLabel?: string }): string {
+  return task.agentLabel ?? task.agentName;
+}
+
 function formatFleetRow(row: FleetRow): string {
   return `- ${row.childSessionId} @${row.agentName} [${row.state}] ${row.description} (${formatAge(row.startedAt)})`;
 }
@@ -393,7 +400,7 @@ export function formatTaskStatusDetail(
     "",
     `Session: ${task.childSessionId}`,
     `Parent: ${task.parentSessionId}`,
-    `Agent: ${task.agentName}`,
+    `Agent: ${agentDisplayName(task)},`,
     `State: ${task.state}`,
     `Description: ${task.description}`,
     `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" → ") : "(root)"}`,

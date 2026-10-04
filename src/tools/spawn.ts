@@ -83,7 +83,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     const waitingParent = resolveParentSessionId(ctx);
     if (waitingParent) {
       holdDispatchWait(store, {
-        description: args.description || `Task: ${agent.id}`,
+        description: args.description || `Task: ${agent.name}`,
         parentSessionId: waitingParent,
         dependsOn: args.depends_on ?? [],
         dependsOnSettled: args.depends_on_settled ?? [],
@@ -114,7 +114,8 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // The registry id, not the display label: this field is the routing key the host
     // resolves, and sending the label is how live dispatch died with `Agent not found`.
     agentName: agent.id,
-    description: args.description || `Task: ${agent.id}`,
+    agentLabel: agent.name,
+    description: args.description || `Task: ${agent.name}`,
     lineage: admission.newLineage,
     ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
     ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
@@ -166,14 +167,14 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     fireChildPrompt(host, store, activeTask, buildBackgroundPrompt(admitted.prompt, { canNotify: agentCanNotify(agent, NOTIFY_TOOL) }));
 
     debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "background-task-registered", {
-      description: args.description || `Task: ${agent.id}`,
+      description: args.description || `Task: ${agent.name}`,
     });
 
     // One confirmation for both shapes: a child with no parent to name is still
     // a tracked child, and `parentSessionId` is already nullable in the report —
     // deciding here what that field means is the one place that can decide it.
     return spawnConfirmation({
-      agentName: agent.id,
+      agentName: agent.name,
       childSessionId,
       model: requestedModelLabel,
       parentSessionId: parentSessionId || null,
@@ -227,7 +228,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       ).then((delivered) => debugLog(parentSessionId || UNKNOWN_PARENT, failedChildSessionId, "spawn-error-notify", { delivered }));
     }
     if (message.includes("not found")) {
-      return agentGone(agent.id);
+      return agentGone(agent.name);
     }
     if (message.includes("permission") || message.includes("denied")) {
       return PERMISSION_DENIED;

@@ -27,7 +27,7 @@ describe("dynamic_task validation", () => {
     const h = await setupHarness();
     const out = await h.trySpawn({ description: "task t", prompt: "hi" });
     answerSays(out, "No subagent_type");
-    answerSays(out, "explore", "lists agents");
+    answerSays(out, "Explore", "lists agents by label");
     });
 
   it("rejects unknown agents", async () => {
@@ -60,7 +60,7 @@ describe("dynamic_task validation", () => {
 
   it("admits any agent by default — general dispatches", async () => {
     const { out } = await withChild({ spawn: { subagent_type: "general" } });
-    answerSays(out, "@general");
+    answerSays(out, "@General", "the confirmation names the label");
   });
 
   it("rejects overlong descriptions at admission", async () => {
@@ -249,7 +249,7 @@ describe("admission lineage", () => {
     const two = await h.spawn({ description: "nested task", subagent_type: "general" }, { sessionID: one.id });
     assert.ok(two.out.includes("in background"), `nested spawn admitted. got: ${two.out}`);
     const status = await h.tool.task_status.execute({ session_id: two.id });
-    answerSays(status, "explore → general", "parent chain visible");
+    answerSays(status, "Explore → General", "the chain reads in labels");
     await h.tool.task_interrupt.execute({ session_id: one.id });
     });
 

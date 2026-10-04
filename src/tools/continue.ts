@@ -10,9 +10,8 @@ import { textBlock } from "../shared/text-block.js";
 import {
   TaskState,
   transitionState,
-  markTurnReplacement,
-  clearTurnReplacement,
 } from "../shared/task-state.js";
+import { markTurnReplacement, clearTurnReplacement } from "../shared/notice-claim.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { type ResolvedSessionScope } from "./context.js";
 import {
@@ -137,7 +136,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         description: active.description,
         ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
       }, steerText);
-      return steerSent(sessionId, active.agentName);
+      return steerSent(sessionId, active.agentLabel ?? active.agentName);
     }
   }
 
@@ -157,6 +156,6 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   }
 
   return autoRevivedFrom
-    ? steerAutoRevived(sessionId, task.agentName, autoRevivedFrom)
-    : followupSent(task.childSessionId, task.agentName);
+    ? steerAutoRevived(sessionId, task.agentLabel ?? task.agentName, autoRevivedFrom)
+    : followupSent(task.childSessionId, task.agentLabel ?? task.agentName);
 }

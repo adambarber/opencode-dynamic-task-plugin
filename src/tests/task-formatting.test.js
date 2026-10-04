@@ -8,8 +8,8 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
-import { noticeRecord } from "../../dist/shared/task-state.js";
+import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
+import { noticeRecord } from "../../dist/shared/notice-claim.js";
 import { notifiedAs } from "./support/records.js";
 import { SessionExistence, UNANSWERED_LIVENESS } from "../../dist/shared/liveness.js";
 
@@ -358,6 +358,13 @@ describe("task formatting: fleet views", () => {
 
     assert.match(detail, /FAILED after 3 attempt\(s\)/);
     assert.doesNotMatch(detail, /EXPIRED/);
+  });
+
+  it("the display name is the stored label, and the routing id only where no label was stored", () => {
+    assert.strictEqual(agentDisplayName({ agentName: "general", agentLabel: "General" }), "General");
+    assert.strictEqual(agentDisplayName({ agentName: "general" }), "general");
+    const summary = listOf({ tree: [treeRow({ agentName: "general" })] });
+    assert.match(rowFor(summary, "ses_a"), /@general/, `a labelless row reads raw. got: ${summary}`);
   });
 
   it("formatTaskListSummary counts the running rows and indents the tree", () => {

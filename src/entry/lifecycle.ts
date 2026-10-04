@@ -16,6 +16,7 @@ import {
   invokePrompt,
   classifyPromptError,
   hydrateLatestOutcome,
+  type HydratedOutcome,
 } from "../shared/prompt.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import { classifyFailure, failureNote, FailureClass } from "../shared/failure-class.js";
@@ -226,15 +227,40 @@ export interface SettlementSignal {
  * meant here. The boot pass passes the same words, so a task that vanished
  * across a restart lands on `error` by the same rule as one that broke live.
  */
-function settlementVerdict(input: {
+// The words a settlement interprets, before any outcome is read.
+type SettlementFacts = {
   status: string;
   event: unknown;
   declaredBlocked: boolean;
-}): SettlementVerdict {
+};
+
+function settlementVerdict(input: SettlementFacts): SettlementVerdict {
   if (endedBadly(input.status) || (input.event !== undefined && eventLooksDeleted(input.event))) {
     return TaskState.Error;
   }
   return input.declaredBlocked ? TaskState.Blocked : TaskState.Completed;
+}
+
+// The one interpreter both settlement arms share: a turn the
+// transcript cannot back is not the success its status word claimed.
+function settleOutcome(input: SettlementFacts & {
+  outcome: HydratedOutcome;
+  cause?: string | undefined;
+  resumesSpent: number;
+}): { verdict: SettlementVerdict; failure: FailureClass; text: string } {
+  const base = settlementVerdict(input);
+  const verdict =
+    base === TaskState.Completed && (input.outcome.errorDetail || input.outcome.unreadable)
+      ? TaskState.Error
+      : base;
+  const failure = classifyFailure(verdict, input.outcome.errorDetail);
+  const quote = input.outcome.text || input.outcome.errorDetail || "";
+  const causeNote = input.cause ? `\n\n${input.cause}` : "";
+  const classNote = failureNote(failure, input.resumesSpent);
+  const unreadableNote = input.outcome.unreadable
+    ? "\n\n(The child's transcript could not be read; read it with task_result.)"
+    : "";
+  return { verdict, failure, text: `${quote}${causeNote}${classNote}${unreadableNote}` };
 }
 
 export async function settleRunningChild(
@@ -269,11 +295,13 @@ export async function settleRunningChild(
   // kind, the fallback wording — all read the verdict. Three parallel booleans
   // and a status string re-tested at each step is how a child that declared it
   // was blocked came to be reported as a completed success.
-  let verdict = settlementVerdict({
+  const declared = declaredBlocked(store, childSessionId);
+  const facts: SettlementFacts = {
     status,
     event: signal.event,
-    declaredBlocked: declaredBlocked(store, childSessionId),
-  });
+    declaredBlocked: declared,
+  };
+  let verdict = settlementVerdict(facts);
   const parentSessionId = task.parentSessionId;
   const childDescription = task.description;
   try {
@@ -287,35 +315,30 @@ export async function settleRunningChild(
   const outcome = await hydrateLatestOutcome(host, childSessionId);
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
   // the same words, so a settled `blocked` cannot be announced as a success.
-  let kind: NotifyKind = settlementKind(verdict);
-  // The verdict the parent will actually hear, settled before anything is
-  // recorded. A turn that ended `idle` over an errored stream is a failure, and
-  // the correction and the classification must BOTH be taken from this final
-  // value — classifying the host's original `idle` describes a state the record
-  // is no longer in, which is how a structural failure ends up labelled "no
-  // failure class" and the parent loses the one fact it needed.
-  const concluded = verdict === TaskState.Completed && outcome.errorDetail
-    ? TaskState.Error
-    : verdict;
+  // The verdict the parent hears, settled before anything is recorded: an
+  // errored stream or an unreadable transcript both correct a success.
+  const settled = settleOutcome({
+    ...facts,
+    outcome,
+    cause,
+    resumesSpent: task.transientResumes ?? 0,
+  });
+  const kind: NotifyKind = settlementKind(settled.verdict);
   // WHY, recorded on the same amendment that may correct the state. A parent that
   // inspects this child in an hour asks "was this the network or was this the
   // work", and only the record can answer it — the notification is a moment, and
   // moments do not survive. One write, not two: the common case for this
   // correction IS the common case for a class, since both come from a turn that
   // ended `idle` over an errored stream.
-  const failure = classifyFailure(concluded, outcome.errorDetail);
-  if (concluded !== verdict) {
-    verdict = concluded;
-    kind = NotifyKind.Error;
+  const failure = settled.failure;
+  if (settled.verdict !== verdict) {
+    verdict = settled.verdict;
     if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
       void safeLog("info", `Late error already recorded for ${childSessionId}`);
     }
   } else if (failure !== FailureClass.None) {
     recordSettledOutcome(store, childSessionId, verdict, failure);
   }
-  // Empty when the child said nothing: the renderer says so and names the reader,
-  // which is truer than any stand-in word and cannot be mistaken for a quote.
-  const latestText = outcome.text || outcome.errorDetail || "";
 
   // The settlement has claimed the child, so the record is settled and the parent
   // is owed an answer. Before spending that answer: was this failure the
@@ -338,28 +361,12 @@ export async function settleRunningChild(
     }
   }
 
-  // The outcome is the point of this message, so a read that could not be
-  // made says so instead of letting "(completed)" stand in for a quote the
-  // parent never received. The record is settled either way; task_result
-  // remains the way to read what the child actually said.
-  const unreadableNote = outcome.unreadable ? "\n\n(The child's transcript could not be read; read it with task_result.)" : "";
-  // What told us it was over, when no event did. Names the loss of contact so a
-  // vanished child is never read as a child whose work failed.
-  const causeNote = cause ? `\n\n${cause}` : "";
-  // WHY it failed, in words the parent can act on. A network blip and a broken
-  // child arrive as the same host error string, and a parent who cannot tell
-  // them apart either ignores real failures or root-causes a socket reset. The
-  // class is decided once, by the classifier, and its wording lives beside it —
-  // the two used to be separate (a boolean here appending a sentence about a
-  // classification that did not exist), which is how the sentence stopped
-  // describing the decision.
-  const classNote = failureNote(failure, findTask(store, childSessionId)?.transientResumes ?? 0);
   // Detached: the synchronous claim above is the settlement guarantee;
   // delivery transport must never hold the event pump head-of-line.
   // Observability survives via the ledger record, logged on completion.
   // deliverParent is the single funnel for parent-directed writes: it
   // records parentless settlements instead of dialing a phantom session.
-  void deliverParent(host, parentSessionId, childSessionId, childDescription, kind, `${latestText}${causeNote}${classNote}${unreadableNote}`)
+  void deliverParent(host, parentSessionId, childSessionId, childDescription, kind, settled.text)
     .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
   // The parent's answer to a settlement this child may have been an EDGE for is
   // not sent here. It is sent by the store's own retained-change sink, which every
@@ -451,12 +458,16 @@ export async function handleChildLifecycleEvent(
     // The transcript is in scope here — it was just read to build the notice —
     // so this costs a classifier call, not another read, and the record and the
     // notice below cannot disagree about what class it is.
-    const failure = classifyFailure(TaskState.Error, outcome.errorDetail);
-    recordSettledOutcome(store, childSessionId, TaskState.Error, failure);
-    const errorDetail = outcome.errorDetail
-      || (outcome.unreadable ? "(session vanished and its transcript could not be read)" : "(session vanished before output was readable)");
-    const classNote = failureNote(failure, current.transientResumes ?? 0);
-    void deliverParent(host, retained.parentSessionId, childSessionId, retained.description, NotifyKind.Error, `${errorDetail}${classNote ? `\n\n${classNote}` : ""}`)
-      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind: NotifyKind.Error, delivered }));
+    const settled = settleOutcome({
+      status,
+      event,
+      declaredBlocked: declaredBlocked(store, childSessionId),
+      outcome,
+      resumesSpent: current.transientResumes ?? 0,
+    });
+    const kind = settlementKind(settled.verdict);
+    recordSettledOutcome(store, childSessionId, settled.verdict, settled.failure);
+    void deliverParent(host, retained.parentSessionId, childSessionId, retained.description, kind, settled.text)
+      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind, delivered }));
   }
 }

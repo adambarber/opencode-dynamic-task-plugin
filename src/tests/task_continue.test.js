@@ -173,23 +173,21 @@ describe("task_continue branches", () => {
     await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
   });
 
-  // A child's outcome reaches the parent through exactly one path, and that path
-  // quotes the child's last words before it speaks. A transcript that cannot be
-  // read must not be mistaken for a child that said nothing: "(completed)" is a
-  // plausible reading and a false one, and the parent would act on it.
-  it("a settlement whose transcript cannot be read still notifies, and says the quote is missing", async () => {
+  // A transcript the plugin cannot read cannot back a success, so the
+  // settlement reads error and names the missing quote, not silence.
+  it("a settlement whose transcript cannot be read settles error, and says the quote is missing", async () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ prompt: "turn one" });
     h.client.makeUnreadable(id);
-    await h.settle(id, "completed");
+    await h.settle(id);
     await sleep(20);
     const notice = h.noticeFor(id);
     assert.ok(notice, "the outcome is the parent's only route to the child — it cannot ride behind a read");
-    textDeclaresKind(notice.message, "completed", "the settlement still notifies");
+    textDeclaresKind(notice.message, "error", "a success we cannot read is none");
     answerMatches(
       notice.message,
       /transcript could not be read/,
-      `names the missing quote instead of passing "(completed)" off as one`,
+      `names the missing quote instead of passing silence off as one`,
     );
   });
 

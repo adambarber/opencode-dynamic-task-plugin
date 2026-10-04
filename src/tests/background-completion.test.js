@@ -187,6 +187,30 @@ describe("Background Task Settlement", () => {
     });
   }
 
+  // Both settlement arms answer one unreadable transcript through
+  // one interpreter: error, for a success it cannot read is none.
+  it("a late error on an unreadable transcript settles error and names the missing quote", async () => {
+    const childId = await spawn("late_unreadable_parent", "Late unreadable");
+    const success = await harness.settledNotice(childId);
+    textDeclaresKind(success.message, "completed", "the turn was reported as one");
+
+    harness.client.makeUnreadable(childId);
+    const note = await harness.noticeAfter(events.error(childId));
+    textDeclaresKind(note.message, "error", "the late failure is reported as one");
+    assert.match(note.message, /transcript could not be read/, "the missing quote is named");
+    assert.doesNotMatch(note.message, /session vanished/, "nothing vanished — the read failed, not the session");
+  });
+
+  it("a late error with no error string reports the failure without claiming the session vanished", async () => {
+    const childId = await spawn("late_clean_parent", "Late clean");
+    await harness.settle(childId);
+    const { error: terminal } = events;
+    await harness.fireEvent(terminal(childId));
+    const late = harness.notices()[1];
+    textDeclaresKind(late.message, "error", "the late failure is reported as one");
+    assert.doesNotMatch(late.message, /session vanished/, "the transcript was read: nothing vanished");
+  });
+
   it("a working child's own events count as recent activity", async () => {
     const childId = await spawn("parent_activity", "Activity test");
     await sleep(1200);

@@ -21,6 +21,8 @@ import {
   withdrawInterruptClaim,
   noteAbortLanded,
   recordAbortError,
+  isRunning,
+  retainedFor,
 } from "../shared/task-state.js";
 import { type ResolvedSessionScope } from "./context.js";
 import type { Refusal } from "../shared/verdict.js";
@@ -83,7 +85,7 @@ function abortFailedActive(
 /** The synchronous half: settle the task before the server is told anything. */
 function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string): InterruptClaim {
   const claimTime = Date.now();
-  if (!store.activeTasks.get(sessionId)) return { claimed: false, claimTime };
+  if (!isRunning(store, sessionId)) return { claimed: false, claimTime };
   try {
     transitionState(store, sessionId, TaskState.Interrupted);
     return { claimed: true, claimTime };
@@ -111,7 +113,7 @@ async function abortClaimed(
     sessionId,
   );
 
-  const retained = store.retainedTasks.get(sessionId);
+  const retained = retainedFor(store, sessionId);
   if (!claimed && !retained) {
     // Untracked: transient abort failures are simply the caller's
     // transport error; nothing of ours is at stake.
@@ -130,7 +132,7 @@ async function abortClaimed(
     // Withdrawal additionally requires no newer abort to have landed
     // since the claim (F-R4: success is knowledge, failure is
     // ignorance — the newer success wins).
-    if (claimed && store.retainedTasks.get(sessionId)?.state === TaskState.Interrupted) {
+    if (claimed && retainedFor(store, sessionId)?.state === TaskState.Interrupted) {
       if (withdrawInterruptClaim(store, sessionId, claim.claimTime, config)) {
         return abortFailedActive(sessionId, abortMessage, "speculative claim withdrawn, child may still be live");
       }

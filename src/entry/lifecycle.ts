@@ -35,6 +35,7 @@ import {
   terminalEventIsAttributable,
   isRunning,
   findTask,
+  retainedFor,
   reviveRetainedTask,
   type TaskStore,
   type TaskIdentity,
@@ -429,7 +430,7 @@ export async function handleChildLifecycleEvent(
   const childSessionId = getSessionIdFromEvent(event);
   if (!childSessionId) return;
 
-  if (store.activeTasks.get(childSessionId)) {
+  if (isRunning(store, childSessionId)) {
     await settleRunningChild(host, store, childSessionId, {
       status: getEventLifecycleStatus(event),
       event,
@@ -437,8 +438,8 @@ export async function handleChildLifecycleEvent(
     return;
   }
 
-  const retained = store.retainedTasks.get(childSessionId);
-  if (retained) {
+  const settledRecord = retainedFor(store, childSessionId);
+  if (settledRecord) {
     // Late failures are the only amendment a settled record accepts: an event
     // contradicting a reported success escalates completed→error. Interrupted
     // and errored records are final — post-interrupt errors are our own
@@ -446,9 +447,9 @@ export async function handleChildLifecycleEvent(
     // parent of a "failure" it deliberately caused.
     const status = getEventLifecycleStatus(event);
     if (!endedBadly(status)) return;
-    if (retained.state !== TaskState.Completed) return;
+    if (settledRecord.state !== TaskState.Completed) return;
     const outcome = await hydrateLatestOutcome(host, childSessionId);
-    const current = store.retainedTasks.get(childSessionId);
+    const current = retainedFor(store, childSessionId);
     if (!current || current.state !== TaskState.Completed) return; // lost the escalation race
     // WHY, on the same amendment, and ONE decision read twice. A failure that
     // arrives after a reported success is the same failure the ordinary path
@@ -467,7 +468,7 @@ export async function handleChildLifecycleEvent(
     });
     const kind = settlementKind(settled.verdict);
     recordSettledOutcome(store, childSessionId, settled.verdict, settled.failure);
-    void deliverParent(host, retained.parentSessionId, childSessionId, retained.description, kind, settled.text)
-      .then((delivered) => debugLog(retained.parentSessionId, childSessionId, "retained-late-error", { kind, delivered }));
+    void deliverParent(host, settledRecord.parentSessionId, childSessionId, settledRecord.description, kind, settled.text)
+      .then((delivered) => debugLog(settledRecord.parentSessionId, childSessionId, "retained-late-error", { kind, delivered }));
   }
 }

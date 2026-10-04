@@ -8,7 +8,7 @@
 // outgrew the line cap. The writer funnel (`annotateActive`) stays where the
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
-import { annotateActive } from "./task-state.js";
+import { activeFor, annotateActive } from "./task-state.js";
 import type { TaskStore } from "./store.js";
 import type { ActiveTaskState } from "./task-state.js";
 
@@ -70,7 +70,7 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
  * has, and a revival produces a new record with no declaration at all.
  */
 export function declaredBlocked(store: TaskStore, childSessionId: string): boolean {
-  const active = store.activeTasks.get(childSessionId);
+  const active = activeFor(store, childSessionId);
   if (!active?.lastNotice || active.lastNotice.claim !== NoticeClaim.NeedsInput) return false;
   return active.lastNotice.at > (active.replacedAt ?? 0);
 }
@@ -92,7 +92,7 @@ export function markTurnReplacement(store: TaskStore, childSessionId: string): b
  * own life signs.
  */
 export function clearTurnReplacement(store: TaskStore, childSessionId: string): boolean {
-  const active = store.activeTasks.get(childSessionId);
+  const active = activeFor(store, childSessionId);
   if (!active || active.replacedAt === undefined) return false;
   delete active.replacedAt;
   return true;

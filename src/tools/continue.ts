@@ -10,6 +10,9 @@ import { textBlock } from "../shared/text-block.js";
 import {
   TaskState,
   transitionState,
+  activeFor,
+  retainedFor,
+  isRunning,
 } from "../shared/task-state.js";
 import { markTurnReplacement, clearTurnReplacement } from "../shared/notice-claim.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
@@ -48,7 +51,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // the shared revival, so the two paths cannot drift in what they do.
   let autoRevivedFrom: string | undefined;
 
-  const active = store.activeTasks.get(sessionId);
+  const active = activeFor(store, sessionId);
   if (active) {
     // A steer is an abort and a prompt, so it is stopped by the same rule that stops
     // a child from interrupting itself — and it has to be asked BEFORE
@@ -82,7 +85,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       let weSettled = false;
       try { transitionState(store, sessionId, TaskState.Error); weSettled = true; } catch { /* settled concurrently */ }
       if (!weSettled) {
-        const state = store.retainedTasks.get(sessionId)?.state;
+        const state = retainedFor(store, sessionId)?.state;
         if (state) {
           return steerWonBySettler(sessionId, state);
         }
@@ -106,10 +109,10 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // settled the task while the abort was in flight. Firing the
     // replacement prompt now would launch an untracked turn on a settled
     // task's session and report a steer that never happened.
-    if (!store.activeTasks.has(sessionId)) {
+    if (!isRunning(store, sessionId)) {
       // No disarm needed: the stamps live on the active record and
       // transitionState strips them, so nothing is armed anymore by construction.
-      const settled = store.retainedTasks.get(sessionId);
+      const settled = retainedFor(store, sessionId);
       if (settled && settled.state !== TaskState.Interrupted) {
         // M9: close the loop the abort-race opened. The abort landed, so the
         // session proved live — revive in this same call instead of demanding
@@ -149,7 +152,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   try {
     task = reviveWithPrompt(host, store, sessionId, admitted.prompt, config, admitted.modelOverride);
   } catch (error: unknown) {
-    if (!store.retainedTasks.has(sessionId)) {
+    if (!retainedFor(store, sessionId)) {
       return untrackedSession(sessionId);
     }
     return `ERROR: ${errorMessage(error)}`;

@@ -535,7 +535,7 @@ export function recordSettledOutcome(
   outcome: Exclude<TaskState, TaskState.Active>,
   failureClass?: FailureClass | undefined,
 ): boolean {
-  return decideRetained(store, childSessionId, (retained) => {
+  return amendRetained(store, childSessionId, (retained) => {
     const corrected = retained.state !== outcome;
     // Nothing to record is a DECLINE, not an empty publish: a change that
     // asserts a record identical to the one already on disk is a file write for
@@ -547,7 +547,7 @@ export function recordSettledOutcome(
       retained.state = outcome;
     }
     if (failureClass !== undefined) retained.failureClass = failureClass;
-    return settledChange(childSessionId, retained);
+    return true;
   });
 }
 
@@ -717,9 +717,9 @@ export function findTask(store: TaskStore, childSessionId: string): TaskRecord |
 // this one owes the file — the reason a transport failure outlives the process
 // is that the record outlives it.
 export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
-  decideRetained(store, childSessionId, (retained) => {
+  amendRetained(store, childSessionId, (retained) => {
     retained.abortError = error;
-    return settledChange(childSessionId, retained);
+    return true;
   });
 }
 
@@ -730,6 +730,19 @@ export function recordAbortError(store: TaskStore, childSessionId: string, error
 // there, and published once" checkable by reading one screen instead of auditing
 // every edge.
 
+// The amendment and its publish are a pair: every settled-history
+// writer spells them the same way, so the pair lives here once.
+function amendRetained(
+  store: TaskStore,
+  childSessionId: string,
+  edit: (record: RetainedTaskState) => boolean,
+): boolean {
+  return decideRetained(store, childSessionId, (retained) => {
+    if (!edit(retained)) return false;
+    return settledChange(childSessionId, retained);
+  });
+}
+
 /**
  * The running record for a child, or undefined. The mirror of `retainedFor`, and
  * named for the same reason: "what is this child's running record" is one question
@@ -737,7 +750,7 @@ export function recordAbortError(store: TaskStore, childSessionId: string, error
  * each caller. The policy that answers it stays with the edge — an internal
  * rollback, a settlement and a revival genuinely disagree about a missing record.
  */
-function activeFor(store: TaskStore, childSessionId: string): ActiveTaskState | undefined {
+export function activeFor(store: TaskStore, childSessionId: string): ActiveTaskState | undefined {
   return store.activeTasks.get(childSessionId);
 }
 

@@ -20,6 +20,7 @@ import {
   activeRecord,
   transitionState,
   agentCapacityRefusal,
+  isRunning,
   TaskState,
   type NewTaskRegistration,
 } from "../shared/task-state.js";
@@ -190,7 +191,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // aborted so it cannot run unmonitored on the server.
     if (createdSessionId) {
       const failedChildSessionId = createdSessionId;
-      if (store.activeTasks.has(failedChildSessionId)) {
+      if (isRunning(store, failedChildSessionId)) {
         try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* already terminal */ }
       } else {
         // Not "already untracked, nothing to do" — this process created the session,

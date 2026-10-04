@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
 import { isFailureClass } from './failure-class.js';
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
-import { TaskState } from "./task-state.js";
+import { TaskState, findTask, isRunning } from "./task-state.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
 import { isSessionMissing } from "./liveness.js";
@@ -149,11 +149,11 @@ export function stopPlan(
   if (callerSessionId !== undefined && callerSessionId === sessionId) {
     return { refusal: { kind: AbortRefusalKind.Self }, targets: [] };
   }
-  if (!store.activeTasks.has(sessionId) && !store.retainedTasks.has(sessionId)) {
+  if (findTask(store, sessionId) === null) {
     return { refusal: { kind: AbortRefusalKind.Unowned }, targets: [] };
   }
   const candidates = reachSubtree ? subtreeTaskIds(store, sessionId) : [sessionId];
-  return { targets: candidates.filter((id) => id === sessionId || store.activeTasks.has(id)) };
+  return { targets: candidates.filter((id) => id === sessionId || isRunning(store, id)) };
 }
 
 /** The outcome an accepted request produces: stopped, and nothing more to say. */

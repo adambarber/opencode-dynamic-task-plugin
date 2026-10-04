@@ -159,6 +159,10 @@ export function agentGone(agentName: string): string {
   return `ERROR: Agent "${agentName}" not found.`;
 }
 
+export function sessionLost(sessionId: string): string {
+  return `ERROR: Session "${sessionId}" not found on the server — dispatch failed after create; the session was aborted, history preserved.`;
+}
+
 // ─── Continue / steer ────────────────────────────────────────────────────
 
 export function steerMissing(sessionId: string): { notify: string; report: string } {

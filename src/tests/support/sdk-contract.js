@@ -13,6 +13,7 @@
 // loudly and immediately, and a fake that invents one cannot pass the gate at all.
 
 import { readFileSync } from "node:fs";
+import { SESSION_NOT_FOUND_TAG } from "../../../dist/shared/liveness.js";
 import path from "node:path";
 
 import { REPO_ROOT } from "./corpus.js";
@@ -140,37 +141,29 @@ export function clientErrorReasons() {
 }
 
 /**
- * How the host says "no such session", as the v2 client actually says it.
+ * How the in-process host says "no such session": the core
+ * `Session.NotFoundError` (`packages/core/src/session/error.ts`), thrown
+ * across the plugin boundary as an Error instance carrying the dotted tag
+ * and the session id — and no message (the class declares no override).
  *
- * v2 declares no not-found error type: `session.get` rejects with a `ClientError`
- * whose `reason` is declared in `ClientErrorReason` and whose `cause` carries the
- * failing response. A fake that threw a v1 named error would be refused by the very
- * reader it exists to exercise — which is the right outcome, and only visible if
- * the fake builds the shape from the declaration rather than from memory.
+ * That class is unpublished: no installed package exports it, so the tag
+ * string below is the one token cited from source rather than imported.
+ * Everything else is the class's nature (Error instance, empty message),
+ * not invention. The HTTP `ClientError` spelling this replaced is a
+ * remote-client shape the in-process API never throws.
  */
-export function missingSessionError() {
-  const reason = clientErrorReasons().includes(NOT_FOUND_REASON) ? NOT_FOUND_REASON : clientErrorReasons()[0];
-  const error = Object.assign(new Error(`Session not found.`), {
-    name: CLIENT_ERROR_NAME,
-    reason,
-    cause: { status: NOT_FOUND_STATUS },
+export function missingSessionError(sessionID = "ses_missing") {
+  // The tag is imported, not retyped: the suite forbids test-side copies of
+  // bound production values, and this is one. Its spelling is owned by
+  // liveness.ts with the host source cited there.
+  return Object.assign(new Error(""), {
+    _tag: SESSION_NOT_FOUND_TAG,
+    sessionID,
   });
-  return error;
 }
-
-/** The error's declared name, parsed rather than retyped. */
-export const CLIENT_ERROR_NAME = (() => {
-  const text = clientFile("promise/generated/client-error.d.ts");
-  const at = text.indexOf('readonly name = "');
-  if (at < 0) return "ClientError";
-  return text.slice(at).match(/readonly name = "([^"]+)"/)[1];
-})();
 
 /** The reason that pairs with a 404 to mean "no such session". */
 export const NOT_FOUND_REASON = "UnexpectedStatus";
-
-/** The HTTP status the host pairs with that reason. */
-export const NOT_FOUND_STATUS = 404;
 
 /** The installed SDK version, so a drifting dependency cannot pass unnoticed. */
 export function installedSdkVersion() {

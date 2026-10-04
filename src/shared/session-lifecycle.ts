@@ -17,6 +17,7 @@ import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { TaskState } from "./task-state.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
 import { TASK_STATES, withoutAdvisory } from "./task-state.js";
+import { isSessionMissing } from "./liveness.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
 import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, isTurnEnding, SESSION_EXECUTION_INTERRUPTED, SESSION_EXECUTION_STARTED, SESSION_EXECUTION_SUCCEEDED } from "./host-events.js";
@@ -178,10 +179,10 @@ export function abortSession(target: AbortTarget, sessionId: string): Promise<Ab
       .interrupt({ sessionID: sessionId })
       .then((): AbortOutcome => ABORT_SENT)
       .catch((error: unknown): AbortOutcome => {
-        const message = errorMessage(error);
-        return message.includes("not found")
-          ? { serverGone: true, transportError: undefined }
-          : { serverGone: false, transportError: message };
+        // The core not-found carries no message, so a substring cannot see
+        // it — the one reader that names every shape decides here too.
+        if (isSessionMissing(error)) return { serverGone: true, transportError: undefined };
+        return { serverGone: false, transportError: errorMessage(error) };
       });
 
   return callHost(

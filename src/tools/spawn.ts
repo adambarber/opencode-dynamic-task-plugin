@@ -12,6 +12,7 @@ import { agentCanNotify } from "../shared/agent-record.js";
 import { NOTIFY_TOOL } from "../shared/notification-text.js";
 import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
+import { isSessionMissing } from "../shared/liveness.js";
 import { WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { callHost } from "../shared/client.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
@@ -34,6 +35,7 @@ import {
   createFailed,
   spawnConfirmation,
   agentGone,
+  sessionLost,
   PERMISSION_DENIED,
 } from "../shared/voice.js";
 
@@ -226,6 +228,12 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         NotifyKind.Error,
         spawnErrorText,
       ).then((delivered) => debugLog(parentSessionId || UNKNOWN_PARENT, failedChildSessionId, "spawn-error-notify", { delivered }));
+    }
+    // A missing AGENT still carries its name in the message, so the substring
+    // holds for it — but a missing SESSION arrives with no message at all, and
+    // blaming the agent for the host losing the session is the wrong recovery.
+    if (isSessionMissing(error)) {
+      return sessionLost(createdSessionId ?? "the new session");
     }
     if (message.includes("not found")) {
       return agentGone(agent.name);

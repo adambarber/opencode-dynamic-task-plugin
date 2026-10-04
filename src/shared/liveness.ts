@@ -202,19 +202,27 @@ export const NOT_FOUND_STATUS = 404;
 export type HostSessionMissing = Record<string, unknown>;
 
 /**
+ * The in-process host's missing-session tag, named once. The dotted spelling
+ * is the core `Session.NotFoundError` (`packages/core/src/session/error.ts`);
+ * the undotted one is the protocol/HTTP layer's own error. They differ by
+ * design, so the reader below accepts both and no other tag.
+ */
+export const SESSION_NOT_FOUND_TAG = "Session.NotFoundError";
+export const PROTOCOL_NOT_FOUND_TAG = "SessionNotFoundError";
+
+/**
  * Whether the host says "no such session", in every shape it says it.
  *
- * Three exact shapes, no substring: the tagged SDK error (`_tag`, verified
- * against the live host), the RPC wire error (`type`, what the plugin
- * framework hands across the boundary), and the `ClientError` rejection
- * (`reason` + `cause.status`, what the promise client throws). The message
- * fallback is scoped to sessions — a bare "not found" also matches the AGENT
- * being gone, which is a different failure with a different recovery.
+ * Order matters: the dotted core tag is what the in-process plugin API
+ * throws (verified against the host source); the rest is tolerance for the
+ * remote shapes. The message fallback is scoped to sessions — a bare
+ * "not found" also matches the AGENT being gone, which is a different
+ * failure with a different recovery.
  */
 export function isSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
-  if (error["_tag"] === "SessionNotFoundError") return true;
-  if (error["type"] === "SessionNotFoundError") return true;
+  if (error["_tag"] === SESSION_NOT_FOUND_TAG || error["_tag"] === PROTOCOL_NOT_FOUND_TAG) return true;
+  if (error["type"] === SESSION_NOT_FOUND_TAG || error["type"] === PROTOCOL_NOT_FOUND_TAG) return true;
   if (error["reason"] === NOT_FOUND_REASON) {
     const cause = error["cause"];
     return isPlainRecord(cause) && cause["status"] === NOT_FOUND_STATUS;

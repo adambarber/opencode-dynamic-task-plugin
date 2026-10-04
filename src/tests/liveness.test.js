@@ -24,6 +24,8 @@ import {
   hostTurnRunning,
   isSessionMissing,
   NOT_FOUND_REASON,
+  PROTOCOL_NOT_FOUND_TAG,
+  SESSION_NOT_FOUND_TAG,
   parentTurnStuck,
   readLiveness,
   readSessionPresence,
@@ -247,8 +249,10 @@ describe("isSessionMissing names every not-found the host sends", () => {
   // rejection (promise client). A fourth spelling — top-level status, a bare
   // name, a message about some OTHER thing being gone — must never match.
   const cases = [
-    ["tagged SDK error", { _tag: "SessionNotFoundError", message: "Session not found: ses_x" }, true],
-    ["RPC wire error", { type: "SessionNotFoundError", message: "Session not found: ses_x" }, true],
+    ["dotted core tag", { _tag: SESSION_NOT_FOUND_TAG, sessionID: "ses_x" }, true],
+    ["dotted core type", { type: SESSION_NOT_FOUND_TAG, sessionID: "ses_x" }, true],
+    ["protocol tag", { _tag: PROTOCOL_NOT_FOUND_TAG, message: "Session not found: ses_x" }, true],
+    ["protocol type", { type: PROTOCOL_NOT_FOUND_TAG, message: "Session not found: ses_x" }, true],
     ["ClientError rejection", Object.assign(new Error("nope"), { reason: NOT_FOUND_REASON, cause: { status: 404 } }), true],
     ["session-scoped message", { message: "Session not found: ses_x" }, true],
     ["agent-not-found tag", { _tag: "Session.AgentNotFoundError", message: "Agent not found: General" }, false],

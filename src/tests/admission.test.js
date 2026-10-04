@@ -13,7 +13,8 @@ import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentLi
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
-import { toAgentRecords, toAgentRecord, DEFAULT_AGENT_MODE } from "../../dist/shared/agent-record.js";
+import { agentCanNotify, toAgentRecords, toAgentRecord, DEFAULT_AGENT_MODE } from "../../dist/shared/agent-record.js";
+import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 
@@ -451,5 +452,47 @@ describe("admission gate: registerAdmittedTask", () => {
     const task = registerAdmittedTask(store, childParams({ id: "ses_1", description: "t1" }), limited);
     assert.strictEqual(task.agentName, "explore");
     assert.throws(() => registerAdmittedTask(store, childParams({ id: "ses_2", description: "t2" }), limited), /Concurrency/);
+  });
+});
+
+describe("agentCanNotify walks the host's ruleset, not a map", () => {
+  const record = (permissions) => toAgentRecords([{ id: "general", name: "General", mode: "subagent", permissions }])[0];
+  it("a partial-glob deny closes the channel", () => {
+    const agent = record([{ action: "task_*", resource: "*", effect: "deny" }]);
+    assert.strictEqual(agentCanNotify(agent, NOTIFY_TOOL), false);
+  });
+  it("the last match wins, so order is meaning", () => {
+    const denyLast = record([
+      { action: "*", resource: "*", effect: "allow" },
+      { action: NOTIFY_TOOL, resource: "*", effect: "deny" },
+    ]);
+    const allowLast = record([
+      { action: NOTIFY_TOOL, resource: "*", effect: "deny" },
+      { action: NOTIFY_TOOL, resource: "*", effect: "allow" },
+    ]);
+    assert.strictEqual(agentCanNotify(denyLast, NOTIFY_TOOL), false);
+    assert.strictEqual(agentCanNotify(allowLast, NOTIFY_TOOL), true);
+  });
+  it("`?` is one char and dots are literal, like the host", () => {
+    const q = record([{ action: "task_notif?", resource: "*", effect: "deny" }]);
+    assert.strictEqual(agentCanNotify(q, NOTIFY_TOOL), false, "one ? matches the one trailing char");
+    assert.strictEqual(agentCanNotify(q, "task_notif"), true, "no char, no match, ask means open");
+    const dot = record([{ action: "task.notify", resource: "*", effect: "deny" }]);
+    assert.strictEqual(agentCanNotify(dot, "taskXnotify"), true, "a dot is not any-char");
+  });
+  it("absent permissions arrive already denied; an explicit empty list stays open", () => {
+    const absent = toAgentRecords([{ id: "g", name: "G", mode: "subagent" }])[0];
+    const empty = record([]);
+    assert.strictEqual(agentCanNotify(absent, NOTIFY_TOOL), false, "the host denies what it was never given");
+    assert.strictEqual(agentCanNotify(empty, NOTIFY_TOOL), true, "no rule matches, and no match is ask");
+  });
+});
+
+describe("isDispatchableAgent hides what the host hides", () => {
+  const record = (over) => toAgentRecords([{ id: "g", name: "G", mode: "subagent", permissions: [], ...over }])[0];
+  it("a hidden subagent is not offered", () => {
+    assert.strictEqual(isDispatchableAgent(record({ hidden: true })), false);
+    assert.strictEqual(isDispatchableAgent(record({ hidden: false })), true);
+    assert.strictEqual(isDispatchableAgent(record({})), true, "the field defaults the host's way");
   });
 });

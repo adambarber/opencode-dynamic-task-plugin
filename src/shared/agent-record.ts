@@ -24,7 +24,12 @@ export interface AgentRecord {
   readonly id: Unbrand<Agent.Info["id"]>;
   readonly name: Unbrand<Agent.Info["name"]>;
   readonly mode: Agent.Info["mode"];
+  // The host substitutes deny-all for an ABSENT field
+  // (`agent?.permissions ?? missingAgentPermissions`), so the constructor does
+  // the same: absent or malformed arrives here already denied. An explicit `[]`
+  // stays empty, which the host reads as no-match → `ask` → available.
   readonly permissions: Agent.Info["permissions"];
+  readonly hidden: boolean;
 }
 
 /** The words v2 declares for an agent's dispatch role. */
@@ -61,6 +66,7 @@ export function toAgentRecord(raw: unknown): AgentRecord | null {
     name,
     mode,
     permissions: permissionRules(item["permissions"]),
+    hidden: item["hidden"] === true,
   };
 }
 
@@ -99,7 +105,9 @@ function toAgentRecordsFrom(entries: unknown): AgentRecord[] {
  * not, which is why one is done and the other never is.
  */
 function permissionRules(raw: unknown): AgentRecord["permissions"] {
-  if (!Array.isArray(raw)) return [];
+  // Mirrors the host's `?? missingAgentPermissions`: only a well-formed array is
+  // the agent's real ruleset. Anything else is deny-all, never "no rules".
+  if (!Array.isArray(raw)) return [{ action: "*", resource: "*", effect: "deny" }];
   const rules: Agent.Info["permissions"][number][] = [];
   for (const entry of raw) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
@@ -136,9 +144,11 @@ const PERMISSION_EFFECTS: ReadonlySet<unknown> = new Set<Agent.Info["permissions
  * genuinely stuck child lost the ability to declare `needs_input`, settled
  * `completed`, and handed its parent a success that never happened.
  *
- * An agent with NO rules is the one unknown — the host substitutes a deny-all
- * ruleset for an absent field, so a payload that reaches here empty is a host that
- * has not, and absence of knowledge must never blind a child to its own voice.
+ * Agent-side only: the host merges the child SESSION's ruleset at execution time
+ * (`merge(agent?.permissions ?? missingAgentPermissions, session.permissions)`),
+ * which this reader cannot see — a session-level deny closes a channel reported
+ * open here. The resource is likewise fixed to `*`: per-call resources are known
+ * only at the call. Both narrowings err toward the warning, never toward silence.
  */
 export function agentCanNotify(agent: AgentRecord, tool: string): boolean {
   if (agent.permissions.length === 0) return true;
@@ -155,13 +165,17 @@ export function agentCanNotify(agent: AgentRecord, tool: string): boolean {
   return true;
 }
 
-/**
- * The host's own matcher: `*` is a wildcard, and everything else is literal.
- *
- * A substring match would answer differently from the host on a partially-spelled
- * rule, and a rule that matches nothing the host would match makes every question
- * asked about that agent wrong.
- */
+// The host's own matcher (`Wildcard.match`): regex specials literal, `*` spans,
+// `?` is one char, anchored both ends, backslashes normalised. Ported whole —
+// including the trailing-" .*" carve-out — because a narrower grammar answers a
+// different question than the host on partial-glob rules like `task_*`.
 function wildcardMatches(value: string, pattern: string): boolean {
-  return pattern === "*" || pattern === value;
+  const normalized = value.replaceAll("\\", "/");
+  let escaped = pattern
+    .replaceAll("\\", "/")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?";
+  return new RegExp(`^${escaped}$`, "s").test(normalized);
 }

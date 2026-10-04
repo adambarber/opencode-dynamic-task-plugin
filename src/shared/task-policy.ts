@@ -60,7 +60,9 @@ export function validateAgent(agentName: unknown, config: Pick<DynamicTaskConfig
 // `type` field a v1 payload carried is not a field this plugin can see any more.
 
 export function isDispatchableAgent(agent: AgentRecord): boolean {
-  return agent.mode === "subagent" || agent.mode === "all";
+  // The host's own filter excludes hidden agents alongside primary-mode ones;
+  // offering one is promising a dispatch the host's listing suppresses.
+  return (agent.mode === "subagent" || agent.mode === "all") && !agent.hidden;
 }
 
 // ─── isSameAgent ───────────────────────────────────────────────────

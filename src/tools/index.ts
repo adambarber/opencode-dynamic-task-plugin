@@ -13,7 +13,7 @@ import { executeTaskInterrupt } from "./interrupt.js";
 import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
 import { NOTIFY_TOOL } from "../shared/notification-text.js";
 import type { Verdict } from "../shared/verdict.js";
-import { NOTICE_CLAIMS } from "../shared/task-state.js";
+import { NOTICE_CLAIMS } from "../shared/notice-claim.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
   TASK_CONTINUE_DESCRIPTION,

@@ -17,15 +17,17 @@
  */
 import {
   activeRecord,
-  annotateNotice,
   createTaskStore,
-  markTurnReplacement,
   noteActivity,
-  noticeRecord,
   registerActiveTask,
   retainedRecord,
   withoutAdvisory,
 } from "../../../dist/shared/task-state.js";
+import {
+  annotateNotice,
+  markTurnReplacement,
+  noticeRecord,
+} from "../../../dist/shared/notice-claim.js";
 import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
 import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
 

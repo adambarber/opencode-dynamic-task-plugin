@@ -35,7 +35,8 @@ import {
 } from "./support/corpus.js";
 import { buildToolMap } from "../../dist/tools/index.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { TaskState, NoticeClaim } from "../../dist/shared/task-state.js";
+import { TaskState } from "../../dist/shared/task-state.js";
+import { NoticeClaim } from "../../dist/shared/notice-claim.js";
 
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
@@ -321,13 +322,13 @@ describe("invariant: lifecycle mutations funnel through task-state (Task 01)", (
   rule({
     name: "no raw record mutation outside the settlement funnels",
     ...LIFECYCLE_MUTATION,
-    // The two files that OWN the funnel, not two exemptions. `task-state.ts` holds
-    // the lifecycle matrix and `settled-record.ts` holds the settled amendment, and
-    // between them they are where a record's field is allowed to be assigned.
-    // Naming them here rather than leaving the rule pointed at one path is what
-    // keeps a new settled-record writer from being invisible: the corpus is every
-    // production file, so a third sanctioned file would have to be added on purpose.
-    sanctioned: ["task-state.ts", "settled-record.ts"],
+    // The files that OWN the funnel, not exemptions. `task-state.ts` holds the
+    // lifecycle matrix, `settled-record.ts` the settled amendment, and
+    // `notice-claim.ts` the advisory writers — and those writers assign ONLY
+    // inside lambdas handed to the funnel (`annotateActive`), never directly.
+    // The corpus is every production file, so a fourth sanctioned file would
+    // have to be added on purpose.
+    sanctioned: ["task-state.ts", "settled-record.ts", "notice-claim.ts"],
   });
 });
 

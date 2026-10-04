@@ -5,7 +5,8 @@ import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless } from "../shared/session-lifecycle.js";
 import { notifyParent, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
-import { pruneRetainedTasks, findTask, annotateNotice, isNoticeClaim, NoticeClaim, TaskState } from "../shared/task-state.js";
+import { pruneRetainedTasks, findTask, TaskState } from "../shared/task-state.js";
+import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
 import { callerSessionId, type ToolDeps } from "./context.js";
 import {
   CALLER_UNKNOWN,

@@ -27,10 +27,10 @@ import {
   settlementKind,
   gateLedger,
 } from "../shared/notify.js";
+import { declaredBlocked } from "../shared/notice-claim.js";
 import {
   transitionState,
   recordSettledOutcome,
-  declaredBlocked,
   terminalEventIsAttributable,
   isRunning,
   findTask,

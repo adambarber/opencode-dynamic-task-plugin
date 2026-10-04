@@ -7,7 +7,8 @@
 // only mis-attribute a reused id. A map this gate used to keep existed to bridge an
 // `asked` event that carried no session id — a shape the host has never published.
 import type { OpaqueHost } from "../shared/client.js";
-import { annotateNotice, findTask, NoticeClaim, TaskState, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
+import { findTask, TaskState, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
+import { annotateNotice, NoticeClaim } from "../shared/notice-claim.js";
 import { debugLog } from "../debug-logger.js";
 import { isHostAsked, readHostAsk } from "../shared/host-events.js";
 import { denyAsk, decideAsk } from "../shared/question-handling.js";

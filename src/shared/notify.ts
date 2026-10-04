@@ -20,22 +20,6 @@ import { hostTurnRunning, readLiveness } from "./liveness.js";
 // Plugin logging that never throws: a dead log write must not break a
 // lifecycle path. Best-effort visibility, owned beside the parent-write gate.
 
-/**
- * The one host call logging needs — OPTIONAL, and that is the point.
- *
- * Narrower than `OpenCodeClient` for the same reason `AgentLister` is narrower than it:
- * every call site of this function uses it to reach `app.log` and nothing else, and a
- * parameter typed as the whole client rejects a caller holding a different SDK
- * generation's client over capabilities this function never touches. The alternative
- * was a cast at each such caller, and a cast is an assertion that outlives its reason.
- *
- * The log call itself is optional because the two SDK generations spell it
- * differently and a client from the TUI side cannot be required to carry the server
- * side's shape. Requiring it would mean a cast on the one path that logs a failed
- * agent read — and this function has ALWAYS swallowed every failure, including a
- * missing call, so a client that cannot log is not a new case. Making that guarantee
- * structural is better than making it true by inspection of a try block.
- */
 /** The level vocabulary this plugin writes; the only one it uses. */
 export type LogLevel = "info" | "warn" | "error";
 

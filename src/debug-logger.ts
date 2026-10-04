@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export const DEBUG_DIR = ".dynamic-task-logs";
@@ -52,14 +52,29 @@ export function getDebugLogPath(parentSessionId: string, childSessionId: string)
  * which the write-funnel gate correctly refused. A second writer is two places
  * to learn that a failing write must be swallowed and two places to forget.
  */
+// A log that never stops growing is a disk-fill defect on a long-lived
+// project, so the one write keeps the most recent lines past the cap.
+export const LOG_CAP_BYTES = 1_000_000;
+
 export function appendLogLine(targetPath: string, line: string): void {
   try {
     mkdirSync(path.dirname(targetPath), { recursive: true });
+    if ((statSync(targetPath, { throwIfNoEntry: false })?.size ?? 0) > LOG_CAP_BYTES) {
+      writeFileSync(targetPath, recentTail(readFileSync(targetPath, "utf8")), "utf8");
+    }
     appendFileSync(targetPath, `${line}\n`, "utf8");
   } catch {
     // A failing fs write (permissions, disk) must never break the caller —
     // observability is never worth losing the work it was observing.
   }
+}
+
+// The last whole lines of a log: from the first line that starts
+// at or after the halfway cut, so no line is kept half-written.
+function recentTail(content: string): string {
+  const cut = Math.max(content.length - LOG_CAP_BYTES / 2, 0);
+  const start = content.indexOf("\n", cut) + 1;
+  return content.slice(Math.max(start, cut));
 }
 
 export function safeDebugPayload(payload: Record<string, unknown>): Record<string, unknown> {

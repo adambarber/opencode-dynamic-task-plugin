@@ -677,8 +677,8 @@ async function readLimitsOr(ctx: Host, view: LimitsView): Promise<LimitsView> {
  */
 
 /**
- * The agent list as the TUI host itself reads it: `ctx.data.location.agent`, the same
- * store its own agent screens read. The TUI runtime client has no `agent` namespace.
+ * The agent list as the TUI host itself reads it: `ctx.data.location.agent`, the same synchronous
+ * agent screens read — so the admission reader's agent-read bound, there for the server's wire dial, never fires here.
  */
 function tuiAgentCaller(ctx: Host): AgentCaller {
   return {

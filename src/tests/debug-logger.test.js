@@ -11,7 +11,7 @@
 import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
+import { debugLog, getDebugLogPath, LOG_CAP_BYTES, safeDebugPayload } from "../../dist/debug-logger.js";
 import { SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { withEnv } from "./support/harness.js";
 
@@ -95,6 +95,21 @@ describe("debugLog — closed to 100% coverage", () => {
     const content = readFileSync(logPath, "utf8");
     assert.match(content, /test-event/);
     assert.match(content, /"key":"value"/);
+  });
+
+  it("keeps the most recent lines once a log passes the cap", () => {
+    const logPath = getDebugLogPath("parent_cap", "child_cap");
+    // Enough lines to pass the cap several times over.
+    for (let i = 0; i < 30_000; i += 1) {
+      debugLog("parent_cap", "child_cap", `event-${i}`, { i });
+    }
+    const content = readFileSync(logPath, "utf8");
+    assert.ok(
+      content.length <= LOG_CAP_BYTES + 200,
+      `the log must stay near the cap, was ${content.length} bytes`,
+    );
+    assert.match(content, /"eventName":"event-29999"/, "the most recent lines are the ones kept");
+    assert.doesNotMatch(content, /"eventName":"event-0"/, "the oldest lines are the ones dropped");
   });
 
   it("logs nothing when DYNAMIC_TASK_DEBUG is not 1", () => {

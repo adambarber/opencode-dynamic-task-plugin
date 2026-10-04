@@ -51,6 +51,13 @@ export function buildToolMap(deps: ToolDeps) {
     (input: InputSchema, description: string, execute: (resolved: T, args: never, ctx: ToolContext) => Promise<string>) => ({
       input,
       description,
+      // Direct tools, not Code-Mode-catalog tools. Without this the host files
+      // every one of the seven under `execute`, and a model that calls one
+      // directly hears `No tool named "task_notify" is currently available` —
+      // observed live in a child that then stayed silent. The child's voice is
+      // the one call this plugin cannot afford to route through an indirection
+      // a small model may not take.
+      options: { codemode: false },
       async execute(raw: unknown, ctx: ToolContext) {
         // ctx goes to the resolver because the resolved scope is how a
         // session-scoped tool learns who is calling it — a fact the arguments

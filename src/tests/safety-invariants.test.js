@@ -876,7 +876,11 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     // registered by a helper the scan does not know — and the previous version
     // of this gate had already gone stale that way, matching a funnel name
     // that no longer existed. The map's construction never touches deps.
-    const registered = new Set(Object.keys(buildToolMap({})));
+    const map = buildToolMap({});
+    const registered = new Set(Object.keys(map));
+    for (const [name, info] of Object.entries(map)) {
+      assert.strictEqual(info.options?.codemode, false, `${name} must be a direct tool: a catalog-only tool answers a direct call with "No tool named", which silenced a live child`);
+    }
     const readme = readFileSync(path.join(REPO_ROOT, "README.md"), "utf8").split("\n");
     const headerIdx = readme.findIndex((l) => l.startsWith("| Tool |"));
     const documented = new Set();

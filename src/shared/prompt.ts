@@ -166,9 +166,10 @@ export function isTextPart(value: unknown): value is TextPart {
   return value.type === "text" && typeof value.text === "string";
 }
 
-// Role arrives top-level or nested under info depending on the hydration
-// era (the shape this family exists to absorb); parts stay unknown[] —
-// text members are discriminated per part by isTextPart at read time.
+// Role arrives as `type` (v2) or top-level/nested-under-info `role` (v1);
+// content arrives as `content` (v2) or `parts` (v1). Both spellings stay
+// readable: the host speaks v2, old fixtures speak v1. Members are
+// discriminated per part by isTextPart at read time.
 //
 // `parts` is OPTIONAL, and that is load-bearing. The host omits the key
 // entirely on a turn that produced no output — an aborted turn arrives as
@@ -180,21 +181,35 @@ export function isTextPart(value: unknown): value is TextPart {
 // A turn declares itself a message by its ROLE; parts are what it said, not
 // what it is. Do not re-tighten this guard.
 export interface Message {
+  type?: unknown;
   role?: unknown;
   info?: unknown;
   time?: unknown;
   parts?: unknown[];
+  content?: unknown[];
 }
 
 export function isMessage(value: unknown): value is Message {
   if (!isEventRecord(value)) return false;
-  return Array.isArray(value.parts) || messageRoleOf(value as Message) !== "";
+  return (
+    Array.isArray(value.parts) ||
+    Array.isArray(value.content) ||
+    messageRoleOf(value as Message) !== ""
+  );
 }
 
 export function messageRoleOf(message: Message): string {
+  if (typeof message.type === "string" && message.type !== "") return message.type;
   const info = isEventRecord(message.info) ? message.info : undefined;
   const role = info?.role ?? message.role;
   return typeof role === "string" ? role : "";
+}
+
+/** The members a message speaks through, v2 first: `content`, then `parts`. */
+export function contentPartsOf(message: Message): unknown[] {
+  if (Array.isArray(message.content)) return message.content;
+  if (Array.isArray(message.parts)) return message.parts;
+  return [];
 }
 
 /**
@@ -262,11 +277,13 @@ export interface ToolPart {
  * finished one.
  */
 export function toolCallOf(value: unknown): ToolPart | null {
-  if (!isEventRecord(value) || value.type !== "tool" || typeof value.tool !== "string") return null;
+  if (!isEventRecord(value) || value.type !== "tool") return null;
+  const name = value.name ?? value.tool;
+  if (typeof name !== "string") return null;
   if (!isEventRecord(value.state) || !isEventRecord(value.state.input)) return null;
   const status = value.state.status;
   return {
-    tool: value.tool,
+    tool: name,
     input: value.state.input,
     incomplete: typeof status !== "string" || !LANDED_CALLS.has(status),
   };
@@ -322,7 +339,7 @@ export function touchedFiles(messages: unknown): FileTouch[] {
   const touches: FileTouch[] = [];
   for (const message of messages) {
     if (!isMessage(message)) continue;
-    for (const part of message.parts ?? []) {
+    for (const part of contentPartsOf(message)) {
       const call = toolCallOf(part);
       if (call === null || !MUTATING_TOOLS.has(call.tool)) continue;
       // Through the family's own door rather than a bare `input.filePath`. The
@@ -400,7 +417,7 @@ export function getLatestAssistantText(messages: unknown): string {
     if (!isMessage(msg)) continue;
     if (messageRoleOf(msg) !== ASSISTANT_ROLE) continue;
 
-    const text = extractTextFromParts(msg.parts);
+    const text = extractTextFromParts(contentPartsOf(msg));
     if (text.trim()) return text;
   }
 
@@ -432,7 +449,7 @@ export function messageErrorDetail(message: unknown): string {
     return detail.trim();
   }
   if (typeof error === "string" && error.trim()) return error.trim();
-  if (messageRoleOf(message) === ERROR_ROLE) return extractTextFromParts(message.parts).trim();
+  if (messageRoleOf(message) === ERROR_ROLE) return extractTextFromParts(contentPartsOf(message)).trim();
   return "";
 }
 

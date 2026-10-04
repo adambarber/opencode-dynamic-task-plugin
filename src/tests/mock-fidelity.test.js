@@ -118,7 +118,7 @@ describe("invariant: only the host's own words can describe a turn", () => {
     setHostTurn(state, "ses_x", "succeeded");
     assert.strictEqual(state.turns.get("ses_x").outcome, "succeeded", "the verdict the turn ended with is the one production reads");
     const last = state.transcripts.get("ses_x").at(-1);
-    assert.notStrictEqual(last.info.time?.completed, undefined, "and the message it was writing is finished");
+    assert.notStrictEqual(last.time?.completed, undefined, "and the message it was writing is finished");
   });
 
   it("finds no fake holding a turn word anywhere but that one funnel", () => {

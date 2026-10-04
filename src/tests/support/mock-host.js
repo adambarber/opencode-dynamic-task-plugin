@@ -27,7 +27,6 @@ import { missingSessionError, hostOutcomeWords } from "./sdk-contract.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
-import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { isParentNotification, notificationKindOf } from "../../../dist/shared/notification-text.js";
 // The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
 // is `satisfies Event["type"]` in host-events.ts, so this module cannot fire an
@@ -49,27 +48,21 @@ import {
   SESSION_IDLE,
 } from "../../../dist/shared/host-events.js";
 
-/**
- * An assistant turn as the HOST's transcript carries one: `info` holding the
- * clock, parts beside it. The liveness reader takes an age from `info.time`, and
- * getting this shape wrong does not crash — it renders as "this child has never
- * written a message", which is what a live smoke test caught on a child that had
- * written three. So the shape is stated once, here, and the mock that answers a
- * transcript read and the cases that seed one both read it from here.
- */
-const textParts = (text) => [{ type: "text", text }];
-// One builder for every assistant message the fake writes: the role and the text
-// envelope never vary, only the clock (finished vs still writing) and the caller.
+// One builder for every assistant message the fake writes, in the host's
+// own v2 spelling: flat `type`, flat clock, `content` members.
 const assistantMessage = (text, time, extra) => ({
-  info: { role: ASSISTANT_ROLE, time, ...extra },
-  parts: textParts(text),
+  type: "assistant",
+  time,
+  content: [{ type: "text", text }],
+  ...extra,
 });
 export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { created: at, completed: at }, extra);
 
 /** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
 export const unclockedSaid = (text = "go", role = "user") => ({
   ...hostSaid(text),
-  info: { role },
+  type: role,
+  time: undefined,
 });
 
 /**
@@ -152,14 +145,14 @@ export function recordingClient(respond) {
         get: async ({ sessionID }) => {
           if (!turns.has(sessionID)) throw missingSessionError();
           const messages = turns.get(sessionID) ?? [];
-          const lastAssistant = [...messages].reverse().find((m) => m?.info?.role === "assistant");
-          if (!lastAssistant || lastAssistant.info?.time?.completed === undefined) {
+          const lastAssistant = [...messages].reverse().find((m) => m?.type === "assistant");
+          if (!lastAssistant || lastAssistant.time?.completed === undefined) {
             return { id: sessionID, outcome: undefined, time: { created: Date.now() } };
           }
           return {
             id: sessionID,
-            outcome: lastAssistant.info?.error ? "failed" : "succeeded",
-            time: { created: lastAssistant.info.time.created ?? Date.now(), idle: lastAssistant.info.time.completed },
+            outcome: lastAssistant.error ? "failed" : "succeeded",
+            time: { created: lastAssistant.time.created ?? Date.now(), idle: lastAssistant.time.completed },
           };
         },
         prompt: async (args) => {
@@ -294,12 +287,21 @@ const stampHostTurn = (state, id, extra) => {
 // One closer for the message a finished turn was writing: stamp it completed, or
 // append the host's own finished shape when nothing is open. Both turn writers
 // (verdict seeding and terminal events) finish the same message, so they share it.
+// The fake serves both transcript eras deliberately (v2 for the host's own
+// spelling, v1 for the tolerance pins), so the closer reads both: the role off
+// `type` or `info.role`, the clock off `time` or `info.time`, and the stamp goes
+// back in the spelling it found. Stamping a v1 seed with a flat clock would
+// orphan its error under `info` while the readers walk the new `time`.
+const messageRole = (m) => m?.type ?? m?.info?.role;
+const messageClock = (m) => m?.time ?? m?.info?.time;
 const finishOpenMessage = (have, extra) => {
   const last = have.at(-1);
-  const open = last?.info?.role === ASSISTANT_ROLE && last.info.time?.completed === undefined;
-  return open
-    ? [...have.slice(0, -1), { ...last, info: { ...last.info, time: { ...last.info.time, completed: Date.now() }, ...extra } }]
-    : [...have, hostSaid("", undefined, extra)];
+  const open = messageRole(last) === "assistant" && messageClock(last)?.completed === undefined;
+  if (!open) return [...have, hostSaid("", undefined, extra)];
+  const stamped = { ...last, ...extra };
+  if (last?.info) stamped.info = { ...last.info, time: { ...messageClock(last), completed: Date.now() } };
+  else stamped.time = { ...messageClock(last), completed: Date.now() };
+  return [...have.slice(0, -1), stamped];
 };
 
 /**
@@ -334,7 +336,7 @@ const closeHostTurn = (state, id, outcome) => {
 /** The verdict a closing idle implies, read off the transcript it is closing. */
 function idleVerdict(state, id) {
   const last = (state.transcripts.get(id) ?? []).at(-1);
-  return last?.info?.error ? "failed" : "succeeded";
+  return last?.info?.error ?? last?.error ? "failed" : "succeeded";
 }
 
 /**

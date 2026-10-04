@@ -11,6 +11,7 @@
     "node_modules/**",
     "dist/**",
     "coverage/**",
-    ".git/**"
+    ".git/**",
+    "src/tests/support/v2-transcript.json"
   ]
 }

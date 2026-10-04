@@ -468,7 +468,7 @@ const captureNotice = (state, record) => state.notifications.push(record);
  * condition is only the story that produces it. Spelled three times, the message
  * was three chances to drift away from the server's own wording.
  */
-const sessionNotFound = (id) => new Error(`Session "${id}" not found.`);
+const sessionNotFound = (id) => missingSessionError();
 
 /**
  * The production-shaped mock host.
@@ -785,9 +785,7 @@ export function createMockClient(hooks = {}) {
         }
         if (hooks.messages) return hooks.messages({ sessionID });
         if (!state.sessions.has(sessionID)) {
-          const error = new Error(`Session "${sessionID}" not found.`);
-          error.status = 404;
-          throw error;
+          throw missingSessionError();
         }
         return [hostSaid("COMPLETED_OK")];
       },

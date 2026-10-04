@@ -6,11 +6,13 @@ import { eventField } from "../shared/host-shape.js";
 import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
+  isSessionMissing,
   readLiveness,
   statusFromHostTurn,
   type LivenessReading,
   UNANSWERED_LIVENESS,
 } from "../shared/liveness.js";
+import { debugLog } from "../debug-logger.js";
 import {
   agentDisplayName,
   formatTaskResultSummary,
@@ -63,15 +65,22 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
       }),
     );
   } catch (err: unknown) {
-    // 404 or network error → unknown/error states in the same markdown voice.
-    const message = errorMessage(err);
-    const status = eventField(err, "status");
-    const code = eventField(err, "code");
-    if (status === 404 || message.includes("not found")) {
+    // One reader for "no such session" — the ad-hoc `status === 404` check
+    // matched the fake's old shape while the live host answered otherwise, so
+    // an untracked session surfaced as a network error. An error this still
+    // does not recognise is logged with its shape, so the next one names
+    // itself instead of hiding behind the fallback text below.
+    if (isSessionMissing(err)) {
       return unknownSessionResult(sessionId);
     }
+    const message = errorMessage(err);
+    const code = eventField(err, "code");
     const retryable = code === "ECONNREFUSED" || code === "ETIMEDOUT";
     if (!task) {
+      debugLog("tool", sessionId, "unrecognized-read-error", {
+        message: message.slice(0, 120),
+        code: code ?? null,
+      });
       return formatTaskResultSummary(
         taskResultRecord({
           sessionId,

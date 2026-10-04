@@ -17,6 +17,7 @@ import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNot
 import { eventHarness } from "./support/integration.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { isSessionMissing } from "../../dist/shared/liveness.js";
 
 /**
  * A child whose abort transport is down, settled — the arrangement behind both
@@ -113,6 +114,14 @@ describe("task_result and task_interrupt paths", () => {
     const summary = await h.tool.task_result.execute({ session_id: "ses_gone" });
     answerSays(summary, "Status: unknown");
     assert.ok(summary.startsWith("## Task Result"), `one format for all reads. got: ${summary}`);
+    // The fake must reject the way the host rejects, or this test proves the
+    // reader against a shape production never sees — which is how an untracked
+    // session once read as a network error under a green suite.
+    const rejection = await h.client.session.context({ sessionID: "ses_gone" }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(isSessionMissing(rejection), "the fake's not-found is a shape the reader reads");
     });
 
   // The read that fails is the one the tool actually makes. A transport

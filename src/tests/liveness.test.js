@@ -22,6 +22,7 @@ import { describe, it, assert } from "./support/runner.js";
 import {
   hostTurnInFlight,
   hostTurnRunning,
+  isSessionMissing,
   NOT_FOUND_REASON,
   parentTurnStuck,
   readLiveness,
@@ -239,4 +240,26 @@ describe("liveness: a turn is not a message", () => {
     const reading = await readOpenTurn(messages);
     assert.strictEqual(hostTurnRunning(reading), true, "a message error is not a turn verdict");
   });
+});
+describe("isSessionMissing names every not-found the host sends", () => {
+  // Three exact shapes, each verified against something real: the tagged SDK
+  // error (live host), the RPC wire error (plugin framework), the ClientError
+  // rejection (promise client). A fourth spelling — top-level status, a bare
+  // name, a message about some OTHER thing being gone — must never match.
+  const cases = [
+    ["tagged SDK error", { _tag: "SessionNotFoundError", message: "Session not found: ses_x" }, true],
+    ["RPC wire error", { type: "SessionNotFoundError", message: "Session not found: ses_x" }, true],
+    ["ClientError rejection", Object.assign(new Error("nope"), { reason: NOT_FOUND_REASON, cause: { status: 404 } }), true],
+    ["session-scoped message", { message: "Session not found: ses_x" }, true],
+    ["agent-not-found tag", { _tag: "Session.AgentNotFoundError", message: "Agent not found: General" }, false],
+    ["agent-not-found message", { message: "Agent not found: General" }, false],
+    ["top-level status", Object.assign(new Error("nope"), { status: 404 }), false],
+    ["bare name", Object.assign(new Error("nope"), { name: "NotFoundError" }), false],
+    ["empty failure", {}, false],
+  ];
+  for (const [name, error, want] of cases) {
+    it(`${want ? "reads" : "refuses"}: ${name}`, () => {
+      assert.strictEqual(isSessionMissing(error), want);
+    });
+  }
 });

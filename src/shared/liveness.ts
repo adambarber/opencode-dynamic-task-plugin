@@ -201,11 +201,26 @@ export const NOT_FOUND_STATUS = 404;
 /** The host's own "no such session", narrowed to what we actually compare. */
 export type HostSessionMissing = Record<string, unknown>;
 
-function isHostSessionMissing(error: unknown): error is HostSessionMissing {
+/**
+ * Whether the host says "no such session", in every shape it says it.
+ *
+ * Three exact shapes, no substring: the tagged SDK error (`_tag`, verified
+ * against the live host), the RPC wire error (`type`, what the plugin
+ * framework hands across the boundary), and the `ClientError` rejection
+ * (`reason` + `cause.status`, what the promise client throws). The message
+ * fallback is scoped to sessions — a bare "not found" also matches the AGENT
+ * being gone, which is a different failure with a different recovery.
+ */
+export function isSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
-  if (error["reason"] !== NOT_FOUND_REASON) return false;
-  const cause = error["cause"];
-  return isPlainRecord(cause) && cause["status"] === NOT_FOUND_STATUS;
+  if (error["_tag"] === "SessionNotFoundError") return true;
+  if (error["type"] === "SessionNotFoundError") return true;
+  if (error["reason"] === NOT_FOUND_REASON) {
+    const cause = error["cause"];
+    return isPlainRecord(cause) && cause["status"] === NOT_FOUND_STATUS;
+  }
+  const message = error["message"];
+  return typeof message === "string" && /session[^.]{0,40}not found/i.test(message);
 }
 
 /**
@@ -229,7 +244,7 @@ export async function readSessionState(host: OpaqueHost, sessionId: string): Pro
       ...(info ? { hostTurn: readHostOutcome(info) } : {}),
     };
   } catch (error: unknown) {
-    if (isHostSessionMissing(error)) {
+    if (isSessionMissing(error)) {
       return { existence: SessionExistence.Missing, missing: error, statusAnswered: true };
     }
     return { existence: SessionExistence.Unread, statusAnswered: false };

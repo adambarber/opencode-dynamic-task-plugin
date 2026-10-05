@@ -26,6 +26,7 @@ import { isParentNotification } from "../../../dist/shared/notification-text.js"
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { DEBUG_DIR, getDebugLogPath } from "../../../dist/debug-logger.js";
+import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
 import {
   applyHostStatus,
   createMockClient,
@@ -34,6 +35,26 @@ import {
   setHostTurn,
   unclockedSaid,
 } from "./mock-host.js";
+
+export {
+  abortRequests,
+  abortWasRequestedFor,
+  abortedSessions,
+  confirmationFor,
+  declareNeedsInput,
+  dialCount,
+  notifiedNotes,
+  promptsCarrying,
+  promptsSaying,
+  promptsTo,
+  promptsToCarrying,
+  promptTextsTo,
+  sentPrompts,
+  sessionBody,
+  sessionCount,
+  sessionIds,
+  wasAborted,
+} from "./client-queries.js";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -175,73 +196,9 @@ export function renderedAgeSeconds(detail, label) {
   return Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3]);
 }
 
-/**
- * Questions about the fake host's recorded state, asked here instead of by 26
- * hand-rolled reach-throughs.
- *
- * The harness owns `testState` — that is the whole point of it — and the tests were
- * each re-deriving the same queries out of it: `filter((p) => p.to === id)`,
- * `filter((p) => p.body.parts[0].text.includes("pivot"))`, `aborted.includes(id)`.
- * The body shape and the field names then had 26 callers to keep in step, and a
- * test that renames one gets a filter that matches nothing — which is the
- * dangerous direction, because the common assertion is "this did NOT happen", so
- * a broken predicate still passes.
- *
- * Each function below is one of those questions with its answer's shape decided
- * once: which prompts reached a child, which carried a given text, whether a turn
- * was aborted, how many dials the gate made. The client is the argument because a
- * `failing` or `one` harness and the primary `h` are all equally valid subjects.
- */
 
-/** Every prompt the host was asked to send, oldest first. */
-export const sentPrompts = (client) => client.testState.promptBodies;
 
-/** The prompts addressed to one session — "which turns of this child fired". */
-export const promptsTo = (client, sessionId) => client.testState.promptBodies.filter((p) => p.to === sessionId);
 
-/** The text of every prompt addressed to one session. */
-export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId).map(promptText);
-
-/**
- * The text the spawning turn was told back — the confirmation, not the child's
- * opening. Its sibling `promptTextsTo` reads what went OUT; this reads what came
- * back, and a case that wants the dispatcher's side of a spawn should not have to
- * destructure the seam's whole return to get one string out of it.
- */
-export const confirmationFor = async (h, description, args = {}) =>
-  (await h.spawn({ ...args, description })).out;
-
-/** "This prompt said these words" — the one predicate both prompt readers use. */
-const carries = (words) => (p) => promptText(p).includes(words);
-
-/** The prompts addressed to one session that carry the given words. */
-export const promptsToCarrying = (client, sessionId, words) => promptsTo(client, sessionId).filter(carries(words));
-
-/** Every prompt whose text contains the given words — "which turn said this". */
-export const promptsCarrying = (client, words) => sentPrompts(client).filter(carries(words));
-
-/** How many prompts said the given words — the count a "nothing fired" case asserts. */
-export const promptsSaying = (client, words) => promptsCarrying(client, words).length;
-
-/** Whether a turn was aborted, without leaking the array to compare against. */
-export const wasAborted = (client, sessionId) => client.testState.aborted.includes(sessionId);
-
-/** The sessions aborted so far, for a failure message that wants the list. */
-export const abortedSessions = (client) => client.testState.aborted;
-
-/**
- * Whether the host was ever ASKED to abort a session.
- *
- * `wasAborted` asks what the host did, which is the wrong question for anything
- * about authority: a host that does not own the id answers 404, so a plugin that
- * stopped a session it had no business stopping produces no `aborted` entry and a
- * test written against `wasAborted` calls that clean. The request is the record.
- */
-export const abortWasRequestedFor = (client, sessionId) =>
-  client.testState.abortAttempts.includes(sessionId);
-
-/** Every session the host was asked to abort, in order. */
-export const abortRequests = (client) => client.testState.abortAttempts;
 
 /**
  * `task_interrupt` with the CALLER named, because in every ownership case the
@@ -280,17 +237,7 @@ export function assertStopped(h, targets, _answer, note) {
   }
 }
 
-/** Every session the host has been asked to create. */
-export const sessionIds = (client) => [...client.testState.sessions];
 
-/** How many sessions the host has been asked to create. */
-export const sessionCount = (client) => client.testState.sessions.size;
-
-/** The create body recorded for one session — what the host was told to make. */
-export const sessionBody = (client, sessionId) => client.testState.sessionBodies.get(sessionId);
-
-/** How many dials the gate made, held or not. */
-export const dialCount = (client) => client.testState.notifyCalls.length;
 
 /**
  * Yield until the queue has run once, so a fire-and-forget write has had its
@@ -318,14 +265,7 @@ export const drain = async (chainOf, chainName = "unnamed") => {
   }
 };
 
-/** The parent notifications the plugin recorded. */
-export const notifiedNotes = (client) => client.testState.notifications;
 
-/** How many times the host's status channel was read. */
-/** A child declaring it cannot continue without something. The `needs_input` kind is the
- * production contract for that gesture, so it is spelled here once rather than at
- * every site that needs a child to be stuck. */
-export const declareNeedsInput = (child, words) => child.notify(words, { kind: "needs_input" });
 
 // Harnesses booted during the current test, so one afterEach can release every
 // child any test spawned — including ones a test built inline rather than

@@ -9,11 +9,11 @@
 
 import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { opaqueHost } from "./support/opaque-host.js";
-import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentList, registerAdmittedTask, resetAgentCache, resolveAdmission, resolveDependencies } from "../../dist/shared/admission.js";
+import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, registerAdmittedTask, resetAgentCache, resolveAdmission, resolveDependencies } from "../../dist/shared/admission.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
-import { DEFAULT_AGENT_MODE, agentCanNotify, toAgentRecords } from "../../dist/shared/agent-record.js";
+import { DEFAULT_AGENT_MODE, agentCanNotify, toAgentRecords, wildcardMatches } from "../../dist/shared/agent-record.js";
 import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
@@ -414,9 +414,9 @@ describe("admission gate: there is no second key to ask for", () => {
   });
 });
 
-describe("admission gate: parseAgentList", () => {
+describe("admission gate: toAgentRecords", () => {
   it("accepts bare arrays and drops nameless records", () => {
-    const records = parseAgentList([
+    const records = toAgentRecords([
       { mode: "subagent", name: "explore", permissions: [] },
       { noName: true },
       null,
@@ -425,20 +425,20 @@ describe("admission gate: parseAgentList", () => {
   });
 
   it("normalises every field, so no reader has to ask the payload again", () => {
-    const [agent] = parseAgentList([{ extra: 1, mode: "primary", name: "a", permissions: [{ action: NOTIFY_TOOL, effect: "deny", resource: "*" }] }]);
+    const [agent] = toAgentRecords([{ extra: 1, mode: "primary", name: "a", permissions: [{ action: NOTIFY_TOOL, effect: "deny", resource: "*" }] }]);
     assert.strictEqual(agent.mode, "primary");
     assert.deepStrictEqual(agent.permissions, [{ action: NOTIFY_TOOL, effect: "deny", resource: "*" }]);
     assert.ok(!("extra" in agent), "a field this plugin never asked for does not travel with the record");
   });
 
   it("drops a rule the host could not have sent", () => {
-    const [agent] = parseAgentList([{ name: "a", permissions: [{ action: "x", resource: "*" }, { action: "y", effect: "maybe", resource: "*" }] }]);
+    const [agent] = toAgentRecords([{ name: "a", permissions: [{ action: "x", resource: "*" }, { action: "y", effect: "maybe", resource: "*" }] }]);
     assert.deepStrictEqual(agent.permissions, [], "an unreadable rule is dropped, not guessed at");
   });
 
   it("rejects garbage", () => {
     for (const bad of [null, undefined, "str", 42, {}, { agents: "x" }, [{ noName: 1 }]]) {
-      assertNoAgents(parseAgentList(bad), `nothing usable in ${JSON.stringify(bad)}`);
+      assertNoAgents(toAgentRecords(bad), `nothing usable in ${JSON.stringify(bad)}`);
     }
   });
 });
@@ -484,6 +484,20 @@ describe("agentCanNotify walks the host's ruleset, not a map", () => {
      empty = record([]);
     assert.strictEqual(agentCanNotify(absent, NOTIFY_TOOL), false, "the host denies what it was never given");
     assert.strictEqual(agentCanNotify(empty, NOTIFY_TOOL), true, "no rule matches, and no match is ask");
+  });
+  it("matcher flags follow the host, which makes them case-insensitive on win32 only", () => {
+    // packages/core/src/util/wildcard.ts:13 — `process.platform === "win32" ? "si" : "s"`.
+    // Hardcoding "s" made a case-differing rule deny here and match there, so the
+    // answer differed by platform rather than by rule.
+    assert.strictEqual(wildcardMatches("win32", NOTIFY_TOOL, "TASK_NOTIFY"), true);
+    assert.strictEqual(wildcardMatches("darwin", NOTIFY_TOOL, "TASK_NOTIFY"), false);
+    assert.strictEqual(wildcardMatches("linux", NOTIFY_TOOL, "task_*"), true, "every platform globs the same");
+    const shouty = record([{ action: "TASK_NOTIFY", effect: "deny", resource: "*" }]);
+    assert.strictEqual(
+      agentCanNotify(shouty, NOTIFY_TOOL),
+      !wildcardMatches(process.platform, NOTIFY_TOOL, "TASK_NOTIFY"),
+      "no match is ask, so a case-sensitive platform leaves the channel open",
+    );
   });
 });
 

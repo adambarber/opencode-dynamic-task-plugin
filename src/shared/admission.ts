@@ -205,20 +205,6 @@ export function resolveDependencies(
   return pending.length === 0 ? { ok: true } : { ok: false, pending };
 }
 
-// ─── parseAgentList ────────────────────────────────────────────────
-// Turns an untyped registry response into agent records. The envelope is
-// hostPayload's business (the client resolves to { data, request, response },
-// and a keyed map keyed by agent name is the other shape this endpoint
-// The reader is one constructor over whatever `agent.list` answered. The v2 client
-// answers its `AgentListOutput` envelope (`{ location, data }`); the TUI store answers
-// a bare array. An earlier revision claimed the bare array was the only shape, so every
-// live dispatch failed admission with "(none discovered)" — the envelope is not an
-// array, and there is no second chance: the refusal names what was (not) found.
-
-export function parseAgentList(result: unknown): AgentRecord[] {
-  return toAgentRecords(result);
-}
-
 // ─── registerAdmittedTask ──────────────────────────────────────────
 // Post-create registration. Thin today by design: single ownership of the
 // registration path so continuation policy (Task 07) has one place to land.
@@ -391,7 +377,7 @@ async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, ca
       if (listed.timedOut) throw new Error(`agent list unanswered after ${READ_BOUNDS.agents}ms`);
       const result: unknown = listed.value;
       const entry: AgentCacheEntry = {
-        agents: parseAgentList(result).filter((a) => isDispatchableAgent(a)),
+        agents: toAgentRecords(result).filter((a) => isDispatchableAgent(a)),
         at: Date.now(),
         epoch: agentCacheEpoch,
       };

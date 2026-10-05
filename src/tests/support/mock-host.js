@@ -1,6 +1,6 @@
 /**
- * The fake OpenCode server — everything this suite is allowed to assert about the
- * host, in one place.
+ * The fake OpenCode server's transport: the client surface, its refusals and its
+ * faults, assembled from the three shape modules it is made of.
  *
  * Split from `harness.js` along the client interface: this module IS the host
  * (its transcript shapes, its event vocabulary, its status map, its SDK envelope,
@@ -13,57 +13,28 @@
  * Ground truth, not test doubles of the thing under test (Tenet 12): nothing in
  * this file is a stand-in for plugin code. Only the host is faked, because the
  * server is not what these suites are about.
+ *
+ * The shapes live where they can be checked against one thing each:
+ * `mock-transcript.js` owns what the host writes into a session and how a turn ends,
+ * `mock-events.js` owns the event vocabulary and what is read back out of it, and
+ * this module re-exports both so a suite has one import to name the host through.
  */
-
-import assert from "node:assert";
-
-import { readFileSync } from "node:fs";
 import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
-// The host's status vocabulary and not-found spelling, parsed out of the SDK
-// declaration the production code compiles against — so the fake is held to the
-// host's own words rather than to a hand-kept list that drifts in the one
-// direction which hides a defect.
-import { hostOutcomeWords, missingSessionError } from "./sdk-contract.js";
-// The role the reader looks for, named by the module that looks for it. A mock
-// message part that hardcodes the role is a message the plugin may correctly
-// ignore, and a test that builds one still passes.
-import { isParentNotification, notificationKindOf } from "../../../dist/shared/notification-text.js";
-// The host's event vocabulary is PRODUCTION's, not the suite's. Every name below
-// is `satisfies Event["type"]` in host-events.ts, so this module cannot fire an
-// event the host does not publish — which is the one thing a fixture must never
-// be able to do, because a fixture that invents an event certifies a gate that
-// listens for it. That is exactly how `question.created` shipped. The names are
-// used to BUILD events (the `events` factory below) rather than re-exported as a
-// second list: a suite that named a raw event type would be naming it from a
-// hand-kept copy of this import, which is the drift the import exists to prevent.
-import {
-  FORM_CANCELLED,
-  PERMISSION_ASKED,
-  PERMISSION_REPLIED,
-  SESSION_DELETED,
-  SESSION_ERROR,
-  SESSION_EXECUTION_INTERRUPTED,
-  SESSION_EXECUTION_STARTED,
-  SESSION_EXECUTION_SUCCEEDED,
-  SESSION_IDLE,
-} from "../../../dist/shared/host-events.js";
+import { captureNotice, noticeRecord } from "./mock-events.js";
+import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
+import { armGate } from "./mock-gates.js";
+import { isParentNotification } from "../../../dist/shared/notification-text.js";
+import { missingSessionError } from "./sdk-contract.js";
+import assert from "node:assert";
+import { readFileSync } from "node:fs";
 
-// One builder for every assistant message the fake writes, in the host's
-// own v2 spelling: flat `type`, flat clock, `content` members.
-const assistantMessage = (text, time, extra) => ({
-  content: [{ text, type: "text" }],
-  time,
-  type: "assistant",
-  ...extra,
-});
-export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { completed: at, created: at }, extra);
-
-/** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
-export const unclockedSaid = (text = "go", role = "user") => ({
-  ...hostSaid(text),
-  time: undefined,
-  type: role,
-});
+// A suite names the host through ONE import, whichever of these subjects it needs.
+// `export *` rather than a named list: these bindings are also used below, and a
+// barrel that both uses and re-exports a name cannot satisfy `prefer-export-from` any
+// other way — the rule wants the re-export to come straight from the source module.
+export * from "./mock-transcript.js";
+export * from "./mock-gates.js";
+export * from "./mock-events.js";
 
 /**
  * The host's sync session.updated envelope. `status` is the word it reports, or
@@ -114,91 +85,6 @@ const permissionEndpoint = (state, hooks) =>
   };
 
 /**
- * A client whose only method is the parent write, plus the list of writes that
- * actually reached it. Every test in this file needs the same two things — a
- * transport whose answer the test decides, and the count of writes that got
- * there — and they were two hand-written client literals per test, so "dialed
- * exactly once" was answered by whichever literal that test happened to copy. One
- * wrapper, one recording: a test that wants the write to park, to throw, or to
- * note its own ordering says so in `respond`, and the record is the same record.
- */
-export function recordingClient(respond) {
-  const calls = [];
-  const turns = new Map();
-  return {
-    calls,
-    // The same two facts the big fake keeps, written to the same place: a turn running
-    // is an assistant message with no `completed`, and its absence from the record is
-    // the one thing that reads as "open". A private map here would be a second copy
-    // of a fact production reads from the transcript.
-    setStatus: (id, word) => {
-      turns.set(id, [word === "open" ? hostSaying("") : hostSaid("")]);
-    },
-    setMessages: (id, list) => turns.set(id, list),
-    client: {
-      session: {
-        context: async (args) => turns.get(args.sessionID) ?? [],
-        // Project the message list down to the turn record production reads: no
-        // finished message means the host has recorded no verdict, and a finished
-        // message's own error/absence of one names how it ended. A session this
-        // client has no messages for at all is a NotFound like any other.
-        get: async ({ sessionID }) => {
-          if (!turns.has(sessionID)) throw missingSessionError();
-          const messages = turns.get(sessionID) ?? [];
-          const lastAssistant = messages.findLast((m) => m?.type === "assistant");
-          if (!lastAssistant || lastAssistant.time?.completed === undefined) {
-            return { id: sessionID, outcome: undefined, time: { created: Date.now() } };
-          }
-          return {
-            id: sessionID,
-            outcome: lastAssistant.error ? "failed" : "succeeded",
-            time: { created: lastAssistant.time.created ?? Date.now(), idle: lastAssistant.time.completed },
-          };
-        },
-        prompt: async (args) => {
-          calls.push(args);
-          return respond(args);
-        },
-      },
-    },
-  };
-}
-
-/**
- * The SDK envelope every answer arrives in. `refusal` is the second half of the
- * same contract: the SDK does not throw on an API error, it RESOLVES the envelope
- * with an `error` beside a non-2xx status — which is why a fake that can only
- * refuse by throwing cannot express a refusal, and why a case written against it
- * tested the wrong branch.
- */
-
-/** A promise plus its resolver — the gate tests use to hold a reply open. */
-export function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, reject, resolve };
-}
-
-/**
- * Arm one host call open, the way every gated call is armed. The mock consults
- * `state[name]`, the test holds the release: one shape, so a new gate cannot
- * invent its own protocol with the mock.
- */
-export function armGate(state, name, { fails = false, maybe = false } = {}) {
-  const gate = deferred();
-  state[name] = { fails, promise: gate.promise, release: gate.resolve, used: false };
-  // The gate name is the fault name: one spelling, so the teardown rule needs no
-  // translation table between "what a test armed" and "what a branch records".
-  armFault(state, name);
-  if (maybe) state.maybe.add(name);
-  return { release: () => gate.resolve() };
-}
-
-/**
  * The host's `session.get` answer: the fields the SDK's `Session` declares
  * required. A fake that answers with `{id}` alone is a fake answering a smaller
  * question than the one production asked, and the missing fields are exactly where
@@ -236,240 +122,6 @@ const sessionObject = (id, state) => {
  */
 
 
-/**
- * The one place the mock MOVES a session's host status word: an abort parks the
- * turn, a prompt starts it — the same two transitions the server makes, from the
- * same two calls, so a read that consults the transcript sees what the plugin's own
- * calls would have caused. Word only, never an event: the event a real server
- * sends is the plugin's to react to, and a test that delivers it says so. The
- * guard is what makes this a MOVE: a session the host no longer lists must not
- * come back from a status write.
- */
-export function setHostTurn(state, id, word) {
-  const verdicts = hostOutcomeWords();
-  if (word !== "open" && !verdicts.includes(word)) {
-    throw new Error(
-      `mock-host: "${word}" is not a v2 turn state (declared: open, ${verdicts.join(", ")}) — the fake may not invent vocabulary`,
-    );
-  }
-  if (word === "open") {
-    // No transcript message: a session that has said nothing has no transcript yet,
-    // and `context` answers that absence with the COMPLETED_OK fallback. Seeding an
-    // empty "saying" message here would shadow the fallback with silence.
-    openHostTurn(state, id);
-    return;
-  }
-  state.transcripts.set(id, finishOpenMessage(state.transcripts.get(id) ?? []));
-  closeHostTurn(state, id, word);
-}
-
-/**
- * The turn word a transcript records, and the one way a delivered terminal event
- * records a turn's FATE.
- *
- * v2 split the old status word in two and that split is load-bearing: `idle` says
- * only that no turn is running, while `succeeded`/`failed` say how the turn ended.
- * Folding them together let `session.idle` APPEND a successful assistant message,
- * so a child whose last real message was an API error was reported as a success —
- * the fake inventing the verdict it was supposed to detect. A terminal event
- * therefore STAMPS the open message rather than adding another: the host finishes
- * the message it was writing.
- */
-const stampHostTurn = (state, id, extra) => {
-  // Absence is a fact: a session with no transcript reads through the COMPLETED_OK
-  // fallback in `context`, which is the mock's standing answer for "what the child
-  // said". Manufacturing an empty message here would shadow that fallback with
-  // silence, so a completion would notify with no result text.
-  if (!state.transcripts.has(id)) return;
-  state.transcripts.set(id, finishOpenMessage(state.transcripts.get(id) ?? [], extra));
-};
-
-// One closer for the message a finished turn was writing: stamp it completed, or
-// append the host's own finished shape when nothing is open. Both turn writers
-// (verdict seeding and terminal events) finish the same message, so they share it.
-// The fake serves both transcript eras deliberately (v2 for the host's own
-// spelling, v1 for the tolerance pins), so the closer reads both: the role off
-// `type` or `info.role`, the clock off `time` or `info.time`, and the stamp goes
-// back in the spelling it found. Stamping a v1 seed with a flat clock would
-// orphan its error under `info` while the readers walk the new `time`.
-const messageRole = (m) => m?.type ?? m?.info?.role;
-const messageClock = (m) => m?.time ?? m?.info?.time;
-const finishOpenMessage = (have, extra) => {
-  const last = have.at(-1);
-  const open = messageRole(last) === "assistant" && messageClock(last)?.completed === undefined;
-  if (!open) return [...have, hostSaid("", undefined, extra)];
-  const stamped = { ...last, ...extra };
-  if (last?.info) stamped.info = { ...last.info, time: { ...messageClock(last), completed: Date.now() } };
-  else stamped.time = { ...messageClock(last), completed: Date.now() };
-  return [...have.slice(0, -1), stamped];
-};
-
-/**
- * A MESSAGE the host has not finished. One step of a turn, not the turn — a turn is
- * a sequence of these and stays open until the host records a verdict for it.
- */
-export const hostSaying = (text, at = Date.now()) => assistantMessage(text, { created: at });
-
-/**
- * The host's TURN record, which is not the transcript.
- *
- * A v2 turn is a SEQUENCE of assistant messages that each carry their own
- * `time.completed`, so "the last message finished" is true for most of a running
- * turn. Measured on a live child: message 7 completed 30s into a 47-minute turn.
- * The turn's own verdict lives on `Session.Info.outcome` and is absent until the
- * execution reaches a terminal transition — so that is what the fake records here,
- * and it is what `session.get` hands production.
- */
-const openHostTurn = (state, id) => {
-  state.turns.set(id, { idle: undefined, outcome: undefined });
-};
-
-const closeHostTurn = (state, id, outcome) => {
-  // A closed turn KEEPS its verdict. The host records the outcome of the last
-  // completed execution; an event that arrives afterwards for a turn that already
-  // ended must not rewrite history, or an interrupt of a finished turn would
-  // report the finished work as interrupted.
-  if (state.turns.get(id)?.outcome !== undefined) return;
-  state.turns.set(id, { idle: Date.now(), outcome });
-};
-
-/** The verdict a closing idle implies, read off the transcript it is closing. */
-function idleVerdict(state, id) {
-  const last = (state.transcripts.get(id) ?? []).at(-1);
-  return last?.info?.error ?? last?.error ? "failed" : "succeeded";
-}
-
-/**
- * Fold a delivered event into the host's own record of the turn, the way the server
- * keeps it. `started` OPENS a turn and adds a message to it — a turn may hold many,
- * and none of them finishing ends it. `idle`/`succeeded`/`interrupted`/`failed`
- * CLOSE it with a verdict. A deletion drops the session's messages entirely.
- */
-export function applyHostStatus(state, event) {
-  if (typeof event !== "object" || event === null) return;
-  const id = event.data?.sessionID;
-  if (typeof id !== "string") return;
-  if (event.type === SESSION_DELETED) {
-    state.transcripts.delete(id);
-    return;
-  }
-  if (event.type === SESSION_EXECUTION_STARTED) {
-    // No transcript message: a turn starting says nothing yet, and seeding an empty
-    // "saying" message would shadow both the COMPLETED_OK fallback and a test's
-    // `hooks.messages` script for what the child actually said.
-    openHostTurn(state, id);
-  } else if (event.type === SESSION_ERROR) {
-    // The event's own error, if it carries one — never a stand-in. Stamping a
-    // hardcoded `{message: "failed"}` here would overwrite the transcript's own
-    // error detail (the child's real last words) with a word the classifier
-    // reads as structural, turning every transient blip into a real failure.
-    const carried = event.data?.error;
-    stampHostTurn(state, id, carried === undefined ? {} : { error: carried });
-    closeHostTurn(state, id, "failed");
-  } else if (event.type === SESSION_IDLE) {
-    stampHostTurn(state, id, {});
-    closeHostTurn(state, id, idleVerdict(state, id));
-  } else if (event.type === SESSION_EXECUTION_SUCCEEDED) {
-    stampHostTurn(state, id, {});
-    closeHostTurn(state, id, "succeeded");
-  } else if (event.type === SESSION_EXECUTION_INTERRUPTED) {
-    stampHostTurn(state, id, {});
-    closeHostTurn(state, id, "interrupted");
-  }
-}
-
-/**
- * A host event envelope: the type the server names, the session it is about, and
- * whatever else it carries. The server's lifecycle event shapes below are all
- * this, and tests used to spell the literals inline, which is how a test can end
- * up asserting against a shape the host never emits.
- */
-const hostEvent = (type, id, properties) => ({ data: { sessionID: id, ...properties }, type });
-
-/**
- * The server's lifecycle event shapes, declared once. `updated` and `error` take
- * the inner status so one declaration covers both the plain and error-valued
- * payloads.
- */
-export const events = {
-  idle: (id, properties = {}) => hostEvent(SESSION_IDLE, id, properties),
-  /**
-   * A turn at work: the host saying this session is running. It is the first
-   * fact a replacement turn produces, and therefore the life sign that lets that
-   * turn's ending be attributed to it rather than to the turn it replaced.
-   *
-   * v2 replaced the readable status channel with EXECUTION events — started,
-   * succeeded, interrupted, failed — and every one of those is declared in
-   * `host-events.ts` with `satisfies HostEventType`, so a fixture cannot invent a
-   * fifth. A `session.status` here would have been a shape no host emits, which is
-   * exactly how `question.created` shipped.
-   */
-  working: (id) => hostEvent(SESSION_EXECUTION_STARTED, id),
-  /** The turn that ended well. Its counterpart to `working`, and named as such. */
-  succeeded: (id) => hostEvent(SESSION_EXECUTION_SUCCEEDED, id),
-  /** The turn the operator cut short — a third ending, distinct from failure. */
-  interrupted: (id) => hostEvent(SESSION_EXECUTION_INTERRUPTED, id),
-  deleted: (id, properties = {}) => hostEvent(SESSION_DELETED, id, properties),
-  // The failure event carries an error detail, never a status field.
-  error: (id, error) => hostEvent(SESSION_ERROR, id, error ? { error } : {}),
-  /**
-   * The host ASKING a permission, verbatim from the v2 manifest: `permission.asked`
-   * carries `{id, sessionID, action, resources}` and no options at all. An absent
-   * `sessionID` is the unattributable ask the gate must never touch.
-   */
-  permissionAsked: (sessionID, properties) => ({
-    data: { ...(sessionID ? { sessionID } : {}), ...properties },
-    type: PERMISSION_ASKED,
-  }),
-  /** The ask a live child would raise, spelled the way the manifest spells it. */
-  ask: (sessionID, requestId, action = "edit") => events.permissionAsked(sessionID, { action, id: requestId, resources: [] }),
-  /** The retirement of an ask — a decision, so it is a settlement the gate does not owe anyone. */
-  permissionReplied: (props) => ({ data: props, type: PERMISSION_REPLIED }),
-  permissionCancelled: (props) => ({ data: props, type: FORM_CANCELLED }),
-};
-
-/**
- * The text one prompt body carries, with the parts envelope stripped. Tolerant of a
- * body carrying no text part, because the two readers that classify a prompt by its
- * marker run before anything knows the body has parts at all — a strict reader there
- * throws inside a mock instead of reporting the prompt as not-a-notification.
- */
-export const promptText = (args) => args?.text || "";
-
-/**
- * One funnel for "the parent has now been sent this", and it classifies.
- *
- * Two capture sites typed the same record by hand, so the KIND rode nowhere: every
- * settlement case then told a success from a failure by the REGISTER of the prose,
- * which is how the corpus mis-read an ended turn as a finished job. A record is
- * therefore built here once, carrying the kind the payload declares — and a
- * parent-directed payload that declares none is a PLUGIN bug, so it throws at the
- * capture rather than entering the ledger as an unlabelled notice.
- */
-const noticeRecord = (to, text) => {
-  const kind = notificationKindOf(text);
-  if (!kind) {
-    throw new Error(`parent-directed payload carries no Kind field:\n${text}`);
-  }
-  return { kind, message: text, to };
-};
-
-/**
- * …and the one place a notice joins the ledger, kept separate from classifying it
- * so a REJECTED attempt stays undelivered. Classifying and capturing together
- * counted a failed dial as a delivery and doubled every redelivery case.
- */
-const captureNotice = (state, record) => state.notifications.push(record);
-
-/**
- * The ONE "this session is gone" error the mock transport reports. Three
- * conditions produce it — a session the host never had, a test-declared failure
- * id, and a gate released with `fails` — and they share the message on purpose:
- * a test asserting what the transport said must not be able to tell which
- * scenario it hit, because what the server says is the contract and the
- * condition is only the story that produces it. Spelled three times, the message
- * was three chances to drift away from the server's own wording.
- */
 const sessionNotFound = () => missingSessionError();
 
 /**

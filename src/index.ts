@@ -113,8 +113,9 @@ async function setup(context: Context): Promise<void> {
 
 export default {
   id: "dynamic-task",
-  // The loader calls `setup(context)` with ONE argument (promise/adapter.js) —
-  // options ride on `context.options`. A two-parameter forwarding signature would
-  // typecheck while receiving `undefined` forever.
-  setup: (context: Context) => setup(context),
+  // The function itself, not a re-annotating forwarder: the loader calls
+  // `setup(context)` with ONE argument (promise/adapter.js) and `satisfies Plugin`
+  // already types the parameter. A wrapper could only restate it, and a two-parameter
+  // one would typecheck while receiving `undefined` forever.
+  setup,
 } satisfies Plugin;

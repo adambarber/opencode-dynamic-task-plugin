@@ -13,7 +13,6 @@ import type { TaskStore } from "./store.js";
 import type { ActiveTaskState } from "./task-state.js";
 
 /**
-/**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE
  * child→parent channel (no purpose-specific tool): `progress` is information,
  * `needs_input` is the child saying this turn cannot finish without the parent.

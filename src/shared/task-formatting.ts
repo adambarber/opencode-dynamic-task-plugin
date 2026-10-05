@@ -407,7 +407,7 @@ export function formatTaskStatusDetail(
     "",
     `Session: ${task.childSessionId}`,
     `Parent: ${task.parentSessionId}`,
-    `Agent: ${agentDisplayName(task)},`,
+    `Agent: ${agentDisplayName(task)}`,
     `State: ${task.state}`,
     `Description: ${task.description}`,
     `Lineage: ${task.lineage.length > 0 ? task.lineage.join(" → ") : "(root)"}`,

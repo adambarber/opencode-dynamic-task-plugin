@@ -1,0 +1,124 @@
+/**
+ * The caps flow end to end on disk: what a chosen value writes, what it leaves alone, and
+ * what the operator is told. The design thesis and harness rationale are in
+ * `tui-limits-command.test.js`.
+ */
+import {
+  BASE, agentEntry, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, rowsText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
+} from "./support/limits-screen.js";
+import { CAP_LABEL, capCellOf } from "../../dist/tui/agent-editor.js";
+import { FROM_CONFIG, namedCell } from "../../dist/tui/theme.js";
+import { describe, it } from "./support/runner.js";
+import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
+import assert from "node:assert/strict";
+import { chmodSync } from "node:fs";
+
+/** What the two cap rows read as the terminal will show them, for an agent capped at 2. */
+const AGENT_CAP_ROWS = AGENT_CAP_NAMES.map((cap) => {
+  const entry = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
+  return `${CAP_LABEL[cap]} ${namedCell(capCellOf(entry, cap))}`;
+});
+
+/**
+ * The cap rows of a drawn screen, in draw order, minus the way out.
+ *
+ * Two cases claim the same thing about the caps screen — that both caps are there,
+ * labelled, each with its figure — from two different angles: one is about the EXIT being
+ * last and needs the rows above it to be only the caps, the other is about the hole the
+ * flow found and needs both caps individually pressable. Spelled twice it is four lines
+ * and seventy tokens of identical shape, and the gate is right to: the two
+ * `AGENT_CAP_NAMES.map` chains are one claim written out, and the line above each says so.
+ */
+const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
+
+describe("the flow, end to end on disk", () => {
+  it("a chosen cap lands in the overlay the dispatch path reads", () =>
+    withPickerOpen(havingWritten((host) => chooseValue(host, 4))((host, directory) => {
+      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4 } } },
+        "the value the row promised is the value on disk");
+      assert.ok(host.seen.toasts.some((toast) => toast.variant === "success" && /next dispatch/.test(toast.message)),
+        "and the operator is told it takes effect on the next dispatch, which is all it claims");
+    })));
+
+  it("lands back on the AGENT's caps, re-read, so the other cap is one keypress away", () =>
+    // The stale-row defect, and the reason the landing screen is an argument rather
+    // than a constant. A write makes the view the caller is holding out of date, so a
+    // second cap answered from that view would be written from caps the file no
+    // longer has. Landing on the LIST instead would also be correct, and would make
+    // changing the pair two round trips through the whole screen — the cost a
+    // per-agent cap pair exists to avoid.
+    withPickerOpen(havingWritten((host) => chooseValue(host, 4))((host) => {
+      assert.equal(top(host.seen).title, "explore", "the agent's own caps, not the list and not the value screen");
+      // LABEL AND VALUE, whole rows and by EQUALITY, so a failure prints what the
+      // operator sees. The operator set this one, so it claims no provenance — that is
+      // the difference between a number the file holds and a number somebody chose, and it
+      // is the reason `namedCell` and `terseCell` are two spellings rather than one.
+      assert.equal(capText(host, "maxConcurrent"), `${CAP_LABEL.maxConcurrent} 4`, "and it shows the NEW number, not the one it was holding");
+      assert.equal(capText(host, "maxDepth"), `${CAP_LABEL.maxDepth} ${BASE.maxDepth} from config`, "with the other cap still reading as inherited, so nothing was invented by the write");
+    })));
+
+  it("setting the OTHER cap of the same agent keeps the first, because the list is re-read after a write", () =>
+    // The stale-row defect, driven through the one flow that has it. One row carries
+    // both caps, so the second write happens on a re-read of a view the first write
+    // invalidated — and a flow that wrote from the pre-write view would drop the
+    // first cap with nothing to show for it.
+    withPickerOpen(havingWritten((host) => chooseValue(host, 4))(async (host, directory) => {
+      // Back on the agent's caps, re-read. The DEPTH row is right there — which is
+      // the whole claim: the second write happens on a re-read, and it is one keypress
+      // away rather than a trip through the list.
+      await choose(host, capRow(host, "maxDepth"));
+      assert.equal(top(host.seen).title, `explore — ${CAP_LABEL.maxDepth} (${FROM_CONFIG})`, "the OTHER cap of the same agent, and the file still holding its number");
+      await choose(host, valueRow(host, 3));
+      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4, maxDepth: 3 } } },
+        "the cap set first survives the second, which is the whole claim");
+    })));
+
+  it("the depth cap is reachable at all, which a single-press row could not be", () =>
+    // The hole the flow found. One row carried both values, and one press had to pick a
+    // cap to open — so the row opened the concurrency picker and the depth cap had no
+    // way in at all. The pair was VISIBLE and half of it was editable, which is worse
+    // than showing one, because the screen had said both were settings.
+    withCapsOpen(async (host) => {
+      assert.deepEqual(capRowsAsDrawn(top(host.seen)), AGENT_CAP_ROWS, "both caps are rows of the agent's own screen, each with its figure");
+      for (const cap of AGENT_CAP_NAMES) {
+        await choose(host, capRow(host, cap));
+        assert.match(top(host.seen).title, new RegExp(`explore — ${CAP_LABEL[cap]}`), `${cap} opens its picker`);
+        await backToCaps(host, "explore", "and the way back is one level up, on the agent's own caps");
+      }
+    }));
+
+  it("clearing the agent's only cap removes the key AND the entry", () =>
+    // These were two cases over one event, differing only in their closing message,
+    // which is what the duplication gate called them. They are the same write: an
+    // agent whose last stated cap is cleared has nothing left to say, so both the key
+    // and the entry go. A `null` would be the same file with a second shape every
+    // reader would have to recognise, and an empty body would be a dead entry per
+    // experiment — the two ways an overlay rots.
+    withPickerOpen(async (host, directory) => {
+      await choose(host, clearRow(host));
+      assert.deepEqual(readOverlay(directory), { agents: {} },
+        "an absent key and a zero are different statements, and only one of them means 'no cap'");
+    }));
+
+  it("a write that fails says so and confirms nothing, rather than reporting a cap that was not applied", () =>
+    withPickerOpen(async (host, directory) => {
+      // A read-only directory: the overlay's temp-then-rename has nowhere to land.
+      chmodSync(directory, 0o500);
+      try {
+        await choose(host, valueRow(host, 4));
+        assert.ok(!host.seen.toasts.some((toast) => toast.variant === "success"),
+          "a refused write must not be confirmed as a cap in force");
+        assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
+          "and the operator is told the file could not be written");
+      } finally {
+        chmodSync(directory, 0o700);
+      }
+    }));
+
+  it("the list opens over a directory holding a ledger, because it does not read one", () =>
+    // The row used to print how many tasks were charged to it, which meant a read of
+    // the ledger file in the render path. The number is gone, and with it the read.
+    withOpen((host) => {
+      assert.match(rowText(top(host.seen), "explore"), /2 concurrency/);
+    }, { active: [{ agentName: "explore", childSessionId: "ses_x" }], overlay: { agents: { explore: { maxConcurrent: 2 } } } }));
+});

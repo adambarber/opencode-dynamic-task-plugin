@@ -1,31 +1,31 @@
 {
-  "$comment": "702 findings. Regenerate with: npm run lint:budget",
+  "$comment": "687 findings. Regenerate with: npm run lint:budget",
   "rules": {
     "eslint/default-param-last": 3,
     "eslint/init-declarations": 17,
     "eslint/max-params": 46,
-    "eslint/max-statements": 81,
+    "eslint/max-statements": 79,
     "eslint/new-cap": 13,
     "eslint/no-continue": 33,
-    "eslint/no-duplicate-imports": 25,
+    "eslint/no-duplicate-imports": 22,
     "eslint/no-nested-ternary": 7,
     "eslint/no-template-curly-in-string": 1,
     "eslint/no-underscore-dangle": 2,
     "eslint/prefer-destructuring": 9,
     "eslint/prefer-named-capture-group": 36,
-    "eslint/sort-imports": 249,
+    "eslint/sort-imports": 241,
     "eslint/sort-keys": 38,
     "oxc/no-map-spread": 1,
     "typescript/method-signature-style": 7,
     "unicorn/consistent-function-scoping": 73,
     "unicorn/error-message": 1,
     "unicorn/filename-case": 4,
-    "unicorn/max-nested-calls": 25,
+    "unicorn/max-nested-calls": 23,
     "unicorn/no-await-expression-member": 26,
     "unicorn/no-nested-ternary": 1,
     "unicorn/prefer-export-from": 2,
     "unicorn/prefer-spread": 1,
     "unicorn/prefer-ternary": 1
   },
-  "total": 702
+  "total": 687
 }

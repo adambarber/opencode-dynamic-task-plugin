@@ -341,7 +341,7 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
 // Makes it. Do it when a split would be dishonest — when there is genuinely no
 // Seam — and say so in the commit that raises it. Never to fit a file you have
 // Not finished splitting.
-const MAX_LINES = 1000;
+const MAX_LINES = 700;
 
 const readBudgetFile = () => JSON.parse(readFileSync(path.join(REPO_ROOT, "lint-budget.json"), "utf8"));
 

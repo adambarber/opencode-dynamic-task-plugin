@@ -29,6 +29,7 @@ export const FAULTS = Object.freeze([
   "presenceThrows",
   "agentsListThrows",
   "createThrowsOnce",
+  "createRefusedMissing",
   "createReturnsIdless",
   "abortHang",
   "abortThrows",

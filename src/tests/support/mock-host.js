@@ -660,6 +660,13 @@ export function createMockClient(hooks = {}) {
           state.createThrown = true;
           throw new Error("create failed");
         }
+        // The host refusing the create with its own missing-session shape, the way it
+        // answers when the session being branched from is gone. No session is created,
+        // so nothing exists to abort and no id was ever returned.
+        if (armedFlag(state, hooks, "createRefusedMissing")) {
+          fault(state, "createRefusedMissing");
+          throw missingSessionError(parentID ?? "ses_parent_gone");
+        }
         // Always `ses_`-prefixed, even when told to distinguish hosts: the
         // ledger reader validates that shape and drops an entry without it, so a
         // prefix in front would be a silent, self-inflicted data loss.

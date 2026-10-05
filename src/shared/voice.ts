@@ -159,8 +159,16 @@ export function agentGone(agentName: string): string {
   return `ERROR: Agent "${agentName}" not found.`;
 }
 
+// Two facts, two voices. One function used to answer both with the post-create
+// wording, so a create the host REFUSED — where no session existed, no id was
+// returned, nothing was aborted and there was no history — reported three events
+// that never happened. It had to be two: the id is exactly what tells them apart.
 export function sessionLost(sessionId: string): string {
   return `ERROR: Session "${sessionId}" not found on the server — dispatch failed after create; the session was aborted, history preserved.`;
+}
+
+export function createRefusedMissing(parentSessionId: string): string {
+  return `ERROR: Session "${parentSessionId}" not found on the server — the create was refused, so no child session was created.`;
 }
 
 // ─── Continue / steer ────────────────────────────────────────────────────

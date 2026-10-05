@@ -34,6 +34,7 @@ import {
   PERMISSION_DENIED,
   agentGone,
   createFailed,
+  createRefusedMissing,
   dependenciesPending,
   descriptionTooLong,
   sessionLost,
@@ -233,8 +234,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // A missing AGENT still carries its name in the message, so the substring
     // holds for it — but a missing SESSION arrives with no message at all, and
     // blaming the agent for the host losing the session is the wrong recovery.
+    // Which of the two missing-session facts this is: a session the host created and
+    // then lost, or a create the host refused. `createdSessionId` is the discriminator
+    // — it is set only once the create has answered with an id.
     if (isSessionMissing(error)) {
-      return sessionLost(createdSessionId ?? "the new session");
+      return createdSessionId ? sessionLost(createdSessionId) : createRefusedMissing(parentSessionId || UNKNOWN_PARENT);
     }
     if (message.includes("not found")) {
       return agentGone(agent.name);

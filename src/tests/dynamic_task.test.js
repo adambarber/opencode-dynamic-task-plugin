@@ -94,6 +94,19 @@ describe("dynamic_task validation", () => {
     answerSays(out, "create failed");
     });
 
+  // One refusal, two facts. A create the host REFUSED never produced a session, so
+  // there was no id, nothing to abort and no history to preserve — reporting it in
+  // the voice of a session lost after create invents three events that did not happen.
+  it("does not claim a session existed when the create itself was refused", async () => {
+    const refusing = await setupHarness({ hooks: { createRefusedMissing: true } });
+    const out = await refusing.tool.dynamic_task.execute(dispatchArgs("task t"), { sessionID: "p1" });
+    answerSays(out, "ERROR");
+    answerSays(out, "not found on the server");
+    for (const claim of ["the new session", "after create", "aborted", "history preserved"]) {
+      answerOmits(out, claim, "the create was refused, so none of that happened");
+    }
+  });
+
   // The one post-create failure the plugin cannot clean up. `session.abort` needs
   // an id; an unnameable session cannot be aborted, registered, notified, listed
   // or settled, and it is left running on the server. The response says "create

@@ -47,6 +47,7 @@ export const FAULTS = Object.freeze([
   "messageReadGate",
   "storageGate",
   "storageThrows",
+  "storageWriteThrows",
   "unreadableTranscript",
 ]);
 
@@ -84,12 +85,19 @@ export const fault = (state, name) =>
  * engages.
  */
 export function armHookFaults(state, hooks) {
-  for (const [flag, value] of Object.entries(hooks)) {
-    if (!FAULTS.includes(flag)) continue;
-    if (value === false || value === undefined || value === null) continue;
-    if (value instanceof Set && value.size === 0) continue;
-    armFault(state, flag);
-  }
+  const armed = Object.entries(hooks).filter(([flag, value]) => isAFaultArmed(flag, value));
+  for (const [flag] of armed) armFault(state, flag);
+}
+
+/**
+ * What a hooks object is asking for, as one question. A flag that is off, unnamed,
+ * or an empty set is the same answer — do not arm it — so three spellings of "no"
+ * cannot drift into three spellings of "yes".
+ */
+function isAFaultArmed(flag, value) {
+  if (!FAULTS.includes(flag)) return false;
+  if (value === false || value === undefined || value === null) return false;
+  return !(value instanceof Set && value.size === 0);
 }
 
 /**

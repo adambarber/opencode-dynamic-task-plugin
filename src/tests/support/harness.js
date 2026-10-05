@@ -14,24 +14,27 @@
  * in `mock-host.js` — this module is the driver, that one is the server.
  */
 
-import assert from "node:assert";
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
-import nodePath, { join } from "node:path";
-import { tmpdir } from "node:os";
-import { afterEach } from "node:test";
-import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
-import { resetAgentCache } from "../../../dist/shared/admission.js";
-import { clearNotifyLedger } from "../../../dist/shared/notify.js";
-import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { DEBUG_DIR } from "../../../dist/debug-logger.js";
+import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
+import { afterEach } from "node:test";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import {
   applyHostStatus,
   createMockClient,
   events,
   setHostTurn,
 } from "./mock-host.js";
+import { clearNotifyLedger } from "../../../dist/shared/notify.js";
+import { createStore } from "../../../dist/shared/durable-store.js";
+import { ledgerOver } from "./durable-world.js";
+import nodePath, { join } from "node:path";
+import { opaqueHost } from "./opaque-host.js";
+import { resetAgentCache } from "../../../dist/shared/admission.js";
+import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { textTools, v2Context } from "./v2-context.js";
+import { tmpdir } from "node:os";
+import assert from "node:assert";
 
 export {
   abortRequests,
@@ -267,7 +270,7 @@ const liveHarnesses = [];
  * without. `harness.spawn` records the child it creates, so cleanup cannot be
  * forgotten by a test that builds its harness inline.
  */
-export async function setupHarness({ hooks = {}, options = {}, directory = tmpProjectDir() } = {}) {
+export async function setupHarness({ hooks = {}, options = {}, directory = tmpProjectDir(), storage, domain = {} } = {}) {
   // v2 took the host's log sink away, so the plugin's debug log is a FILE and the
   // only one. A reader pointed at a host array would read a sink nothing writes,
   // and a log assertion against it passes against silence — so every harness test
@@ -277,7 +280,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     if (process.env.HARNESS_TRACE) appendFileSync(process.env.HARNESS_TRACE, `${mark}\n`);
   };
   trace("setup:enter");
-  const client = createMockClient(hooks);
+  const client = createMockClient(hooks, { kv: domain.kv });
   trace("setup:client");
   const state = client.testState;
 
@@ -315,6 +318,9 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   // Options ride on the context itself (`context.options`) — the loader calls
   // `setup(context)` with one argument, so a harness passing them positionally
   // would exercise defaults while believing otherwise.
+  // Durable state is seeded BEFORE the boot, because boot is the read: a case that
+  // seeds afterwards has already missed the only moment the plugin looks.
+  if (storage) storage(state.kv);
   await plugin.setup(context);
   trace("setup:plugin-run");
   assert.ok(rawTools.has("dynamic_task"), "dynamic_task tool must be registered");
@@ -322,6 +328,13 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
 
   const harness = {
     client,
+    /** The host's own durable table, so a case can see what the plugin persisted. */
+    kv: state.kv,
+    /**
+     * What a RESTART would believe, read through the reader the plugin itself uses.
+     * A case that reads the rows instead is reading the writer's opinion of itself.
+     */
+    readLedger: () => ledgerOver(createStore(opaqueHost(client), () => {})).load(),
     tool: textTools(rawTools),
     rawTools,
     directory,
@@ -392,6 +405,8 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     noticeFor: (childId) => state.notifications.find((n) => n.message.includes(childId)),
     permissionCalls: () => state.permissionCalls,
     logs: () => debugLines(directory),
+    /** The prose an operator would read: one file, written for a person. */
+    prose: () => pluginLog(directory),
     /**
      * The log lines for one event name, as the writer spelled it.
      *

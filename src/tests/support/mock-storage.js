@@ -10,6 +10,12 @@ import { armedFlag, fault } from "./faults.js";
 /** A promise nobody resolves, and the resolver that says so: the shape of "not yet". */
 const NOOP = () => {};
 
+/** A promise a holder can open later, and the hand that opens it. */
+function aGate() {
+  let letGo = NOOP;
+  return { gated: new Promise((resolve) => { letGo = resolve; }), release: () => letGo() };
+}
+
 /**
  * A count of things that happened, and a promise for when at least `n` have. Waiting
  * for the host by COUNT rather than by clock is what lets a case watch a store repair
@@ -55,6 +61,11 @@ async function passGate(state) {
  */
 export function createMockStorage(state, hooks) {
   const queuedDelays = Array.isArray(hooks.storageDelays) ? [...hooks.storageDelays] : [];
+  // The order the host was ASKED to write in, which is a different fact from the
+  // order its rows came back in and the only way a case can watch that a store puts
+  // before it drops.
+  const asked = [];
+  let readGate = null;
   const landings = counter();
   const afterHeld = [];
   let heldWrite = null;
@@ -66,10 +77,23 @@ export function createMockStorage(state, hooks) {
     throw new Error("storage unavailable");
   }
 
+  /**
+   * A host that will answer a READ and refuse a WRITE. Its own fault, because the
+   * two are different worlds: refusing everything means the plugin never boots, which
+   * tests nothing about what it does with a store it read successfully and cannot
+   * write. This is the shape an operator meets when the host's table is full.
+   */
+  function passWriteThrowFault() {
+    if (!armedFlag(state, hooks, "storageWriteThrows")) return;
+    fault(state, "storageWriteThrows");
+    throw new Error("storage write refused");
+  }
+
   // Returns the hold THIS call consumed, so the caller announces this write's own
   // landing rather than whichever write happened to finish first.
   async function storageFault() {
     await passGate(state);
+    if (readGate) await readGate.gated;
     passThrowFault();
     // A per-CALL delay queue, because that is the only way two writes to one key can
     // land out of ORDER: the earlier write has to be the slower one. A uniform delay
@@ -90,7 +114,10 @@ export function createMockStorage(state, hooks) {
   // one of them quietly stops announcing that its write landed.
   const settleWrite = async (land) => {
     const held = await storageFault();
-    land();
+    // AWAITED, because a fault inside the landing must travel out as this call's
+    // failure rather than as a promise nobody holds — a refusal the host reported to
+    // nobody is a test that passes against a broken store.
+    await land();
     landings.bump();
     // A held write reports its OWN landing, and does not also count as the write
     // that follows it — the follow-up has not been asked for yet.
@@ -103,7 +130,8 @@ export function createMockStorage(state, hooks) {
       await storageFault();
       return state.kv.get(key);
     },
-    remove: (key) => settleWrite(() => state.kv.delete(key)),
+    remove: (key) =>
+      settleWrite(writeVerb(`del ${key}`, () => state.kv.delete(key))),
     // The host's own rules, not this fake's idea of them: the limit is clamped to
     // 1..1000 and defaults to 100, the range is a prefix, and the cursor is
     // exclusive. A fake that invented its own pagination let a reader be written
@@ -121,8 +149,18 @@ export function createMockStorage(state, hooks) {
       const next = entries.length === take ? entries[entries.length - 1].key : undefined;
       return { entries, next };
     },
-    set: (key, value) => settleWrite(() => state.kv.set(key, value)),
+    set: (key, value) =>
+      settleWrite(writeVerb(`set ${key}`, () => state.kv.set(key, value))),
   };
+
+  /** What every write verb does: arm the fault, say what was asked, then do it. */
+  function writeVerb(askedLine, apply) {
+    return () => {
+      passWriteThrowFault();
+      asked.push(askedLine);
+      apply();
+    };
+  }
 
   /**
    * Hold ONE write until released, and name the two events a case needs without
@@ -130,12 +168,9 @@ export function createMockStorage(state, hooks) {
    * the store issues after it, armed only once it has landed.
    */
   function holdNext() {
-    let letGo = NOOP;
     let reportThis = NOOP;
     let reportFollowing = NOOP;
-    const gated = new Promise((resolve) => {
-      letGo = resolve;
-    });
+    const { gated, release } = aGate();
     const applied = new Promise((resolve) => {
       reportThis = resolve;
     });
@@ -149,9 +184,18 @@ export function createMockStorage(state, hooks) {
         afterHeld.push(reportFollowing);
       },
     };
-    return { applied, next, release: () => letGo() };
+    return { applied, next, release };
   }
 
-  /** Resolve once `n` durable writes have LANDED, however many calls refused to. */
-  return { holdNext, storage, untilWrites: landings.at };
+  /**
+   * Stop the host answering reads at all. A reader that cannot tell this from an
+   * empty table invents a clean slate, which is how a boot loses a child in silence.
+   */
+  function holdReads() {
+    const held = aGate();
+    readGate = { gated: held.gated };
+    return { release: held.release };
+  }
+
+  return { askedWrites: () => [...asked], holdNext, holdReads, storage, untilWrites: landings.at };
 }

@@ -104,11 +104,18 @@ export { noticeRecord };
  * A delivery the plugin owes and has not landed: the exact write, not a recipe to
  * rebuild one, plus how many attempts the previous boot already spent.
  */
+/**
+ * An owed notice AS THE HOST HOLDS IT. The clock is part of the record rather than a
+ * side table, because the queue is ordered by it and a boot that could not read it
+ * would deliver in an order that changes run to run. A fixture without it is a
+ * record the production reader drops — which is exactly what it was.
+ */
 export const owedEntry = (overrides = {}) => ({
   ...owedDelivery(
     { childSessionId: "ses_1", kind: "completed", parentSessionId: "parent_1" },
     "[dynamic-task-notify]\nsession owed",
     1,
   ),
+  owedAt: Date.now(),
   ...overrides,
 });

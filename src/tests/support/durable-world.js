@@ -12,10 +12,12 @@
 // arrangement as every other case that does, and the duplicate gate reads that as
 // duplication of the code under test rather than of the fixture.
 
+import { LEDGER_KEYS, createLedgerStore } from "../../../dist/shared/ledger-storage.js";
 import { afterEach, assert, beforeEach } from "./runner.js";
 import { createMockClient } from "./mock-host.js";
 import { createStateFacade } from "../../../dist/shared/state-facade.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
+import { createTaskStore } from "../../../dist/shared/task-state.js";
 import { opaqueHost } from "./opaque-host.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 
@@ -58,6 +60,8 @@ function build(options) {
     client,
     facade,
     kv,
+    /** The production ledger reader over this same chain, for a boot-shaped claim. */
+    ledger: ledgerOver(store),
     /** Read every record under the prefix through the facade, guarded. */
     readAll: () => facade.readAll(PREFIX, isTaskRecord),
     refusals,
@@ -146,6 +150,124 @@ function everyShape() {
   return world;
 }
 
+/**
+ * A world whose subject is the LEDGER rather than the store: the real ledger over the
+ * real facade, over the same fake host. A case that built this itself would spell the
+ * three layers again, and would be free to wire them in an order the plugin never uses.
+ */
+function ledger() {
+  const world = build();
+  const store = world.ledger;
+  return {
+    ...world,
+    /** A child must be in exactly one half. Absence is asserted as absence, not as
+     *  an undefined lookup — a record that merely reads as empty is a defect here. */
+    assertHalfGone: (half, child, why) => {
+      assert.equal(world.kv.has(LEDGER_KEYS[half](child)), false, why);
+    },
+    ledger: store,
+    /** Persist, wait until the host has it, and report what is durable. A case that
+     *  observes durability without the wait is asserting about a queue it never saw. */
+    persist: async (changes) => {
+      store.persist(changes);
+      await world.store.settled();
+      return store.load();
+    },
+    read: () => store.load(),
+    /** Let everything queued so far reach the host. A case that observes durability
+     *  without this is asserting about a queue it never waited on. */
+    settle: () => world.store.settled(),
+  };
+}
+
+/**
+ * A ledger world that has ALREADY persisted the given changes, one persist per change,
+ * in the order given. Most claims here are about what is durable once something
+ * happened, so the thing that happened is the arrangement and the claim is what
+ * follows — spelling "world, persist, await, read" in every case made the ceremony the
+ * only thing the duplicate gate could see.
+ */
+async function ledgerAfter(...firstChanges) {
+  const world = ledger();
+  for (const change of firstChanges) {
+    await world.persist([change]);
+  }
+  return world;
+}
+
+/**
+ * A ledger world where a child has already MOVED from one half to the other. Three
+ * claims here are about a move rather than about a record, and each spelled the same
+ * "running, then settle it" arrival: the ceremony was the thing they shared, not a
+ * defect in any one of them.
+ */
+async function ledgerMoved(from, to) {
+  const world = await ledgerAfter(from);
+  await world.persist([to]);
+  return world;
+}
+
+/**
+ * One child already written, with the host HOLDING the next write it is asked for. A
+ * refused move is only possible in this world — a write that is merely late asks a
+ * different question — so the arming belongs beside the arrival, not in each case.
+ */
+async function ledgerHeldAfter(firstChange) {
+  const world = await ledgerAfter(firstChange);
+  return { held: world.client.holdNextStorageWrite(), world };
+}
+
+/**
+ * A ledger world whose host table holds exactly the given rows, for a claim about a
+ * value the writer never produced — a torn row, a record filed under the wrong child,
+ * a field this build does not know. The rows ARE the arrangement, so they are named
+ * rather than written inside a closure in every corrupt-value case.
+ */
+function ledgerHolding(...rows) {
+  const world = ledger();
+  for (const [rowKey, value] of rows) {
+    world.kv.set(rowKey, value);
+  }
+  return world;
+}
+
+/**
+ * What the ledger reader makes of the given host rows. Almost every claim about a
+ * seeded row IS that read, so building the world and reading it are one arrangement:
+ * splitting them left every case spelling the same two lines, and the duplicate gate
+ * read the ceremony as duplication of the reader.
+ */
+async function ledgerReading(...rows) {
+  const world = ledgerHolding(...rows);
+  return { read: await world.read(), world };
+}
+
+/**
+ * The production LEDGER reader over an existing bounded store: the real store, the
+ * real facade, the real reader — layered over the chain the writes go into, never a
+ * second one. Two chains over one host is a world the plugin never has, and a case
+ * that awaits the empty one learns nothing about whether its write landed.
+ */
+export function ledgerOver(store) {
+  return createLedgerStore(createStateFacade(store));
+}
+
+/**
+ * The LEDGER world wired to a real task store the way `entry/state.ts` wires it, so a
+ * case can ask the only question the ledger exists to answer: after the process dies,
+ * what will the next one believe? The sinks ARE the subject — they are the line an
+ * empty publish used to vanish behind — so they are wired once, here, rather than in
+ * every suite that needs the join.
+ */
+async function durableTask(fn) {
+  const world = ledger();
+  const store = createTaskStore();
+  store.onActiveChange = (changes) => world.ledger.persist(changes);
+  store.onRetainedChange = (changes) => world.ledger.persist(changes);
+  const out = await fn(world, store);
+  return { ...out, store, world };
+}
+
 /** A world holding exactly one record of ours, beside a document that is not ours. */
 function besideAForeignKey(records) {
   const world = seeded(records);
@@ -154,10 +276,35 @@ function besideAForeignKey(records) {
 }
 
 /**
- * Shrink every deadline for a whole suite, and put them back after each case. A
- * case that asserts about a bound needs it held across the arrange and not only
- * across the await that observes it, and two suites spelling the hook pair drifted
- * into two slightly different save/restore dances.
+ * Nothing answered at all. The claim is the same at either level of the reader — it is
+ * why `incomplete` exists — and only the collection each reader reports differs, so a
+ * case names that. An operator told "no records" would conclude there is nothing to
+ * settle, when in fact nothing could be read.
+ */
+function assertNothingAnswered(read, size, why) {
+  assert.equal(read.incomplete, true, `nothing answered, and the read says PARTIAL — ${why}`);
+  assert.equal(size(read), 0, `and it is empty rather than clean — ${why}`);
+  return read;
+}
+
+/**
+ * Run a claim with every deadline shrunk, and put them back afterwards. A claim about
+ * a REFUSAL needs the bound to expire inside the test, and the save/restore dance was
+ * spelled out in each such case, which is how two of them drifted into two slightly
+ * different teardowns.
+ */
+async function whileRefused(claim) {
+  const restore = shrink();
+  try {
+    return await claim();
+  } finally {
+    restore();
+  }
+}
+
+/**
+ * Shrink every deadline for a whole suite, and put them back after each case, so a
+ * bound is held across the arrange and not only across the await that observes it.
  */
 function tightBounds(ms = PATIENCE_MS) {
   let restore = NOT_YET;
@@ -169,18 +316,38 @@ function tightBounds(ms = PATIENCE_MS) {
   });
 }
 
+/**
+ * Shorten every deadline for one case, and put it back after. A case that asserts a
+ * REFUSAL needs the bound to expire inside the test; a case that asserts a successful
+ * read or write must not have its answer race a clock it does not control, so it runs
+ * at the production bound and passes by observation rather than by luck.
+ */
+function shrink(ms = PATIENCE_MS) {
+  return shrinkBoundsForTesting(ms);
+}
+
 export const durable = {
+  assertNothingAnswered,
   besideAForeignKey,
   build,
+  durableTask,
   everyShape,
   failing,
   held,
   isTaskRecord,
   key,
+  ledger,
+  ledgerAfter,
+  ledgerHeldAfter,
+  ledgerHolding,
+  ledgerMoved,
+  ledgerReading,
   loaded,
   paged,
   refusing,
   seeded,
+  shrink,
   tightBounds,
+  whileRefused,
   written,
 };

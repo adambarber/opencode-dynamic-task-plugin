@@ -189,7 +189,14 @@ const silence = (state, hooks, value, ns = "") =>
     },
   });
 
-export function createMockClient(hooks = {}) {
+/**
+ * `domain` is the host's durable table, handed in when a case needs TWO plugin
+ * processes to share one. The host's KV is global, so sharing is the truth and a
+ * private Map per client is the simplification — which is only safe while every
+ * case asks questions about a single plugin, and quietly unaskable the moment one
+ * does not.
+ */
+export function createMockClient(hooks = {}, domain = {}) {
   const state = {
     sessions: new Set(),
     // Sessions the host HAS but did not create in this run — a restore. Kept apart
@@ -247,7 +254,7 @@ export function createMockClient(hooks = {}) {
     messageReadGate: null,
     // The host's durable plugin table. A Map here stands in for the host's SQLite
     // `kv`, and it is the ONLY place in the fake that pretends to be a disk.
-    kv: new Map(),
+    kv: domain.kv ?? new Map(),
     storageGate: null,
     // The host's status map, shaped as the server holds it: every live
     // session, with the host's own three words. Derived from the events a test
@@ -276,8 +283,13 @@ export function createMockClient(hooks = {}) {
     else closeHostTurn(state, id, verdict);
   }
   armHookFaults(state, hooks);
-  const { holdNext: holdNextStorageWrite, storage, untilWrites: untilStorageWrites } =
-    createMockStorage(state, hooks);
+  const {
+    askedWrites: storageAskedWrites,
+    holdNext: holdNextStorageWrite,
+    holdReads: holdStorageReads,
+    storage,
+    untilWrites: untilStorageWrites,
+  } = createMockStorage(state, hooks);
 
   const endpoints = {
     testState: state,
@@ -582,6 +594,16 @@ export function createMockClient(hooks = {}) {
     // already gave up on arrive and observe what the store does about it.
     holdNextStorageWrite() {
       return holdNextStorageWrite();
+    },
+    // The keys the host was ASKED to write, in order: put-then-drop is a claim about
+    // what a case asked for, which the rows in `kv` cannot show.
+    storageWriteKeys() {
+      return storageAskedWrites();
+    },
+    // A host that has stopped answering reads. Unanswered is not empty, and a case
+    // cannot tell them apart unless the fake can make one happen on purpose.
+    holdStorageReads() {
+      return holdStorageReads();
     },
     // Resolve once `n` durable writes have LANDED. A store repairing a late landing
     // does it with a real write, so waiting for the repair waits for the host.

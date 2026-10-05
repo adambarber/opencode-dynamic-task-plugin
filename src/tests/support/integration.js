@@ -11,12 +11,12 @@
  * document the boot will quietly ignore.
  */
 
-import assert from "node:assert";
-import { readFileSync, writeFileSync } from "node:fs";
-import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
-import { events } from "./mock-host.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { resolveTaskLedgerPath } from "../../../dist/shared/task-ledger.js";
+import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
+import { events } from "./mock-host.js";
+import { owedIdentity } from "../../../dist/shared/notify-queue.js";
+import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
+import assert from "node:assert";
 
 /**
  * A harness whose children fail every turn with `detail`, and one such child.
@@ -40,13 +40,51 @@ export async function childFailingWith(detail) {
 }
 
 /**
- * The durable reader's input, written as given. The file name and the version
- * are the reader's contract, not a case's business — and four cases were each
- * spelling out all three, which is four chances to write a document the boot
- * quietly ignores.
+ * The two halves the durable reader knows, and the reader's own key for each. A
+ * fixture that spelled these itself would be free to drift from the layout, so the
+ * layout is asked for rather than remembered — and the `tasks` name is the file era's
+ * word for the settled half, kept only so a case's document still reads like itself.
  */
-export const writeLedger = (directory, document) =>
-  writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ version: 3, ...document }));
+const HALVES = [
+  ["active", LEDGER_KEYS.active],
+  ["tasks", LEDGER_KEYS.retained],
+];
+
+/**
+ * The durable reader's input, written through the reader's own key layout.
+ *
+ * A `Storage.set` has no `undefined`, so a record goes in as text: the same thing the
+ * writer does, which is why a fixture cannot hand the reader a shape production could
+ * never have written and call the reader's rejection a bug.
+ */
+export const putLedger = (kv, document) => {
+  for (const [half, keyOf] of HALVES) {
+    for (const [childSessionId, entry] of Object.entries(document[half] ?? {})) {
+      kv.set(keyOf(childSessionId), JSON.stringify(entry));
+    }
+  }
+  for (const notice of document.pending ?? []) {
+    kv.set(LEDGER_KEYS.pending(owedIdentity(notice)), JSON.stringify(notice));
+  }
+  return kv;
+};
+
+/** The durable state as it stands, read back under the reader's own keys. */
+export const ledgerSays = (kv) => {
+  const entries = (prefix) =>
+    Object.fromEntries(
+      [...kv]
+        .filter(([key]) => key.startsWith(`${prefix}/`))
+        .map(([key, value]) => [key.slice(prefix.length + 1), JSON.parse(value)]),
+    );
+  return {
+    active: entries(LEDGER_PREFIXES.active),
+    pending: [...kv]
+      .filter(([key]) => key.startsWith(`${LEDGER_PREFIXES.pending}/`))
+      .map(([, value]) => JSON.parse(value)),
+    tasks: entries(LEDGER_PREFIXES.retained),
+  };
+};
 
 /**
  * A plugin booted on a project whose durable state is a ledger the case wrote.
@@ -59,27 +97,31 @@ export const writeLedger = (directory, document) =>
  * variable read at boot is fixed for the life of the process, and a fixture that
  * looked like it could be sequenced around that is a fixture that cannot.
  */
-export const bootOn = async (seed, { hooks = {} } = {}) => {
+export const bootOn = async (seed, { hooks = {}, raw = {} } = {}) => {
   const directory = tmpProjectDir();
   const document = seed(Date.now());
-  // A case may hand the reader something that is not a document at all. A torn
-  // write is a failure mode of the READ, so the seam that owns what the reader
-  // is given has to be able to produce one — and it is the SAME seam, because a
-  // second boot helper is a second arrangement that can drift from the first.
-  if (typeof document === "string") writeFileSync(resolveTaskLedgerPath(directory), document);
-  else writeLedger(directory, document);
-  return { directory, ...(await setupHarness({ directory, hooks })) };
+  // `raw` is the seam that can put something the WRITER would never write under a key
+  // of its own: a torn record, a record from a past this build cannot read. Both are
+  // reader questions, and a fixture that could only produce well-formed records could
+  // never ask one.
+  const storage = (kv) => {
+    putLedger(kv, document);
+    for (const [key, value] of Object.entries(raw)) kv.set(key, value);
+  };
+  return { directory, ...(await setupHarness({ directory, hooks, storage })) };
 };
 
 /**
- * Settle the child and let its durable write land. The settlement writes the
- * ledger synchronously — the pause is for CI, not the contract — so it is said
- * once here, where a reader can see which of the two it is, instead of as a
- * private `sleep(30)` that reads like eventual consistency.
+ * Settle the child and let its durable write land.
+ *
+ * The write is now a bounded, ordered, per-key round trip to the host, so "landed" is
+ * an event rather than a pause: the chain the store exposes settles only once the
+ * write it covers has been answered, and a refusal would still resolve it. So the
+ * ledger is polled until it says what the settlement claimed.
  */
 export const settledOnDisk = async (h, id, status) => {
   await h.settle(id, status);
-  await sleep(30);
+  await waitFor(() => h.kv.size > 0, "the settlement's durable write to land");
 };
 
 /**
@@ -153,11 +195,9 @@ export async function waitFor(predicate, what) {
 export const inTempFile = (fn) => withTempFile(tmpFilePath("dt-integration"), fn);
 
 /**
- * The ledger as it is ON DISK, parsed raw.
+ * The ledger as the HOST holds it, parsed raw.
  *
- * Not through `loadTaskLedger`: a case about what the file says must not be
- * answered by the reader under test, because the reader is the component that
- * discards. Two suites had each spelled this line, and the gate was right to
- * call it a clone.
+ * Not through the reader: a case about what durable state says must not be answered
+ * by the reader under test, because the reader is the component that discards.
  */
-export const fileSays = (file) => JSON.parse(readFileSync(file, "utf8"));
+export const fileSays = (kv) => ledgerSays(kv);

@@ -115,13 +115,12 @@ export const ABORT_BOUND_MS = 2_000;
 // that accepts the call and never answers left every dispatch waiting on the list.
 // `presence` is the existence read — one `session.get` against the same local
 // server, same bound, and a key of its own because it is a distinct call with a
-// distinct failure mode: it is the ONLY read whose answer is a refusal, and a
-// bound shared with the status read would let a slow status map be mistaken for
-// an unanswered existence question.
-export const READ_BOUNDS: { transcript: number; agents: number; status: number; presence: number } = {
+// distinct failure mode: it is the ONLY read whose answer can be a refusal, and
+// reusing the transcript's bound would let a slow transcript be mistaken for an
+// unanswered existence question.
+export const READ_BOUNDS: { transcript: number; agents: number; presence: number } = {
   agents: READ_BOUND_MS,
   presence: READ_BOUND_MS,
-  status: READ_BOUND_MS,
   transcript: READ_BOUND_MS,
 };
 // Creating the child's session. The same bound and the same argument as the abort:
@@ -135,25 +134,17 @@ export const CREATE_BOUND_MS = 2_000;
 // answer — it is a settlement that never settles, with the child's turn open.
 export const QUESTION_BOUND_MS = 2_000;
 
-// A log line. The shortest of them all, because the log is the least valuable
-// thing the plugin asks for: it is diagnostics, its own contract is best-effort,
-// and it is the one write that happens BEFORE anything else — boot awaits it,
-// every settlement path awaits it. Unbounded, a host that accepted the line and
-// never answered it left the plugin's entry function never returning, which is
-// the one failure with no symptom at all: the session exists, the tools are
-// never registered, and nothing logs the reason because the log is what hung.
-export const LOG_BOUND_MS = 1_000;
-
+// v2 has no host log sink (`app.log` is gone), so there is no bounded log WRITE:
+// `safeLog` is local file I/O now and needs no deadline against the host. The old
+// bound outlived the call it bounded and still described the hang it used to cause.
 export const WRITE_BOUNDS: {
   parentPrompt: number;
   abort: number;
   create: number;
   question: number;
-  log: number;
 } = {
   abort: ABORT_BOUND_MS,
   create: CREATE_BOUND_MS,
-  log: LOG_BOUND_MS,
   parentPrompt: PARENT_WRITE_BOUND_MS,
   question: QUESTION_BOUND_MS,
 };
@@ -170,7 +161,6 @@ export const WRITE_BOUNDS: {
 export function shrinkBoundsForTesting(ms: number): () => void {
   const read = READ_BOUNDS.transcript;
   const {agents} = READ_BOUNDS;
-  const {status} = READ_BOUNDS;
   const {presence} = READ_BOUNDS;
   const write = WRITE_BOUNDS.parentPrompt;
   const {abort} = WRITE_BOUNDS;
@@ -178,9 +168,8 @@ export function shrinkBoundsForTesting(ms: number): () => void {
   const {question} = WRITE_BOUNDS;
   READ_BOUNDS.transcript = ms;
   READ_BOUNDS.agents = ms;
-  READ_BOUNDS.status = ms;
   // Shortened like every other read: the seam changes patience, not the
-  // production separation between the presence question and the status one.
+  // production separation between the presence question and the transcript one.
   READ_BOUNDS.presence = ms;
   WRITE_BOUNDS.parentPrompt = ms;
   WRITE_BOUNDS.abort = ms;
@@ -189,7 +178,6 @@ export function shrinkBoundsForTesting(ms: number): () => void {
   return () => {
     READ_BOUNDS.transcript = read;
     READ_BOUNDS.agents = agents;
-    READ_BOUNDS.status = status;
     READ_BOUNDS.presence = presence;
     WRITE_BOUNDS.parentPrompt = write;
     WRITE_BOUNDS.abort = abort;

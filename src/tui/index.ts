@@ -4,10 +4,8 @@
  * A TUI module exports `tui` where a server module exports `server` — never both
  * (see `TuiPluginModule`), which is why this is a SEPARATE module rather than a flag
  * on the first. It is not, however, a second entry in opencode's `plugin` array:
- * that array is the SERVER plugin list. The host loads TUI modules from `tui.json` —
- * a different file with its own `plugin` array — and there is no directory
- * auto-discovery for TUI plugins at all, so a module listed in the wrong file is
- * never loaded. An empty command palette is what that looks like.
+ * that array is the SERVER plugin list. Registration is one directory, built as
+ * `index` (server) plus `tui` (TUI), linked into `~/.config/opencode/plugins/`.
  *
  * The loader reads the module's DEFAULT export and ignores named exports, and a file
  * plugin must carry a non-empty `id`: it is the module's runtime identity, the key

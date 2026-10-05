@@ -13,7 +13,7 @@
 // Then each target is aborted in turn, and each reports its own outcome: the
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
-import { abortSession, stopPlan } from "../shared/session-lifecycle.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { safeLog } from "../shared/notify.js";
 import {

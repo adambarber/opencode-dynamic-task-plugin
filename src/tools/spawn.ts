@@ -10,7 +10,8 @@ import {
 } from "../shared/admission.js";
 import { agentCanNotify } from "../shared/agent-record.js";
 import { NOTIFY_TOOL } from "../shared/notification-text.js";
-import { UNKNOWN_PARENT, abortSession, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
+import { abortSession } from "../shared/session-abort.js";
+import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { isSessionMissing } from "../shared/liveness.js";
 import { WRITE_BOUNDS } from "../shared/execution-bound.js";

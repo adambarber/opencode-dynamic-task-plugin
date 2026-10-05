@@ -18,7 +18,7 @@
 
 import type { Context, Plugin } from "@opencode/plugin/promise/plugin";
 import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
-import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
+import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
 import { containFailure, safeLog } from "./shared/notify.js";

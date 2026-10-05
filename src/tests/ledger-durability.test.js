@@ -24,7 +24,7 @@ import { describe, it } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
 import { createTaskStore, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { FailureClass } from "../../dist/shared/failure-class.js";
-import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/session-lifecycle.js";
+import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/task-ledger.js";
 import { childParams, defaultConfig } from "./support/fixtures.js";
 import { tmpLedgerPath, withTempFile } from "./support/harness.js";
 import { assertAbsent, assertIs } from "./support/assertions.js";

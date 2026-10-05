@@ -11,7 +11,7 @@
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import { TaskState } from "./task-state.js";
-import { type AbortRefusal, AbortRefusalKind } from "./session-lifecycle.js";
+import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
 import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────

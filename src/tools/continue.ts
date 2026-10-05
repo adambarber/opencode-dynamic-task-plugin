@@ -1,7 +1,7 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
-import { abortSession, stopPlan } from "../shared/session-lifecycle.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";

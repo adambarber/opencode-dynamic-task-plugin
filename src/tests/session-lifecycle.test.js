@@ -1,29 +1,33 @@
 /**
- * session-lifecycle.ts — the host's session envelope, read from every side.
+ * The host's session boundary, read from every side.
  *
- * One module, one file: the readers that take an event, an SDK result or a sync
- * envelope and answer a session id, a status word, or a payload. These were one
- * describe among sixty in a single grab-bag file, which is the only reason a
- * reader had to hold the whole plugin's contract in mind to check one function.
+ * The readers that take an event, an SDK result or a sync envelope and answer a
+ * session id, a status word, or a payload. These were one describe among sixty in
+ * a single grab-bag file, which is the only reason a reader had to hold the whole
+ * plugin's contract in mind to check one function.
+ *
+ * The subject spans three owners now, and each import below names which one it is
+ * testing: the readers in host-events.ts, the ledger in task-ledger.ts, and the
+ * parentage this file is named after in session-lifecycle.ts.
  */
 
-import { assert, describe, it } from "./support/runner.js";
-import { compareStrings } from "./support/assertions.js";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, loadTaskLedger, mergeLedgerChange, normalizeStatus, resolveParentSessionId, saveTaskLedger, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
 // The host's event vocabulary, named by the module that owns it. A test firing a
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
-import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE } from "../../dist/shared/host-events.js";
+import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, normalizeStatus } from "../../dist/shared/host-events.js";
+import { activeEntry, owedEntry, retainedEntry } from "./support/records.js";
+import { assert, describe, it } from "./support/runner.js";
+import { assertAbsent, assertEmpty, assertIs, assertNothing, compareStrings } from "./support/assertions.js";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { loadTaskLedger, mergeLedgerChange, saveTaskLedger } from "../../dist/shared/task-ledger.js";
+import { resolveParentSessionId, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
+import { tmpLedgerPath, withEnv, withTempFile } from "./support/harness.js";
+import { sessionUpdatedEnvelope } from "./support/mock-host.js";
+import { tmpdir } from "node:os";
 // The strip the writer applies to a durable record, read from production rather
 // than restated as a field list — a test that enumerates the advisories cannot
 // notice a fifth one.
 import { withoutAdvisory } from "../../dist/shared/task-state.js";
-import { tmpLedgerPath, withEnv, withTempFile } from "./support/harness.js";
-import { sessionUpdatedEnvelope } from "./support/mock-host.js";
-import { activeEntry, owedEntry, retainedEntry } from "./support/records.js";
-import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 
 describe("validateSessionResult", () => {
   it("extracts id from flat result", () => {
@@ -443,7 +447,7 @@ describe("the ledger's documented shape is the shape it writes", () => {
     const written = Object.keys(JSON.parse(readFileSync(file, "utf8")));
 
     const source = readFileSync(
-      new URL("../../src/shared/session-lifecycle.ts", import.meta.url),
+      new URL("../../src/shared/task-ledger.ts", import.meta.url),
       "utf8",
     );
     // Scoped to the line that CLAIMS to enumerate, not the whole comment block.

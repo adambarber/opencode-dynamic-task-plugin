@@ -22,190 +22,47 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
+import { type ActiveTaskState, type NewTaskRegistration, TaskState, withoutAdvisory } from "./task-records.js";
+import { type AgentCapSource, agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
-import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
-import { type AgentCapSource, agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
-import { foldActiveByAgent } from "./occupancy.js";
+
 // The store is its own subject: it owns the SET and the only way to change it,
 // while this module owns what a set MEANS. Re-exported here because task-state is
 // where the state machine reads and writes it, and eight modules already reach the
 // store through this path; the alternative is eight import lines for a type they
 // did not previously have to name.
 export { TaskStore, createTaskStore, type LedgerChangeSink } from "./store.js";
-import type { TaskStore} from "./store.js";
-import { type LedgerChangeSink } from "./store.js";
 
+import type { DynamicTaskConfig } from "./config.js";
 import type { ModelOverride } from "./prompt.js";
-import type { NoticeClaim } from "./notice-claim.js";
+import type { TaskStore } from "./store.js";
+import { foldActiveByAgent } from "./occupancy.js";
+
+// The vocabulary of a task record — the state enum, both record shapes, the
+// lineage types and the advisory strip — is declared in `task-records.ts`, which
+// is its owner. It is re-exported here for the reason the settled-record block
+// below gives for its own half: this module is where the store's vocabulary has
+// always been named, and seventeen modules import those names from here. The
+// owner is one line below, so where a thing lives is still answerable by reading
+// this header rather than by searching the tree.
+export {
+  ADVISORY_FIELDS,
+  type ActiveTaskState,
+  type LineagePath,
+  type LineageStep,
+  type NewTaskRegistration,
+  type SettlementVerdict,
+  TASK_STATES,
+  type TaskIdentity,
+  type TaskRecordBase,
+  TaskState,
+  isTaskState,
+  withoutAdvisory,
+} from "./task-records.js";
 
 
 
-/**
- * A task's lifecycle state.
- *
- * `blocked` is a state of its own: the child ended its turn needing the parent's
- * answer. Not a success and not a failure — the child worked, it could not
- * finish, and the plugin recorded `completed` for exactly this case, a false
- * success claim about a task that delivered no result. It is terminal (the turn
- * is over) and revivable (the parent's answer is a new turn).
- *
- * An enum, not a string-literal union, for the same reason as NoticeClaim: a
- * union is an invitation to compare against a raw literal, and the wire string is
- * the only place a literal belongs.
- */
-export enum TaskState {
-  Active = "active",
-  Completed = "completed",
-  Error = "error",
-  Blocked = "blocked",
-  Interrupted = "interrupted",
-}
-
-// The states, as data: the durable reader validates a restored record against
-// this list, so a state cannot be added to the machine and forgotten by the
-// reader that has to understand it.
-export const TASK_STATES: readonly TaskState[] = Object.values(TaskState);
-// A set lookup never narrows its key; the predicate below does the naming.
-const TASK_STATE_LIST: readonly unknown[] = Object.values(TaskState);
-export function isTaskState(value: unknown): value is TaskState {
-  return TASK_STATE_LIST.includes(value);
-}
-
-/**
- * A settlement, named — and the names are the machine's OWN terminal states, so
- * a verdict is directly claimable, notifiable, and renderable without a second
- * lookup table translating between three parallel spellings of the same fact.
- *
- * `interrupted` is absent on purpose: it is claimed by the interrupt funnel, not
- * arrived at by a turn ending.
- */
-export type SettlementVerdict = Extract<TaskState, TaskState.Completed | TaskState.Blocked | TaskState.Error>;
-
-export type LineageStep = string;
-export type LineagePath = LineageStep[];
-
-// The identity and routing of a task: the store's record, the durable entry the
-// loader narrows an untrusted file to, and the reference the plugin hands to the
-// prompt path are one contract wearing three coats. Declared once, so a field
-// added to a task is added here — a fourth coat is a fourth place a rename or a
-// new required field silently fails to reach.
-export interface TaskIdentity {
-  childSessionId: string;
-  parentSessionId: string;
-  // The REGISTRY id: the routing key the host resolves and the policy key the caps
-  // fold on. Never rendered to an operator as-is — renderers read `agentLabel`.
-  agentName: string;
-  // The display label snapshotted at dispatch. Optional so rows written before the
-  // field existed still load; renderers fall back to `agentName` for those.
-  agentLabel?: string;
-  description: string;
-}
-
-// A model override as the parent spelled it, as a PAIR — the record, the route
-// and the confirmation that renders it all need the same one, so it is named once
-// where the parse that produces it lives (ModelOverride, in prompt.ts) rather than
-// declared a second time beside the field that holds it. An inline spelling in
-// each is three places for a rename to miss.
-export interface TaskRecordBase extends TaskIdentity {
-  startedAt: number;
-  lineage: LineagePath;
-  // The agent is the routing fact, and it was here all along: `agentName` is on
-  // `TaskIdentity`, so a task has always known which agent occupies its slot. The
-  // lane field it used to carry alongside was a SECOND answer to the same question,
-  // and the two were free to disagree — which is how a capped lane got filled by
-  // children that were dispatched somewhere else. There is one key now.
-  requestedModel?: ModelOverride | undefined;
-  dependsOn?: string[] | undefined;
-  // Admission-time only: ids that needed settlement, not success, before this
-  // task spawned. Persisted so status renders the full dependency picture.
-  dependsOnSettled?: string[] | undefined;
-  /**
-   * How many times this child has been brought back to life.
-   *
-   * A count of REVIVALS, not of automatic ones. A revival is a revival whoever
-   * asked for it, and treating a parent's `task_continue` as free would let a
-   * child that has been revived three times quietly resume itself forever.
-   *
-   * Optional, and `?? 0` is the whole meaning of its absence at every reader: a
-   * fresh spawn has spent nothing, and a ledger written before this field
-   * existed has nothing to report. It is deliberately NOT one of the advisory
-   * fields — it must survive a restart, because a budget that resets on boot is
-   * no budget at all during the outage it exists for.
-   */
-  transientResumes?: number | undefined;
-}
-
-// What admission registers: the record minus the clock the store owns. The
-// advisory fields below are lifecycle-written, so a registration cannot set them.
-export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
-
-/**
- * The advisory fields — the ones a fresh process cannot verify, and so the only
- * ones that may never reach disk. A mid-flight notice and an activity heartbeat
- * belong to the process that observed them, and turn attribution belongs to
- * in-flight events that died with it: a fresh boot that inherited any of them
- * would be trusting a claim it cannot verify — and would re-persist a heartbeat on
- * every host event, putting a file write in the event head.
- *
- * The list lives HERE, exported, because three readers need it: the strip below,
- * the durable write, and the suite that has to prove the strip happens. It was
- * written out in the settle path and again on the durable write, in different
- * orders, and a fifth advisory field added to the record had to be remembered in
- * both places — while the tests, which named their advisories one case at a time,
- * would not have covered the fifth at all.
- */
-export const ADVISORY_FIELDS = ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt"] as const;
-// The tuple above is the whole advisory set: a fifth advisory stops being
-// `never` here, so the build fails until the list names it.
-type UnlistedAdvisory = Exclude<keyof ActiveTaskState, "state" | keyof TaskRecordBase | (typeof ADVISORY_FIELDS)[number]>;
-const everyAdvisoryIsListed: UnlistedAdvisory extends never ? true : never = true;
-void everyAdvisoryIsListed;
-export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
-  // The advisory half, dropped by name: a fifth advisory field fails the
-  // return type below, so the drop set cannot silently go stale.
-  const { lastNotice, lastActivityAt, turnLiveAt, replacedAt, ...base } = record;
-  return base;
-}
-
-export interface ActiveTaskState extends TaskRecordBase {
-  state: TaskState.Active;
-  // Latest mid-flight notice from the child (advisory metadata, not a lifecycle
-  // field). `claim` is what the child said about itself: `needs_input` means
-  // this turn is ending because it needs the parent, and the settlement reads it
-  // to record `blocked` instead of a false success. Last one wins, so a child
-  // that declares a block and then reports progress is believed again.
-  lastNotice?: { message: string; at: number; claim: NoticeClaim } | undefined;
-  // Latest time the host emitted ANY event for this child's session — the
-  // event funnel's own proof the turn is moving. Without it "last activity"
-  // could only mean "spawned" or "called task_notify", so a child working
-  // through a long tool chain read as silent since spawn. Advisory like the
-  // notice: never a lifecycle field, stripped at settlement so the durable
-  // ledger carries no heartbeat.
-  lastActivityAt?: number | undefined;
-  /**
-   * Turn attribution, part 1. Stamped ONLY when this turn REPLACED a previous
-   * turn on the same session (a steer, a revival) — a fresh spawn has no prior
-   * turn whose ending could still be in flight.
-   *
-   * A turn end is published more than once by the host (the status channel and
-   * the idle event each say the turn ended), and those copies can still be in
-   * flight when a replacement is dispatched. Until the replacement shows a life
-   * sign, no terminal event can be attributed to it — see
-   * `terminalEventIsAttributable`, the one gate that decides this.
-   */
-  replacedAt?: number | undefined;
-  /**
-   * Turn attribution, part 2: the last moment the CURRENT turn was observed
-   * doing something. Terminal events do not count — a turn ENDING is not the
-   * turn working, and counting it is what let an echo vouch for itself.
-   */
-  turnLiveAt?: number | undefined;
-  // Parent steer in flight: set synchronously by task_continue before aborting
-  // the running turn, consumed by the lifecycle handler to suppress that
-  // turn's terminal echo. Advisory, never a lifecycle mutation — the task
-  // stays active either way, and settlement strips it.
-}
 
 // The settled record's shape lives in `settled-record.ts`, with the read, the
 // amendment, and the change that carries it. It is re-exported here because it is
@@ -751,168 +608,12 @@ export function activeFor(store: TaskStore, childSessionId: string): ActiveTaskS
 }
 
 
-// Durability boundary: hydrate entries already validated by the ledger
-// reader (session-lifecycle) into the live maps. The reader owns shape truth;
-// this module owns placement and the caps.
-//
-// One loop for both halves. "Walk what the last boot left, keep what fits, count
-// what came back" is one shape; the per-record work (where it lands, and what
-// conflicts with it) is a function, not a copy of the loop.
-//
-// The conflict is handed over as the OTHER durable half rather than as a
-// predicate: a settled record and a running record for one id are the same task
-// seen twice, so the rule is simply "the other half outranks me" and each caller
-// names the map that holds it instead of re-deriving the lookup.
-function hydrate<T extends ActiveTaskState | RetainedTaskState>(
-  records: Map<string, T>,
-  place: (id: string, record: T) => void,
-  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
-  superseded: string[] = [],
-): number {
-  let restored = 0;
-  for (const [id, record] of records) {
-    if (outrankedBy.has(id)) {
-      // Declined, not placed — and the caller must be able to SAY so, or the
-      // entry stays in the shared file forever: this process will never place
-      // it, never settle it, and never claim it.
-      superseded.push(id);
-      continue;
-    }
-    place(id, record);
-    restored++;
-  }
-  return restored;
-}
-
 /** Is this one of ours, still running? The same question `activeFor` answers, as a verdict. */
 export function isRunning(store: TaskStore, childSessionId: string): boolean {
   return activeFor(store, childSessionId) !== undefined;
 }
 
-
-/**
- * Boot hydration for the running half, as ONE change rather than N.
- *
- * One write, and that is the load-bearing part. Placing each record through
- * `setActive` meant a boot rewrote the file once per restored task, each write
- * serializing a map that had already grown: restoring 200 records issued 200
- * writes and 4.8 MB of JSON to produce a 30 KB file, every boot, for no change in
- * content — the file ALREADY holds these records, they were just read from it.
- *
- * So the restore places and then tells the funnel ONCE. It does not bypass it —
- * spawn, revive and settlement still go through `setActive`/`removeActive` — and
- * a restore that dropped a record (the cap fired, or the other half outranked
- * it) is still followed by a write, so the file never disagrees with memory.
- *
- * The concurrency cap is deliberately NOT applied: it is an admission policy
- * about work this process starts, and these tasks are already running
- * server-side. Over-cap actives block new admissions until they settle.
- */
-/**
- * The one boot restore, for either half of the ledger.
- *
- * Three things are true of both halves and none of them is worth stating twice:
- * placements are collected AS they happen (so there is no second pass over the
- * records and no cast), an entry outranked by the other half is reported rather
- * than left behind, and N placements become ONE write. A boot that wrote per
- * record would read the shared file N times for no gain.
- */
-function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
-  records: Map<string, T>,
-  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
-  place: (id: string, record: T, changes: LedgerChange[]) => void,
-  fire: LedgerChangeSink | undefined,
-): number {
-  const changes: LedgerChange[] = [];
-  const superseded: string[] = [];
-  const restored = hydrate(records, (id, record) => place(id, record, changes), outrankedBy, superseded);
-  for (const id of superseded) changes.push({ id, kind: LedgerChangeKind.Stopped });
-  if (changes.length > 0) fire?.(changes);
-  return restored;
-}
-
-/**
- * The running half, restored as running tasks. Over-cap actives block new
- * admissions until they settle.
- */
-export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
-  return restoreInto(
-    records,
-    store.retainedTasks,
-    (id, record, changes) => {
-      changes.push(store.markRunning(id, record));
-    },
-    store.onActiveChange,
-  );
-}
-
-/**
- * The settled half, with the same one-write shape.
- *
- * `pruneIfBounded` is what stops this being a copy of the file: the cap can drop
- * a record, and a record the running half already holds is skipped, so the
- * restored set is not always the loaded set.
- */
-export function restoreRetained(
-  store: TaskStore,
-  records: Map<string, RetainedTaskState>,
-  maxEntries: number = DEFAULT_CONFIG.retainedTaskMaxEntries,
-): number {
-  return restoreInto(
-    records,
-    store.activeTasks,
-    (id, record, changes) => {
-      // The cap's drop is named rather than left inside `pruneIfBounded`, which
-      // has no way to hand it back: a record it drops must leave the shared file
-      // too, and "this process no longer has it" is not the same claim.
-      const decision = pruneIfBounded(store, record, maxEntries);
-      if ("dropped" in decision) {
-        // The incoming record IS the oldest, so it is the one the cap evicts, and
-        // the file has to learn that — or the next boot restores what this one
-        // refused. A `Forgotten` with no `Settled` beside it is the whole truth:
-        // this record is not in the store, and was not for an instant of this boot.
-        changes.push({ id, kind: LedgerChangeKind.Forgotten });
-        return;
-      }
-      store.markRetained(id, decision.kept);
-      if (decision.forgotten !== null) changes.push({ id: decision.forgotten, kind: LedgerChangeKind.Forgotten });
-      changes.push({ id, kind: LedgerChangeKind.Settled, record: decision.kept });
-    },
-    store.onRetainedChange === undefined
-      ? undefined
-      : (changes) => emitRetainedChange(store, ...changes),
-  );
-}
-
-// Restored entries bypass the runtime mutation choke points, so the cap is
-// enforced here (tenet: the cap cannot be escaped by any state path).
-//
-// AGE is the cap's rule, so it is judged on `retainedAt` from BOTH sides. The
-// only two things this can do — drop the oldest record held, or keep the one
-// arriving — are the same decision only while the file's key order is its age
-// order, which holds for a file this plugin wrote and for nothing else. A merge
-// of two ledgers, a formatter, a hand edit or a clock that moved between two
-// records all produce an order that is not an age order, and the oldest record
-// then arrives LAST, so the second branch evicts a record newer than the one it
-// keeps. The eviction is published as `Forgotten` and written back, so that is
-// not a transient slip: the file agrees with it and the next boot restores what
-// this one refused.
-function pruneIfBounded(
-  store: TaskStore,
-  record: RetainedTaskState,
-  maxEntries: number,
-): { kept: RetainedTaskState; forgotten: string | null } | { dropped: true } {
-  if (store.retainedTasks.size < maxEntries) return { forgotten: null, kept: record };
-  const oldestId = oldestRetainedId(store);
-  if (!oldestId) return { forgotten: null, kept: record };
-  const oldest = store.retainedTasks.get(oldestId);
-  // A tie keeps the incoming record and evicts the held one, which is what the
-  // first branch did, so nothing about an already-correct case moves.
-  if (oldest && record.retainedAt < oldest.retainedAt) return { dropped: true };
-  store.dropRetained(oldestId);
-  return { forgotten: oldestId, kept: record };
-}
-
+/** The oldest retained record, as an id: the eviction order for both prunes. */
 export function oldestRetainedId(store: TaskStore): string | null {
   let oldest: string | null = null;
   let oldestAt = Infinity;

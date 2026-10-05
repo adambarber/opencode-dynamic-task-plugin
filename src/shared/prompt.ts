@@ -7,7 +7,7 @@
 
 import { type FailureReporter, type OpaqueHost, callHost, fireAndForget } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
-import { hostPayload } from "./session-lifecycle.js";
+import { hostPayload } from "./host-events.js";
 import { errorMessage } from "./host-shape.js";
 import { eventField, eventString, isEventRecord } from "./host-shape.js";
 import { READ_BOUNDS } from "./execution-bound.js";

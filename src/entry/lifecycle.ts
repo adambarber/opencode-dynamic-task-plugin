@@ -2,33 +2,6 @@
 // terminal-event settlement handler. Owns every entry-side client.session
 // call except spawn's create and the steer/interrupt aborts (Tenet 9: those
 // stay in their tool executors beside the claims that order them).
-import type { OpaqueHost } from "../shared/client.js";
-import {
-  UNKNOWN_PARENT,
-  endedBadly,
-  eventLooksDeleted,
-  getEventLifecycleStatus,
-  getSessionIdFromEvent,
-  isParentless,
-} from "../shared/session-lifecycle.js";
-import { debugLog } from "../debug-logger.js";
-import {
-  type HydratedOutcome,
-  classifyPromptError,
-  hydrateLatestOutcome,
-  invokePrompt,
-} from "../shared/prompt.js";
-import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
-import { FailureClass, classifyFailure, failureNote } from "../shared/failure-class.js";
-import {
-  gateLedger,
-  notifyParent,
-  notifyRecord,
-  recordNotification,
-  safeLog,
-  settlementKind,
-} from "../shared/notify.js";
-import { declaredBlocked } from "../shared/notice-claim.js";
 import {
   type ActiveTaskState,
   type SettlementVerdict,
@@ -45,13 +18,34 @@ import {
   transitionState,
 } from "../shared/task-state.js";
 import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
-import { resolveDependencies } from "../shared/admission.js";
-import { waitsReleasedBody } from "../shared/voice.js";
-import { transientResumeAvailable } from "../shared/transient-resume.js";
-import { textBlock } from "../shared/text-block.js";
-import { errorMessage } from "../shared/host-shape.js";
+import { FailureClass, classifyFailure, failureNote } from "../shared/failure-class.js";
+import {
+  type HydratedOutcome,
+  classifyPromptError,
+  hydrateLatestOutcome,
+  invokePrompt,
+} from "../shared/prompt.js";
+import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
+import { UNKNOWN_PARENT, eventLooksDeleted, isParentless } from "../shared/session-lifecycle.js";
+import { endedBadly, getEventLifecycleStatus, getSessionIdFromEvent } from "../shared/host-events.js";
+import {
+  gateLedger,
+  notifyParent,
+  notifyRecord,
+  recordNotification,
+  safeLog,
+  settlementKind,
+} from "../shared/notify.js";
 import type { AgentCapSource } from "../shared/caps.js";
 import type { ModelOverride } from "../shared/prompt.js";
+import type { OpaqueHost } from "../shared/client.js";
+import { debugLog } from "../debug-logger.js";
+import { declaredBlocked } from "../shared/notice-claim.js";
+import { errorMessage } from "../shared/host-shape.js";
+import { resolveDependencies } from "../shared/admission.js";
+import { textBlock } from "../shared/text-block.js";
+import { transientResumeAvailable } from "../shared/transient-resume.js";
+import { waitsReleasedBody } from "../shared/voice.js";
 
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the

@@ -9,7 +9,8 @@
  */
 
 import { assert, beforeEach, describe, it } from "./support/runner.js";
-import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { restoreActive, restoreRetained } from "../../dist/shared/task-ledger.js";
 import { annotateNotice, markTurnReplacement } from "../../dist/shared/notice-claim.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";

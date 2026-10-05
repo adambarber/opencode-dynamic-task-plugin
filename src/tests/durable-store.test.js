@@ -53,7 +53,7 @@ describe("durable store", () => {
 
     await durable.written(world, "ses_boom", { n: 1 });
 
-    world.assertRefused(/durable write failed/);
+    world.assertRefused(/refused the write to ledger\/v3\/task\/ses_boom: storage unavailable/);
   });
 });
 
@@ -73,12 +73,7 @@ describe("durable state facade", () => {
   });
 
   it("says a read came back empty because nothing answered", async () => {
-    // The reason `incomplete` exists: an operator told "no records" would conclude
-    // there is nothing to settle, when in fact nothing could be read at all.
-    const read = await durable.held().readAll();
-
-    assert.equal(read.incomplete, true);
-    assert.equal(read.records.size, 0, "nothing came back, and that is stated, not implied");
+    durable.assertNothingAnswered(await durable.held().readAll(), (read) => read.records.size, "the store's own reader");
   });
 
   it("routes its writes through the store, and surfaces what the store refused", async () => {

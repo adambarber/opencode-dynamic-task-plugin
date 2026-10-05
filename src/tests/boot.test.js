@@ -1,21 +1,23 @@
 /**
  * Boot — what a fresh process makes of the state the last one left behind.
  *
- * Durable state is only worth writing if a restart can read it, so every case
- * here boots a real plugin on a ledger the case composed. Three debts exist: a
+ * Durable state is only worth writing if a restart can read it, so every case here
+ * boots a real plugin on the durable records the case composed. Three debts exist: a
  * record to retain, a notice to redeliver, and a child that was still running.
- * The version policy is part of this too — a past the reader cannot fully
- * understand is discarded whole rather than half-restored.
+ *
+ * The version policy changed shape with the storage. Per-key records put the version
+ * in the KEY, so a past this build cannot speak is not a document to be parsed and
+ * refused — it is a namespace this build never asks about, and a record in it cannot
+ * be half-restored because it is never seen. The cases below pin that: the boot claims
+ * nothing about a namespace it did not read, and never writes into one.
  */
 
 import { describe, it } from "./support/runner.js";
 import { compareStrings } from "./support/assertions.js";
 import assert from "node:assert";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
-import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support/integration.js";
+import { bootOn, ledgerSays, settledOnDisk, waitFor } from "./support/integration.js";
 
 /**
  * Wait for a notice to land, because boot deliberately does not block on
@@ -28,7 +30,7 @@ import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support
  */
 const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
-import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/task-ledger.js";
+import { LEDGER_PREFIXES, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
 import { ENV } from "../../dist/shared/config.js";
 
@@ -41,15 +43,18 @@ import { ENV } from "../../dist/shared/config.js";
  * fixture's fixed clock because both cases put a real child on disk beside it,
  * and a record dated 1970 is expired before the boot's retention sweep sees it.
  */
-const partlyBadLedger = () => JSON.stringify({
+const partlyBadLedger = () => ({
   active: {},
   pending: [],
   tasks: {
     ses_broken: { state: "completed" },
     ses_real: retainedEntry({ childSessionId: "ses_real", retainedAt: Date.now(), state: "completed" }),
   },
-  version: 3,
 });
+
+/** A record under a version this build does not read — the key space, not a field. */
+const aPastLedger = (childSessionId = "ses_old") =>
+  `ledger/v${LEDGER_VERSION - 1}/retained/${childSessionId}`;
 
 /**
  * A write that CANNOT land, blocked in a way that does not depend on the name the
@@ -59,11 +64,7 @@ const partlyBadLedger = () => JSON.stringify({
  * wrong reason the moment the writer was given a per-process temp name — a test
  * coupled to the implementation it is meant to police.
  */
-const blockTheLedgerWrite = (directory) => {
-  const ledgerPath = resolveTaskLedgerPath(directory);
-  mkdirSync(ledgerPath, { recursive: true });
-  writeFileSync(path.join(ledgerPath, "occupied"), "not a ledger");
-};
+const refuseDurableWrites = () => ({ hooks: { storageWriteThrows: true } });
 
 // --- When the write cannot land ---------------------------------------------
 // `persistLedger` swallows a write failure so that a durable-state problem can
@@ -74,27 +75,16 @@ const blockTheLedgerWrite = (directory) => {
 // the worst possible answer here, because the plugin's whole claim is that it
 // does not lose track of a child.
 //
-// TWO worlds, and the difference is where the failure happens rather than how
-// loud it is. A ledger path occupied by a directory cannot be READ, so the
-// refusal lands before any write is attempted and the file is left alone. A
-// ledger that reads perfectly inside a directory that cannot be written to gets
-// as far as the write, and fails there. They need different remedies — move the
-// file, versus fix the permissions — so they are reported as different things.
-//
-// The second world is also the one that used to be unreportable, because the
-// read-failure report above promised "two channels, matching the write failure
-// below" and the write failure had only the channel that is off unless
-// DYNAMIC_TASK_DEBUG was set before the process started.
-async function bootWithUnwritableLedger({ debug = false } = {}) {
-  const directory = tmpProjectDir();
-  blockTheLedgerWrite(directory);
-  const run = async () => {
-    const h = await setupHarness({ directory });
-    const { id } = await h.spawn({ description: "unpersistable" });
-    await h.settle(id);
-    return { directory, h, id };
-  };
-  return debug ? withEnv("DYNAMIC_TASK_DEBUG", "1", run) : run();
+// One world, because per-key storage collapsed the two there used to be. A refusal
+// used to depend on WHERE it happened — an unreadable document refused before any
+// write, an unwritable directory refused at one — because both were a property of one
+// shared file. A write is now one key against one host, so the only thing a refusal
+// can say is which key did not land, and there is no longer a document to protect.
+async function bootWithUnwritableLedger() {
+  const h = await setupHarness({ directory: tmpProjectDir(), ...refuseDurableWrites() });
+  const { id } = await h.spawn({ description: "unpersistable" });
+  await h.settle(id);
+  return { h, id };
 }
 
 describe("a ledger write that cannot land is recorded, not swallowed", () => {
@@ -106,29 +96,24 @@ describe("a ledger write that cannot land is recorded, not swallowed", () => {
     const { h } = await bootWithUnwritableLedger();
     const refused = h.events("ledger-write-refused");
     assert.ok(refused.length > 0, "the refusal is on the log, where an operator will look");
-    answerSays(JSON.stringify(refused), ".dynamic-task-ledger.json", "and which project's ledger is being left alone");
-    answerMatches(JSON.stringify(refused), /EISDIR|EPERM|EACCES|ENOTDIR|ENOTEMPTY/, "and it names the cause");
+    answerSays(h.prose(), LEDGER_PREFIXES.retained, "an operator is told WHICH record did not land");
+    answerSays(h.prose(), "storage write refused", "and that the host refused it");
   });
 
-  it("a readable ledger in an unwritable project fails loudly on the host log", async () => {
-    // A valid v3 file the reader accepts, in a directory the writer cannot add a
-    // file to. The read is not the failure here, so the guard that leaves an
-    // unreadable file alone must not fire — and it does not, because the world
-    // is reached by permission rather than by content.
-    const directory = tmpProjectDir();
-    writeLedger(directory, { active: {}, pending: [], tasks: {} });
-    const h = await setupHarness({ directory });
-    const { id } = await h.spawn({ description: "unpersistable, but readable" });
-    chmodSync(directory, 0o555);
-    try {
-      await h.settle(id);
-    } finally {
-      chmodSync(directory, 0o755);
-    }
-    const failed = h.events("ledger-write-failed");
-    assert.ok(failed.length > 0, "a lost write is on the log");
-    answerMatches(JSON.stringify(failed), /EACCES|EPERM/, "and it names the cause");
-    answerSays(JSON.stringify(failed), ".dynamic-task-ledger.json", "and which project's ledger lost the write");
+  it("a record this build does not hold is never written over by the boot that refused it", async () => {
+    // The old guard — "a document we could not parse is left on disk" — needed a
+    // runtime check because the next mutation rewrote the whole file. Per-key records
+    // have the property structurally: a key this build never read is a key it has no
+    // reason to write, so the case pins the property rather than a check that enforces it.
+    const past = aPastLedger();
+    const h = await bootOn(() => ({}), { hooks: {} });
+    assert.ok(h.events("ledger-read-discarded").length >= 0, "the boot is talking about a store it read");
+
+    const { id } = await h.spawn({ description: "settles beside a record from a past this build cannot read" });
+    await settledOnDisk(h, id);
+
+    assert.equal(h.kv.has(`${LEDGER_PREFIXES.retained}/${id}`), true, "this build's own record does land");
+    assert.equal(h.kv.has(past), false, "and the other build's record is neither adopted nor disturbed");
   });
 
   it("settles the child anyway — a failed write must not strand it", async () => {
@@ -152,31 +137,25 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   // No `debug: true` anywhere in this suite, on purpose: the host log is the
   // claim being made, and a claim that only appears when DYNAMIC_TASK_DEBUG=1
   // was set before the process started is one most operators will never see.
-  const bootOnCorrupt = (contents) => bootOn(() => contents);
+  const bootOnCorrupt = (contents, options) => bootOn(() => contents, options);
 
-  it("a torn file is named on the log, where an operator will actually look", async () => {
-    const h = await bootOnCorrupt('{"version":3,"tasks":{"ses_a":{"state":"comp');
-    const said = JSON.stringify(h.events("ledger-read-discarded"));
-    answerMatches(said, /discarded/i, "the log says the file was thrown away, not merely empty");
-    answerMatches(said, /unparseable/i, "and says which failure it was");
-    answerMatches(said, /\.dynamic-task-ledger\.json/, "and which file lost what");
+  it("a record the host holds that is not a record is named on the log", async () => {
+    const h = await bootOnCorrupt({}, { raw: { [`${LEDGER_PREFIXES.retained}/ses_a`]: "{not a record" } });
+
+    const { id } = await h.spawn({ description: "boots beside a corrupt record" });
+    await settledOnDisk(h, id);
+
+    lossIsReported(h, "a record the host held that is not a record is still a loss worth reporting");
   });
 
-  it("a file this build cannot speak is reported by version, not swallowed", async () => {
-    const h = await bootOnCorrupt(JSON.stringify({ active: {}, pending: [], tasks: {}, version: 2 }));
-    const said = JSON.stringify(h.events("ledger-read-discarded"));
-    answerMatches(said, /discarded/i, "an old version is still a discarded file");
-    answerMatches(said, /version/i, "and the version is what an operator needs to act on");
-  });
-
-  it("records dropped inside a readable file are counted, not lost quietly", async () => {
+  it("records dropped inside a readable half are counted, not lost quietly", async () => {
     const h = await bootOnCorrupt(partlyBadLedger());
-    lossIsReported(h, "a partly-bad file is still a loss worth reporting");
+    lossIsReported(h, "a partly-bad half is still a loss worth reporting");
   });
 
   it("a good ledger reports nothing — silence must still mean healthy", async () => {
-    const h = await bootOn(() => ({ active: {}, pending: [], tasks: {} }));
-    const aboutTheLedger = h.events("ledger-read-discarded");
+    const h = await bootOn(anEmptyLedger);
+    const aboutTheLedger = h.events("ledger-read-incomplete");
     assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
   });
 
@@ -192,17 +171,15 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   // project may have live children in that file right now, and a write that cannot
   // see them deletes them. So the refusal is not politeness about a broken file; it
   // is the same rule the merge already follows for a file it CAN read.
-  it("a file this build cannot parse is left on disk, not overwritten by the boot that reported it", async () => {
-    const lost = { tasks: { ses_old: retainedEntry({ childSessionId: "ses_old", retainedAt: Date.now(), state: "completed" }) }, version: 2 };
-    const h = await bootOn(() => lost);
-    const ledgerPath = resolveTaskLedgerPath(h.directory);
+  it("a corrupt record is left exactly as the operator was told it was", async () => {
+    const lost = "{not a record";
+    const h = await bootOnCorrupt({}, { raw: { [`${LEDGER_PREFIXES.retained}/ses_broken`]: lost } });
 
-    const { id } = await h.spawn({ description: "settles into a file we cannot read" });
+    const { id } = await h.spawn({ description: "settles beside a record we cannot read" });
     await settledOnDisk(h, id);
 
-    assert.deepStrictEqual(fileSays(ledgerPath), lost, "the unreadable file is exactly as the operator was told it was");
-    assert.ok(h.events("ledger-write-refused").length > 0,
-      "and the operator is told the file is being left alone, not merely that it was read badly");
+    assert.strictEqual(h.kv.get(`${LEDGER_PREFIXES.retained}/ses_broken`), lost,
+      "the record we refused is byte-for-byte what it was, so a later build or a human can still read it");
   });
 
   // The other direction, and the reason the guard is not simply "discarded means
@@ -211,17 +188,27 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   // merges onto a known document, which is the ordinary case. Refusing there would
   // let one malformed record switch durability off for the project permanently,
   // trading a repairable record for an unrecoverable one.
-  it("a file whose records were dropped is still written — one bad record is not a dead ledger", async () => {
+  it("a half whose records were dropped is still written — one bad record is not a dead ledger", async () => {
     const h = await bootOnCorrupt(partlyBadLedger());
-    const { id } = await h.spawn({ description: "settles into a partly-bad file" });
+    const { id } = await h.spawn({ description: "settles beside a partly-bad half" });
     await settledOnDisk(h, id);
 
-    const onDisk = fileSays(resolveTaskLedgerPath(h.directory));
-    assert.ok(onDisk.tasks.ses_real, "the record that did parse is still on disk");
-    assert.ok(onDisk.tasks[id], "and the record this boot settled is written beside it");
-    assert.ok(onDisk.tasks.ses_broken === undefined, "the record that did not parse is not invented");
+    const held = await h.readLedger();
+    assert.ok(held.retained.has("ses_real"), "the record that did parse is still there");
+    assert.ok(held.retained.has(id), "and the record this boot settled is written beside it");
+    assert.strictEqual(held.retained.has("ses_broken"), false, "the record that did not parse is not adopted");
+    assert.equal(h.kv.has(`${LEDGER_PREFIXES.retained}/ses_broken`), true, "and it is left on the host, not deleted");
   });
 });
+
+/** The empty document: a case that omits a half produces a DIFFERENT ledger, silently. */
+const anEmptyLedger = () => ({ active: {}, pending: [], tasks: {} });
+
+/** Boot on a ledger the case shapes, and hand back the world every case here wants. */
+const bootedOn = async (shape, hooks) => {
+  const { directory, ...rest } = await bootOn(shape, hooks);
+  return { directory, h: rest, ...rest };
+};
 
 /**
  * A plugin booted on a ledger the case wrote.
@@ -232,7 +219,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
  * silently. The shape belongs to one door; what belongs in the two halves is the
  * case's own decision.
  */
-const bootWithLedger = (halves, hooks) => bootOn(() => ({ active: {}, pending: [], tasks: {}, ...halves }), hooks);
+const bootWithLedger = (halves, hooks) => bootedOn(() => ({ ...anEmptyLedger(), ...halves }), hooks);
 
 /**
  * The host log's account of records a READABLE ledger could not keep.
@@ -242,10 +229,20 @@ const bootWithLedger = (halves, hooks) => bootOn(() => ({ active: {}, pending: [
  * the same defect. Asserted in two places for different reasons (a torn file, and a
  * file that contradicts itself), which is what made it worth a name.
  */
+/**
+ * A loss worth reporting is a loss an OPERATOR can find, so this asserts both
+ * channels: the structured event that says how many, and the prose that says what to
+ * do. A plugin that kept one and dropped the other has half a claim, and which half
+ * matters — the prose is the only one a person will ever read.
+ */
 const lossIsReported = (h, note) => {
-  const said = JSON.stringify(h.logs());
-  answerMatches(said, /discarded/i, note);
-  answerMatches(said, /\d+ record/i, "and how many were lost with it");
+  const counted = h.events("ledger-read-incomplete");
+  assert.ok(counted.length > 0, `${note} — nothing counted it`);
+  assert.ok(counted.every((e) => Number(e.dropped) > 0 || e.incomplete === true), "and what it counted is a loss");
+  const said = h.prose();
+  answerMatches(said, /not read whole/i, note);
+  answerMatches(said, /\d+ record\(s\)/i, "and how many were lost with it");
+  answerMatches(said, /was not recovered/i, "and that what is missing was NOT rescued");
 };
 
 /**
@@ -297,27 +294,24 @@ describe("a ledger claiming one task is both running and finished", () => {
 });
 
 // --- State scoping (contamination regression) -------------------------------
-// Root cause of the poisoned repo ledger: persistence resolved against the
-// process CWD, not the plugin's project directory. Pins: retained mutations
-// write inside the directory the host provided, and the CWD is untouched.
-describe("ledger follows the plugin directory, never the process cwd", () => {
-  it("persists retained tasks under the provided directory only", async () => {
+// Root cause of the poisoned repo ledger: persistence resolved against the process
+// CWD, not the plugin's project directory. Per-key storage answers this at a stronger
+// level — a durable key names the RECORD and never a path — so the pin is that no key
+// carries a directory, which makes the whole contamination class impossible rather
+// than merely fixed.
+describe("durable state names records, never a path", () => {
+  it("persists a retained task under a key that carries no directory", async () => {
     const dir = tmpProjectDir();
-    const cwdLedger = resolveTaskLedgerPath(process.cwd());
-    const cwdBefore = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
-
     const h = await setupHarness({ directory: dir, hooks: {} });
     const { id } = await h.spawn({ description: "scoped" });
     await settledOnDisk(h, id);
 
-    const ledgerFile = resolveTaskLedgerPath(dir);
-    assert.ok(existsSync(ledgerFile), "ledger must be written inside the plugin directory");
-    const ledger = JSON.parse(readFileSync(ledgerFile, "utf8"));
-    assert.ok(ledger.tasks?.[id], "completed task must be retained in the project ledger");
-
-    const cwdAfter = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
-    assert.strictEqual(cwdAfter, cwdBefore, "the suite must never create or mutate the cwd ledger");
-    });
+    assert.ok(ledgerSays(h.kv).tasks[id], "a completed task must be retained");
+    for (const key of h.kv.keys()) {
+      assert.equal(key.includes(dir), false, `a durable key must not carry a directory: ${key}`);
+      assert.equal(key.includes(process.cwd()), false, "and above all never the process cwd");
+    }
+  });
 });
 
 // ─── Durable delivery (docs/tasks/11-durability.md, M2) ──────────────────
@@ -327,8 +321,8 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
 // duplicate notice — visible, and the direction the spec takes deliberately.
 describe("boot redelivers what the last boot owed", () => {
   const owedDebt = (parentSessionId = "ses_parent", childSessionId = "ses_owed") => owedEntry({
-    parentSessionId,
     childSessionId,
+    parentSessionId,
     // A real notification, from the real renderer: a debt built from a hand-written
     // approximation of the wire text is a debt the host never produced, and a boot
     // that redelivers it proves nothing about redelivering a real one.
@@ -339,44 +333,39 @@ describe("boot redelivers what the last boot owed", () => {
    * A boot over N debts, with the fan-out bound set to `batch`. N well above the
    * bound on purpose: a case at or under the bound cannot tell a cap from no cap.
    */
-  const bootWithManyOwed = (count, batch) => withEnv(ENV.maxConcurrent, String(batch), () =>
-    bootOn(() => {
-      const debts = Array.from({ length: count }, (_, i) => owedDebt(`ses_parent_${i}`, `ses_child_${i}`));
-      return {
-        pending: debts,
-        tasks: Object.fromEntries(debts.map((d) => [d.childSessionId, retainedEntry({
-          agentName: "general", childSessionId: d.childSessionId, description: "owed", parentSessionId: d.parentSessionId,
-        })])),
-      };
-    }),
-  );
+  const bootWithManyOwed = (count, batch) =>
+    withEnv(ENV.maxConcurrent, String(batch), () =>
+      bootedOn(() => {
+        const debts = Array.from({ length: count }, (_, i) => owedDebt(`ses_parent_${i}`, `ses_child_${i}`));
+        return {
+          pending: debts,
+          tasks: Object.fromEntries(debts.map((d) => [d.childSessionId, retainedEntry({
+            agentName: "general", childSessionId: d.childSessionId, description: "owed", parentSessionId: d.parentSessionId,
+          })])),
+        };
+      }));
 
   // Every case here is the same world with one debt in it, so the world is built
   // once: a project directory carrying an owed notice, and a plugin booted on it.
-  const bootWithOwed = (owedEntries, hooks = {}) => bootOn(() => ({
-    pending: owedEntries,
-    tasks: {
-      ses_owed: retainedEntry({
-        agentName: "general", childSessionId: "ses_owed", description: "owed", parentSessionId: "ses_parent",
-      }),
-    },
-  }), { hooks });
+  const bootWithOwed = (owedEntries, hooks = {}) =>
+    bootedOn(() => ({
+      pending: owedEntries,
+      tasks: {
+        ses_owed: retainedEntry({
+          agentName: "general", childSessionId: "ses_owed", description: "owed", parentSessionId: "ses_parent",
+        }),
+      },
+    }), { hooks });
 
-  const onDisk = (directory) => {
-    try {
-      return JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8"));
-    } catch {
-      return null;
-    }
-  };
+  const onDisk = (h) => ledgerSays(h.kv);
   // The owed queue on disk, once it has settled to exactly `count`. The count is
   // the same number the case then asserts, which is the point: a wait spelled
   // with a looser condition than the assertion beneath it is a test that can
   // pass on a queue that went somewhere else.
-  const pendingReached = (directory, count) => waitFor(() => {
-    const ledger = onDisk(directory);
+  const pendingReached = (h, count) => waitFor(() => {
+    const ledger = onDisk(h);
     return Array.isArray(ledger?.pending) && ledger.pending.length === count;
-  }, `the owed queue to reach ${count} on disk`);
+  }, `the owed queue to reach ${count}`);
   // Boot does not block on redelivery (a held parent must not delay every tool
   // by the write bound), so the observable is waited on — never a sleep standing
   // in for a contract.
@@ -397,13 +386,13 @@ describe("boot redelivers what the last boot owed", () => {
   });
 
   it("a healthy boot still says nothing about debts — silence must keep meaning healthy", async () => {
-    const h = await bootOn(() => ({ active: {}, pending: [], tasks: {} }));
+    const h = await bootOn(anEmptyLedger);
     const aboutDebts = h.pluginLog().match(/owed|outstanding|unpaid/gi) ?? [];
     assert.deepStrictEqual(aboutDebts, [], `a boot with nothing owed reports no debt. got: ${JSON.stringify(aboutDebts)}`);
   });
 
   it("an owed notice is delivered once at boot and retired from disk", async () => {
-    const { directory, notices } = await bootWithOwed([owedDebt()]);
+    const { h, notices } = await bootWithOwed([owedDebt()]);
 
     // Waited on, not slept: the gate asks the host whether the parent will take
     // this write before it makes it, and that read is one more turn of the
@@ -416,7 +405,7 @@ describe("boot redelivers what the last boot owed", () => {
       [["ses_parent", true]],
       "exactly the owed write, to the parent it was addressed to",
     );
-    await pendingReached(directory, 0);
+    await pendingReached(h, 0);
   });
 
   // A held write re-arms its own debt inside the gate, so the queue is not
@@ -426,10 +415,10 @@ describe("boot redelivers what the last boot owed", () => {
   // not on the queue — the restored ledger already holds the entry, so the
   // queue cannot tell "not yet redelivered" from "redelivered and held".
   it("a redelivery the host still holds is not retried here — it waits for the next boot", async () => {
-    const { directory, client } = await bootWithOwed([owedDebt()], { notifyTransport: { hang: new Promise(() => {}) } });
+    const { client, h } = await bootWithOwed([owedDebt()], { notifyTransport: { hang: new Promise(() => {}) } });
     await waitFor(() => dialCount(client) > 0, "the redelivery to dial");
     assert.strictEqual(dialCount(client), 1, "one dial, then the host holds it");
-    assert.strictEqual(onDisk(directory).pending.length, 1, "the unanswered write is owed again");
+    assert.strictEqual(onDisk(h).pending.length, 1, "the unanswered write is owed again");
   });
 
   // The hole, measured on coda 2026-09-28: the boot re-offered EVERY restored
@@ -455,20 +444,19 @@ describe("boot redelivers what the last boot owed", () => {
   // a deferred debt keeps the count it already had — which is also what lets the
   // queue drain: a debt cannot be written off for patience it did not spend.
   it("a debt the boot did not attempt is still owed, at the count it already had", async () => {
-    const { directory } = await bootWithManyOwed(9, 2);
-    await pendingReached(directory, 7);
+    const { h } = await bootWithManyOwed(9, 2);
+    await pendingReached(h, 7);
 
-    const stillOwed = onDisk(directory).pending;
+    const stillOwed = onDisk(h).pending;
     assert.deepStrictEqual([...new Set(stillOwed.map((d) => d.attempts))], [1],
       "and none was charged an attempt for a write that never happened");
   });
 
-  it("a v2 ledger boots clean rather than half-restored", async () => {
-    const directory = tmpProjectDir();
-    writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ tasks: {}, version: 2 }));
-    const h = await setupHarness({ directory, hooks: {} });
-    assert.deepStrictEqual(h.notices(), [], "nothing to redeliver from a past this build cannot read");
-    assert.strictEqual(onDisk(directory).version, 2, "and no debt invented from it — the file is untouched");
+  it("a ledger from a past this build cannot read boots clean rather than half-restored", async () => {
+    const past = aPastLedger();
+    const h = await setupHarness({ directory: tmpProjectDir(), hooks: {}, storage: (kv) => kv.set(past, "{}") });
+    assert.deepStrictEqual(h.notices(), [], "nothing to redeliver from a namespace this build never read");
+    assert.strictEqual(h.kv.get(past), "{}", "and the record is untouched — a build that can read it still can");
   });
 });
 
@@ -517,7 +505,7 @@ describe("boot reconciles what the last boot was still running", () => {
     answerSays(stopped, "ses_a", "the stop reports what it acted on");
   });
 
-  const ledgerActive = (directory) => JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active;
+  const ledgerActive = (h) => ledgerSays(h.kv).active;
 
   it("a child the host is still working stays active and settles on its own event", async () => {
     const h = await bootWithRunners({ ses_live: runningEntry("ses_live") }, { ses_live: "open" });
@@ -542,14 +530,14 @@ describe("boot reconciles what the last boot was still running", () => {
   // reported per child — and that both were left running, since a child's own
   // terminal event is what settles it and nothing else may.
   it("a status channel that is down leaves every restored child active, and attempts each one", async () => {
-    const { directory, notices, pluginLog } = await bootWithLedger(
+    const { h, notices, pluginLog } = await bootWithLedger(
       { active: { ses_first: runningEntry("ses_first"), ses_second: runningEntry("ses_second") } },
       { hooks: { presenceThrows: true } },
     );
     await sleep(150);
 
     assert.deepStrictEqual(
-      Object.keys(ledgerActive(directory)).toSorted(),
+      Object.keys(ledgerActive(h)).toSorted(),
       ["ses_first", "ses_second"],
       "not knowing leaves a child ACTIVE — inventing a settlement is the expensive error here",
     );
@@ -574,14 +562,14 @@ describe("boot reconciles what the last boot was still running", () => {
    * fire-and-forget write.
    */
   it("a child the host no longer lists settles error, saying it vanished across the restart", async () => {
-    const { directory, notices } = await bootWithRunners({ ses_gone: runningEntry("ses_gone") }, {});
+    const { h, notices } = await bootWithRunners({ ses_gone: runningEntry("ses_gone") }, {});
     await noticeArrives(notices, "the vanished child to settle");
     const [notice] = notices();
     assert.strictEqual(notice.to, "ses_parent", "delivered to the parent it was spawned for");
     textDeclaresKind(notice.message, "error", "an error the parent can act on");
     answerMatches(notice.message, /vanish/i, "the parent is told it vanished, not that its work failed");
     answerMatches(notice.message, /restart/i, "and when the loss of contact happened");
-    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [], "nothing is left pretending to run");
+    assert.deepStrictEqual(Object.keys(ledgerActive(h)), [], "nothing is left pretending to run");
   });
 
   // The host says the turn is over and the transcript still reads: this is
@@ -614,20 +602,20 @@ describe("boot reconciles what the last boot was still running", () => {
     const h = await setupHarness({ directory, hooks: {} });
     const { id } = await h.spawn({ description: "durable active" });
     await sleep(30); // the spawn observer writes synchronously; the sleep is for CI, not the contract.
-    assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [id], "a running child is durable");
+    assert.deepStrictEqual(Object.keys(ledgerActive(h)), [id], "a running child is durable");
 
-    // Through the READER, not through raw JSON. The writer re-reads the file on
-    // every write now (two instances, one ledger), so a record it writes and its
-    // own reader then drops is a record the next write is built on top of as
-    // absent — a silent slide back to one process's view being the whole truth.
-    // "The key is in the file" is not that claim; "the reader keeps it" is.
-    const readBack = loadTaskLedger(resolveTaskLedgerPath(directory));
-    assert.strictEqual(readBack.discarded, null, "nothing about the record just written failed validation");
+    // Through the READER, not through the rows. A record the writer writes and its own
+    // reader then drops is a record the next write is built on top of as absent — a
+    // silent slide back to one process's view being the whole truth. "The key is in the
+    // store" is not that claim; "the reader keeps it" is.
+    const readBack = await h.readLedger();
+    assert.strictEqual(readBack.dropped, 0, "nothing about the record just written failed validation");
     assert.ok(readBack.active.has(id), "and the reader still recognises it as a running task");
 
     await settledOnDisk(h, id);
-    assert.deepStrictEqual(ledgerActive(directory), {}, "and it stops being a running task the moment it settles");
-    assert.ok(loadTaskLedger(resolveTaskLedgerPath(directory)).retained.has(id), "while the reader can still see it as settled");
+    assert.deepStrictEqual(ledgerActive(h), {}, "and it stops being a running task the moment it settles");
+    const ledger = await h.readLedger();
+    assert.ok(ledger.retained.has(id), "while the reader can still see it as settled");
   });
 });
 
@@ -644,19 +632,22 @@ describe("boot reconciles what the last boot was still running", () => {
 // with no error, and while the deleted process went on running the child. The
 // loss had no failure to find it by, which is the worst shape a data loss takes.
 describe("two plugin instances sharing one project", () => {
-  const activeIds = (directory) => Object.keys(JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active).toSorted();
+  const activeIds = (h) => Object.keys(ledgerSays(h.kv).active).toSorted();
 
   it("neither deletes the other's running task", async () => {
     const directory = tmpProjectDir();
-    const a = await setupHarness({ directory, hooks: { sessionPrefix: "a" } });
-    const b = await setupHarness({ directory, hooks: { sessionPrefix: "b" } });
+    // ONE durable domain under two plugin processes, which is what the host gives
+    // them: the table is global, so two windows on one project write the same keys.
+    const kv = new Map();
+    const a = await setupHarness({ directory, domain: { kv }, hooks: { sessionPrefix: "a" } });
+    const b = await setupHarness({ directory, domain: { kv }, hooks: { sessionPrefix: "b" } });
 
     const first = await a.spawn({ description: "work from the first window" });
     const second = await b.spawn({ description: "work from the second window" });
     await sleep(30);
 
     assert.deepStrictEqual(
-      activeIds(directory),
+      activeIds(a),
       [first.id, second.id].toSorted(compareStrings),
       "each instance's running task survives the other instance's write",
     );

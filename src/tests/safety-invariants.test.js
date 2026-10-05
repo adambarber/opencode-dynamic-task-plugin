@@ -222,7 +222,7 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
   // clock owners — including globalThis.*. The two gates are one banned spelling
   // read two ways: zero outside the owners, exactly one apiece inside them.
   rule({ name: "no bare wall-clock waits outside the bound funnels", ...WALL_CLOCK_WAIT });
-  rule({ name: "each clock owner keeps exactly one timer-shaped call site", ...CLOCK_OWNER_COUNT, only: CLOCK_OWNERS, expect: 2 });
+  rule({ name: "each clock owner keeps exactly one timer-shaped call site", ...CLOCK_OWNER_COUNT, expect: 2, only: CLOCK_OWNERS });
 
   // Tenet 9: create lives in the spawn executor — the ONLY site, because a
   // created session nobody registered runs unmonitored. Abort is funnelled
@@ -283,7 +283,8 @@ describe("invariant: session.prompt flows through funnels (Tasks 03/05)", () => 
   // The same call site, read two ways: nothing but the two funnels, and exactly
   // one write inside the notification gate — which is the only parent write the
   // plugin is allowed to make.
-  rule({ name: "no direct client.session.prompt outside prompt.ts and notify.ts", ...PARENT_OR_CHILD_WRITE, sanctioned: ["prompt.ts", "notify.ts"] });  rule({ name: "the gate holds exactly one parent-write call", ...THE_ONLY_PARENT_WRITE, only: ["notify.ts"], expect: 1 });
+  rule({ name: "no direct client.session.prompt outside prompt.ts and notify.ts", ...PARENT_OR_CHILD_WRITE, sanctioned: ["prompt.ts", "notify.ts"] });
+  rule({ name: "the gate holds exactly one parent-write call", ...THE_ONLY_PARENT_WRITE, expect: 1, only: ["notify.ts"] });
   rule({ name: "no legacy notifyParentSession helper remains", ...LEGACY_NOTIFY_HELPER });
 });
 
@@ -358,35 +359,42 @@ describe("invariant: file writes funnel through ledger/logger dances (Task 06)",
   rule({ name: "no writeFileSync/renameSync/appendFileSync outside sanctioned dances", ...RAW_FILE_WRITE });
 });
 
-// --- Task 06 amendment (2026-09-26 race finding): the temp path is shared --
-// The atomic write is tmp-then-rename, which is what makes a crash leave the
-// PREVIOUS complete ledger rather than a truncation. But a fixed `${file}.tmp`
-// is one name shared by every writer that can see the directory, and the rename
-// is where that collides: two opencode processes on one repo both write it, and
-// whichever renames second finds the file already gone. Measured by racing two
-// processes over 800 writes — 10 ENOENT out of the rename, against 0 of 400 in
-// the single-process control.
+// The file era's collision, closed by construction (#3078): every durable write was a
+// whole-file rewrite, so two opencode processes on one project each persisted the file
+// from their own in-memory maps and alternately destroyed each other's running-task
+// records — 10 of 800 renames raced away with ENOENT, and the pid-qualified temp path
+// that papered over it made the loss QUIETER rather than rarer. Per-key storage removes
+// the shared name: there is no file, no temp sidecar, and no key two processes mean
+// differently, because a key ends in the record's own identity.
 //
-// Not runtime-observable cheaply (the proof needs two processes, and this suite
-// stays fast), so it is pinned as a source property instead. Note the direction:
-// this is a "must contain" invariant, so it cannot use `rule()` — that helper
-// asserts a BANNED shape, and a positive pattern read through it fails precisely
-// when the code is right.
-describe("invariant: the ledger's atomic write cannot collide between writers", () => {
-  it("gives the ledger's temp path a per-process discriminator", () => {
-    const source = readFileSync(path.join(SRC_DIR, "shared", "task-ledger.ts"), "utf8");
-    const assignment = /^.*const tmpPath = .*$/m.exec(source)?.[0];
-    assert.ok(assignment, "could not find the ledger's temp-path assignment in task-ledger.ts");
-    assert.match(
-      assignment,
-      /process\.pid/,
-      "the ledger temp path must carry a per-process discriminator. A fixed name is shared state\n" +
-      "between every writer that can see the directory, and the rename is where that collides:\n" +
-      "two opencode processes on one repo both write it and whichever renames second finds it\n" +
-      "already gone. Measured by racing two processes over 800 writes — 10 ENOENT, against 0 of\n" +
-      "400 single-process. It only misbehaves when a second process exists, so nothing in this\n" +
-      `tree would notice the regression. Found: ${assignment}`,
+// Pinned as a source property, because the proof needs two processes and this suite
+// stays fast. The direction matters: this is a "must be built through" invariant, so it
+// cannot use `rule()` — that helper asserts a BANNED shape, and a positive pattern read
+// through it fails precisely when the code is right.
+describe("invariant: every durable ledger write is addressed through one key layout", () => {
+  const LEDGER = readFileSync(path.join(SRC_DIR, "shared", "ledger-storage.ts"), "utf8");
+
+  it("builds every key through LEDGER_KEYS, which ends in the record's own identity", () => {
+    const writes = [...LEDGER.matchAll(/facade\.(put|drop)\((?<args>[^;]*?)\);/gs)]
+      .map((match) => match.groups.args.trim())
+      .filter((args) => !args.startsWith("LEDGER_KEYS."));
+    assert.deepEqual(
+      writes,
+      [],
+      "a durable write that spells its own key is a second key layout, and the whole claim\n" +
+        "of per-key storage is that two processes cannot address one key for two records.\n" +
+        `Spelled out here: ${writes.join(" | ")}`,
     );
+  });
+
+  it("names no ledger key by anything but the child, or the notice's own digest", () => {
+    assert.equal(
+      [...LEDGER.matchAll(/`\$\{ROOT\}/g)].length,
+      3,
+      "the root belongs to the three prefixes and nowhere else. A fourth use means a key is\n" +
+        "being built somewhere other than LEDGER_PREFIXES, and that is the drift this pin is for.",
+    );
+    assert.match(LEDGER, /digest\("hex"\)/, "a notice key must be a digest of the notice itself, not of its child");
   });
 });
 
@@ -428,9 +436,9 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     const headerIdx = readme.findIndex((l) => l.startsWith("| Tool |"));
     const documented = new Set();
     for (let i = headerIdx + 2; i < readme.length; i++) {
-      const m = readme[i].match(/^\|\s*`(\w+)`/);
+      const m = readme[i].match(/^\|\s*`(?<tool>\w+)`/);
       if (!m) break;
-      documented.add(m[1]);
+      documented.add(m.groups.tool);
     }
     const phantom = [...documented].filter((t) => !registered.has(t));
     const undocumented = [...registered].filter((t) => !documented.has(t));

@@ -7,11 +7,11 @@
 // only mis-attribute a reused id. A map this gate used to keep existed to bridge an
 // `asked` event that carried no session id — a shape the host has never published.
 import type { OpaqueHost } from "../shared/client.js";
-import { findTask, TaskState, type TaskIdentity, type TaskStore } from "../shared/task-state.js";
-import { annotateNotice, NoticeClaim } from "../shared/notice-claim.js";
+import { type TaskIdentity, TaskState, type TaskStore, findTask } from "../shared/task-state.js";
+import { NoticeClaim, annotateNotice } from "../shared/notice-claim.js";
 import { debugLog } from "../debug-logger.js";
 import { isHostAsked, readHostAsk } from "../shared/host-events.js";
-import { denyAsk, decideAsk } from "../shared/question-handling.js";
+import { decideAsk, denyAsk } from "../shared/question-handling.js";
 
 // One reporting tail for every denial: a denied ask is logged by outcome and the tag
 // names which arm of the gate refused it. The reason is logged rather than sent — the

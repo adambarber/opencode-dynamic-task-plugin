@@ -47,19 +47,19 @@ function optionalStringList(value: unknown): string[] | undefined {
 // own voice name the first missing one instead of throwing on the read.
 function readPromptFields(raw: Record<string, unknown>): PromptToolArgs {
   return {
-    session_id: optionalString(raw["session_id"]),
-    prompt: optionalString(raw["prompt"]),
-    model: optionalString(raw["model"]),
+    model: optionalString(raw.model),
+    prompt: optionalString(raw.prompt),
+    session_id: optionalString(raw.session_id),
   };
 }
 export function readSpawnArgs(raw: unknown): SpawnArgs {
   if (!isEventRecord(raw)) return {};
   return {
     ...readPromptFields(raw),
-    description: optionalString(raw["description"]),
-    subagent_type: optionalString(raw["subagent_type"]),
-    depends_on: optionalStringList(raw["depends_on"]),
-    depends_on_settled: optionalStringList(raw["depends_on_settled"]),
+    depends_on: optionalStringList(raw.depends_on),
+    depends_on_settled: optionalStringList(raw.depends_on_settled),
+    description: optionalString(raw.description),
+    subagent_type: optionalString(raw.subagent_type),
   };
 }
 export function readContinueArgs(raw: unknown): ContinueArgs {
@@ -74,5 +74,5 @@ export interface NotifyArgs {
 }
 export function readNotifyArgs(raw: unknown): NotifyArgs {
   if (!isEventRecord(raw)) return {};
-  return { message: raw["message"], kind: raw["kind"] };
+  return { kind: raw.kind, message: raw.message };
 }

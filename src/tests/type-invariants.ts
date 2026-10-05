@@ -17,7 +17,8 @@
  * opposite of `any`, which fails silently in the same situation.
  */
 import type { DependencyWait } from "../shared/dispatch-wait.js";
-import { createTaskStore, TaskStore } from "../shared/store.js";
+import type { TaskStore } from "../shared/store.js";
+import { createTaskStore } from "../shared/store.js";
 import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 
 const store = createTaskStore();
@@ -34,10 +35,10 @@ declare const aRetained: RetainedTaskState;
 
 /** A wait, built for real: the one map left open, and the reason it is worth a pin. */
 const wait: DependencyWait = {
-  description: "t",
-  parentSessionId: "ses_parent",
   dependsOn: [],
   dependsOnSettled: [],
+  description: "t",
+  parentSessionId: "ses_parent",
   queuedAt: 0,
 };
 

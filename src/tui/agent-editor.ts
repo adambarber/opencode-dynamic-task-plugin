@@ -18,17 +18,18 @@
  */
 import {
   AGENT_CAP_NAMES,
-  agentKey,
-  applyAgentOverlay,
-  readAgentOverlayCaps,
-  resolveAgentCaps,
   type AgentCapName,
   type AgentCapSource,
   type AgentCaps,
   type AgentOverlay,
   type OverlayAgents,
+  agentKey,
+  applyAgentOverlay,
+  readAgentOverlayCaps,
+  resolveAgentCaps,
 } from "../shared/caps.js";
-import { DepthBound, depthHeldBy, depthLimits } from "../shared/task-policy.js";
+import type { DepthBound} from "../shared/task-policy.js";
+import { depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
 /**
  * How each cap reads in a cell.
@@ -92,7 +93,7 @@ export const CAP_CHOICES: Record<AgentCapName, readonly number[]> = {
 };
 
 /** The two cap numbers in force for one agent, with the config file's fallbacks applied. */
-export type ResolvedCaps = { maxConcurrent: number; maxDepth: number };
+export interface ResolvedCaps { maxConcurrent: number; maxDepth: number }
 
 
 /** One agent, as the screen holds it. */
@@ -179,16 +180,17 @@ export function agentDialogFrom(
   // stated/inherited pair exists to prevent, arriving through the pair itself.
   const inForce = applyAgentOverlay(base, raw) ?? base;
   return {
-    ceiling: { value: inForce.maxConcurrent, stated: stated.maxConcurrent !== undefined, bounded: null },
+    ceiling: { bounded: null, stated: stated.maxConcurrent !== undefined, value: inForce.maxConcurrent },
+    problem,
     rows: names.map((name) => {
       const policy = resolveAgentCaps(inForce, name);
       return {
-        name,
-        stated: stated.agents[agentKey(name)] ?? {},        resolved: capsOf(policy),
         depth: depthBindingFor(policy.maxDepth, allowSameAgentRecursion, agentNames),
+        name,
+        resolved: capsOf(policy),
+        stated: stated.agents[agentKey(name)] ?? {},
       };
     }),
-    problem,
   };
 }
 
@@ -207,9 +209,9 @@ export function agentDialogFrom(
  * happen to their dispatches.
  */
 function depthBindingFor(configured: number, allowSameAgentRecursion: boolean, agentNames: readonly string[] | null): DepthBinding {
-  if (agentNames === null) return { configured, effective: null, boundBy: null };
-  const limits = depthLimits({ maxDepth: configured, allowSameAgentRecursion }, agentNames);
-  return { configured, effective: limits.effective, boundBy: limits.boundBy };
+  if (agentNames === null) return { boundBy: null, configured, effective: null };
+  const limits = depthLimits({ allowSameAgentRecursion, maxDepth: configured }, agentNames);
+  return { boundBy: limits.boundBy, configured, effective: limits.effective };
 }
 
 /**
@@ -277,7 +279,7 @@ export interface CapCell {
  */
 export function capCellOf(row: AgentEntry, cap: AgentCapName): CapCell {
   const value = row.resolved[cap];
-  return { value, stated: row.stated[cap] !== undefined, bounded: ceilingOf(row.depth, cap, value) };
+  return { bounded: ceilingOf(row.depth, cap, value), stated: row.stated[cap] !== undefined, value };
 }
 
 /**
@@ -300,7 +302,7 @@ function capsOf(policy: { maxConcurrent: number; maxDepth: number }): ResolvedCa
 // ─── the edit ────────────────────────────────────────────────────────────────
 
 /** What a cap choice means. `default` removes the stated cap; a number sets it. */
-export type CapChoice = { cap: AgentCapName; value: number | null };
+export interface CapChoice { cap: AgentCapName; value: number | null }
 
 /** The cross-agent total's label, the one word the refusal and the screen share. */
 export const CEILING_LABEL = "total ceiling";
@@ -313,7 +315,7 @@ export const CEILING_LABEL = "total ceiling";
  * wrongly. The alternative — accepting a `CapChoice` and refusing the wrong cap at
  * runtime — makes "which cap is this" a question the type system could have answered.
  */
-export type CeilingChoice = { value: number | null };
+export interface CeilingChoice { value: number | null }
 
 /**
  * The outcome of an edit, or a refusal.
@@ -353,9 +355,6 @@ export function applyCapEdit(
   const label = `${agent} ${CAP_LABEL[choice.cap]}`;
   return editOutcome({
     before: current.agents?.[key]?.[choice.cap],
-    choice,
-    label,
-    cap: choice.cap,
     build: (value) => {
       const next: AgentCaps = { ...current.agents?.[key] };
       const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
@@ -370,6 +369,9 @@ export function applyCapEdit(
       }
       return { ...current, agents };
     },
+    cap: choice.cap,
+    choice,
+    label,
   });
 }
 

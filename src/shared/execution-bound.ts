@@ -31,7 +31,7 @@ export type Bounded<T, D = T> =
  * The one construction of a bound's timeout report, so an absent host and a host that
  * did not answer in time cannot drift into two shapes for the same fact.
  */
-export const expired = <D>(timedOut: D): Bounded<never, D> => ({ value: timedOut, timedOut: true });
+export const expired = <D>(timedOut: D): Bounded<never, D> => ({ timedOut: true, value: timedOut });
 
 /**
  * The bound's arguments, named once: the deadline, the work it covers, and the value
@@ -74,7 +74,7 @@ export function withBound<T, D>(
     Promise.resolve().then(work).then(
       (value) => {
         clearTimeout(timer);
-        resolve({ value, timedOut: false });
+        resolve({ timedOut: false, value });
       },
       (error: unknown) => {
         clearTimeout(timer);
@@ -119,10 +119,10 @@ export const ABORT_BOUND_MS = 2_000;
 // bound shared with the status read would let a slow status map be mistaken for
 // an unanswered existence question.
 export const READ_BOUNDS: { transcript: number; agents: number; status: number; presence: number } = {
-  transcript: READ_BOUND_MS,
   agents: READ_BOUND_MS,
-  status: READ_BOUND_MS,
   presence: READ_BOUND_MS,
+  status: READ_BOUND_MS,
+  transcript: READ_BOUND_MS,
 };
 // Creating the child's session. The same bound and the same argument as the abort:
 // the create is awaited by the CALLER'S turn, so a host that accepts it and never
@@ -151,11 +151,11 @@ export const WRITE_BOUNDS: {
   question: number;
   log: number;
 } = {
-  parentPrompt: PARENT_WRITE_BOUND_MS,
   abort: ABORT_BOUND_MS,
   create: CREATE_BOUND_MS,
-  question: QUESTION_BOUND_MS,
   log: LOG_BOUND_MS,
+  parentPrompt: PARENT_WRITE_BOUND_MS,
+  question: QUESTION_BOUND_MS,
 };
 
 /**
@@ -169,13 +169,13 @@ export const WRITE_BOUNDS: {
  */
 export function shrinkBoundsForTesting(ms: number): () => void {
   const read = READ_BOUNDS.transcript;
-  const agents = READ_BOUNDS.agents;
-  const status = READ_BOUNDS.status;
-  const presence = READ_BOUNDS.presence;
+  const {agents} = READ_BOUNDS;
+  const {status} = READ_BOUNDS;
+  const {presence} = READ_BOUNDS;
   const write = WRITE_BOUNDS.parentPrompt;
-  const abort = WRITE_BOUNDS.abort;
-  const create = WRITE_BOUNDS.create;
-  const question = WRITE_BOUNDS.question;
+  const {abort} = WRITE_BOUNDS;
+  const {create} = WRITE_BOUNDS;
+  const {question} = WRITE_BOUNDS;
   READ_BOUNDS.transcript = ms;
   READ_BOUNDS.agents = ms;
   READ_BOUNDS.status = ms;

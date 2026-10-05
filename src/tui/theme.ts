@@ -20,7 +20,7 @@
  * drawn the way every other dialog in the host is drawn.
  */
 import { AGENT_CAP_NAMES } from "../shared/caps.js";
-import { CAP_NOUN, capCellOf, type AgentEntry, type CapCell } from "./agent-editor.js";
+import { type AgentEntry, CAP_NOUN, type CapCell, capCellOf } from "./agent-editor.js";
 
 /**
  * The mark between an agent's two figures.

@@ -9,26 +9,26 @@ import { NotifyKind } from "../shared/notification-text.js";
 import { textBlock } from "../shared/text-block.js";
 import {
   TaskState,
-  transitionState,
   activeFor,
-  retainedFor,
   isRunning,
+  retainedFor,
+  transitionState,
 } from "../shared/task-state.js";
-import { markTurnReplacement, clearTurnReplacement } from "../shared/notice-claim.js";
+import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { type ResolvedSessionScope } from "./context.js";
 import {
   PROMPT_REQUIRED,
-  steerMissing,
-  steerWonBySettler,
-  steerStateUnknown,
-  steerSettledMidway,
-  steerAbortFailed,
-  steerSent,
-  steerSelfRefused,
-  untrackedSession,
   followupSent,
+  steerAbortFailed,
   steerAutoRevived,
+  steerMissing,
+  steerSelfRefused,
+  steerSent,
+  steerSettledMidway,
+  steerStateUnknown,
+  steerWonBySettler,
+  untrackedSession,
 } from "../shared/voice.js";
 
 import type { ContinueArgs } from "./args.js";
@@ -60,7 +60,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // turn and then wait forever for a replacement turn that the refusal just said
     // would not be sent: the child reads `active` and the store reads mid-steer, and
     // neither fact points at the tool call that caused it.
-    const selfSteer = stopPlan({ store, callerSessionId }, sessionId, false).refusal;
+    const selfSteer = stopPlan({ callerSessionId, store }, sessionId, false).refusal;
     if (selfSteer !== undefined) return steerSelfRefused(sessionId, selfSteer);
 
     // Steer: the parent speaks to a running child as a turn
@@ -73,7 +73,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // terminal event, or operator interruption, ends the task.
     markTurnReplacement(store, sessionId);
     const { serverGone, transportError: abortError } = await abortSession(
-      { host, store, callerSessionId },
+      { callerSessionId, host, store },
       sessionId,
     );
     if (serverGone) {
@@ -133,10 +133,10 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         admitted.prompt,
       );
       fireChildPrompt(host, store, {
-        childSessionId: sessionId,
-        parentSessionId: active.parentSessionId,
         agentName: active.agentName,
+        childSessionId: sessionId,
         description: active.description,
+        parentSessionId: active.parentSessionId,
         ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
       }, steerText);
       return steerSent(sessionId, active.agentLabel ?? active.agentName);

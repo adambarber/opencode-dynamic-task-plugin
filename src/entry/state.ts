@@ -7,10 +7,10 @@ import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks, restoreActive, restoreRetained } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
 import { LedgerChangeKind } from "../shared/ledger-change.js";
-import { loadTaskLedger, mergeLedgerChange, saveTaskLedger, resolveTaskLedgerPath } from "../shared/session-lifecycle.js";
+import { loadTaskLedger, mergeLedgerChange, resolveTaskLedgerPath, saveTaskLedger } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
-import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
+import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 import {
   configurePendingPersistence,
@@ -181,8 +181,8 @@ const ledger = loadTaskLedger(ledgerPath);
       // kind an operator can rely on being there.
       void safeLog("warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
       debugLog("plugin", "ledger", "ledger-write-failed", {
-        path: ledgerPath,
         error: errorMessage(error),
+        path: ledgerPath,
       });
     }
   };
@@ -239,7 +239,7 @@ const ledger = loadTaskLedger(ledgerPath);
   // turn, so a queue is paid in batches rather than all at once.
   redeliverOwedNotifications(host, config.pendingMaxAttempts, config.maxConcurrent);
 
-  return { store, config };
+  return { config, store };
 }
 
 // One pass, at boot, over the tasks the last process left running — the
@@ -300,8 +300,8 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // candidate for the silent transient resume, and reviving a record would send
       // a prompt to a session the host has just denied having.
       await settleRunningChild(host, store, childSessionId, {
-        status: "error",
         cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
+        status: "error",
       });
     } catch (error: unknown) {
       void containFailure(`Could not reconcile restored task ${childSessionId}`, error, "left active");

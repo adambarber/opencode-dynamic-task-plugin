@@ -21,7 +21,7 @@ import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
-import { safeLog, containFailure } from "./shared/notify.js";
+import { containFailure, safeLog } from "./shared/notify.js";
 import { initPluginState } from "./entry/state.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
@@ -29,11 +29,11 @@ import { noteActivity } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
 async function setup(context: Context): Promise<void> {
-  const directory = context.location.directory;
+  const {directory} = context.location;
   // v2 carries plugin options ON the context (`context.options`), not as a second
   // argument — the host calls `setup(context)` with one argument. A two-parameter
   // signature here would typecheck while silently receiving `undefined`.
-  const options = context.options;
+  const {options} = context;
   // The one mint. Past this line nothing downstream can name a host namespace.
   const host = asOpaqueHost(context);
 
@@ -48,7 +48,7 @@ async function setup(context: Context): Promise<void> {
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
   const { config, store } = initPluginState(directory, options, host);
-  const deps = { host, store, config, directory };
+  const deps = { config, directory, host, store };
   const tools = buildToolMap(deps);
 
   safeLog("info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
@@ -76,9 +76,9 @@ async function setup(context: Context): Promise<void> {
     // observability belongs: it returns before allocating anything unless
     // DYNAMIC_TASK_DEBUG=1, so it costs nothing when nobody is watching.
     debugLog("event-handler", "event-handler", "event-received", {
-      type: eventType,
       name: eventName,
       sessionId: evtSessionId,
+      type: eventType,
     });
 
     // --- Activity heartbeat: this head is the ONLY place that sees every
@@ -90,8 +90,8 @@ async function setup(context: Context): Promise<void> {
     // --- Ask gate: attribute through the gate, then deny.
     try {
       if (await handleAskEvent(host, store, eventType, event)) return;
-    } catch (qerr: unknown) {
-      debugLog("unknown", "unknown", "ask-handler-error", { error: errorMessage(qerr) });
+    } catch (error: unknown) {
+      debugLog("unknown", "unknown", "ask-handler-error", { error: errorMessage(error) });
     }
 
     // --- Session lifecycle event handler ---

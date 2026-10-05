@@ -41,7 +41,7 @@ const key = (c) =>
 
 const run = (minLines, minTokens) => {
   const dir = join(OUT, `${minLines}x${minTokens}`);
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(dir, { force: true, recursive: true });
   mkdirSync(dir, { recursive: true });
   try {
     execFileSync("npx", ["--yes", "jscpd", "--min-lines", String(minLines), "--min-tokens", String(minTokens), "src", "--reporters", "json", "--output", dir], {
@@ -67,10 +67,10 @@ const seen = new Map();
 const anomalies = [];
 
 for (const minLines of LINE_FLOORS) {
-  const row = { minLines, cells: [] };
+  const row = { cells: [], minLines };
   for (const minTokens of TOKEN_FLOORS) {
     const clones = run(minLines, minTokens);
-    row.cells.push({ minTokens, count: clones.length });
+    row.cells.push({ count: clones.length, minTokens });
     for (const c of clones) {
       const k = key(c);
       if (!seen.has(k)) {
@@ -82,7 +82,7 @@ for (const minLines of LINE_FLOORS) {
       // The anomaly: reported while the token floor sat above its own count.
       for (const floor of TOKEN_FLOORS) {
         if (floor > c.tokens && seen.get(k).at.includes(`${minLines}/${floor}`)) {
-          anomalies.push({ clone: k, tokens: c.tokens, lines: c.lines, reportedAt: `${minLines}/${floor}` });
+          anomalies.push({ clone: k, lines: c.lines, reportedAt: `${minLines}/${floor}`, tokens: c.tokens });
         }
       }
     }
@@ -97,13 +97,13 @@ const testTest = byBoundary((c) => c.boundary === "test↔test");
 const cross = byBoundary((c) => c.boundary === "prod↔test");
 
 console.log("=== count matrix (rows = minLines, cols = minTokens) ===");
-console.log(["lines\\tok", ...TOKEN_FLOORS.map(String)].join("\t"));
+console.log([String.raw`lines\tok`, ...TOKEN_FLOORS.map(String)].join("\t"));
 for (const row of matrix) {
   console.log([String(row.minLines), ...row.cells.map((c) => (c.count === 0 ? "." : String(c.count)))].join("\t"));
 }
 
 console.log(`\n=== distinct clones seen anywhere in the grid: ${all.length} ===`);
-const tally = { "prod↔prod": prodProd.length, "test↔test": testTest.length, "prod↔test": cross.length };
+const tally = { "prod↔prod": prodProd.length, "prod↔test": cross.length, "test↔test": testTest.length };
 console.log("by boundary:", JSON.stringify(tally));
 
 // What the 2/2 view is made of: the widest lens, grouped by file.
@@ -135,5 +135,5 @@ if (cross.length) {
   }
 }
 
-writeFileSync(join(OUT, "frontier.json"), JSON.stringify({ matrix, anomalies, clones: all }, null, 2));
+writeFileSync(join(OUT, "frontier.json"), JSON.stringify({ anomalies, clones: all, matrix }, null, 2));
 console.log(`\nfull data → ${join(OUT, "frontier.json")}`);

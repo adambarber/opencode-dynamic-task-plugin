@@ -61,16 +61,16 @@ export const DEFAULT_AGENT_MODE: Agent.Info["mode"] = "all";
 export function toAgentRecord(raw: unknown): AgentRecord | null {
   if (!isEventRecord(raw)) return null;
   const item = raw;
-  const name = item["name"];
+  const {name} = item;
   if (typeof name !== "string" || name === "") return null;
-  const mode = isAgentMode(item["mode"]) ? item["mode"] : DEFAULT_AGENT_MODE;
-  const id = item["id"];
+  const mode = isAgentMode(item.mode) ? item.mode : DEFAULT_AGENT_MODE;
+  const {id} = item;
   return {
+    hidden: item.hidden === true,
     id: typeof id === "string" && id !== "" ? id : name,
-    name,
     mode,
-    permissions: permissionRules(item["permissions"]),
-    hidden: item["hidden"] === true,
+    name,
+    permissions: permissionRules(item.permissions),
   };
 }
 
@@ -85,7 +85,7 @@ export function toAgentRecords(raw: unknown): AgentRecord[] {
 // because both are shapes the plugin actually receives; anything else is nothing.
 function listEntries(raw: unknown): unknown {
   if (Array.isArray(raw)) return raw;
-  if (isEventRecord(raw) && Array.isArray(raw["data"])) return raw["data"];
+  if (isEventRecord(raw) && Array.isArray(raw.data)) return raw.data;
   return [];
 }
 
@@ -109,15 +109,15 @@ function toAgentRecordsFrom(entries: unknown): AgentRecord[] {
 function permissionRules(raw: unknown): AgentRecord["permissions"] {
   // Mirrors the host's `?? missingAgentPermissions`: only a well-formed array is
   // the agent's real ruleset. Anything else is deny-all, never "no rules".
-  if (!Array.isArray(raw)) return [{ action: "*", resource: "*", effect: "deny" }];
+  if (!Array.isArray(raw)) return [{ action: "*", effect: "deny", resource: "*" }];
   const rules: Agent.Info["permissions"][number][] = [];
   for (const entry of raw) {
     if (!isEventRecord(entry)) continue;
     const rule = entry;
-    if (typeof rule["action"] !== "string") continue;
-    if (typeof rule["resource"] !== "string") continue;
-    if (!isPermissionEffect(rule["effect"])) continue;
-    rules.push({ action: rule["action"], resource: rule["resource"], effect: rule["effect"] });
+    if (typeof rule.action !== "string") continue;
+    if (typeof rule.resource !== "string") continue;
+    if (!isPermissionEffect(rule.effect)) continue;
+    rules.push({ action: rule.action, effect: rule.effect, resource: rule.resource });
   }
   return rules;
 }
@@ -169,9 +169,9 @@ function wildcardMatches(value: string, pattern: string): boolean {
   const normalized = value.replaceAll("\\", "/");
   let escaped = pattern
     .replaceAll("\\", "/")
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/[.+^${}()|[\]\\]/g, String.raw`\$&`)
     .replace(/\*/g, ".*")
     .replace(/\?/g, ".");
-  if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?";
+  if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)  }( .*)?`;
   return new RegExp(`^${escaped}$`, "s").test(normalized);
 }

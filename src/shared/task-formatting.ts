@@ -5,13 +5,13 @@
 // whose whole job is rendering. It spent years in task-state.ts, which is a
 // lifecycle module, because a formatter is easy to park next to the data it
 // reads. `task-state: no file outgrows 1000 lines` is the gate that noticed.
-import { truncateText, type NotificationRecord } from "./notify.js";
-import { TaskState, failureClassOf, turnReplacementPending, type TaskRecord, type ActiveTaskState, type RetainedTaskState, type TaskIdentity } from "./task-state.js";
+import { type NotificationRecord, truncateText } from "./notify.js";
+import { type ActiveTaskState, type RetainedTaskState, type TaskIdentity, type TaskRecord, TaskState, failureClassOf, turnReplacementPending } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
-import { hostTurnRunning, type LivenessReading, SessionExistence, UntrackedStatus } from "./liveness.js";
+import { type LivenessReading, SessionExistence, UntrackedStatus, hostTurnRunning } from "./liveness.js";
 import { FailureClass, failureNote } from "./failure-class.js";
 import type { FileTouch } from "./prompt.js";
-import { textBlock, present } from "./text-block.js";
+import { present, textBlock } from "./text-block.js";
 import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
 
@@ -201,7 +201,7 @@ function retainedRollup(rows: FleetRow[]): string {
   // are strings, so it reads the string side of the one vocabulary.
   const knownWords: readonly string[] = lifecycle;
   const known = lifecycle.filter((state) => counts.has(state));
-  const unfamiliar = [...counts.keys()].filter((state) => !knownWords.includes(state)).toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const unfamiliar = [...counts.keys()].filter((state) => !knownWords.includes(state)).toSorted((a, b) => (a < b ? -1 : (a > b ? 1 : 0)));
   const parts = [
     ...known.map((state) => `${counts.get(state)} ${state}${errorBlips(rows, state)}`),
     ...unfamiliar.map((state) => `${counts.get(state)} ${state}`),
@@ -369,9 +369,9 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
   // silence alone must not be dressed up as a diagnosis.
   const diagnosis =
     answered && turnReplacementPending(task)
-      ? hostTurnRunning(answered)
+      ? (hostTurnRunning(answered)
         ? undefined
-        : "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not."
+        : "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not.")
       : answered && !hostTurnRunning(answered)
         ? "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt."
         : Date.now() - observed > STALE_TURN_AFTER_MS
@@ -548,9 +548,9 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   const action =
     running
       ? "Recommended next action: use task_status for settleability, or task_result again later."
-      : input.status === TaskState.Error
+      : (input.status === TaskState.Error
         ? "Recommended next action: inspect latest output, then use task_continue if recovery is possible."
-        : "Recommended next action: no follow-up needed unless you want to continue the child session.";
+        : "Recommended next action: no follow-up needed unless you want to continue the child session.");
 
   const lines = [
     "## Task Result",

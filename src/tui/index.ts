@@ -35,38 +35,38 @@
  */
 import type { Plugin } from "@opencode/plugin/tui";
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
-import { readDynamicTaskPolicy, type DynamicTaskConfig } from "../shared/config.js";
+import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
   AGENT_CAP_NAMES,
+  type AgentCapName,
+  type AgentOverlay,
   agentOverlayPath,
   readAgentOverlay,
   resolveAgentCaps,
   writeAgentOverlay,
-  type AgentCapName,
-  type AgentOverlay,
 } from "../shared/caps.js";
-import { dispatchableAgentNamesOrNull, type AgentCaller } from "../shared/admission.js";
-import { asOpaqueHost, type OpaqueHost } from "../shared/client.js";
+import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
+import { type OpaqueHost, asOpaqueHost } from "../shared/client.js";
 import {
+  type AgentDialog,
+  type AgentEntry,
   CAP_CHOICES,
   CAP_LABEL,
+  CAP_NOUN,
   CEILING_LABEL,
+  type CapCell,
+  type CapChoice,
+  type CeilingChoice,
+  type EditOutcome,
   agentDialogFrom,
   applyCapEdit,
   applyCeilingEdit,
   capCellOf,
   ceilingOf,
   displayName,
-  CAP_NOUN,
   overlayFrom,
-  type AgentDialog,
-  type AgentEntry,
-  type CapChoice,
-  type CapCell,
-  type CeilingChoice,
-  type EditOutcome,
 } from "./agent-editor.js";
 import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 
@@ -128,7 +128,6 @@ enum ChoiceKind {
 // no owner and the hooks throw. The render draws nothing; registering is its job.
 function registerLimitsCommand(ctx: Host, agentHost: OpaqueHost<AgentCaller>): null {
   ctx.keymap.layer(() => ({
-    mode: "global",
     commands: [
       {
         id: COMMAND,
@@ -149,6 +148,7 @@ function registerLimitsCommand(ctx: Host, agentHost: OpaqueHost<AgentCaller>): n
         },
       },
     ],
+    mode: "global",
   }));
   return null;
 }
@@ -220,7 +220,7 @@ export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListCh
         // over it would say the same word twice in three lines — and the `Agents` heading
         // below is what organises the block, which is the job the heading was wanted for.
         title: `${displayName(CEILING_LABEL)}:`,
-        description: terseCell(dialog.ceiling) + " " + CAP_NOUN.maxConcurrent,
+        description: `${terseCell(dialog.ceiling)  } ${  CAP_NOUN.maxConcurrent}`,
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
       },
       ...dialog.rows.map((row) => ({
@@ -243,8 +243,8 @@ export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListCh
         // This is the width gate's one caller acting on its own verdict, which is the only
         // arrangement in which it can: a gate that reports a clip the screen then ignores
         // has found out that the screen does not care.
-        ...(fitsItsDialog({ title: row.name, description: plainSummary(row) }, DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
-        value: { kind: ChoiceKind.Agent, agent: row.name } as const satisfies ListChoice,
+        ...(fitsItsDialog({ description: plainSummary(row), title: row.name }, DIALOG_WIDTH) ? { description: plainSummary(row) } : {}),
+        value: { agent: row.name, kind: ChoiceKind.Agent } as const satisfies ListChoice,
       })),
     ],
   };
@@ -321,12 +321,11 @@ export function ceilingPickerProps(ceiling: CapCell): DialogSelectOptions<Picker
  */
 export function agentCapsProps(agent: string, row: AgentEntry): DialogSelectOptions<CapsChoice> {
   return {
-    title: agent,
     options: [
       ...AGENT_CAP_NAMES.map((cap) => ({
-        title: CAP_LABEL[cap],
         description: namedCell(capCellOf(row, cap)),
-        value: { kind: ChoiceKind.Cap, agent, cap } as const satisfies CapsChoice,
+        title: CAP_LABEL[cap],
+        value: { agent, cap, kind: ChoiceKind.Cap } as const satisfies CapsChoice,
       })),
       // The way out LAST, below both caps — and it stays a ROW. Escape cannot do this
       // job and the reason is structural rather than a matter of trying harder: the
@@ -338,11 +337,12 @@ export function agentCapsProps(agent: string, row: AgentEntry): DialogSelectOpti
       // dismisses the host's dialog wherever the operator stands, so without this row
       // the only way back up is to reopen the palette.
       {
-        title: ALL_AGENTS_LABEL,
         description: "back to every agent's caps",
+        title: ALL_AGENTS_LABEL,
         value: { kind: ChoiceKind.Back } as const satisfies CapsChoice,
       },
     ],
+    title: agent,
   };
 }
 
@@ -362,11 +362,11 @@ export function capPickerProps(agent: string, cap: AgentCapName, row: AgentEntry
     // host matches `current` to a row with `isDeepEqual` (dialog-select.tsx), so this is
     // the same object shape every row below carries — structural identity, not reference
     // identity, and a case that reshaped one without the other would find the marker gone.
-    current: { kind: ChoiceKind.Value, agent, cap, value: stated } as const satisfies PickerChoice,
+    current: { agent, cap, kind: ChoiceKind.Value, value: stated } as const satisfies PickerChoice,
     ...valuePicker(
       CAP_CHOICES[cap],
       stated,
-      (value) => ({ kind: ChoiceKind.Value, agent, cap, value } as const satisfies PickerChoice),
+      (value) => ({ agent, cap, kind: ChoiceKind.Value, value } as const satisfies PickerChoice),
       `back to ${agent}'s caps`,
     ),
   };
@@ -430,8 +430,8 @@ function valuePicker(
       // under a press, so an exit sitting among the values is one mis-aimed press away
       // from throwing away the place the operator was standing.
       {
-        title: BACK_LABEL,
         description: backTo,
+        title: BACK_LABEL,
         value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
       },
     ],
@@ -578,7 +578,7 @@ export function fitsItsDialog(row: { title: string; description?: string }, widt
 // ─── the flow ────────────────────────────────────────────────────────────────
 
 /** What the list shows, where it writes, and the base config's fallbacks. */
-type LimitsView = {
+interface LimitsView {
   dialog: AgentDialog;
   overlay: AgentOverlay;
   directory: string;
@@ -592,7 +592,7 @@ type LimitsView = {
    * that holds for it and not for the row above.
    */
   agents: readonly string[] | null;
-};
+}
 
 async function openLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promise<void> {
   // The agent set is the host's own, so the screen has one row per agent this project
@@ -604,7 +604,7 @@ async function openLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
     // Said BEFORE the dialog opens rather than instead of it: showing nothing because
     // the file is odd would leave the operator with no way to REPAIR it, and repair is
     // the most likely reason they opened this.
-    ctx.ui.toast.show({ variant: "warning", title: "Task limits", message: view.dialog.problem });
+    ctx.ui.toast.show({ message: view.dialog.problem, title: "Task limits", variant: "warning" });
   }
   // One loop, not a stack of screens: each drill-down returns the view to show next,
   // and a dismiss (`undefined`) ends the command. The old stack of `replace`d dialogs
@@ -697,7 +697,7 @@ function tuiAgentCaller(ctx: Host): AgentCaller {
 async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView | undefined> {
   const directory = ctx.location?.directory;
   if (!directory) {
-    ctx.ui.toast.show({ variant: "error", title: "Task limits", message: "no project directory" });
+    ctx.ui.toast.show({ message: "no project directory", title: "Task limits", variant: "error" });
     return undefined;
   }
   const read = readAgentOverlay(directory);
@@ -741,12 +741,12 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
   if (found) return found;
   const policy = resolveAgentCaps(view.base, agent);
   const names = view.agents ?? [];
-  const limits = depthLimits({ maxDepth: policy.maxDepth, allowSameAgentRecursion: view.base.allowSameAgentRecursion }, names);
+  const limits = depthLimits({ allowSameAgentRecursion: view.base.allowSameAgentRecursion, maxDepth: policy.maxDepth }, names);
   return {
+    depth: { boundBy: limits.boundBy, configured: policy.maxDepth, effective: limits.effective },
     name: agent,
-    stated: {},
     resolved: { maxConcurrent: policy.maxConcurrent, maxDepth: policy.maxDepth },
-    depth: { configured: policy.maxDepth, effective: limits.effective, boundBy: limits.boundBy },
+    stated: {},
   };
 }
 
@@ -774,19 +774,19 @@ async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () =>
   const outcome = edit();
   if (outcome.kind === "unchanged") return view;
   if (outcome.kind === "invalid") {
-    ctx.ui.toast.show({ variant: "error", title, message: outcome.problem });
+    ctx.ui.toast.show({ message: outcome.problem, title, variant: "error" });
     return view;
   }
   try {
     writeAgentOverlay(view.directory, outcome.overlay);
   } catch (error) {
     ctx.ui.toast.show({
-      variant: "error",
-      title,
       message: `could not write ${agentOverlayPath(view.directory)}: ${errorMessage(error)}`,
+      title,
+      variant: "error",
     });
     return view;
   }
-  ctx.ui.toast.show({ variant: "success", title: "Task limits", message: `${outcome.summary} — in force on the next dispatch` });
+  ctx.ui.toast.show({ message: `${outcome.summary} — in force on the next dispatch`, title: "Task limits", variant: "success" });
   return (await readLimits(ctx, agentHost)) ?? view;
 }

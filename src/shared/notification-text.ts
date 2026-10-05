@@ -48,28 +48,28 @@ export enum NotifyKind {
 
 /** Settlement (completed/error) and mid-flight voice (notice) carry distinct tags so orchestrators route them without parsing prose. */
 const TEXT: Record<NotifyKind, { tag: string; header: string; bodyLabel: string; tail: string }> = {
-  completed: {
+  blocked: {
+    bodyLabel: "What it needs (the child's own words)",
+    header: "A turn of this background task ended on a question from the child, having delivered no result.",
     tag: "[dynamic-task-notify]",
-    header: "A turn of this background task ended. Nothing here says whether the work is finished.",
+    tail: "Answer with task_continue(session_id=...): the task is settled as blocked and runs again on your answer. If it cannot be answered, task_interrupt ends it.",
+  },
+  completed: {
     bodyLabel: "The child's last words in that turn (its own claim, not verified)",
+    header: "A turn of this background task ended. Nothing here says whether the work is finished.",
+    tag: "[dynamic-task-notify]",
     tail: "The store is the authority on what this task has produced: task_result(session_id=...) reads it.",
   },
   error: {
-    tag: "[dynamic-task-notify]",
-    header: "A turn of this background task ended with an error.",
     bodyLabel: "The child's last words in that turn (its own claim, not verified)",
+    header: "A turn of this background task ended with an error.",
+    tag: "[dynamic-task-notify]",
     tail: "Read the task before treating this as a child failure: task_result(session_id=...), then task_continue(session_id=...) to retry.",
   },
-  blocked: {
-    tag: "[dynamic-task-notify]",
-    header: "A turn of this background task ended on a question from the child, having delivered no result.",
-    bodyLabel: "What it needs (the child's own words)",
-    tail: "Answer with task_continue(session_id=...): the task is settled as blocked and runs again on your answer. If it cannot be answered, task_interrupt ends it.",
-  },
   notice: {
-    tag: "[dynamic-task-notice]",
-    header: "Message from a running child task (its own words, unverified):",
     bodyLabel: "",
+    header: "Message from a running child task (its own words, unverified):",
+    tag: "[dynamic-task-notice]",
     tail: "task_continue(session_id=...) steers a running task — it replaces the child's current turn with yours. task_result(session_id=...) reads progress without disturbing it.",
   },
 };
@@ -133,9 +133,9 @@ export function formatParentNotification(
   const quoted = resultText.trim();
   const read = `task_result(session_id=${state.childSessionId})`;
   const body = quoted
-    ? shape.bodyLabel
+    ? (shape.bodyLabel
       ? `${shape.bodyLabel}: ${truncatedForParent(quoted, state.childSessionId)}`
-      : truncatedForParent(quoted, state.childSessionId)
+      : truncatedForParent(quoted, state.childSessionId))
     : `No text was captured from that turn. ${read} reads what the child actually said.`;
   return textBlock(
     shape.tag,

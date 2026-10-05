@@ -14,7 +14,7 @@
  */
 
 /** A gate that said no, and why — the answer a tool reports verbatim. */
-export type Refusal = { ok: false; error: string };
+export interface Refusal { ok: false; error: string }
 
 /** A gate that answered with a resolved input, or refused. */
 export type Verdict<T> = { ok: true; input: T } | Refusal;

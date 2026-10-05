@@ -19,9 +19,9 @@ import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
 
 /** The colours a dark terminal hands the host, which is where `theme.text` comes from. */
-const value = RGBA.fromInts(0xd0, 0xd0, 0xd0);
-const context = RGBA.fromInts(0x6c, 0x6c, 0x6c);
-const primary = RGBA.fromInts(0x3a, 0x7b, 0xd8);
+const value = RGBA.fromInts(0xD0, 0xD0, 0xD0);
+const context = RGBA.fromInts(0x6C, 0x6C, 0x6C);
+const primary = RGBA.fromInts(0x3A, 0x7B, 0xD8);
 
 if (process.argv.includes("--screen")) {
   const { agentDialogFrom } = await import("../dist/tui/agent-editor.js");
@@ -32,9 +32,9 @@ if (process.argv.includes("--screen")) {
   const DIALOG = Math.min(DIALOG_WIDTH, 80 - 2);
 
   const OVERLAY = { agents: { explore: { maxConcurrent: 2, maxDepth: 4 } } };
-  const dialog = agentDialogFrom(OVERLAY, { maxConcurrent: 4, maxDepth: 2, allowSameAgentRecursion: false }, ["explore", "general", "review"], false, null);
+  const dialog = agentDialogFrom(OVERLAY, { allowSameAgentRecursion: false, maxConcurrent: 4, maxDepth: 2 }, ["explore", "general", "review"], false, null);
   const explore = dialog.rows.find((r) => r.name === "explore");
-  const actions = { confirm: () => {}, back: () => {} };
+  const actions = { back: () => {}, confirm: () => {} };
   const screens = [
     ["the list - the total above every agent", limitsListProps(dialog, () => {})],
     ["the per-agent cap picker, two agents deep", agentCapsProps("explore", explore)],
@@ -54,17 +54,16 @@ if (process.argv.includes("--screen")) {
     const marked = isSame(o.value, current);
     const head = o.title + (o.description ? ` ${o.description}` : "");
     return jsx("box", {
-      flexDirection: "column",
       children: [
         jsx("box", {
-          flexDirection: "row", paddingLeft: marked ? 1 : 3, paddingRight: 3, gap: 1,
           children: [
-            ...(marked ? [jsx("text", { flexShrink: 0, fg: primary, children: "\u25cf" })] : []),
-            jsx("text", { flexGrow: 1, overflow: "hidden", wrapMode: "none", paddingLeft: 3, children: head }),
-            ...(o.footer === undefined ? [] : [jsx("box", { flexShrink: 0, children: jsx("text", { fg: context, children: o.footer }) })]),
-          ],
+            ...(marked ? [jsx("text", { children: "\u25cf", fg: primary, flexShrink: 0 })] : []),
+            jsx("text", { children: head, flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" }),
+            ...(o.footer === undefined ? [] : [jsx("box", { children: jsx("text", { fg: context, children: o.footer }), flexShrink: 0 })]),
+          ], flexDirection: "row", gap: 1, paddingLeft: marked ? 1 : 3, paddingRight: 3,
         }),
       ],
+      flexDirection: "column",
     });
   };
 
@@ -76,7 +75,7 @@ if (process.argv.includes("--screen")) {
     for (const o of options) {
       if (o.category && o.category !== seen) {
         if (rows.length > 0) rows.push(jsx("box", { children: [] }));
-        rows.push(jsx("box", { paddingTop: seen === null ? 0 : 0, paddingLeft: 3, children: jsx("text", { fg: primary, attributes: TextAttributes.BOLD, children: o.category }) }));
+        rows.push(jsx("box", { children: jsx("text", { attributes: TextAttributes.BOLD, children: o.category, fg: primary }), paddingLeft: 3, paddingTop: seen === null ? 0 : 0 }));
         seen = o.category;
       }
       rows.push(option(o, current));
@@ -98,23 +97,23 @@ if (process.argv.includes("--screen")) {
    * the pickers whose entire option set is ten numbers.
    */
   const hostDialog = (title, children, filtered) =>
-    jsx("box", { flexDirection: "column", gap: 1, paddingBottom: 1, flexGrow: 1, children: [
-      jsx("box", { paddingLeft: 4, paddingRight: 4, children:
-        jsx("box", { flexDirection: "row", justifyContent: "space-between", children: [
+    jsx("box", { children: [
+      jsx("box", { children:
+        jsx("box", { children: [
           jsx("text", { fg: value, attributes: TextAttributes.BOLD, children: title }),
           jsx("text", { fg: context, children: "esc" }),
-        ] }) }),
+        ], flexDirection: "row", justifyContent: "space-between" }), paddingLeft: 4, paddingRight: 4 }),
       ...(filtered
-        ? [jsx("box", { paddingTop: 1, children: jsx("text", { fg: context, children: "Search" }) })]
+        ? [jsx("box", { children: jsx("text", { children: "Search", fg: context }), paddingTop: 1 })]
         : []),
-      jsx("scrollbox", { paddingLeft: 1, paddingRight: 1, scrollbarOptions: { visible: false }, children: children }),
-    ] });
+      jsx("scrollbox", { children, paddingLeft: 1, paddingRight: 1, scrollbarOptions: { visible: false } }),
+    ], flexDirection: "column", flexGrow: 1, gap: 1, paddingBottom: 1 });
 
   for (const [heading, d] of screens) {
     const shot = await testRender(
-      () => jsx("box", { width: DIALOG, backgroundColor: RGBA.fromInts(0, 0, 0), children:
-        hostDialog(d.title, jsx("box", { flexDirection: "column", children: withHeadings(d.options, d.current) }), d.renderFilter !== false) }),
-      { width: 80, height: 40 },
+      () => jsx("box", { backgroundColor: RGBA.fromInts(0, 0, 0), children:
+        hostDialog(d.title, jsx("box", { children: withHeadings(d.options, d.current), flexDirection: "column" }), d.renderFilter !== false), width: DIALOG }),
+      { height: 40, width: 80 },
     );
     await shot.renderOnce();
     console.log(`\n--- ${JSON.stringify(heading)}`);
@@ -137,8 +136,8 @@ if (process.argv.includes("--screen")) {
   // confident. A measurement is not.
   const fits = async (makeRow, probe) => {
     const shot = await testRender(
-      () => jsx("box", { width: DIALOG, children: hostDialog("T", jsx("box", { flexDirection: "column", children: [makeRow(probe)] }), false) }),
-      { width: 80, height: 8 },
+      () => jsx("box", { children: hostDialog("T", jsx("box", { children: [makeRow(probe)], flexDirection: "column" }), false), width: DIALOG }),
+      { height: 8, width: 80 },
     );
     await shot.renderOnce();
     const line = shot.captureSpans().lines.find((l) => l.spans.some((sp) => sp.text.includes("|")));
@@ -151,20 +150,20 @@ if (process.argv.includes("--screen")) {
     }
     return 0;
   };
-  const headline = () => (n) => jsx("box", { flexDirection: "row", paddingLeft: 3, paddingRight: 3, gap: 1, children:
-    [jsx("text", { flexGrow: 1, overflow: "hidden", wrapMode: "none", paddingLeft: 3, children: "|".repeat(n) })] });
-  const withFooter = () => (n) => jsx("box", { flexDirection: "row", paddingLeft: 3, paddingRight: 3, gap: 1, children:
-    [jsx("text", { flexGrow: 1, overflow: "hidden", wrapMode: "none", paddingLeft: 3, children: "|".repeat(n) }),
-     jsx("box", { flexShrink: 0, children: jsx("text", { children: "in force" }) })] });
-  const detailLine = () => (n) => jsx("box", { flexDirection: "column", children: [
-    jsx("box", { paddingLeft: 3, paddingRight: 3, children: jsx("text", { fg: context, wrapMode: "none", children: "|".repeat(n) }) })] });
+  const headline = () => (n) => jsx("box", { children:
+    [jsx("text", { children: "|".repeat(n), flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" })], flexDirection: "row", gap: 1, paddingLeft: 3, paddingRight: 3 });
+  const withFooter = () => (n) => jsx("box", { children:
+    [jsx("text", { children: "|".repeat(n), flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" }),
+     jsx("box", { children: jsx("text", { children: "in force" }), flexShrink: 0 })], flexDirection: "row", gap: 1, paddingLeft: 3, paddingRight: 3 });
+  const detailLine = () => (n) => jsx("box", { children: [
+    jsx("box", { children: jsx("text", { children: "|".repeat(n), fg: context, wrapMode: "none" }), paddingLeft: 3, paddingRight: 3 })], flexDirection: "column" });
   // Where the text STARTS, which is the claim the docstrings lean on hardest: "the row
   // spends ten columns before any content". A `<text paddingLeft={3}>` is the only
   // reason to believe in a third indent, and the frame does not show one.
   const indent = async (makeRow) => {
     const shot = await testRender(
-      () => jsx("box", { width: DIALOG, children: hostDialog("T", jsx("box", { flexDirection: "column", children: [makeRow(1)] })) }),
-      { width: 80, height: 8 },
+      () => jsx("box", { children: hostDialog("T", jsx("box", { children: [makeRow(1)], flexDirection: "column" })), width: DIALOG }),
+      { height: 8, width: 80 },
     );
     await shot.renderOnce();
     const line = shot.captureSpans().lines.find((l) => l.spans.some((sp) => sp.text.includes("|")));

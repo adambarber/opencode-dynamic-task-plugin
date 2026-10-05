@@ -8,8 +8,8 @@
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
 import { appendLogLine, getPluginLogPath } from "../debug-logger.js";
-import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
-import { callHost, type OpaqueHost } from "./client.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { type OpaqueHost, callHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { evictOldest } from "./bounded-map.js";
 import { NOTIFY_KINDS, NotifyKind } from "./notification-text.js";
@@ -121,9 +121,9 @@ export function notifyRecord(
   return {
     ...target,
     at: Date.now(),
-    message,
     attempts: outcome.attempts,
     delivered: outcome.delivered,
+    message,
     ...(outcome.suppressed ? { suppressed: true } : {}),
     ...(outcome.pending ? { pending: true } : {}),
     ...(outcome.expired ? { expired: true } : {}),
@@ -141,7 +141,7 @@ export function recordNotification(entry: NotificationRecord): void {
  * spelled out at the gate and again by whatever seeds a ledger.
  */
 export function owedDelivery(target: DeliveryTarget, text: string, attempts: number): PendingDelivery {
-  return { ...target, text, attempts };
+  return { ...target, attempts, text };
 }
 
 export function getLatestNotification(childSessionId: string): NotificationRecord | null {
@@ -214,7 +214,7 @@ export function configurePendingPersistence(persist: ((changes: readonly LedgerC
 }
 
 export function getPendingDeliveries(): PendingDelivery[] {
-  return pendingDeliveries.slice();
+  return [...pendingDeliveries];
 }
 
 /** Boot hydration: what the ledger owed becomes what this process owes. */
@@ -458,15 +458,6 @@ function createGateLedger(): GateLedger {
   // comparison does.
   const retired = new Map<string, Map<string, number>>();
   return {
-    record({ childSessionId, dedupKey, generation }) {
-      if (currentGeneration(generations, childSessionId) !== generation) return false;
-      const kinds = delivered.get(childSessionId) ?? new Set();
-      if (kinds.has(dedupKey)) return false;
-      kinds.add(dedupKey);
-      delivered.set(childSessionId, kinds);
-      evictOldest(delivered, GATE_MAX_CHILDREN);
-      return true;
-    },
     claim(childSessionId, dedupKey) {
       if (duplicateOf(delivered, childSessionId, dedupKey) || duplicateOf(inFlight, childSessionId, dedupKey)) return null;
       const pending = inFlight.get(childSessionId) ?? new Set();
@@ -474,20 +465,11 @@ function createGateLedger(): GateLedger {
       inFlight.set(childSessionId, pending);
       return currentGeneration(generations, childSessionId);
     },
-    release({ childSessionId, dedupKey, generation }) {
-      // A stale generation's pending entry was already cleared by forgetChild;
-      // dropping here could only hit the current generation's claim.
-      if (currentGeneration(generations, childSessionId) !== generation) return;
-      drop(inFlight, childSessionId, dedupKey);
-    },
-    retire({ childSessionId, dedupKey, generation }) {
-      const keys = retired.get(childSessionId) ?? new Map<string, number>();
-      keys.set(dedupKey, generation);
-      retired.set(childSessionId, keys);
-    },
-    isRetired({ childSessionId, dedupKey, generation }) {
-      const at = retired.get(childSessionId)?.get(dedupKey);
-      return at !== undefined && generation <= at;
+    clear() {
+      delivered.clear();
+      inFlight.clear();
+      generations.clear();
+      retired.clear();
     },
     forgetChild(childSessionId) {
       const next = currentGeneration(generations, childSessionId) + 1;
@@ -500,11 +482,29 @@ function createGateLedger(): GateLedger {
       inFlight.delete(childSessionId);
       retired.delete(childSessionId);
     },
-    clear() {
-      delivered.clear();
-      inFlight.clear();
-      generations.clear();
-      retired.clear();
+    isRetired({ childSessionId, dedupKey, generation }) {
+      const at = retired.get(childSessionId)?.get(dedupKey);
+      return at !== undefined && generation <= at;
+    },
+    record({ childSessionId, dedupKey, generation }) {
+      if (currentGeneration(generations, childSessionId) !== generation) return false;
+      const kinds = delivered.get(childSessionId) ?? new Set();
+      if (kinds.has(dedupKey)) return false;
+      kinds.add(dedupKey);
+      delivered.set(childSessionId, kinds);
+      evictOldest(delivered, GATE_MAX_CHILDREN);
+      return true;
+    },
+    release({ childSessionId, dedupKey, generation }) {
+      // A stale generation's pending entry was already cleared by forgetChild;
+      // dropping here could only hit the current generation's claim.
+      if (currentGeneration(generations, childSessionId) !== generation) return;
+      drop(inFlight, childSessionId, dedupKey);
+    },
+    retire({ childSessionId, dedupKey, generation }) {
+      const keys = retired.get(childSessionId) ?? new Map<string, number>();
+      keys.set(dedupKey, generation);
+      retired.set(childSessionId, keys);
     },
   };
 }
@@ -560,9 +560,9 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
   const offered = owed.slice(0, Math.max(1, batch));
   for (const debt of offered) {
     void notifyParent(host, debt.parentSessionId, debt.text, {
+      carriedAttempts: debt.attempts,
       childSessionId: debt.childSessionId,
       kind: debt.kind,
-      carriedAttempts: debt.attempts,
       maxAttempts,
     });
   }
@@ -601,7 +601,7 @@ export async function notifyParent(
   message: string,
   opts: NotifyParentOptions,
 ): Promise<boolean> {
-  const kind = opts.kind;
+  const {kind} = opts;
   const sleep = opts.sleep ?? defaultSleep;
   const record = opts.record ?? recordNotification;
   const dedupKey = opts.dedupKey ?? opts.kind;
@@ -612,11 +612,11 @@ export async function notifyParent(
   // silently, and for the life of the process.
   const gateKey = `${parentSessionId}|${dedupKey}`;
   const emit = (outcome: DeliveryOutcome): void =>
-    record(notifyRecord({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, outcome));
+    record(notifyRecord({ childSessionId: opts.childSessionId, kind, parentSessionId }, message, outcome));
   const generation = gateLedger.claim(opts.childSessionId, gateKey);
   const epoch = gateEpoch;
   if (generation === null) {
-    emit({ delivered: false, attempts: 0, suppressed: true });
+    emit({ attempts: 0, delivered: false, suppressed: true });
     return Promise.resolve(false);
   }
   // The claim, as one value: the generation is bound to the notice and the child
@@ -664,7 +664,7 @@ export async function notifyParent(
   // Attempts count from the last boot's, so the record and the queue agree on
   // how many times this parent has already been dialed for this write.
   const carried = opts.carriedAttempts ?? 0;
-  const owed = owedDelivery({ parentSessionId, childSessionId: opts.childSessionId, kind }, message, carried);
+  const owed = owedDelivery({ childSessionId: opts.childSessionId, kind, parentSessionId }, message, carried);
   // The budget, checked in the GATE and not at the boot loop that offers these
   // debts. `session.prompt` is the only parent-write path there is, so the gate
   // is the only place a debt is ever offered — a check at the boot loop would be
@@ -685,7 +685,7 @@ export async function notifyParent(
     gateLedger.retire(claim);
     gateLedger.release(claim);
     dropPending(owed);
-    if (epoch === gateEpoch) emit({ delivered: false, attempts: carried, expired: true });
+    if (epoch === gateEpoch) emit({ attempts: carried, delivered: false, expired: true });
     // The host log, for the same reason every other durable-state loss goes
     // there: the notification ledger is in-memory, so this record dies with the
     // process, and the parent may never open a status view. This is the only
@@ -771,7 +771,7 @@ export async function notifyParent(
         // the queue exists for, and a refusal is not a reason to lose it. The
         // re-armed count is the one this boot spent.
         const dropped = queuePending({ ...owed, attempts: carried + 1 });
-        if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
+        if (epoch === gateEpoch) emit({ attempts: carried + 1, delivered: false, pending: true });
         void safeLog("warn", `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
         announceDropped(dropped);
         // The claim goes back, because nothing was written and the debt is still
@@ -794,31 +794,31 @@ export async function notifyParent(
       await sleep(NOTIFY_RETRY_DELAY_MS);
       try {
         await dial(2);
-        return commit({ delivered: true, attempts: carried + 2 });
+        return commit({ attempts: carried + 2, delivered: true });
       } catch {
-        return commit({ delivered: false, attempts: carried + 2 });
+        return commit({ attempts: carried + 2, delivered: false });
       }
     }
     if (outcome.held) {
       const { request } = outcome;
       // Same epoch rule as commit(): the held write is recorded only while the
       // gate still knows the child it belongs to.
-      if (epoch === gateEpoch) emit({ delivered: false, attempts: carried + 1, pending: true });
+      if (epoch === gateEpoch) emit({ attempts: carried + 1, delivered: false, pending: true });
       // A held write is NOT retried — the host may still deliver it, and a
       // second copy of the same kind is the duplicate this gate exists to
       // prevent. The claim stays held while the request is outstanding, so
       // nothing slips in behind it, and the record ends up truthful whenever
       // the host finally answers.
       void request.then(
-        () => commit({ delivered: true, attempts: carried + 1 }),
+        () => commit({ attempts: carried + 1, delivered: true }),
         // ONE write was made, so ONE attempt is billed: the second dial never
         // happened, and a record that counts it is a record that spends the
         // parent's budget on attempts that were not made.
-        () => commit({ delivered: false, attempts: carried + 1 }),
+        () => commit({ attempts: carried + 1, delivered: false }),
       );
       return false;
     }
-return commit({ delivered: true, attempts: carried + 1 });
+return commit({ attempts: carried + 1, delivered: true });
   };
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();
   const cur: Promise<boolean> = prev.then(run, run);
@@ -843,7 +843,7 @@ export function notifyChainCount(): number {
 // distinct long notices sharing a prefix. FNV-1a, no dependency; length is
 // folded in so equal hashes with different lengths still separate.
 export function noticeDedupKey(message: string): string {
-  let hash = 0x811c9dc5;
+  let hash = 0x811C9DC5;
   for (let i = 0; i < message.length; i++) {
     hash ^= message.charCodeAt(i);
     hash = Math.imul(hash, 0x01000193);

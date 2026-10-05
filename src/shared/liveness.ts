@@ -6,7 +6,7 @@
 // declared type, never a local re-declaration of it. Both re-declarations that
 // used to live here were load-bearing and both were wrong.
 
-import { callHost, type OpaqueHost } from "./client.js";
+import { type OpaqueHost, callHost } from "./client.js";
 import { isMessage, readSessionMessages } from "./prompt.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { includesWord, isPlainRecord } from "./host-shape.js";
@@ -79,9 +79,9 @@ export interface LivenessReading extends SessionTurn {
 export const UNANSWERED_LIVENESS: LivenessReading = Object.freeze({
   existence: SessionExistence.Unread,
   hostTurn: undefined,
-  statusAnswered: false,
   lastMessageAt: null,
   messageCount: 0,
+  statusAnswered: false,
 });
 
 /**
@@ -128,10 +128,10 @@ function lastMessageAt(messages: unknown[]): number | null {
 /** Where one message keeps its clock: `info.time`, or the flat `time`. */
 function messageTime(message: unknown): { completed?: unknown; created?: unknown } | undefined {
   if (!isPlainRecord(message)) return undefined;
-  const info = isPlainRecord(message["info"]) ? message["info"] : undefined;
-  const at = isPlainRecord(message["time"]) ? message["time"] : info?.["time"];
+  const info = isPlainRecord(message.info) ? message.info : undefined;
+  const at = isPlainRecord(message.time) ? message.time : info?.time;
   if (!isPlainRecord(at)) return undefined;
-  return { completed: at["completed"], created: at["created"] };
+  return { completed: at.completed, created: at.created };
 }
 
 /**
@@ -159,9 +159,9 @@ export async function readLiveness(
   return {
     existence: turn.existence,
     hostTurn: turn.hostTurn,
-    statusAnswered: true,
     lastMessageAt: lastMessageAt(read),
     messageCount: read.length,
+    statusAnswered: true,
   };
 }
 
@@ -221,13 +221,13 @@ export const PROTOCOL_NOT_FOUND_TAG = "SessionNotFoundError";
  */
 export function isSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
-  if (error["_tag"] === SESSION_NOT_FOUND_TAG || error["_tag"] === PROTOCOL_NOT_FOUND_TAG) return true;
-  if (error["type"] === SESSION_NOT_FOUND_TAG || error["type"] === PROTOCOL_NOT_FOUND_TAG) return true;
-  if (error["reason"] === NOT_FOUND_REASON) {
-    const cause = error["cause"];
-    return isPlainRecord(cause) && cause["status"] === NOT_FOUND_STATUS;
+  if (error._tag === SESSION_NOT_FOUND_TAG || error._tag === PROTOCOL_NOT_FOUND_TAG) return true;
+  if (error.type === SESSION_NOT_FOUND_TAG || error.type === PROTOCOL_NOT_FOUND_TAG) return true;
+  if (error.reason === NOT_FOUND_REASON) {
+    const {cause} = error;
+    return isPlainRecord(cause) && cause.status === NOT_FOUND_STATUS;
   }
-  const message = error["message"];
+  const {message} = error;
   return typeof message === "string" && /session[^.]{0,40}not found/i.test(message);
 }
 
@@ -261,7 +261,7 @@ export async function readSessionState(host: OpaqueHost, sessionId: string): Pro
 
 /** The host's own outcome word, or undefined when no execution has completed. */
 function readHostOutcome(info: Record<string, unknown>): HostTurnWord | undefined {
-  const outcome = info["outcome"];
+  const {outcome} = info;
   return isHostTurnWord(outcome) ? outcome : undefined;
 }
 

@@ -50,7 +50,7 @@ export function isNoticeClaim(value: unknown): value is NoticeClaim {
 // reads to tell a blocked turn from a finished one, so it is not optional in the
 // record and this is the one place that says so.
 export function noticeRecord(message: string, claim: NoticeClaim, at: number): ActiveTaskState["lastNotice"] {
-  return { message, at, claim };
+  return { at, claim, message };
 }
 
 export function annotateNotice(store: TaskStore, childSessionId: string, message: string, claim: NoticeClaim): boolean {

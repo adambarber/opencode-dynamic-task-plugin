@@ -61,7 +61,7 @@ const { tokenize } = require("@jscpd/tokenizer");
 const walk = (dir) =>
   readdirSync(dir).flatMap((entry) => {
     const path = join(dir, entry);
-    return statSync(path).isDirectory() ? walk(path) : path.endsWith(".ts") || path.endsWith(".js") ? [path] : [];
+    return statSync(path).isDirectory() ? walk(path) : (path.endsWith(".ts") || path.endsWith(".js") ? [path] : []);
   });
 
 /**
@@ -148,7 +148,7 @@ export const sharedRuns = (a, b, window) => {
         claimed.add(id);
         const lines = new Set();
         for (let k = startA; k < startA + n; k++) lines.add(a[k].line);
-        runs.push({ startA, startB, tokens: n, lines: lines.size, lineA: a[startA].line, lineB: b[startB].line });
+        runs.push({ lineA: a[startA].line, lineB: b[startB].line, lines: lines.size, startA, startB, tokens: n });
       }
     }
   }
@@ -163,7 +163,7 @@ const productionFiles = sourceFiles.filter((f) => !f.includes(TESTS));
 const streamCache = new Map();
 
 const cachedStream = (path) => {
-  const mtimeMs = statSync(path).mtimeMs;
+  const {mtimeMs} = statSync(path);
   const hit = streamCache.get(path);
   if (hit && hit.mtimeMs === mtimeMs) return hit.tokens;
   const tokens = stream(path);
@@ -194,7 +194,7 @@ export function findCrossBoundaryClones({
   for (const test of tests) {
     for (const prod of production) {
       for (const run of sharedRuns(cachedStream(test), cachedStream(prod), minTokens)) {
-        if (run.tokens >= minTokens && run.lines >= minLines) findings.push({ test, prod, ...run });
+        if (run.tokens >= minTokens && run.lines >= minLines) findings.push({ prod, test, ...run });
       }
     }
   }
@@ -202,8 +202,8 @@ export function findCrossBoundaryClones({
 }
 
 export const corpus = () => ({
-  tests: testFiles.length,
   production: productionFiles.length,
+  tests: testFiles.length,
   /** Total comparable tokens, so a gate can prove it is not passing on an empty tree. */
   tokens: [...testFiles, ...productionFiles].reduce((sum, f) => sum + cachedStream(f).length, 0),
 });
@@ -230,8 +230,8 @@ export const withProbeCorpus = (body, fn, testBody = body) => {
   try {
     writeFileSync(prod, body);
     writeFileSync(test, testBody);
-    return fn({ tests: [test], production: [prod] });
+    return fn({ production: [prod], tests: [test] });
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { force: true, recursive: true });
   }
 };

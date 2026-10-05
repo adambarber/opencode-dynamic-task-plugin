@@ -22,10 +22,10 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
-import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 import { DEFAULT_CONFIG, type DynamicTaskConfig } from "./config.js";
-import { agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps, type AgentCapSource } from "./caps.js";
+import { type AgentCapSource, agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { foldActiveByAgent } from "./occupancy.js";
 // The store is its own subject: it owns the SET and the only way to change it,
 // while this module owns what a set MEANS. Re-exported here because task-state is
@@ -33,7 +33,8 @@ import { foldActiveByAgent } from "./occupancy.js";
 // store through this path; the alternative is eight import lines for a type they
 // did not previously have to name.
 export { TaskStore, createTaskStore, type LedgerChangeSink } from "./store.js";
-import { TaskStore, type LedgerChangeSink } from "./store.js";
+import type { TaskStore} from "./store.js";
+import { type LedgerChangeSink } from "./store.js";
 
 import type { ModelOverride } from "./prompt.js";
 import type { NoticeClaim } from "./notice-claim.js";
@@ -409,7 +410,7 @@ function claimSlot(store: TaskStore, record: { readonly agentName: string }, con
  * and then stop.
  */
 export function activeRecord(registration: NewTaskRegistration, startedAt: number): ActiveTaskState {
-  return { ...registration, state: TaskState.Active, startedAt };
+  return { ...registration, startedAt, state: TaskState.Active };
 }
 
 /**
@@ -423,7 +424,7 @@ export function retainedRecord(
   state: Exclude<TaskState, TaskState.Active>,
   retainedAt: number,
 ): RetainedTaskState {
-  return { ...withoutAdvisory(active), state, retainedAt };
+  return { ...withoutAdvisory(active), retainedAt, state };
 }
 
 // Register a task and claim the session id atomically. Every active task holds a
@@ -477,8 +478,8 @@ export function transitionState(
     notifyRunning(store, store.stopRunning(childSessionId));
     const retained = retainedRecord(active, to, Date.now());
     store.markRetained(childSessionId, retained);
-    emitRetainedChange(store, { kind: LedgerChangeKind.Settled, id: childSessionId, record: retained });
-    return { state: to, completed: true, task: retained };
+    emitRetainedChange(store, { id: childSessionId, kind: LedgerChangeKind.Settled, record: retained });
+    return { completed: true, state: to, task: retained };
   }
 
   // No active entry — reject based on the retained state, if any.
@@ -671,7 +672,7 @@ export function pruneRetainedTasks(
   for (const [id, task] of store.retainedTasks) {
     if (now - task.retainedAt >= config.retainedTaskTtlMs) {
       store.dropRetained(id);
-      forgotten.push({ kind: LedgerChangeKind.Forgotten, id });
+      forgotten.push({ id, kind: LedgerChangeKind.Forgotten });
       dropped++;
     }
   }
@@ -679,7 +680,7 @@ export function pruneRetainedTasks(
     const oldest = oldestRetainedId(store);
     if (oldest === null) break;
     store.dropRetained(oldest);
-    forgotten.push({ kind: LedgerChangeKind.Forgotten, id: oldest });
+    forgotten.push({ id: oldest, kind: LedgerChangeKind.Forgotten });
     dropped++;
   }
   if (forgotten.length > 0) emitRetainedChange(store, ...forgotten);
@@ -825,7 +826,7 @@ function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
   const changes: LedgerChange[] = [];
   const superseded: string[] = [];
   const restored = hydrate(records, (id, record) => place(id, record, changes), outrankedBy, superseded);
-  for (const id of superseded) changes.push({ kind: LedgerChangeKind.Stopped, id });
+  for (const id of superseded) changes.push({ id, kind: LedgerChangeKind.Stopped });
   if (changes.length > 0) fire?.(changes);
   return restored;
 }
@@ -870,12 +871,12 @@ export function restoreRetained(
         // the file has to learn that — or the next boot restores what this one
         // refused. A `Forgotten` with no `Settled` beside it is the whole truth:
         // this record is not in the store, and was not for an instant of this boot.
-        changes.push({ kind: LedgerChangeKind.Forgotten, id });
+        changes.push({ id, kind: LedgerChangeKind.Forgotten });
         return;
       }
       store.markRetained(id, decision.kept);
-      if (decision.forgotten !== null) changes.push({ kind: LedgerChangeKind.Forgotten, id: decision.forgotten });
-      changes.push({ kind: LedgerChangeKind.Settled, id, record: decision.kept });
+      if (decision.forgotten !== null) changes.push({ id: decision.forgotten, kind: LedgerChangeKind.Forgotten });
+      changes.push({ id, kind: LedgerChangeKind.Settled, record: decision.kept });
     },
     store.onRetainedChange === undefined
       ? undefined
@@ -901,15 +902,15 @@ function pruneIfBounded(
   record: RetainedTaskState,
   maxEntries: number,
 ): { kept: RetainedTaskState; forgotten: string | null } | { dropped: true } {
-  if (store.retainedTasks.size < maxEntries) return { kept: record, forgotten: null };
+  if (store.retainedTasks.size < maxEntries) return { forgotten: null, kept: record };
   const oldestId = oldestRetainedId(store);
-  if (!oldestId) return { kept: record, forgotten: null };
+  if (!oldestId) return { forgotten: null, kept: record };
   const oldest = store.retainedTasks.get(oldestId);
   // A tie keeps the incoming record and evicts the held one, which is what the
   // first branch did, so nothing about an already-correct case moves.
   if (oldest && record.retainedAt < oldest.retainedAt) return { dropped: true };
   store.dropRetained(oldestId);
-  return { kept: record, forgotten: oldestId };
+  return { forgotten: oldestId, kept: record };
 }
 
 export function oldestRetainedId(store: TaskStore): string | null {

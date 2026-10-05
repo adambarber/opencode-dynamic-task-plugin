@@ -17,7 +17,7 @@
 
 import { errorMessage, isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
-import { callHost, hasPermissionReply, probeHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { type OpaqueHost, type OpenCodeClient, callHost, hasPermissionReply, probeHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 
 export interface QuestionResult {
@@ -40,7 +40,7 @@ export function denyAsk(host: OpaqueHost, sessionId: string, requestId: string):
   if (!sessionId || !requestId) return unsent("missing ask id or session id");
   if (!probeHost(host, hasPermissionReply)) return unsent("this host's context has no permission.reply");
   return sendDenial(host, requestId, (client) =>
-    client.permission.reply({ sessionID: sessionId, requestID: requestId, decision: "reject" }),
+    client.permission.reply({ decision: "reject", requestID: requestId, sessionID: sessionId }),
   );
 }
 
@@ -69,23 +69,23 @@ async function sendDenial(
 // from its table. Both are the outcome the background task wanted and both are ONE
 // reason, so the recognizers are named side by side instead of spelled as two branches
 // returning the same verdict.
-const ALREADY_CLOSED: ReadonlyArray<{ status: number; says: RegExp }> = [
-  { status: 409, says: /already (resolved|answered|decided)|permission not found|not found/i },
-  { status: 404, says: /no such (ask|permission)|missing/i },
+const ALREADY_CLOSED: readonly { status: number; says: RegExp }[] = [
+  { says: /already (resolved|answered|decided)|permission not found|not found/i, status: 409 },
+  { says: /no such (ask|permission)|missing/i, status: 404 },
 ];
 
 function classifyDenialFailure(requestId: string, error: unknown): QuestionResult {
   const status = isEventRecord(error) ? error.status : undefined;
   const message = errorMessage(error);
   if (ALREADY_CLOSED.some(({ status: code, says }) => status === code || says.test(message))) {
-    return { succeeded: true, reason: "already_resolved" };
+    return { reason: "already_resolved", succeeded: true };
   }
-  return { succeeded: false, reason: `${requestId}: ${message}` };
+  return { reason: `${requestId}: ${message}`, succeeded: false };
 }
 
 // A settlement this gate never sent: asked to close an ask it cannot even address.
 // Named once so the refusal shape is one thing, and a caller that forgets the guard
 // fails the same way every other refusal fails.
 function unsent(reason: string): Promise<QuestionResult> {
-  return Promise.resolve({ succeeded: false, reason });
+  return Promise.resolve({ reason, succeeded: false });
 }

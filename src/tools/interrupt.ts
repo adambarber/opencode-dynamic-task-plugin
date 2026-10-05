@@ -18,21 +18,21 @@ import { isEventRecord } from "../shared/host-shape.js";
 import { safeLog } from "../shared/notify.js";
 import {
   TaskState,
-  transitionState,
-  withdrawInterruptClaim,
+  isRunning,
   noteAbortLanded,
   recordAbortError,
-  isRunning,
   retainedFor,
+  transitionState,
+  withdrawInterruptClaim,
 } from "../shared/task-state.js";
 import { type ResolvedSessionScope } from "./context.js";
 import type { Refusal } from "../shared/verdict.js";
 import {
+  type InterruptOutcome,
   interruptReport,
   interruptScopeRefused,
   interruptStopRefused,
   interruptSubtreeReport,
-  type InterruptOutcome,
 } from "../shared/voice.js";
 
 /**
@@ -57,12 +57,12 @@ function isInterruptScope(value: unknown): value is InterruptScope {
 // did not name, and silently narrowing one leaves a descendant running behind a
 // report that reads as success.
 export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
-  const raw = isEventRecord(args) ? args["scope"] : undefined;
+  const raw = isEventRecord(args) ? args.scope : undefined;
   if (raw === undefined) return { ok: true, scope: InterruptScope.Subtree };
   if (isInterruptScope(raw)) return { ok: true, scope: raw };
   // A string renders as itself; anything else as JSON, so the refusal names
   // what was actually received instead of `[object Object]`.
-  return { ok: false, error: interruptScopeRefused(typeof raw === "string" ? raw : JSON.stringify(raw) ?? "unprintable") };
+  return { error: interruptScopeRefused(typeof raw === "string" ? raw : JSON.stringify(raw) ?? "unprintable"), ok: false };
 }
 
 interface InterruptClaim {
@@ -88,12 +88,12 @@ function abortFailedActive(
 /** The synchronous half: settle the task before the server is told anything. */
 function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string): InterruptClaim {
   const claimTime = Date.now();
-  if (!isRunning(store, sessionId)) return { claimed: false, claimTime };
+  if (!isRunning(store, sessionId)) return { claimTime, claimed: false };
   try {
     transitionState(store, sessionId, TaskState.Interrupted);
-    return { claimed: true, claimTime };
+    return { claimTime, claimed: true };
   } catch {
-    return { claimed: false, claimTime }; // settled concurrently
+    return { claimTime, claimed: false }; // settled concurrently
   }
 }
 
@@ -112,7 +112,7 @@ async function abortClaimed(
   // disagree with itself here, which is the one thing the pre-check exists to
   // make impossible.
   const { serverGone, transportError: abortMessage } = await abortSession(
-    { host, store, callerSessionId: scope.callerSessionId },
+    { callerSessionId: scope.callerSessionId, host, store },
     sessionId,
   );
 
@@ -145,7 +145,7 @@ async function abortClaimed(
     // A success record is never annotated with abort noise — the gap
     // belongs in the operator-visible report, not on the outcome.
     if (retained && retained.state !== TaskState.Completed) recordAbortError(store, sessionId, abortMessage);
-    return { kind: "abort-failed-settled", state: retained?.state ?? "unknown", message: abortMessage };
+    return { kind: "abort-failed-settled", message: abortMessage, state: retained?.state ?? "unknown" };
   }
   if (serverGone) return { kind: "server-gone" };
   if (!claimed && retained) {
@@ -170,10 +170,10 @@ export async function executeTaskInterrupt(scope: ResolvedSessionScope, args?: u
   const plan = stopPlan(scope, sessionId, reach.scope === InterruptScope.Subtree);
   if (plan.refusal !== undefined) return interruptStopRefused(sessionId, plan.refusal);
 
-  const claims = plan.targets.map((id) => ({ id, claim: claimInterrupt(store, id) }));
-  const members: Array<{ sessionId: string; outcome: InterruptOutcome }> = [];
+  const claims = plan.targets.map((id) => ({ claim: claimInterrupt(store, id), id }));
+  const members: { sessionId: string; outcome: InterruptOutcome }[] = [];
   for (const { id, claim } of claims) {
-    members.push({ sessionId: id, outcome: await abortClaimed(scope, id, claim) });
+    members.push({ outcome: await abortClaimed(scope, id, claim), sessionId: id });
   }
   // One task is a sentence, several are a ledger. The words come from the same
   // function either way (interruptReport), so a report of ten does not say

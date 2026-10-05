@@ -18,7 +18,8 @@
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { errorMessage, isPlainRecord } from "./host-shape.js";
-import { DepthBound, depthLimits } from "./task-policy.js";
+import type { DepthBound} from "./task-policy.js";
+import { depthLimits } from "./task-policy.js";
 
 // ─── the vocabulary ──────────────────────────────────────────────────────────
 
@@ -47,7 +48,7 @@ export type AgentCapName = (typeof AGENT_CAP_NAMES)[number];
  * them and inherit the rest from the top level — `AgentCapPolicy` is the resolved
  * shape, the one that has all of them.
  */
-export type AgentCaps = { [K in AgentCapName]?: number };
+export type AgentCaps = Partial<Record<AgentCapName, number>>;
 
 /**
  * The caps in force, and the only part of a config this module reads.
@@ -182,6 +183,16 @@ function cap(value: unknown): number | undefined {
   return isAgentCap(value) ? value : undefined;
 }
 
+/** The two top-level knobs, read off any body that carries them. `undefined` means absent. */
+function readTopLevelCaps(body: Record<string, unknown>): { maxConcurrent?: number; maxDepth?: number } {
+  const maxConcurrent = cap(body.maxConcurrent);
+  const maxDepth = cap(body.maxDepth);
+  return {
+    ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
+    ...(maxDepth !== undefined ? { maxDepth } : {}),
+  };
+}
+
 /**
  * The knobs an agent body may set. Nothing else in it is a policy statement.
  *
@@ -216,14 +227,8 @@ export function readAgentCapBody(raw: unknown): AgentCaps {
  */
 export function parseAgentCaps(raw: unknown): AgentCaps | null {
   if (!isPlainRecord(raw)) return null;
-  const body = raw;
-  const maxConcurrent = cap(body.maxConcurrent);
-  const maxDepth = cap(body.maxDepth);
-  if (maxConcurrent === undefined && maxDepth === undefined) return null;
-  return {
-    ...(maxConcurrent !== undefined ? { maxConcurrent } : {}),
-    ...(maxDepth !== undefined ? { maxDepth } : {}),
-  };
+  const caps = readTopLevelCaps(raw);
+  return Object.keys(caps).length === 0 ? null : caps;
 }
 
 // ─── the overlay: the operator's edit, in a file beside the ledger ───────────
@@ -293,7 +298,7 @@ export function readAgentOverlay(directory: string | undefined): { raw: unknown;
  */
 export function readAgentOverlayCaps(raw: unknown): OverlayAgents {
   const { agents, dropped, usable } = readOverlayAgents(raw);
-  const stated = usable ? cap(overlayBody(raw)?.["maxConcurrent"]) : undefined;
+  const stated = usable ? cap(overlayBody(raw)?.maxConcurrent) : undefined;
   // `exactOptionalPropertyTypes` is on, so an absent key and a key holding
   // `undefined` are different values. Spreading would write the latter and the
   // dialog's `!== undefined` check would be answering a question about presence that
@@ -319,7 +324,7 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
   const empty = { agents: {} as Record<string, AgentCaps>, dropped: {} as Record<string, string[]>, usable: true };
   const body = overlayBody(raw);
   if (!body) return { ...empty, usable: false };
-  const rawAgents = body["agents"];
+  const rawAgents = body.agents;
   if (rawAgents === undefined) return empty;
   if (!isPlainRecord(rawAgents)) return { ...empty, usable: false };
 
@@ -354,12 +359,11 @@ export function applyAgentOverlay(base: AgentCapSource, raw: unknown): AgentCapS
   if (!body) return null;
   const { agents, usable } = readOverlayAgents(raw);
   if (!usable) return null;
-  const maxConcurrent = cap(body["maxConcurrent"]);
-  const maxDepth = cap(body["maxDepth"]);
-  if (maxConcurrent === undefined && maxDepth === undefined && Object.keys(agents).length === 0) return null;
+  const caps = readTopLevelCaps(body);
+  if (Object.keys(caps).length === 0 && Object.keys(agents).length === 0) return null;
   return {
-    maxConcurrent: maxConcurrent ?? base.maxConcurrent,
-    maxDepth: maxDepth ?? base.maxDepth,
+    maxConcurrent: caps.maxConcurrent ?? base.maxConcurrent,
+    maxDepth: caps.maxDepth ?? base.maxDepth,
     // An agent the overlay does not mention keeps the base file's numbers: the
     // overlay is an EDIT, not a replacement, so an operator who capped one agent does
     // not silently reset the rest to the top-level defaults.
@@ -378,12 +382,12 @@ function readJsonFile(path: string): { raw: unknown; problem: string | null } {
   try {
     text = readFileSync(path, "utf8");
   } catch {
-    return { raw: null, problem: null };
+    return { problem: null, raw: null };
   }
   try {
-    return { raw: JSON.parse(text) as unknown, problem: null };
+    return { problem: null, raw: JSON.parse(text) as unknown };
   } catch (error) {
-    return { raw: null, problem: `the overlay is not valid JSON: ${errorMessage(error)}` };
+    return { problem: `the overlay is not valid JSON: ${errorMessage(error)}`, raw: null };
   }
 }
 
@@ -516,15 +520,15 @@ export function agentOccupancy(
   const names = agentNames ?? knownCappedAgents(source);
   return names.map((agent) => {
     const policy = resolveAgentCaps(source, agent);
-    const limits = depthLimits({ maxDepth: policy.maxDepth, allowSameAgentRecursion }, agentNames ?? []);
+    const limits = depthLimits({ allowSameAgentRecursion, maxDepth: policy.maxDepth }, agentNames ?? []);
     return {
-      agent,
       active: activeByAgent.get(agentKey(agent)) ?? 0,
-      maxConcurrent: policy.maxConcurrent,
-      stated: source.agents[agentKey(agent)] ?? {},
+      agent,
+      depthBoundBy: agentNames === null ? null : limits.boundBy,
       depthConfigured: policy.maxDepth,
       depthEffective: agentNames === null ? null : finiteDepth(limits.effective),
-      depthBoundBy: agentNames === null ? null : limits.boundBy,
+      maxConcurrent: policy.maxConcurrent,
+      stated: source.agents[agentKey(agent)] ?? {},
     };
   });
 }

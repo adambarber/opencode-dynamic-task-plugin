@@ -130,7 +130,7 @@ try {
   if (run.error) throw run.error;
   report = JSON.parse(readFileSync(join(out, "jscpd-report.json"), "utf8"));
 } finally {
-  rmSync(out, { recursive: true, force: true });
+  rmSync(out, { force: true, recursive: true });
 }
 
 const findings = report.duplicates ?? [];
@@ -148,9 +148,9 @@ for (const { d, ok } of checked) {
 
 const discarded = findings.length - verified.length;
 console.log(
-  `Found ${verified.length} clones` +
-  (discarded ? ` (${discarded} of ${findings.length} reported ranges did not reproduce and were discarded)` : "") +
-  ".",
+  `Found ${verified.length} clones${ 
+  discarded ? ` (${discarded} of ${findings.length} reported ranges did not reproduce and were discarded)` : "" 
+  }.`,
 );
 
 if (unchecked.length > 0) {

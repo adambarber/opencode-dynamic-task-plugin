@@ -24,7 +24,7 @@
  * which is the kind of thing nobody notices until the cap matters.
  */
 
-import { TaskState } from "./task-state.js";
+import type { TaskState } from "./task-state.js";
 import { FailureClass, classifyFailure } from "./failure-class.js";
 import type { TaskStore } from "./store.js";
 import type { AgentCapSource } from "./caps.js";

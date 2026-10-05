@@ -93,8 +93,8 @@ export function safeDebugPayload(payload: Record<string, unknown>): Record<strin
 export function debugLog(parentSessionId: string, childSessionId: string, eventName: string, payload: Record<string, unknown> = {}): void {
   if (process.env.DYNAMIC_TASK_DEBUG !== "1") return;
   const line = JSON.stringify({
-    ts: new Date().toISOString(),
     eventName,
+    ts: new Date().toISOString(),
     ...safeDebugPayload(payload),
   });
   appendLogLine(getDebugLogPath(parentSessionId, childSessionId), line);

@@ -11,7 +11,7 @@
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import { TaskState } from "./task-state.js";
-import { AbortRefusalKind, type AbortRefusal } from "./session-lifecycle.js";
+import { type AbortRefusal, AbortRefusalKind } from "./session-lifecycle.js";
 import { textBlock } from "./text-block.js";
 
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
@@ -134,9 +134,9 @@ export function spawnConfirmation(input: {
   const noChannel = input.canNotify
     ? []
     : [
-      "Warning: @"
-        + input.agentName
-        + "'s children have no task_notify, so it cannot report progress mid-run and cannot declare that it is blocked. If it hits something it cannot finish, it will say so in its final message and the task will still settle as completed — read that message before treating the outcome as a success.",
+      `Warning: @${
+         input.agentName
+         }'s children have no task_notify, so it cannot report progress mid-run and cannot declare that it is blocked. If it hits something it cannot finish, it will say so in its final message and the task will still settle as completed — read that message before treating the outcome as a success.`,
     ];
   // ONE return, because the two cases differ by a line and not by a shape: an earlier
   // version branched into two near-identical arrays, which is two places to edit when the
@@ -398,7 +398,7 @@ export function interruptReport(sessionId: string, outcome: InterruptOutcome): s
 // refused scope stops nothing at all and says so before the choices.
 export function interruptSubtreeReport(
   rootSessionId: string,
-  members: ReadonlyArray<{ sessionId: string; outcome: InterruptOutcome }>,
+  members: readonly { sessionId: string; outcome: InterruptOutcome }[],
 ): string {
   return textBlock(
     `Stopped ${members.length} task(s) in the subtree rooted at ${rootSessionId}:`,

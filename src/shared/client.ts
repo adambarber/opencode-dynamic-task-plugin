@@ -11,7 +11,7 @@
 // deadline is an argument at the call rather than a scan finding above it.
 
 import type { Context } from "@opencode/plugin/promise/plugin";
-import { expired, withBound, type BoundArgs, type Bounded } from "./execution-bound.js";
+import { type BoundArgs, type Bounded, expired, withBound } from "./execution-bound.js";
 import { isEventRecord } from "./host-shape.js";
 
 /** The host, as v2 defines it: a set of typed domains and no client. */
@@ -23,7 +23,7 @@ const HOST: unique symbol = Symbol("opaque-host");
 
 // What production is given instead of the host. Boundedness used to rest on a scan
 // reading the lines above each call, blind to an indirect receiver.
-export type OpaqueHost<C = OpenCodeClient> = { readonly [HOST]: C };
+export interface OpaqueHost<C = OpenCodeClient> { readonly [HOST]: C }
 
 /** Mint the one value production holds — from the plugin entry, nowhere else. */
 export function asOpaqueHost<C>(context: C): OpaqueHost<C> {
@@ -85,8 +85,8 @@ export function fireAndForget(
  * untyped map to ASK whether the key exists, which is the question — not an answer.
  */
 export function hasPermissionReply(host: OpenCodeClient): boolean {
-  const permission = (host as { permission?: Record<string, unknown> }).permission;
-  return typeof permission?.["reply"] === "function";
+  const {permission} = (host as { permission?: Record<string, unknown> });
+  return typeof permission?.reply === "function";
 }
 
 /**
@@ -99,12 +99,12 @@ export function hasCoreApis(host: OpenCodeClient): boolean {
   // The runtime truth can be a PARTIAL context, so each level is narrowed
   // before the next is read; a missing level answers false, never throws.
   if (!isEventRecord(host)) return false;
-  const agent = host["agent"];
-  const session = host["session"];
+  const {agent} = host;
+  const {session} = host;
   if (!isEventRecord(agent) || !isEventRecord(session)) return false;
   return (
-    typeof agent["list"] === "function" &&
-    typeof session["create"] === "function" &&
-    typeof session["prompt"] === "function"
+    typeof agent.list === "function" &&
+    typeof session.create === "function" &&
+    typeof session.prompt === "function"
   );
 }

@@ -51,7 +51,7 @@ export function dispatchForest(store: TaskStore): DispatchNode[] {
 
   const placed = new Set<string>();
   const grow = (task: TaskRecord, depth: number, parentTracked: boolean, path: ReadonlySet<string>): DispatchNode => {
-    const node: DispatchNode = { task, depth, parentTracked, children: [] };
+    const node: DispatchNode = { children: [], depth, parentTracked, task };
     placed.add(task.childSessionId);
     const next = new Set(path).add(task.childSessionId);
     for (const childId of childrenOf.get(task.childSessionId) ?? []) {

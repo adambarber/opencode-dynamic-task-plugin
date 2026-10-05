@@ -13,8 +13,8 @@
  * way; `verbatimModuleSyntax` is what makes the erasure guaranteed rather than
  * conventional.
  */
-import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
-import type { WaitRegistry, DependencyWait } from "./dispatch-wait.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
 /**
@@ -54,7 +54,7 @@ export type LedgerChangeSink = (changes: readonly LedgerChange[]) => void;
  * refactor of a module this change has no reason to touch.
  */
 export class TaskStore implements WaitRegistry {
-  waits: Map<string, DependencyWait> = new Map();
+  waits = new Map<string, DependencyWait>();
   // Durable-state observer (Task 06): invoked after retained entries change.
   onRetainedChange?: LedgerChangeSink | undefined;
   // Durable-state observer (Task 11): invoked when a task STARTS or STOPS being
@@ -102,7 +102,7 @@ export class TaskStore implements WaitRegistry {
   markRunning(id: string, record: ActiveTaskState): LedgerChange {
     this.#retained.delete(id);
     this.#active.set(id, record);
-    return { kind: LedgerChangeKind.Running, id, record };
+    return { id, kind: LedgerChangeKind.Running, record };
   }
 
   /**
@@ -112,7 +112,7 @@ export class TaskStore implements WaitRegistry {
    */
   stopRunning(id: string): LedgerChange {
     this.#active.delete(id);
-    return { kind: LedgerChangeKind.Stopped, id };
+    return { id, kind: LedgerChangeKind.Stopped };
   }
 
   // ── the settled set ───────────────────────────────────────────────

@@ -3,24 +3,24 @@
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless } from "../shared/session-lifecycle.js";
-import { notifyParent, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
-import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
-import { pruneRetainedTasks, findTask, TaskState } from "../shared/task-state.js";
+import { getLatestNotification, noticeDedupKey, notifyParent } from "../shared/notify.js";
+import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
+import { TaskState, findTask, pruneRetainedTasks } from "../shared/task-state.js";
 import type { NotifyArgs } from "./args.js";
-import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
-import { callerSessionId, type ToolDeps } from "./context.js";
+import { NoticeClaim, annotateNotice, isNoticeClaim } from "../shared/notice-claim.js";
+import { type ToolDeps, callerSessionId } from "./context.js";
 import {
   CALLER_UNKNOWN,
   MESSAGE_REQUIRED,
-  noticeTooLong,
+  NOTICE_DUPLICATE_SUPPRESSED,
+  NOTICE_PARENTLESS,
+  NOTICE_PENDING_ACK,
+  NOTICE_SENT,
   NOT_A_TRACKED_TASK,
   alreadySettledNotice,
-  NOTICE_PARENTLESS,
-  NOTICE_SENT,
-  NOTICE_DUPLICATE_SUPPRESSED,
-  NOTICE_PENDING_ACK,
-  parentUndelivered,
   noticeClaimRefused,
+  noticeTooLong,
+  parentUndelivered,
 } from "../shared/voice.js";
 
 export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: ToolContext): Promise<string> {
@@ -66,8 +66,8 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   );
   const delivered = await notifyParent(host, task.parentSessionId, parentMessage, {
     childSessionId: task.childSessionId,
-    kind: NotifyKind.Notice,
     dedupKey: noticeDedupKey(message),
+    kind: NotifyKind.Notice,
   });
   if (delivered) return NOTICE_SENT;
   // The gate resolves synchronously after this await, so the latest record

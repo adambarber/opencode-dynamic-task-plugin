@@ -9,7 +9,7 @@ import type { DynamicTaskConfig } from "./config.js";
 import { resolveAgentCaps } from "./caps.js";
 import { liveAgentCaps } from "./caps.js";
 import { safeLog } from "./notify.js";
-import { callHost, type OpaqueHost } from "./client.js";
+import { type OpaqueHost, callHost } from "./client.js";
 
 // The one host call the listing makes. Stated structurally so a FAKE can satisfy it
 // without the whole host: the reader is bounded, so it needs the shape, not the client.
@@ -143,14 +143,14 @@ export function resolveAdmission(
   const lineageCheck = validateLineage(
     lineage,
     agent.name,
-    { maxDepth: policy.maxDepth, allowSameAgentRecursion: config.allowSameAgentRecursion },
+    { allowSameAgentRecursion: config.allowSameAgentRecursion, maxDepth: policy.maxDepth },
     dispatchableAgentNames(agents, config),
   );
   if (!lineageCheck.ok) {
     return { ok: false, reason: policyRefused(lineageCheck.error) };
   }
 
-  return { ok: true, agent, newLineage: buildTaskLineage(lineage, agent.name) };
+  return { agent, newLineage: buildTaskLineage(lineage, agent.name), ok: true };
 }
 
 // ─── resolveDependencies ───────────────────────────────────────────
@@ -258,7 +258,7 @@ export function admitToolPrompt(
   const admitted = admitPromptInput(args.prompt, args.model, absentPromptVoice);
   if (!admitted.ok) return admitted;
   pruneRetainedTasks(store, config);
-  return { ok: true, input: admitted.input };
+  return { input: admitted.input, ok: true };
 }
 
 // ─── agent discovery ───────────────────────────────────────────────

@@ -5,9 +5,9 @@ import type { OpaqueHost } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { TaskRecord, TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
-import { resolveParentSessionId, isParentless } from "../shared/session-lifecycle.js";
+import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
 import { isEventRecord } from "../shared/host-shape.js";
-import { formatTaskResultSummary, taskResultRecord, NO_SESSION_RECORD } from "../shared/task-formatting.js";
+import { NO_SESSION_RECORD, formatTaskResultSummary, taskResultRecord } from "../shared/task-formatting.js";
 import { UntrackedStatus } from "../shared/liveness.js";
 import type { Refusal } from "../shared/verdict.js";
 
@@ -62,13 +62,13 @@ export type SessionScope = { ok: true; scope: ResolvedSessionScope } | Refusal;
 
 export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext): SessionScope {
   const missing = missingSessionId(args);
-  if (missing) return { ok: false, error: missing };
+  if (missing) return { error: missing, ok: false };
   return {
     ok: true,
     scope: {
       // `missingSessionId` above already refused absent ids, so the fallback
       // is unreachable on that path; it types the read, not a second check.
-      sessionId: String(isEventRecord(args) ? args["session_id"] : undefined),
+      sessionId: String(isEventRecord(args) ? args.session_id : undefined),
       callerSessionId: callerSessionId(ctx),
       host: deps.host,
       store: deps.store,
@@ -81,7 +81,7 @@ export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext
 // voice as every other read (never raw JSON).
 export function unknownSessionResult(sessionId: string): string {
   return formatTaskResultSummary(
-    taskResultRecord({ sessionId, status: UntrackedStatus.Unknown, latestText: NO_SESSION_RECORD }),
+    taskResultRecord({ latestText: NO_SESSION_RECORD, sessionId, status: UntrackedStatus.Unknown }),
   );
 }
 

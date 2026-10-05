@@ -2,27 +2,27 @@
 // register, fire. The ONLY session.create site (funnel test pins this).
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import {
-  resolveAdmission,
-  registerAdmittedTask,
-  resolveDependencies,
-  fetchAgents,
   admitToolPrompt,
+  fetchAgents,
+  registerAdmittedTask,
+  resolveAdmission,
+  resolveDependencies,
 } from "../shared/admission.js";
 import { agentCanNotify } from "../shared/agent-record.js";
 import { NOTIFY_TOOL } from "../shared/notification-text.js";
-import { resolveParentSessionId, validateSessionResult, abortSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
+import { UNKNOWN_PARENT, abortSession, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { isSessionMissing } from "../shared/liveness.js";
 import { WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { callHost } from "../shared/client.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import {
+  type NewTaskRegistration,
+  TaskState,
   activeRecord,
-  transitionState,
   agentCapacityRefusal,
   isRunning,
-  TaskState,
-  type NewTaskRegistration,
+  transitionState,
 } from "../shared/task-state.js";
 import { notifyRunning } from "../shared/change-sinks.js";
 import { NotifyKind } from "../shared/notification-text.js";
@@ -31,13 +31,13 @@ import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
   INVALID_PROMPT,
-  descriptionTooLong,
-  dependenciesPending,
-  createFailed,
-  spawnConfirmation,
-  agentGone,
-  sessionLost,
   PERMISSION_DENIED,
+  agentGone,
+  createFailed,
+  dependenciesPending,
+  descriptionTooLong,
+  sessionLost,
+  spawnConfirmation,
 } from "../shared/voice.js";
 
 // Labels ride every notification verbatim — bound them like prompts.
@@ -58,7 +58,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   if (!admission.ok) {
     return admission.reason.refusal;
   }
-  const agent = admission.agent;
+  const {agent} = admission;
 
   // The shared opening for a prompt-bearing tool: prompt and model shape are
   // admission-checked before the session exists (a bad id would otherwise fail
@@ -86,10 +86,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     const waitingParent = resolveParentSessionId(ctx);
     if (waitingParent) {
       holdDispatchWait(store, {
-        description: args.description || `Task: ${agent.name}`,
-        parentSessionId: waitingParent,
         dependsOn: args.depends_on ?? [],
         dependsOnSettled: args.depends_on_settled ?? [],
+        description: args.description || `Task: ${agent.name}`,
+        parentSessionId: waitingParent,
       });
     }
     return dependenciesPending(readiness.pending);
@@ -155,7 +155,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       // are the two facts that make a session nobody can name findable, and they are
       // fixed at the point the create was asked for. A session created without a
       // title is titled after its agent here, so this is always a real string.
-      return createFailed(sessionResult, { title: sessionBody.title, parentSessionId });
+      return createFailed(sessionResult, { parentSessionId, title: sessionBody.title });
     }
     createdSessionId = childSessionId;
 
@@ -178,10 +178,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // deciding here what that field means is the one place that can decide it.
     return spawnConfirmation({
       agentName: agent.name,
+      canNotify: agentCanNotify(agent, NOTIFY_TOOL),
       childSessionId,
       model: requestedModelLabel,
       parentSessionId: parentSessionId || null,
-      canNotify: agentCanNotify(agent, NOTIFY_TOOL),
     });
   } catch (error: unknown) {
     const message = errorMessage(error);
@@ -212,7 +212,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
           activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now()),
         ));
         try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* settled concurrently */ }
-        await abortSession({ host, store, callerSessionId: parentSessionId || undefined }, failedChildSessionId);
+        await abortSession({ callerSessionId: parentSessionId || undefined, host, store }, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal
       // settlement — a failed spawn the parent never hears about

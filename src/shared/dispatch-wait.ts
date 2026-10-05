@@ -55,7 +55,7 @@ export const MAX_WAITS = 64;
 
 /** A wait's key: who is waiting, for what. The parent named both. */
 export function waitKey(parentSessionId: string, description: string): string {
-  return parentSessionId + " " + description;
+  return `${parentSessionId  } ${  description}`;
 }
 
 /**
@@ -102,7 +102,7 @@ export function releaseWaitsFor(
   isAdmissible: (wait: DependencyWait) => { ok: true } | { ok: false; pending: DependencyBlock[] },
   stillRunning: (childSessionId: string) => boolean,
 ): WaitRelease {
-  const release: WaitRelease = { ready: [], dead: [] };
+  const release: WaitRelease = { dead: [], ready: [] };
   for (const [key, wait] of store.waits) {
     const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
       edges.includes(settledChildSessionId),

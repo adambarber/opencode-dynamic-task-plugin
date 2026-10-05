@@ -145,8 +145,8 @@ export function failureNote(failureClass: FailureClass, resumesSpent = 0): strin
     const spent = resumesSpent > 0
       ? ` It had already been resumed ${resumesSpent} time(s) without getting through, so this is a lasting outage rather than one unlucky turn.`
       : "";
-    return "Failure class: transient — a network or provider blip, not the work. "
-      + "Nothing here to investigate; the child resumes from where it stopped." + spent;
+    return `Failure class: transient — a network or provider blip, not the work. `
+      + `Nothing here to investigate; the child resumes from where it stopped.${  spent}`;
   }
   if (failureClass === FailureClass.Structural) {
     return "Failure class: structural — the work failed, not the connection. "

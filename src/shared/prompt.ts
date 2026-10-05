@@ -5,7 +5,7 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
-import { callHost, fireAndForget, type FailureReporter, type OpaqueHost } from "./client.js";
+import { type FailureReporter, type OpaqueHost, callHost, fireAndForget } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { hostPayload } from "./session-lifecycle.js";
 import { errorMessage } from "./host-shape.js";
@@ -47,11 +47,11 @@ export function admitPromptInput(
   model: unknown,
   absentPromptVoice: string,
 ): Verdict<AdmittedPromptInput> {
-  if (!prompt || typeof prompt !== "string") return { ok: false, error: absentPromptVoice };
-  if (prompt.length > MAX_PROMPT_CHARS) return { ok: false, error: promptTooLong(prompt.length) };
+  if (!prompt || typeof prompt !== "string") return { error: absentPromptVoice, ok: false };
+  if (prompt.length > MAX_PROMPT_CHARS) return { error: promptTooLong(prompt.length), ok: false };
   const modelShapeError = describeModelShapeError(model);
-  if (modelShapeError) return { ok: false, error: `ERROR: ${modelShapeError}` };
-  return { ok: true, input: { prompt, modelOverride: parseModelOverride(model) } };
+  if (modelShapeError) return { error: `ERROR: ${modelShapeError}`, ok: false };
+  return { input: { modelOverride: parseModelOverride(model), prompt }, ok: true };
 }
 
 export function parseModelOverride(model: unknown): ModelOverride | undefined {
@@ -59,8 +59,8 @@ export function parseModelOverride(model: unknown): ModelOverride | undefined {
   const trimmed = model.trim();
   if (!trimmed) return undefined;
   const slash = trimmed.indexOf("/");
-  if (slash < 0) return { providerID: "", modelID: trimmed };
-  return { providerID: trimmed.slice(0, slash), modelID: trimmed.slice(slash + 1) };
+  if (slash === -1) return { modelID: trimmed, providerID: "" };
+  return { modelID: trimmed.slice(slash + 1), providerID: trimmed.slice(0, slash) };
 }
 
 // Admission-time shape check: a bare id (no provider prefix) fails LOUD with
@@ -96,11 +96,11 @@ export function invokePrompt(
     // agent field at all, so the session is switched first and then prompted. Three
     // bounded writes where v1 did one, and that is the price of the current API.
     async (client) => {
-      if (routing.agent !== undefined) await client.session.switchAgent({ sessionID: sessionId, agent: routing.agent });
+      if (routing.agent !== undefined) await client.session.switchAgent({ agent: routing.agent, sessionID: sessionId });
       if (routing.model !== undefined)
         await client.session.switchModel({
-          sessionID: sessionId,
           model: { id: routing.model.modelID, providerID: routing.model.providerID },
+          sessionID: sessionId,
         });
       return client.session.prompt({ sessionID: sessionId, text });
     },
@@ -281,11 +281,11 @@ export function toolCallOf(value: unknown): ToolPart | null {
   const name = value.name ?? value.tool;
   if (typeof name !== "string") return null;
   if (!isEventRecord(value.state) || !isEventRecord(value.state.input)) return null;
-  const status = value.state.status;
+  const {status} = value.state;
   return {
-    tool: name,
-    input: value.state.input,
     incomplete: typeof status !== "string" || !LANDED_CALLS.has(status),
+    input: value.state.input,
+    tool: name,
   };
 }
 
@@ -351,7 +351,7 @@ export function touchedFiles(messages: unknown): FileTouch[] {
       if (filePath === undefined) continue;
       if (seen.has(filePath)) continue;
       seen.add(filePath);
-      touches.push({ verb: call.tool, path: filePath, incomplete: call.incomplete });
+      touches.push({ incomplete: call.incomplete, path: filePath, verb: call.tool });
     }
   }
   return touches;
@@ -483,15 +483,15 @@ export async function hydrateLatestOutcome(
   host: OpaqueHost,
   sessionId: string,
 ): Promise<HydratedOutcome> {
-  const blank: HydratedOutcome = { text: "", errorDetail: "", unreadable: true };
+  const blank: HydratedOutcome = { errorDetail: "", text: "", unreadable: true };
   try {
     // Through the shared transcript read, which is where the bound lives. It used
     // to be a second chokepoint with its own deadline, so the two could disagree
     // about how long a child gets to describe itself.
     const messages = await readSessionMessages(host, sessionId);
     return {
-      text: getLatestAssistantText(messages),
       errorDetail: latestMessageErrorDetail(messages),
+      text: getLatestAssistantText(messages),
       unreadable: false,
     };
   } catch {

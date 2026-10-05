@@ -12,7 +12,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginOptions } from "@opencode/plugin";
-import { agentKey, parseAgentCaps, type AgentCaps } from "./caps.js";
+import { type AgentCaps, agentKey, parseAgentCaps } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 
 export interface DynamicTaskConfig {
@@ -176,14 +176,14 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
  * configures nothing and still passes. Six of them were spelled out on both sides.
  */
 export const ENV = {
-  maxDepth: "DYNAMIC_TASK_MAX_DEPTH",
-  maxConcurrent: "DYNAMIC_TASK_MAX_CONCURRENT",
   agentCacheTtlMs: "DYNAMIC_TASK_CACHE_TTL",
-  retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
-  retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
-  pendingMaxAttempts: "DYNAMIC_TASK_PENDING_MAX_ATTEMPTS",
-  blockedAgents: "DYNAMIC_TASK_FORBIDDEN_AGENTS",
   allowSameAgentRecursion: "DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION",
+  blockedAgents: "DYNAMIC_TASK_FORBIDDEN_AGENTS",
+  maxConcurrent: "DYNAMIC_TASK_MAX_CONCURRENT",
+  maxDepth: "DYNAMIC_TASK_MAX_DEPTH",
+  pendingMaxAttempts: "DYNAMIC_TASK_PENDING_MAX_ATTEMPTS",
+  retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
+  retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
 } as const;
 
 // A knob the defaults actually carry: env can never name a typo, and a new
@@ -210,12 +210,8 @@ export function normalizeDynamicTaskConfig(
   applyKnownFields(base, options);
 
   const env: Partial<Record<keyof DynamicTaskConfig, () => number | string[] | boolean | undefined>> = {
-    maxDepth: () => parsePositiveInt(envValue(ENV.maxDepth)),
-    maxConcurrent: () => parsePositiveInt(envValue(ENV.maxConcurrent)),
     agentCacheTtlMs: () => parsePositiveInt(envValue(ENV.agentCacheTtlMs)),
-    retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
-      retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
-      pendingMaxAttempts: () => parsePositiveInt(envValue(ENV.pendingMaxAttempts)),
+    allowSameAgentRecursion: () => parseBoolean(envValue(ENV.allowSameAgentRecursion)),
     blockedAgents: () => {
       const raw = envValue(ENV.blockedAgents);
       if (!raw) return undefined;
@@ -224,7 +220,11 @@ export function normalizeDynamicTaskConfig(
       const list = trimStringList(raw);
       return list.length > 0 ? list : undefined;
     },
-    allowSameAgentRecursion: () => parseBoolean(envValue(ENV.allowSameAgentRecursion)),
+    maxConcurrent: () => parsePositiveInt(envValue(ENV.maxConcurrent)),
+    maxDepth: () => parsePositiveInt(envValue(ENV.maxDepth)),
+    pendingMaxAttempts: () => parsePositiveInt(envValue(ENV.pendingMaxAttempts)),
+    retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
+    retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
   };
 
   const merged: DynamicTaskConfig = { ...base };
@@ -237,15 +237,15 @@ export function normalizeDynamicTaskConfig(
   }
 
   return {
-    maxDepth: merged.maxDepth,
-    maxConcurrent: merged.maxConcurrent,
-    agents: merged.agents,
     agentCacheTtlMs: merged.agentCacheTtlMs,
-    retainedTaskTtlMs: merged.retainedTaskTtlMs,
-    retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
-    pendingMaxAttempts: merged.pendingMaxAttempts,
-    blockedAgents: merged.blockedAgents,
+    agents: merged.agents,
     allowSameAgentRecursion: merged.allowSameAgentRecursion,
+    blockedAgents: merged.blockedAgents,
+    maxConcurrent: merged.maxConcurrent,
+    maxDepth: merged.maxDepth,
+    pendingMaxAttempts: merged.pendingMaxAttempts,
+    retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
+    retainedTaskTtlMs: merged.retainedTaskTtlMs,
   };
 }
 

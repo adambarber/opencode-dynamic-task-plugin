@@ -6,30 +6,30 @@ import { eventField } from "../shared/host-shape.js";
 import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
+  type LivenessReading,
+  UNANSWERED_LIVENESS,
   isSessionMissing,
   readLiveness,
   statusFromHostTurn,
-  type LivenessReading,
-  UNANSWERED_LIVENESS,
 } from "../shared/liveness.js";
 import { debugLog } from "../debug-logger.js";
 import {
-  agentDisplayName,
-  formatTaskResultSummary,
-  formatTaskListSummary,
-  formatTaskStatusDetail,
-  taskResultRecord,
-  NO_ASSISTANT_TEXT,
-  SEE_ERROR_ABOVE,
   API_UNAVAILABLE,
   type FleetRow,
+  NO_ASSISTANT_TEXT,
+  SEE_ERROR_ABOVE,
+  agentDisplayName,
+  formatTaskListSummary,
+  formatTaskResultSummary,
+  formatTaskStatusDetail,
+  taskResultRecord,
 } from "../shared/task-formatting.js";
-import { pruneRetainedTasks, findTask, listTasks, TaskState, failureClassOf, motionClocksOf, type TaskRecord } from "../shared/task-state.js";
-import { dispatchForest, type DispatchNode } from "../shared/dispatch-tree.js";
+import { type TaskRecord, TaskState, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
+import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
 import { activeByAgent } from "../shared/task-state.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { agentOccupancy } from "../shared/caps.js";
-import { unknownSessionResult, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import { type ResolvedSessionScope, type ToolDeps, unknownSessionResult } from "./context.js";
 
 // The prologue both readers share: resolve the session, prune, look up. Pruning
 // first is the point — a retained record past its TTL must not answer as though
@@ -64,29 +64,29 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
         liveness,
       }),
     );
-  } catch (err: unknown) {
+  } catch (error: unknown) {
     // One reader for "no such session" — the ad-hoc `status === 404` check
     // matched the fake's old shape while the live host answered otherwise, so
     // an untracked session surfaced as a network error. An error this still
     // does not recognise is logged with its shape, so the next one names
     // itself instead of hiding behind the fallback text below.
-    if (isSessionMissing(err)) {
+    if (isSessionMissing(error)) {
       return unknownSessionResult(sessionId);
     }
-    const message = errorMessage(err);
-    const code = eventField(err, "code");
+    const message = errorMessage(error);
+    const code = eventField(error, "code");
     const retryable = code === "ECONNREFUSED" || code === "ETIMEDOUT";
     if (!task) {
       debugLog("tool", sessionId, "unrecognized-read-error", {
-        message: message.slice(0, 120),
         code: code ?? null,
+        message: message.slice(0, 120),
       });
       return formatTaskResultSummary(
         taskResultRecord({
+          error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
+          latestText: SEE_ERROR_ABOVE,
           sessionId,
           status: TaskState.Error,
-          latestText: SEE_ERROR_ABOVE,
-          error: `${message || "Network error querying session"}${retryable ? " (retryable)" : " (not retryable)"}`,
         }),
       );
     }
@@ -94,11 +94,11 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     // saying so is the honest answer — the liveness block is simply absent.
     return formatTaskResultSummary(
       taskResultRecord({
+        latestText: API_UNAVAILABLE,
+        notification: getTurnNotification(sessionId, task.startedAt),
         sessionId,
         status: task.state,
-        latestText: API_UNAVAILABLE,
         tracked: true,
-        notification: getTurnNotification(sessionId, task.startedAt),
       }),
     );
   }
@@ -183,6 +183,11 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   // support when it simply could not ask.
   const agents = await dispatchableAgentNamesOrNull({ host }, config);
   return formatTaskListSummary({
+    activeCount: branch.filter((node) => node.task.state === TaskState.Active).length,
+    agents: agentOccupancy(config, agents, activeByAgent(store), config.allowSameAgentRecursion),
+    maxConcurrent: config.maxConcurrent,
+    pruned,
+    retained: retained.map(toRow),
     tree: branch.map((node) => ({
       ...toRow(node.task),
       depth: node.depth,
@@ -195,10 +200,5 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
       // into `toRow` because only a row with a live turn has an age to be wrong about.
       ...motionClocksOf(node.task),
     })),
-    activeCount: branch.filter((node) => node.task.state === TaskState.Active).length,
-    retained: retained.map(toRow),
-    maxConcurrent: config.maxConcurrent,
-    pruned,
-    agents: agentOccupancy(config, agents, activeByAgent(store), config.allowSameAgentRecursion),
   });
 }

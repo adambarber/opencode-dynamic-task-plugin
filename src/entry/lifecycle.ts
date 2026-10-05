@@ -4,47 +4,47 @@
 // stay in their tool executors beside the claims that order them).
 import type { OpaqueHost } from "../shared/client.js";
 import {
-  getSessionIdFromEvent,
-  getEventLifecycleStatus,
+  UNKNOWN_PARENT,
   endedBadly,
   eventLooksDeleted,
+  getEventLifecycleStatus,
+  getSessionIdFromEvent,
   isParentless,
-  UNKNOWN_PARENT,
 } from "../shared/session-lifecycle.js";
 import { debugLog } from "../debug-logger.js";
 import {
-  invokePrompt,
+  type HydratedOutcome,
   classifyPromptError,
   hydrateLatestOutcome,
-  type HydratedOutcome,
+  invokePrompt,
 } from "../shared/prompt.js";
-import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
-import { classifyFailure, failureNote, FailureClass } from "../shared/failure-class.js";
+import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
+import { FailureClass, classifyFailure, failureNote } from "../shared/failure-class.js";
 import {
+  gateLedger,
   notifyParent,
-  safeLog,
   notifyRecord,
   recordNotification,
+  safeLog,
   settlementKind,
-  gateLedger,
 } from "../shared/notify.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
 import {
-  transitionState,
-  recordSettledOutcome,
-  terminalEventIsAttributable,
-  isRunning,
-  findTask,
-  retainedFor,
-  reviveRetainedTask,
-  type TaskStore,
-  type TaskIdentity,
-  type TaskRecordBase,
   type ActiveTaskState,
   type SettlementVerdict,
+  type TaskIdentity,
+  type TaskRecordBase,
   TaskState,
+  type TaskStore,
+  findTask,
+  isRunning,
+  recordSettledOutcome,
+  retainedFor,
+  reviveRetainedTask,
+  terminalEventIsAttributable,
+  transitionState,
 } from "../shared/task-state.js";
-import { releaseWaitsFor, type DependencyWait } from "../shared/dispatch-wait.js";
+import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
 import { resolveDependencies } from "../shared/admission.js";
 import { waitsReleasedBody } from "../shared/voice.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
@@ -73,7 +73,7 @@ export function deliverParent(
     // distinguishable from "no event yet" in task_result.
     recordNotification(
       notifyRecord(
-        { parentSessionId: parentSessionId || UNKNOWN_PARENT, childSessionId, kind },
+        { childSessionId, kind, parentSessionId: parentSessionId || UNKNOWN_PARENT },
         message,
         { attempts: 0, delivered: false },
       ),
@@ -229,11 +229,11 @@ export interface SettlementSignal {
  * across a restart lands on `error` by the same rule as one that broke live.
  */
 // The words a settlement interprets, before any outcome is read.
-type SettlementFacts = {
+interface SettlementFacts {
   status: string;
   event: unknown;
   declaredBlocked: boolean;
-};
+}
 
 function settlementVerdict(input: SettlementFacts): SettlementVerdict {
   if (endedBadly(input.status) || (input.event !== undefined && eventLooksDeleted(input.event))) {
@@ -261,7 +261,7 @@ function settleOutcome(input: SettlementFacts & {
   const unreadableNote = input.outcome.unreadable
     ? "\n\n(The child's transcript could not be read; read it with task_result.)"
     : "";
-  return { verdict, failure, text: `${quote}${causeNote}${classNote}${unreadableNote}` };
+  return { failure, text: `${quote}${causeNote}${classNote}${unreadableNote}`, verdict };
 }
 
 export async function settleRunningChild(
@@ -298,12 +298,12 @@ export async function settleRunningChild(
   // was blocked came to be reported as a completed success.
   const declared = declaredBlocked(store, childSessionId);
   const facts: SettlementFacts = {
-    status,
-    event: signal.event,
     declaredBlocked: declared,
+    event: signal.event,
+    status,
   };
   let verdict = settlementVerdict(facts);
-  const parentSessionId = task.parentSessionId;
+  const {parentSessionId} = task;
   const childDescription = task.description;
   try {
     transitionState(store, childSessionId, verdict);
@@ -320,8 +320,8 @@ export async function settleRunningChild(
   // errored stream or an unreadable transcript both correct a success.
   const settled = settleOutcome({
     ...facts,
-    outcome,
     cause,
+    outcome,
     resumesSpent: task.transientResumes ?? 0,
   });
   const kind: NotifyKind = settlementKind(settled.verdict);
@@ -331,7 +331,7 @@ export async function settleRunningChild(
   // moments do not survive. One write, not two: the common case for this
   // correction IS the common case for a class, since both come from a turn that
   // ended `idle` over an errored stream.
-  const failure = settled.failure;
+  const {failure} = settled;
   if (settled.verdict !== verdict) {
     verdict = settled.verdict;
     if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
@@ -368,7 +368,7 @@ export async function settleRunningChild(
   // deliverParent is the single funnel for parent-directed writes: it
   // records parentless settlements instead of dialing a phantom session.
   void deliverParent(host, parentSessionId, childSessionId, childDescription, kind, settled.text)
-    .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { kind, delivered }));
+    .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { delivered, kind }));
   // The parent's answer to a settlement this child may have been an EDGE for is
   // not sent here. It is sent by the store's own retained-change sink, which every
   // settlement passes through whether it came through this function or not — see
@@ -410,8 +410,8 @@ export function releaseWaitingDispatches(
   }
   for (const [waitingParent, waits] of byParent) {
     const body = waitsReleasedBody({
-      ready: waits.filter((w) => release.ready.includes(w)),
       dead: waits.filter((w) => release.dead.includes(w)),
+      ready: waits.filter((w) => release.ready.includes(w)),
     });
     // A wait is a property of the PARENT's dispatch, so the child session id
     // this rides on is the edge that answered it — which is what lets the
@@ -432,8 +432,8 @@ export async function handleChildLifecycleEvent(
 
   if (isRunning(store, childSessionId)) {
     await settleRunningChild(host, store, childSessionId, {
-      status: getEventLifecycleStatus(event),
       event,
+      status: getEventLifecycleStatus(event),
     }, capSource);
     return;
   }
@@ -460,15 +460,15 @@ export async function handleChildLifecycleEvent(
     // so this costs a classifier call, not another read, and the record and the
     // notice below cannot disagree about what class it is.
     const settled = settleOutcome({
-      status,
-      event,
       declaredBlocked: declaredBlocked(store, childSessionId),
+      event,
       outcome,
       resumesSpent: current.transientResumes ?? 0,
+      status,
     });
     const kind = settlementKind(settled.verdict);
     recordSettledOutcome(store, childSessionId, settled.verdict, settled.failure);
     void deliverParent(host, settledRecord.parentSessionId, childSessionId, settledRecord.description, kind, settled.text)
-      .then((delivered) => debugLog(settledRecord.parentSessionId, childSessionId, "retained-late-error", { kind, delivered }));
+      .then((delivered) => debugLog(settledRecord.parentSessionId, childSessionId, "retained-late-error", { delivered, kind }));
   }
 }

@@ -9,21 +9,21 @@ import { executeDynamicTask } from "./spawn.js";
 import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "./args.js";
 import { executeTaskContinue } from "./continue.js";
 import { executeTaskNotify } from "./notice.js";
-import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
+import { executeTaskList, executeTaskResult, executeTaskStatus } from "./read.js";
 import { executeTaskInterrupt } from "./interrupt.js";
-import { openSessionScope, type ResolvedSessionScope, type ToolDeps } from "./context.js";
+import { type ResolvedSessionScope, type ToolDeps, openSessionScope } from "./context.js";
 import { NOTIFY_TOOL } from "../shared/notification-text.js";
 import type { Verdict } from "../shared/verdict.js";
 import { NOTICE_CLAIMS } from "../shared/notice-claim.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
+  MODEL_ARG_DESCRIPTION,
   TASK_CONTINUE_DESCRIPTION,
-  TASK_NOTIFY_DESCRIPTION,
-  TASK_RESULT_DESCRIPTION,
   TASK_INTERRUPT_DESCRIPTION,
   TASK_LIST_DESCRIPTION,
+  TASK_NOTIFY_DESCRIPTION,
+  TASK_RESULT_DESCRIPTION,
   TASK_STATUS_DESCRIPTION,
-  MODEL_ARG_DESCRIPTION,
 } from "../shared/voice.js";
 
 // One JSON Schema per tool's WHOLE input, not a record of per-argument schemas: v2's
@@ -32,10 +32,10 @@ import {
 // `tool.schema` DSL entirely and leaves the host validating the same shape we publish.
 type InputSchema = Tool.ValueSchema;
 
-const string = (description: string) => ({ type: "string", description }) as const;
-const optionalString = (description: string) => ({ type: "string", description }) as const;
+const string = (description: string) => ({ description, type: "string" }) as const;
+const optionalString = (description: string) => ({ description, type: "string" }) as const;
 const optionalStringList = (description: string) =>
-  ({ type: "array", items: { type: "string" }, description }) as const;
+  ({ description, items: { type: "string" }, type: "array" }) as const;
 
 // The ONLY door into any registered tool, and the ONLY decision about what an
 // executor runs against. Bound to its resolver, so a tool declares the input it
@@ -92,9 +92,9 @@ const PROMPT = (description: string) => string(description);
 // One wrapper for the object schema every session-scoped tool shares: the same
 // session_id plus whatever else that tool takes. Spelled twice it drifts.
 const SESSION_SCHEMA = (properties: Record<string, unknown>, required: string[]) => ({
-  type: "object",
   properties: { session_id: SESSION_ID, ...properties },
   required,
+  type: "object",
 });
 const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
 // The identity reader for tools that take no arguments: the resolver contract
@@ -109,30 +109,30 @@ export function buildToolMap(deps: ToolDeps) {
     (raw: unknown, ctx: ToolContext): Verdict<{ scope: ResolvedSessionScope; args: A }> => {
       const opened = openSessionScope(deps, raw, ctx);
       if (!opened.ok) return opened;
-      return { ok: true, input: { scope: opened.scope, args: readArgs(raw) } };
+      return { input: { args: readArgs(raw), scope: opened.scope }, ok: true };
     };
   const pluginInput = <A>(readArgs: (raw: unknown) => A) =>
-    (raw: unknown): Verdict<{ scope: ToolDeps; args: A }> => ({ ok: true, input: { scope: deps, args: readArgs(raw) } });
+    (raw: unknown): Verdict<{ scope: ToolDeps; args: A }> => ({ input: { args: readArgs(raw), scope: deps }, ok: true });
   const scopedTool = <A>(readArgs: (raw: unknown) => A) => registeredTool(sessionInput(readArgs));
   const pluginTool = <A>(readArgs: (raw: unknown) => A) => registeredTool(pluginInput(readArgs));
 
   return {
     dynamic_task: pluginTool(readSpawnArgs)(
       {
-        type: "object",
         properties: {
-          description: string("Short human-readable task label"),
-          subagent_type: string("Agent to invoke"),
-          prompt: PROMPT("Instructions for the child session"),
-          model: MODEL(),
           depends_on: SESSION_ID_LIST(
             "Task dependencies — session IDs this task depends on. Each must have completed.",
           ),
           depends_on_settled: SESSION_ID_LIST(
             "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
           ),
+          description: string("Short human-readable task label"),
+          model: MODEL(),
+          prompt: PROMPT("Instructions for the child session"),
+          subagent_type: string("Agent to invoke"),
         },
         required: ["description", "subagent_type", "prompt"],
+        type: "object",
       },
       DYNAMIC_TASK_DESCRIPTION,
       executeDynamicTask,
@@ -141,8 +141,8 @@ export function buildToolMap(deps: ToolDeps) {
     task_continue: scopedTool(readContinueArgs)(
       SESSION_SCHEMA(
         {
-          prompt: PROMPT("Follow-up instructions"),
           model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
+          prompt: PROMPT("Follow-up instructions"),
         },
         ["session_id", "prompt"],
       ),
@@ -152,24 +152,24 @@ export function buildToolMap(deps: ToolDeps) {
 
     [NOTIFY_TOOL]: pluginTool(readNotifyArgs)(
       {
-        type: "object",
         properties: {
-          message: string("What the parent needs to know"),
           kind: {
-            type: "string",
-            enum: [...NOTICE_CLAIMS],
             description:
               "What this notice claims about your own state: 'progress' (default) or 'needs_input' when this turn cannot finish without the parent",
+            enum: [...NOTICE_CLAIMS],
+            type: "string",
           },
+          message: string("What the parent needs to know"),
         },
         required: ["message"],
+        type: "object",
       },
       TASK_NOTIFY_DESCRIPTION,
       executeTaskNotify,
     ),
 
     task_result: scopedTool(passThrough)(
-      { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
+      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
       TASK_RESULT_DESCRIPTION,
       executeTaskResult,
     ),
@@ -178,10 +178,10 @@ export function buildToolMap(deps: ToolDeps) {
       SESSION_SCHEMA(
         {
           scope: {
-            type: "string",
-            enum: ["subtree", "self"],
             description:
               "How far the stop reaches: the whole subtree below this task (default), or this session only",
+            enum: ["subtree", "self"],
+            type: "string",
           },
         },
         ["session_id"],
@@ -195,12 +195,12 @@ export function buildToolMap(deps: ToolDeps) {
     // a closure over `deps` — so the comment on `registeredTool` above ("the ONLY
     // door into any registered tool") was false. It runs against the PLUGIN, not a
     // session scope, so it is a pluginTool like dynamic_task and task_notify.
-    task_list: pluginTool(passThrough)({ type: "object", properties: {} }, TASK_LIST_DESCRIPTION, (input) =>
+    task_list: pluginTool(passThrough)({ properties: {}, type: "object" }, TASK_LIST_DESCRIPTION, (input) =>
       executeTaskList(input),
     ),
 
     task_status: scopedTool(passThrough)(
-      { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
+      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
       TASK_STATUS_DESCRIPTION,
       executeTaskStatus,
     ),

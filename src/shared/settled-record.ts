@@ -10,7 +10,7 @@
 // "a retained record is only ever read here, changed there, and published once"
 // checkable by reading one screen.
 
-import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { emitRetainedChange } from "./change-sinks.js";
 import type { TaskStore } from "./store.js";
 // Types only. The record shapes stay declared in `task-state` because they are
@@ -84,8 +84,8 @@ export function actOnSettled(
  * that quietly stopped carrying its record would have been invisible in both.
  */
 export const settledChange = (id: string, record: RetainedTaskState): LedgerChange => ({
-  kind: LedgerChangeKind.Settled,
   id,
+  kind: LedgerChangeKind.Settled,
   record,
 });
 

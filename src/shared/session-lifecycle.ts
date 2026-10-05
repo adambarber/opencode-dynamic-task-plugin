@@ -11,16 +11,16 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { type OpaqueHost, type OpenCodeClient, callHost } from "./client.js";
 import { isFailureClass } from './failure-class.js';
-import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { TaskState, findTask, isRunning } from "./task-state.js";
-import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
+import type { ActiveTaskState, LineagePath, RetainedTaskState, TaskIdentity, TaskRecordBase } from "./task-state.js";
 import { isTaskState, withoutAdvisory } from "./task-state.js";
 import { isSessionMissing } from "./liveness.js";
-import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
-import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
-import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, isTurnEnding, SESSION_EXECUTION_INTERRUPTED, SESSION_EXECUTION_STARTED, SESSION_EXECUTION_SUCCEEDED } from "./host-events.js";
+import { NOTIFY_KINDS, type PendingDelivery, owedIdentity } from "./notify.js";
+import { errorMessage, eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
+import { SESSION_DELETED, SESSION_ERROR, SESSION_EXECUTION_INTERRUPTED, SESSION_EXECUTION_STARTED, SESSION_EXECUTION_SUCCEEDED, SESSION_IDLE, isTurnEnding } from "./host-events.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { TaskStore } from "./store.js";
@@ -417,9 +417,9 @@ function isPendingDelivery(value: unknown): value is PendingDelivery {
 // field assignment would belong to the state machine (task-state), and the
 // lifecycle scanner rightly forbids it here.
 function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
-  const dependsOn = entry.dependsOn;
-  const dependsOnSettled = entry.dependsOnSettled;
-  const requestedModel = entry.requestedModel;
+  const {dependsOn} = entry;
+  const {dependsOnSettled} = entry;
+  const {requestedModel} = entry;
   return {
     childSessionId: entry.childSessionId,
     parentSessionId: entry.parentSessionId,
@@ -438,9 +438,9 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
     ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
     ...(Array.isArray(dependsOnSettled) ? { dependsOnSettled: dependsOnSettled.filter((d): d is string => typeof d === "string") } : {}),
     ...(isEventRecord(requestedModel)
-      && typeof requestedModel["providerID"] === "string"
-      && typeof requestedModel["modelID"] === "string"
-      ? { requestedModel: { providerID: requestedModel["providerID"], modelID: requestedModel["modelID"] } }
+      && typeof requestedModel.providerID === "string"
+      && typeof requestedModel.modelID === "string"
+      ? { requestedModel: { modelID: requestedModel.modelID, providerID: requestedModel.providerID } }
       : {}),
   };
 }
@@ -469,19 +469,19 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
   if (filePath && existsSync(filePath)) {
     try {
       const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
-      if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed["tasks"])) {
-        const version = isEventRecord(parsed) ? JSON.stringify(parsed["version"]) : "not an object";
+      if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed.tasks)) {
+        const version = isEventRecord(parsed) ? JSON.stringify(parsed.version) : "not an object";
         discarded = `unreadable as a v${TASK_LEDGER_VERSION} ledger file (version field: ${version})`;
         unreadable = true;
       } else {
-        if (Array.isArray(parsed["pending"])) {
-          for (const entry of parsed["pending"]) {
+        if (Array.isArray(parsed.pending)) {
+          for (const entry of parsed.pending) {
             if (isPendingDelivery(entry)) pending.push(entry);
             else dropped++;
           }
         }
-        if (isEventRecord(parsed["active"])) {
-          for (const [key, entry] of Object.entries(parsed["active"])) {
+        if (isEventRecord(parsed.active)) {
+          for (const [key, entry] of Object.entries(parsed.active)) {
             if (isValidLedgerEntry(entry) && entry.state === TaskState.Active && entry.childSessionId === key) {
               active.set(key, { ...hydratedBase(entry), state: TaskState.Active });
             } else {
@@ -489,17 +489,17 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
             }
           }
         }
-        const taskEntries = isEventRecord(parsed["tasks"]) ? Object.entries(parsed["tasks"]) : [];
+        const taskEntries = isEventRecord(parsed.tasks) ? Object.entries(parsed.tasks) : [];
         for (const [key, entry] of taskEntries) {
           // The map key is canonical identity: an entry disagreeing with its key
           // is corrupt, not merely mislabeled.
           if (isValidRetainedEntry(entry) && key.startsWith("ses_") && entry.childSessionId === key) {
-            const abortError = entry["abortError"];
-            const failureClass = entry["failureClass"];
+            const {abortError} = entry;
+            const {failureClass} = entry;
             retained.set(key, {
               ...hydratedBase(entry),
-              state: entry.state,
               retainedAt: entry.retainedAt,
+              state: entry.state,
               ...(typeof abortError === "string" ? { abortError } : {}),
               // A class the file does not carry, or carries as a word this build
               // does not speak, is DROPPED rather than guessed — the same rule the
@@ -527,7 +527,7 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
       unreadable = true;
     }
   }
-  return { retained, active, pending, discarded, unreadable };
+  return { active, discarded, pending, retained, unreadable };
 }
 
 /**
@@ -672,7 +672,7 @@ export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly Ledg
       }
     }
   }
-  return { retained, active, pending };
+  return { active, pending, retained };
 }
 
 export function saveTaskLedger(ledger: TaskLedgerFile, filePath: string): string {
@@ -738,13 +738,13 @@ export function isParentless(parentSessionId: string | null | undefined): boolea
 export function resolveParentSessionId(ctx: SessionContext): string | null {
   if (!isEventRecord(ctx)) return null;
   const record = ctx;
-  const session = isEventRecord(record["session"]) ? record["session"] : undefined;
+  const session = isEventRecord(record.session) ? record.session : undefined;
   const candidates: unknown[] = [
-    record["sessionID"],
-    record["sessionId"],
-    record["session_id"],
-    session ? session["id"] : undefined,
-    record["id"],
+    record.sessionID,
+    record.sessionId,
+    record.session_id,
+    session ? session.id : undefined,
+    record.id,
   ];
   for (const candidate of candidates) {
     if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;

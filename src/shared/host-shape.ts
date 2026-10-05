@@ -84,7 +84,7 @@ export function eventString(event: unknown, ...path: string[]): string | undefin
  */
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
-  if (isEventRecord(error) && "message" in error) return String(error["message"]);
+  if (isEventRecord(error) && "message" in error) return String(error.message);
   return String(error);
 }
 

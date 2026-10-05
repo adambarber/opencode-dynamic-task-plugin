@@ -5,7 +5,7 @@
 // directory or a new gate script would leave one suite's corpus quietly empty
 // while it reported green. One walk, one answer to "what counts as a file here".
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareStrings } from "./assertions.js";

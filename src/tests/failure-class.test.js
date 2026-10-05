@@ -14,7 +14,7 @@
  * case therefore resolves Structural.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { FailureClass, classifyFailure, failureNote } from "../../dist/shared/failure-class.js";
 import { TaskState } from "../../dist/shared/task-state.js";
 

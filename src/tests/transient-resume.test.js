@@ -19,7 +19,7 @@
  * that quietly added `parts: []` would be testing a turn the host never sends.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { promptsTo, sleep } from "./support/harness.js";
 import { answerMatches, assertNoticeCount } from "./support/assertions.js";
 import { childFailingWith } from "./support/integration.js";
@@ -105,7 +105,7 @@ describe("the budget is what makes silence honest", () => {
     const { h, id } = await childFailingWith("socket hang up");
     await noticesAfterSettle(h, id, 0, "the blip was silent");
 
-    h.client.setTranscript(id, [{ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "the real answer" }] }]);
+    h.client.setTranscript(id, [{ parts: [{ text: "the real answer", type: "text" }], role: ASSISTANT_ROLE }]);
     await noticesAfterSettle(h, id, 1, "the settlement after a resume is delivered, not deduplicated away", 50);
   });
 });

@@ -9,7 +9,6 @@
 // From support/corpus.js rather than repeated.
 
 import { assert, describe, it } from "./support/runner.js";
-import { compareStrings } from "./support/assertions.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -344,6 +343,94 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
 // Not finished splitting.
 const MAX_LINES = 1000;
 
+const readBudgetFile = () => JSON.parse(readFileSync(path.join(REPO_ROOT, "lint-budget.json"), "utf8"));
+
+/**
+ * The lint budget is a hand-editable file, so it is checked for the edits that
+ * would quietly raise the ceiling: a total that disagrees with its own rules, a
+ * negative count, or a waived rule carried as debt it cannot be paying.
+ */
+describe("invariant: the lint budget cannot be raised by editing the budget", () => {
+  it("totals its own rules, so a number cannot be lifted alone", () => {
+    const { rules, total } = readBudgetFile();
+    const summed = Object.values(rules).reduce((sum, count) => sum + count, 0);
+    assert.strictEqual(total, summed, `budget total ${total} disagrees with its rules (${summed})`);
+    for (const [rule, count] of Object.entries(rules)) {
+      assert.ok(count >= 0, `${rule} has a negative budget: ${count}`);
+      assert.match(rule, /^[\w-]+\/[\w-]+$/, `${rule} is not a rule id — regenerate with npm run lint:budget`);
+    }
+  });
+
+  it("carries no waived rule, because a waived rule cannot owe anything", () => {
+    // A waived rule emits no findings, so one appearing here means the waiver
+    // and the budget disagree — and the honest fix is to regenerate, not to pick
+    // which of the two is lying.
+    const waived = offRules(readOxlintConfig().rules);
+    assert.deepStrictEqual(Object.keys(readBudgetFile().rules).filter((rule) => waived.includes(rule)), []);
+  });
+
+  it("runs inside npm test, so the ceiling is on the path and not on a shelf", () => {
+    // Raw oxlint exits 1 on the outstanding debt, so the gate has to BE `npm run
+    // lint`. Wiring it anywhere else would leave the chain red rather than honest.
+    const { scripts } = JSON.parse(readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+    for (const script of ["test", "test:coverage"]) {
+      assert.match(scripts[script], /npm run lint\b/, `${script} must gate on lint`);
+    }
+    assert.match(scripts.lint, /lint-budget/, "npm run lint must be the budget gate");
+    assert.match(scripts["lint:report"], /oxlint/, "the raw report must stay reachable");
+  });
+
+  it("is committed, because a gate whose baseline is ignored gates nothing", () => {
+    const ignored = spawnSync("git", ["check-ignore", "lint-budget.json"], { cwd: REPO_ROOT, encoding: "utf8" });
+    assert.notStrictEqual(ignored.status, 0, "lint-budget.json is gitignored: a fresh clone has no ceiling");
+  });
+});
+
+/**
+ * Every rule this repo turns off, and the only place that list is written.
+ * Two pins read it, so a waiver cannot be added to make a file pass without
+ * this list changing — which is where the argument for it has to be written.
+ * The reasoning per rule lives in docs/lint-waivers.md.
+ */
+const DOCUMENTED_WAIVERS = [
+  "eslint/capitalized-comments",
+  "eslint/curly",
+  "eslint/func-style",
+  "eslint/id-length",
+  "eslint/no-magic-numbers",
+  "eslint/no-ternary",
+  "eslint/one-var",
+  "no-await-in-loop",
+  "typescript/no-meaningless-void-operator",
+  "unicorn/no-null",
+  "unicorn/numeric-separators-style",
+  "unicorn/switch-case-braces",
+];
+
+/** The rules a config object turns off, sorted so the assertion reads as a set. */
+function offRules(rules) {
+  return Object.entries(rules)
+    .filter(([, setting]) => setting === "off")
+    .map(([rule]) => rule)
+    .toSorted();
+}
+
+/** Where the lint config lives. Four pins read it, and none re-derives the path. */
+const readOxlintConfig = () => JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
+
+/** Casts are a build error, so these four must stay denied for the compiler to be the gate. */
+const DENIED_CAST_RULES = [
+  "typescript/no-explicit-any",
+  "typescript/no-unsafe-type-assertion",
+  "typescript/no-unnecessary-type-assertion",
+  "typescript/no-non-null-assertion",
+];
+
+/** The waiver set has one owner. A second copy is a second list that can drift from this one. */
+function assertWaiversAreDocumented() {
+  assert.deepStrictEqual(offRules(readOxlintConfig().rules), DOCUMENTED_WAIVERS);
+}
+
 /**
  * Every file under src/, production and suite alike. The file-size rule is the
  * one invariant here that applies to both, because a grab-bag test file and a
@@ -362,82 +449,32 @@ describe("invariant: no file outgrows the point where a reader stops finding thi
   it("keeps the cast rules denied so no assertion compiles back in", () => {
     // The rules are the enforcement: oxlint runs in `npm run lint`, and this
     // Pin keeps the config from silently weakening underneath it.
-    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
-    for (const rule of [
-      "typescript/no-explicit-any",
-      "typescript/no-unsafe-type-assertion",
-      "typescript/no-unnecessary-type-assertion",
-      "typescript/no-non-null-assertion",
-    ]) {
-      assert.strictEqual(config.rules[rule], "deny", `${rule} must stay denied`);
-    }
+    const { rules } = readOxlintConfig();
+    for (const rule of DENIED_CAST_RULES) assert.strictEqual(rules[rule], "deny", `${rule} must stay denied`);
   });
 
-  it("lints PRODUCTION at full strictness, and says which rules the tests waive", () => {
-    // The whole point is production: the test tree is JavaScript and
-    // Untyped, so every type-aware rule about it is a guess. Those waivers are
-    // Listed here by name because an unlisted one is a silent hole, and this
-    // Pin fails the moment a new rule is waived to make something pass.
-    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8")),
-     production = config.rules;
-    for (const rule of [
-      "typescript/no-explicit-any",
-      "typescript/no-unsafe-type-assertion",
-      "typescript/no-unnecessary-type-assertion",
-      "typescript/no-non-null-assertion",
-    ]) {
-      assert.strictEqual(production[rule], "deny", `${rule} must stay denied in production`);
-    }
-    // Nothing is waived for production beyond the two the code documents.
-    const waivedInProduction = Object.entries(production)
-      .filter(([, setting]) => setting === "off")
-      .map(([rule]) => rule)
-      .toSorted(compareStrings);
-    assert.deepStrictEqual(waivedInProduction, ["no-await-in-loop", "typescript/no-meaningless-void-operator"]);
-
-    const waived = Object.entries(config.overrides[0].rules)
-      .filter(([, setting]) => setting === "off")
-      .map(([rule]) => rule)
-      .toSorted(compareStrings);
-    assert.deepStrictEqual(waived, [
-      "no-shadow",
-      "no-unused-vars",
-      "typescript/await-thenable",
-      "typescript/no-base-to-string",
-      "typescript/no-floating-promises",
-      "typescript/no-unnecessary-type-conversion",
-      "typescript/no-unsafe-enum-comparison",
-      "typescript/restrict-template-expressions",
-      "unicorn/consistent-function-scoping",
-      "unicorn/no-array-reverse",
-      "unicorn/no-array-sort",
-      "unicorn/no-new-array",
-      "unicorn/no-useless-fallback-in-spread",
-      "unicorn/prefer-set-has",
-      "unicorn/prefer-string-starts-ends-with",
-    ]);
+  it("lints PRODUCTION at full strictness, and waives nothing the tests get to keep", () => {
+    // Production and the JavaScript suites run under ONE config: there is no
+    // `overrides` block, so a rule denied in production is denied in the tests
+    // Too. That is the point — a suite held to a weaker standard than the code
+    // It audits proves nothing. The waivers are named because an unlisted one is
+    // A silent hole, and this pin fails the moment a rule is turned off to make
+    // Something pass.
+    const config = readOxlintConfig();
+    for (const rule of DENIED_CAST_RULES) assert.strictEqual(config.rules[rule], "deny", `${rule} must stay denied`);
+    assert.strictEqual(config.overrides, undefined, "a per-tree override would exempt the suites");
+    assertWaiversAreDocumented();
   });
 
-  it("keeps exactly two documented exemptions in production, no more", () => {
-    // Two rules fight deliberate repo doctrine, so they stay off BY NAME:
-    // `no-await-in-loop` — host dials are sequential on purpose (ledger
-    // Ordering, claim-then-abort, serial retries, dialog turns); parallelizing
-    // Them would be a correctness bug, not a speedup. `void` is the
-    // Acknowledgment operator for `no-floating-promises`: removing it would
-    // Trade a marked intentional no-await for a silent floating promise. Any
-    // Third exemption is scope creep and fails here until it is justified.
-    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
-    assert.strictEqual(config.rules["no-await-in-loop"], "off", "serial host dials stay legal");
-    assert.strictEqual(
-      config.rules["typescript/no-meaningless-void-operator"],
-      "off",
-      "the void marker stays legal",
-    );
-    const off = Object.entries(config.rules)
-      .filter(([, setting]) => setting === "off")
-      .map(([rule]) => rule)
-      .toSorted();
-    assert.deepStrictEqual(off, ["no-await-in-loop", "typescript/no-meaningless-void-operator"]);
+  it("denies style wholesale, then waives only the rules the code argues against", () => {
+    // Every waiver is a rule whose violation IS the house style, so enforcing it
+    // Would mean rewriting decisions this repo already made. `no-await-in-loop`:
+    // host dials are sequential on purpose (ledger ordering, claim-then-abort,
+    // Serial retries, dialog turns); parallelizing them is a correctness bug.
+    // `void` is the acknowledgment operator `no-floating-promises` asks for.
+    // The rest are style the source writes deliberately — see docs/lint-waivers.md.
+    assert.strictEqual(readOxlintConfig().categories.style, "deny", "style is denied; waivers are named, not blanket");
+    assertWaiversAreDocumented();
   });
 
   it(`keeps every source and gate script within ${MAX_LINES} lines`, () => {

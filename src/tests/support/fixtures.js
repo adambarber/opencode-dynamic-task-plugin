@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 /**
  * The fixtures every module's suite needs: a config, and a registration literal.
  *
@@ -10,7 +10,7 @@ import { join } from "node:path";
  * not about. Named for the refusals they carry so a case says which one it means.
  */
 
-import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 
 /**
  * The config a case means when it does not care: the machine's own defaults,
@@ -46,7 +46,7 @@ export const bothCaps = (maxConcurrent, maxDepth) => ({ maxConcurrent, maxDepth 
  * whose defaults could drift from the production param type.
  */
 export const childParams = ({ id, parent = "parent_1", agent = "explore", description = "test", lineage = [] } = {}) =>
-  ({ childSessionId: id, parentSessionId: parent, agentName: agent, description, lineage });
+  ({ agentName: agent, childSessionId: id, description, lineage, parentSessionId: parent });
 
 /**
  * A fresh directory under the OS temp dir, for a case that needs a real path.
@@ -75,9 +75,17 @@ export const withTempDir = async (work, prefix = "dynamic-task-") => {
   try {
     return await work(directory);
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    rmSync(directory, { force: true, recursive: true });
   }
 };
 
 /** A temp dir standing in for a project directory, which is what the host supplies. */
 export const tempProject = (prefix = "lane-project-") => tempDir(prefix);
+
+/** Writes a config file into a project directory, creating the directory if it is not there yet. */
+export const writeProjectConfig = (directory, body) => {
+  const target = join(directory, DYNAMIC_TASK_FILE);
+  mkdirSync(dirname(target), { recursive: true });
+  writeFileSync(target, JSON.stringify(body));
+  return target;
+};

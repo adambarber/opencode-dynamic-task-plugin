@@ -8,7 +8,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { withBound, shrinkBoundsForTesting, READ_BOUNDS, WRITE_BOUNDS } from "../../dist/shared/execution-bound.js";
+import { READ_BOUNDS, WRITE_BOUNDS, shrinkBoundsForTesting, withBound } from "../../dist/shared/execution-bound.js";
 import { bounded, sleep } from "./support/harness.js";
 import { deferred } from "./support/mock-host.js";
 
@@ -21,20 +21,20 @@ const NO_VALUE = Symbol("degradation");
  * right thing by timing out.
  */
 const assertBound = async (out, expected, why) => {
-  assert.deepStrictEqual({ value: out.value, timedOut: out.timedOut }, expected, why);
+  assert.deepStrictEqual({ timedOut: out.timedOut, value: out.value }, expected, why);
   return out;
 };
 
 describe("execution bound: withBound", () => {
   it("passes a fast answer through as a whole answer", async () => {
-    await assertBound(await withBound(1_000, () => Promise.resolve("ok"), NO_VALUE), { value: "ok", timedOut: false }, "a fast answer is the work's own");
+    await assertBound(await withBound(1_000, () => Promise.resolve("ok"), NO_VALUE), { timedOut: false, value: "ok" }, "a fast answer is the work's own");
   });
 
   it("hands back the caller's degradation, flagged, when work runs long", async () => {
     const gate = deferred();
     await assertBound(
       await bounded(20, () => withBound(WRITE_BOUNDS.parentPrompt, () => gate.promise, NO_VALUE)),
-      { value: NO_VALUE, timedOut: true },
+      { timedOut: true, value: NO_VALUE },
       "a bound that ran out answers the degradation, flagged",
     );
     gate.resolve();
@@ -50,7 +50,7 @@ describe("execution bound: withBound", () => {
   // is the tolerance the type is not obliged to promise, kept because the SDK is not
   // ours and a future method may answer synchronously.
   it("accepts a work function that answers synchronously", async () => {
-    await assertBound(await withBound(1_000, () => "immediate", NO_VALUE), { value: "immediate", timedOut: false }, "a synchronous answer is an answer");
+    await assertBound(await withBound(1_000, () => "immediate", NO_VALUE), { timedOut: false, value: "immediate" }, "a synchronous answer is an answer");
   });
 
   it("reports a synchronous throw as the rejection it is", async () => {

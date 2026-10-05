@@ -27,7 +27,7 @@ describe("permission gate: child asks settle", () => {
     assert.strictEqual(calls.length, 1, "permission.asked must reach the gate — it is the spelling the host publishes");
     assert.deepStrictEqual(
       calls[0],
-      { sessionID: calls[0]?.sessionID, requestID: "q1", decision: "reject" },
+      { decision: "reject", requestID: "q1", sessionID: calls[0]?.sessionID },
       "v2 answers a whole request with one decision word, and deny is the only one this plugin grants",
     );
     assertNoticeCount(h, 0, "a denied ask is settled, not a stall");
@@ -54,7 +54,7 @@ describe("permission gate: child asks settle", () => {
 
   it("unmatched asks are left untouched (fail-closed scoping)", async () => {
     const h = await setupHarness();
-    await h.fireEvent(events.permissionAsked(undefined, { id: "q1", action: "edit", resources: [] }));
+    await h.fireEvent(events.permissionAsked(undefined, { action: "edit", id: "q1", resources: [] }));
     await h.fireEvent(events.ask("ses_stranger", "q9"));
     await h.fireEvent(events.permissionReplied({ requestID: "q1" }));
     assertNoticeCount(h, 0, "no parent traffic for asks");
@@ -113,15 +113,15 @@ describe("permission gate: child asks settle", () => {
     const mine = await h.spawn({ description: "tracked owner" });
     await h.fireEvent(events.ask(mine.id, "q-shared"));
     assert.strictEqual(h.permissionCalls().length, 1, "the tracked task's ask is denied");
-    await h.fireEvent(events.permissionReplied({ sessionID: "ses_someone_else", requestID: "q-shared" }));
+    await h.fireEvent(events.permissionReplied({ requestID: "q-shared", sessionID: "ses_someone_else" }));
     await h.fireEvent(events.ask("ses_someone_else", "q-shared"));
     assert.strictEqual(h.permissionCalls().length, 1, "a foreign ask is never settled on the tracked task's behalf");
   });
 
   it("a retired ask is not a settlement the gate owes anyone", async () => {
     const h = await setupHarness();
-    await h.fireEvent(events.permissionReplied({ sessionID: "ses_x", requestID: "q-done" }));
-    await h.fireEvent(events.permissionCancelled({ sessionID: "ses_x", requestID: "q-done" }));
+    await h.fireEvent(events.permissionReplied({ requestID: "q-done", sessionID: "ses_x" }));
+    await h.fireEvent(events.permissionCancelled({ requestID: "q-done", sessionID: "ses_x" }));
     assert.strictEqual(h.permissionCalls().length, 0, "the gate acts on asks, not on retirements");
   });
 });

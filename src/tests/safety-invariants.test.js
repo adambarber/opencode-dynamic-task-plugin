@@ -17,13 +17,13 @@
  *   funnel it describes exists.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
-  TESTS_DIR,
   REPO_ROOT,
   SRC_DIR,
+  TESTS_DIR,
   listProdFiles,
   listTestFiles,
   listTestSupportFiles,
@@ -70,8 +70,8 @@ function formatViolations(finding, hits) {
   return (
     `${finding.why}\n` +
     `Owning doc: ${finding.doc}\n` +
-    `Expected ${finding.expect ?? 0} hit(s), found ${hits.length}.\n` +
-    (hits.length ? `Sites (${hits.length}):\n` + hits.map((h) => `  - ${h}`).join("\n") : "")
+    `Expected ${finding.expect ?? 0} hit(s), found ${hits.length}.\n${ 
+    hits.length ? `Sites (${hits.length}):\n` + hits.map((h) => `  - ${h}`).join("\n") : ""}`
   );
 }
 
@@ -109,7 +109,7 @@ function rule({ name, patterns, also = [], sanctioned = [], only = null, expect 
       : files.filter((f) => !sanctioned.some((s) => f.endsWith(s)));
     assert.ok(targets.length > 0, `rule "${name}" resolves to an empty corpus — a stale path or a typo in a sanction suffix`);
     const hits = targets.flatMap((f) => scanLines(f, [...patterns, ...also], skip));
-    assert.strictEqual(hits.length, expect, formatViolations({ doc, why, expect }, hits));
+    assert.strictEqual(hits.length, expect, formatViolations({ doc, expect, why }, hits));
   });
 }
 
@@ -129,7 +129,7 @@ const DOC_FIDELITY = "docs/tasks/00-fidelity-ground-truth.md (Tenet 12)";
  * re-typing which note they answered to. What a rule still has to say is WHERE
  * it is read — the scope, which is the only part that genuinely varies.
  */
-const gate = (patterns, doc, why, extra = {}) => ({ patterns, doc, why, ...extra });
+const gate = (patterns, doc, why, extra = {}) => ({ doc, patterns, why, ...extra });
 
 // (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle
 // fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/
@@ -300,7 +300,7 @@ const STALE_DISPATCH_FILTER = gate(
   DOC_FIDELITY,
   "Stale dispatch filter — production accepts 'subagent'+'all' (isDispatchableAgent); import it instead.",
   // Self-exclusion: this file discusses the banned pattern in prose.
-  { sanctioned: ["safety-invariants.test.js"], corpus: listTestFiles },
+  { corpus: listTestFiles, sanctioned: ["safety-invariants.test.js"] },
 );
 
 // --- Task 01: lifecycle funnel -------------------------------------------
@@ -558,12 +558,12 @@ const RECORD_SHAPES = [
   // `TaskRecordBase` is the same drift risk as a restatement of the record, and
   // listing it is what lets `requiredFieldsOf` resolve an `extends` that crosses
   // a module boundary.
-  { name: "TaskRecordBase", file: "shared/task-state.ts" },
-  { name: "ActiveTaskState", file: "shared/task-state.ts" },
-  { name: "RetainedTaskState", file: "shared/settled-record.ts" },
-  { name: "TaskResultRecord", file: "shared/task-formatting.ts" },
-  { name: "NotificationRecord", file: "shared/notify.ts" },
-  { name: "PendingDelivery", file: "shared/notify.ts" },
+  { file: "shared/task-state.ts", name: "TaskRecordBase" },
+  { file: "shared/task-state.ts", name: "ActiveTaskState" },
+  { file: "shared/settled-record.ts", name: "RetainedTaskState" },
+  { file: "shared/task-formatting.ts", name: "TaskResultRecord" },
+  { file: "shared/notify.ts", name: "NotificationRecord" },
+  { file: "shared/notify.ts", name: "PendingDelivery" },
 ];
 
 /** Every field an interface requires, following `extends` wherever the base is declared. */
@@ -594,7 +594,7 @@ function requiredFieldsOf(file, name, seen = new Set()) {
   const required = [...body.matchAll(/^\s*([A-Za-z][A-Za-z0-9]*)\s*[?:]/gm)]
     .filter(([, field]) => !body.match(new RegExp(`^\\s*${field}\\s*\\?`, "m")))
     .map(([, field]) => field);
-  const inherited = declaration[1].match(/extends\s+([A-Za-z][A-Za-z0-9]*)/);
+  const inherited = /extends\s+([A-Za-z][A-Za-z0-9]*)/.exec(declaration[1]);
   return inherited ? [...requiredFieldsOf(fileOf(inherited[1]) ?? file, inherited[1], seen), ...required] : required;
 }
 
@@ -610,14 +610,14 @@ function objectLiterals(source) {
   for (let i = 0; i < source.length; i++) {
     if (source[i] !== "{") continue;
     let depth = 0;
-    let keys = [];
+    const keys = [];
     for (let j = i; j < source.length; j++) {
       const ch = source[j];
       if (ch === "{") depth++;
       else if (ch === "}") {
         depth--;
         if (depth === 0) {
-          if (keys.length > 0) literals.push({ offset: i, keys });
+          if (keys.length > 0) literals.push({ keys, offset: i });
           i = j;
           break;
         }
@@ -727,7 +727,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
       // exemption above and for the same reason: the rule exists to catch a test that
       // restates a production DECISION, and a run of spaces is not one.
       if (literal.trim() === "") return;
-      if (literal.length > 1 && !bound.has(literal)) bound.set(literal, { name, file });
+      if (literal.length > 1 && !bound.has(literal)) bound.set(literal, { file, name });
     };
     for (const file of listProdFiles()) {
       const source = readFileSync(file, "utf8");
@@ -891,8 +891,8 @@ describe("invariant: README tool inventory matches registered tools (Task 00)", 
     assert.strictEqual(
       drift.length,
       0,
-      `README ↔ dist/tools/index.js capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n` +
-        drift.map((d) => `  - ${d}`).join("\n"),
+      `README ↔ dist/tools/index.js capability drift.\nOwning doc: docs/tasks/00-fidelity-ground-truth.md\n${ 
+        drift.map((d) => `  - ${d}`).join("\n")}`,
     );
   });
 });
@@ -943,14 +943,14 @@ describe("invariant: a discriminant is compared as a typed member, never a raw w
   });
 
   rule({
+    doc: "docs/tasks/08-strong-types.md",
     name: "no raw wire-string comparison against an invented vocabulary",
     patterns: RAW_TAG_COMPARISON,
-    doc: "docs/tasks/08-strong-types.md",
+    skip: [PROSE],
     why:
       "A discriminant compared as a raw string compiles clean under a rename and lets a new\n" +
       "member fall through to whatever the final `else` was. Compare the enum member, or let\n" +
       "the value carry its own words (see AdmissionDenial, which has no discriminant at all).",
-    skip: [PROSE],
   });
 });
 
@@ -961,22 +961,22 @@ describe("invariant: the TUI reads agents from the host data store, never client
   // `agent.list`. The host's own screens read `data.location.agent` instead, so
   // this plugin does too — and the double models the store, not the fiction.
   rule({
-    name: "no client.agent read in the TUI entry",
-    patterns: [/client\.agent/],
-    only: ["tui/index.ts"],
     doc: "docs/tasks/07-admission-gate.md",
+    name: "no client.agent read in the TUI entry",
+    only: ["tui/index.ts"],
+    patterns: [/client\.agent/],
     why:
       "The TUI runtime client has no `agent` namespace, so a `client.agent.list()` reader\n" +
       "throws on every call and the menu renders no agents — while the suite stays green\n" +
       "if the double answers the same fictional call. Read the data store instead.",
   });
   rule({
-    name: "the TUI double answers the data store, not a fictional client namespace",
-    patterns: [/client:\s*\{/, /client\.agent/],
-    only: ["support/limits-screen.js"],
     corpus: listTestSupportFiles,
-    skip: [PROSE],
     doc: "docs/tasks/07-admission-gate.md",
+    name: "the TUI double answers the data store, not a fictional client namespace",
+    only: ["support/limits-screen.js"],
+    patterns: [/client:\s*\{/, /client\.agent/],
+    skip: [PROSE],
     why:
       "A double that answers `client.agent.list()` proves a reader the host cannot run.\n" +
       "The double carries `data.location.agent` because that is what production reads.",

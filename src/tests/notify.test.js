@@ -7,7 +7,7 @@
  */
 
 import { cleanNotifyState } from "./support/gate-world.js";
-import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
+import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
 import { opaqueHost } from "./support/opaque-host.js";
 import { clearNotifyLedger, configurePendingPersistence, gateLedger, getLatestNotification, getPendingDeliveries, noticeDedupKey, notifyChainCount, notifyParent, redeliverOwedNotifications, restorePendingDeliveries, truncateText } from "../../dist/shared/notify.js";
 import { formatParentNotification, isParentNotification, notificationTag } from "../../dist/shared/notification-text.js";
@@ -147,8 +147,8 @@ describe("notify gate: notifyParent", () => {
     assert.strictEqual(calls.length, 1);
     const record = getLatestNotification("ses_a1");
     assert.deepStrictEqual(
-      { delivered: record.delivered, attempts: record.attempts, kind: record.kind },
-      { delivered: true, attempts: 1, kind: "completed" },
+      { attempts: record.attempts, delivered: record.delivered, kind: record.kind },
+      { attempts: 1, delivered: true, kind: "completed" },
     );
   });
 
@@ -158,7 +158,7 @@ describe("notify gate: notifyParent", () => {
     assert.strictEqual(delivered, false);
     assert.strictEqual(calls.length, 2, "exactly one retry");
     const record = getLatestNotification("ses_b1");
-    assert.deepStrictEqual({ delivered: record.delivered, attempts: record.attempts }, { delivered: false, attempts: 2 });
+    assert.deepStrictEqual({ attempts: record.attempts, delivered: record.delivered }, { attempts: 2, delivered: false });
   });
 
   it("second-attempt success records delivered with attempts=2", async () => {
@@ -446,8 +446,8 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     // Boot reads this array and redelivers in order, so both properties belong
     // to the redelivery's correctness, not to the reader's tidiness.
     restorePendingDeliveries([
-      { parentSessionId: "p1", childSessionId: "ses_old", kind: "completed", text: "a", attempts: 2 },
-      { parentSessionId: "p1", childSessionId: "ses_new", kind: "error", text: "b", attempts: 1 },
+      { attempts: 2, childSessionId: "ses_old", kind: "completed", parentSessionId: "p1", text: "a" },
+      { attempts: 1, childSessionId: "ses_new", kind: "error", parentSessionId: "p1", text: "b" },
     ]);
     const restored = getPendingDeliveries();
     assert.deepStrictEqual(
@@ -658,16 +658,16 @@ describe("notify: the redelivery budget", () => {
     const { client, calls, ...transport } = answeredClient([]);
     world(transport);
     await notifyParent(opaqueHost(client), "parent_1", text, { ...gate(CHILD, "error"), ...opts });
-    return { writes: calls.length, owed: queuedFor(CHILD).map((entry) => entry.attempts) };
+    return { owed: queuedFor(CHILD).map((entry) => entry.attempts), writes: calls.length };
   };
   // One transcript, three shapes, and the difference IS the check: a clock with no
   // completion is a turn the host abandoned, while no clock at all is a host that
   // described nothing — and reading the second as the first declares every parent
   // the plugin cannot fully describe dead. `ASSISTANT_ROLE`, not a retyped word.
-  const stuckTurn = (at) => [{ role: ASSISTANT_ROLE, time: { created: at }, parts: [] }];
+  const stuckTurn = (at) => [{ parts: [], role: ASSISTANT_ROLE, time: { created: at } }];
   const BUSY = ({ setStatus }) => setStatus("parent_1", "open");
   const WEDGED = ({ setMessages }) => setMessages("parent_1", stuckTurn(1));
-  const CLOCKLESS = ({ setMessages }) => setMessages("parent_1", [{ role: ASSISTANT_ROLE, parts: [] }]);
+  const CLOCKLESS = ({ setMessages }) => setMessages("parent_1", [{ parts: [], role: ASSISTANT_ROLE }]);
   const RE_OFFER = { carriedAttempts: 1, maxAttempts: 3 };
   const FRESH = {};
   /**
@@ -832,8 +832,8 @@ describe("notify: the message the parent receives", () => {
 
 describe("notify: dedup key and truncation", () => {
   it("noticeDedupKey separates distinct long messages sharing a prefix", () => {
-    const first = noticeDedupKey("a".repeat(200) + "1");
-    const second = noticeDedupKey("a".repeat(200) + "2");
+    const first = noticeDedupKey(`${"a".repeat(200)  }1`);
+    const second = noticeDedupKey(`${"a".repeat(200)  }2`);
     assert.notStrictEqual(first, second, "full content keys the dedup, not a prefix");
     assert.strictEqual(noticeDedupKey("same"), noticeDedupKey("same"), "deterministic");
   });

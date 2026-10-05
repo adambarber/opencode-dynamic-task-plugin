@@ -7,7 +7,7 @@
  * invented to match the code certifies the code, not the host.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import {
   decideAsk,
   denyAsk,
@@ -31,13 +31,13 @@ describe("question gate: denial", () => {
     ["denial succeeds", async () => {}, { succeeded: true }],
     ["denial absorbs already-resolved as success",
       async () => { throw new Error("already resolved"); },
-      { succeeded: true, reason: "already_resolved" }],
+      { reason: "already_resolved", succeeded: true }],
     ["denial reports transport failures",
       async () => { throw new Error("nope"); },
-      { succeeded: false, reason: "q1: nope" }],
+      { reason: "q1: nope", succeeded: false }],
     ["denial absorbs a 409 conflict",
       async () => { const e = new Error("gone"); e.status = 409; throw e; },
-      { succeeded: true, reason: "already_resolved" }],
+      { reason: "already_resolved", succeeded: true }],
   ];
   for (const [name, reply, expected] of outcomes) {
     it(name, async () => {
@@ -58,7 +58,7 @@ describe("question gate: denial", () => {
     for (const client of [{ permission: {} }, {}, { session: {} }]) {
       assert.deepStrictEqual(
         await denyAsk(opaqueHost(client), "ses_child", "q1"),
-        { succeeded: false, reason: "this host's context has no permission.reply" },
+        { reason: "this host's context has no permission.reply", succeeded: false },
         "a client without permission.reply must be a refusal, not a crash",
       );
     }
@@ -69,7 +69,7 @@ describe("question gate: denial", () => {
 // options and no labels to read, so the only thing an ask has to carry for the gate
 // to act is the pair of ids a reply quotes back.
 describe("question handling: the asked payload", () => {
-  const asked = (data) => ({ type: PERMISSION_ASKED, data });
+  const asked = (data) => ({ data, type: PERMISSION_ASKED });
 
   it("a one-part ask yields the id pair a denial needs", () => {
     const read = readHostAsk(asked({ id: "q1", sessionID: "ses_child" }));
@@ -89,7 +89,7 @@ describe("question handling: the asked payload", () => {
   // only the client wraps. A gate that accepted both would be guessing which one
   // it holds, and the bare read of a wrapped event must find nothing and say so.
   it("ignores an envelope-wrapped payload, since the host publishes it bare", () => {
-    assertNothing(readHostAsk({ type: PERMISSION_ASKED, data: { info: { id: "q9", sessionID: "ses_child" } } }), "a payload under info");
+    assertNothing(readHostAsk({ data: { info: { id: "q9", sessionID: "ses_child" } }, type: PERMISSION_ASKED }), "a payload under info");
   });
 });
 

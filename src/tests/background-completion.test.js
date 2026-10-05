@@ -8,7 +8,7 @@
  * plugin arms no timers, and every task settles exactly once by event.
  */
 
-import { describe, it, beforeEach, assert } from "./support/runner.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
 import { textDeclaresKind } from "./support/assertions.js";
@@ -91,7 +91,7 @@ describe("Background Task Settlement", () => {
   it("multiple rapid completions each notify", async () => {
     const children = [];
     for (const parentId of ["p1", "p2", "p3"]) {
-      children.push({ parent: parentId, child: await spawn(parentId, `Task ${parentId}`) });
+      children.push({ child: await spawn(parentId, `Task ${parentId}`), parent: parentId });
     }
 
     for (const { child } of children) {
@@ -174,7 +174,7 @@ describe("Background Task Settlement", () => {
       await harness.fireEvent(events.idle(childId));
       assertNotices(1, "the success is notified first");
 
-      harness.client.setTranscript(childId, [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } } }]);
+      harness.client.setTranscript(childId, [{ info: { error: { data: { message: detail } }, role: ASSISTANT_ROLE } }]);
       await harness.fireEvent(events.error(childId));
 
       assert.match(
@@ -222,8 +222,8 @@ describe("Background Task Settlement", () => {
     // heartbeat this event was dropped on the floor and the child read as
     // silent since spawn.
     await harness.fireEvent({
+      data: { part: { state: { status: "running" }, type: "tool" }, sessionID: childId },
       type: "message.part.updated",
-      data: { sessionID: childId, part: { type: "tool", state: { status: "running" } } },
     });
 
     const detail = await harness.tool.task_status.execute({ session_id: childId });

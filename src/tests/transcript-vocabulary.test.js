@@ -1,7 +1,6 @@
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   ASSISTANT_ROLE,
   getLatestAssistantText,
@@ -11,10 +10,9 @@ import {
   toolCallOf,
   touchedFiles,
 } from "../../dist/shared/prompt.js";
+import { TESTS_DIR } from "./support/corpus.js";
 
-const gold = JSON.parse(
-  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "support", "v2-transcript.json"), "utf8"),
-);
+const gold = JSON.parse(readFileSync(join(TESTS_DIR, "support", "v2-transcript.json"), "utf8"));
 
 describe("transcript readers speak the v2 host vocabulary", () => {
   it("recognizes a flat assistant message with content and no parts", () => {
@@ -43,8 +41,8 @@ describe("transcript readers speak the v2 host vocabulary", () => {
   it("finds a mutating call inside content", () => {
     const entry = gold.assistantTool.content.find((p) => p.type === "tool");
     const edit = { ...entry, name: "edit", state: { ...entry.state, input: { filePath: "/tmp/derived" } } };
-    const touched = touchedFiles([{ type: ASSISTANT_ROLE, time: { created: 1 }, content: [edit] }]);
-    assert.deepStrictEqual(touched, [{ verb: "edit", path: "/tmp/derived", incomplete: false }]);
+    const touched = touchedFiles([{ content: [edit], time: { created: 1 }, type: ASSISTANT_ROLE }]);
+    assert.deepStrictEqual(touched, [{ incomplete: false, path: "/tmp/derived", verb: "edit" }]);
   });
 
   it("reads a flat error off the message", () => {
@@ -55,7 +53,7 @@ describe("transcript readers speak the v2 host vocabulary", () => {
     const reasoning = gold.assistantText.content.filter((p) => p.type === "reasoning");
     assert.ok(reasoning.length > 0, "golden holds reasoning");
     assert.strictEqual(
-      getLatestAssistantText([{ type: ASSISTANT_ROLE, time: { created: 1 }, content: reasoning }]),
+      getLatestAssistantText([{ content: reasoning, time: { created: 1 }, type: ASSISTANT_ROLE }]),
       "",
     );
   });

@@ -8,10 +8,10 @@
 
 import { assert, describe, it } from "./support/index.js";
 import {
-  formatParentNotification,
-  notificationKindOf,
   NOTIFICATION_MAX_CHARS,
   NotifyKind,
+  formatParentNotification,
+  notificationKindOf,
 } from "../../dist/shared/notification-text.js";
 
 const CHILD = "ses_child0123456789";

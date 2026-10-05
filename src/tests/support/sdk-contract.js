@@ -76,7 +76,7 @@ export function realDomainNames() {
   const file = path.join(REPO_ROOT, "node_modules", "@opencode", "plugin", "dist", "promise", "plugin.d.ts");
   const text = readFileSync(file, "utf8");
   const start = text.indexOf("export interface Context {");
-  if (start < 0) throw new Error(`sdk-contract could not read Context out of ${file} — the declaration moved`);
+  if (start === -1) throw new Error(`sdk-contract could not read Context out of ${file} — the declaration moved`);
   const body = text.slice(start, text.indexOf("\n}", start));
   return requiredDistinct("Context", body.matchAll(/readonly (\w+):/g));
 }
@@ -93,7 +93,7 @@ export function realDomainNames() {
  */
 export function hostOutcomeWords() {
   const at = source().indexOf("readonly outcome:");
-  if (at < 0) return requireFound("Session.Info.outcome", []);
+  if (at === -1) return requireFound("Session.Info.outcome", []);
   const entry = source().slice(at).match(/Schema\.Literals<readonly \[([^\]]+)\]>/);
   if (!entry) throw new Error(`sdk-contract: Session.Info.outcome declares no Literals list in ${TYPES}`);
   return requiredQuoted("Session.Info.outcome", entry[1]);
@@ -123,7 +123,7 @@ export function turnStateWords() {
 export function clientErrorReasons() {
   const text = clientFile("promise/generated/client-error.d.ts");
   const at = text.indexOf("ClientErrorReason =");
-  if (at < 0) return requireFound("ClientErrorReason", []);
+  if (at === -1) return requireFound("ClientErrorReason", []);
   const entry = text.slice(at).match(/=([^;]+);/);
   if (!entry) throw new Error("sdk-contract: ClientErrorReason declares no union");
   return requiredQuoted("ClientErrorReason", entry[1]);

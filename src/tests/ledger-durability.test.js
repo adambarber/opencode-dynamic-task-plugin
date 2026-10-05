@@ -40,7 +40,7 @@ import { fileSays } from "./support/integration.js";
  */
 function storeWritingLedger(file) {
   const store = createTaskStore();
-  let onDisk = { retained: new Map(), active: new Map(), pending: [] };
+  let onDisk = { active: new Map(), pending: [], retained: new Map() };
   const persist = (changes) => {
     if (changes.length === 0) return;
     onDisk = mergeLedgerChange(onDisk, changes);
@@ -55,7 +55,7 @@ function storeWritingLedger(file) {
 function withSettledChild(fn) {
   return withTempFile(tmpLedgerPath(), (file) => {
     const store = storeWritingLedger(file);
-    registerActiveTask(store, childParams({ id: "ses_c1", agent: "reviewer" }), defaultConfig);
+    registerActiveTask(store, childParams({ agent: "reviewer", id: "ses_c1" }), defaultConfig);
     transitionState(store, "ses_c1", "completed");
     return fn(file, store);
   });
@@ -72,14 +72,21 @@ function withRevivedChild(fn) {
   });
 }
 
+/** Rewrites the settled class to a word this build does not speak. */
+const renameToUnknownWord = (file) => {
+  const edited = fileSays(file);
+  edited.tasks.ses_c1.failureClass = "flaky";
+  writeFileSync(file, JSON.stringify(edited));
+};
+
 describe("durable ledger — what a restart would believe", () => {
   it("records a late error escalation as error, and a restart reads it as error", () =>
     withSettledChild((file, store) => {
-      assertIs(fileSays(file).tasks["ses_c1"].state, "completed", "the seeded record starts as a recorded success");
+      assertIs(fileSays(file).tasks.ses_c1.state, "completed", "the seeded record starts as a recorded success");
 
       recordSettledOutcome(store, "ses_c1", "error");
 
-      assertIs(fileSays(file).tasks["ses_c1"].state, "error", "the correction is what the file says");
+      assertIs(fileSays(file).tasks.ses_c1.state, "error", "the correction is what the file says");
       // The whole point of the durable ledger: a fresh process, reading only the
       // file, must not learn that a failed child succeeded.
       assertIs(loadTaskLedger(file).retained.get("ses_c1")?.state, "error", "and a restart reads the failure, not the success");
@@ -96,7 +103,7 @@ describe("durable ledger — what a restart would believe", () => {
     await withSettledChild((file, store) => {
       recordSettledOutcome(store, "ses_c1", "error", failureClass);
       if (tamper) tamper(file);
-      believed = { onDisk: fileSays(file).tasks["ses_c1"].failureClass, restart: loadTaskLedger(file).retained.get("ses_c1") };
+      believed = { onDisk: fileSays(file).tasks.ses_c1.failureClass, restart: loadTaskLedger(file).retained.get("ses_c1") };
     });
     return believed;
   };
@@ -108,10 +115,10 @@ describe("durable ledger — what a restart would believe", () => {
     // restart that reads `error` with no class believes a structural failure and
     // prints no reason, which is the deafness this file exists to prevent, one
     // field over.
-    const read = await restartAfterSettling(FailureClass.Transient);
+    const believed = await restartAfterSettling(FailureClass.Transient);
 
-    assertIs(read.onDisk, "transient", "the class is in the same write as the correction");
-    assertIs(read.restart?.failureClass, "transient", "and a restart reads WHICH failure it was, not only that it failed");
+    assertIs(believed.onDisk, "transient", "the class is in the same write as the correction");
+    assertIs(believed.restart?.failureClass, "transient", "and a restart reads WHICH failure it was, not only that it failed");
   });
 
   // A class this build does not speak is DROPPED, and one it does is RESTORED —
@@ -132,11 +139,7 @@ describe("durable ledger — what a restart would believe", () => {
     // guessing wrong is a structural failure announced as a blip — a person told
     // the work is fine when it is not. Written by hand, because no writer in this
     // plugin produces it; a merge or a future build's vocabulary does.
-    const read = await restartAfterSettling(FailureClass.Structural, (file) => {
-      const edited = fileSays(file);
-      edited.tasks["ses_c1"].failureClass = "flaky";
-      writeFileSync(file, JSON.stringify(edited));
-    });
+    const read = await restartAfterSettling(FailureClass.Structural, renameToUnknownWord);
 
     assertIs(read.onDisk, "flaky", "the word is in the file, or the case proves nothing");
     assertAbsent(read.restart?.failureClass, "a word this build does not speak is not a class");
@@ -145,8 +148,8 @@ describe("durable ledger — what a restart would believe", () => {
   it("never reads a child as settled while the file also says it is running", () =>
     withRevivedChild((file) => {
       const onDisk = fileSays(file);
-      assertIs(onDisk.active["ses_c1"]?.state, "active", "the revived child is running on disk");
-      assertAbsent(onDisk.tasks["ses_c1"], "and is not ALSO still sitting in settled history");
+      assertIs(onDisk.active.ses_c1?.state, "active", "the revived child is running on disk");
+      assertAbsent(onDisk.tasks.ses_c1, "and is not ALSO still sitting in settled history");
 
       const written = loadTaskLedger(file);
       assertIs(written.retained.size, 0, "no stale settled record survived for the boot pass to restore as completed");
@@ -159,7 +162,7 @@ describe("durable ledger — what a restart would believe", () => {
       // another. The reader is the only place that cannot regress, because it is where
       // the question is actually asked.
       const corrupt = fileSays(file);
-      corrupt.tasks["ses_c1"] = { ...corrupt.active["ses_c1"], state: "completed", retainedAt: 1 };
+      corrupt.tasks.ses_c1 = { ...corrupt.active.ses_c1, retainedAt: 1, state: "completed" };
       writeFileSync(file, JSON.stringify(corrupt));
 
       const rebuilt = loadTaskLedger(file);

@@ -9,6 +9,7 @@
 
 import { opaqueHost } from "./support/opaque-host.js";
 import {
+  PARENT,
   afterEach,
   assert,
   beforeEach,
@@ -16,11 +17,10 @@ import {
   deferred,
   describe,
   isolatedGate,
-  settled,
   it,
-  PARENT,
   recordingClient,
   refuseDispatch,
+  settled,
   setupHarness,
 } from "./support/index.js";
 import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
@@ -55,7 +55,7 @@ describe("a parent owed the same notice twice", () => {
     // its refusal is asserted too: a fixture that quietly dispatched would leave
     // this case testing a wait that was never held.
     const second = await h.trySpawn(
-      { description: "downstream B", prompt: "go", subagent_type: "general", depends_on: [edge.id] },
+      { depends_on: [edge.id], description: "downstream B", prompt: "go", subagent_type: "general" },
       { sessionID: "p2" },
     );
     assert.match(second, /Dependencies pending/, "the second parent is holding a wait of its own");

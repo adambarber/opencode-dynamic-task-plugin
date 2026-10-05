@@ -16,7 +16,7 @@
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
 import { readdirSync } from "node:fs";
-import { applyAgentOverlay, readAgentOverlay, readAgentOverlayCaps, writeAgentOverlay, AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
+import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlay, readAgentOverlayCaps, writeAgentOverlay } from "../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
@@ -98,7 +98,7 @@ describe("a depth the agent set holds below the cap", () => {
   });
 
   it("claims no ceiling when the cap is already below the agent set", () => {
-    const base = { ...BASE, maxDepth: 1, allowSameAgentRecursion: false };
+    const base = { ...BASE, allowSameAgentRecursion: false, maxDepth: 1 };
     const { rows } = agentDialogFrom({}, base, TWO_AGENTS, false, null);
     const explore = rows.find((row) => row.name === "explore");
     // Naming the CAP as the binding constraint is the more useful half: it tells the
@@ -314,7 +314,7 @@ describe("clearing a cap removes it rather than emptying it", () => {
   it("and the agent keeps its place in the list, on the config's numbers", () => {
     // Clearing a cap is not deleting an agent — there is no such operation, because
     // the agent was never the operator's to delete. It came from the host.
-    const rows = view({ agents: {} }, AGENTS).rows;
+    const {rows} = view({ agents: {} }, AGENTS);
     assert.deepEqual(rowNames(rows), AGENTS, "every registered agent is still a row");
     assert.equal(namedCell(capCellOf(rows[0], "maxConcurrent")), `${BASE.maxConcurrent} ${INHERITED}`);
   });
@@ -392,7 +392,7 @@ describe("a hand-mangled overlay", () => {
   const mangled = { agents: { explore: { maxConcurrent: "four", maxDepth: 2 } } };
 
   it("shows the same caps the dispatch path will honour, not the ones the file claims", () => {
-    const rows = view(mangled, AGENTS).rows;
+    const {rows} = view(mangled, AGENTS);
     assert.deepEqual(rows.find((row) => row.name === "explore").stated, { maxDepth: 2 },
       "the string cap is dropped and only the whole number survives");
     assert.deepEqual(applyAgentOverlay(BASE, mangled)?.agents.explore, { maxDepth: 2 },

@@ -6,14 +6,14 @@
  * so a new spelling of a refusal is a new row rather than another arrangement.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import {
   buildTaskLineage,
+  depthLimits,
   isSameAgent,
   normalizeAgentName,
   validateAgent,
   validateLineage,
-  depthLimits,
 } from "../../dist/shared/task-policy.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertIs, assertNothing, refuses } from "./support/assertions.js";
@@ -92,7 +92,7 @@ describe("validateLineage", () => {
   // was a second answer to "who is this about".
   const FOUR_AGENTS = ["general", "coder", "explore", "reviewer"];
   const depth = (lineage, child, { maxDepth = 2, agents = FOUR_AGENTS, recursion = false } = {}) =>
-    validateLineage(lineage, child, { maxDepth, allowSameAgentRecursion: recursion }, agents);
+    validateLineage(lineage, child, { allowSameAgentRecursion: recursion, maxDepth }, agents);
 
   it("rejects same-agent anywhere in lineage", () => {
     const result = refuses(depth(["reviewer"], "reviewer"), "the agent is already in the lineage");
@@ -120,7 +120,7 @@ describe("validateLineage", () => {
   });
 
   it("a negative cap is no limit, however few agents there are", () => {
-    admits(depth(["a", "b", "c"], "d", { maxDepth: -1, agents: ["a"] }), "an unlimited depth is not capped by breadth");
+    admits(depth(["a", "b", "c"], "d", { agents: ["a"], maxDepth: -1 }), "an unlimited depth is not capped by breadth");
   });
 
   it("the refusal names the AGENT, because the cap it broke is that agent's", () => {
@@ -135,8 +135,8 @@ describe("validateLineage", () => {
 
   describe("which constraint binds", () => {
     it("reports the cap as binding when the agent set is wide enough", () => {
-      assert.deepStrictEqual(depthLimits({ maxDepth: 3, allowSameAgentRecursion: false }, FOUR_AGENTS), {
-        configured: 3, effective: 3, boundBy: "agent-cap",
+      assert.deepStrictEqual(depthLimits({ allowSameAgentRecursion: false, maxDepth: 3 }, FOUR_AGENTS), {
+        boundBy: "agent-cap", configured: 3, effective: 3,
       });
     });
 
@@ -144,27 +144,27 @@ describe("validateLineage", () => {
       // The case the whole value exists for: a maxDepth of 4 on a project with
       // two usable agent types is a 2, and the number in the config is a lie the
       // operator cannot see.
-      assert.deepStrictEqual(depthLimits({ maxDepth: 4, allowSameAgentRecursion: false }, ["general", "coder"]), {
-        configured: 4, effective: 2, boundBy: "agent-set",
+      assert.deepStrictEqual(depthLimits({ allowSameAgentRecursion: false, maxDepth: 4 }, ["general", "coder"]), {
+        boundBy: "agent-set", configured: 4, effective: 2,
       });
     });
 
     it("counts DISTINCT normalized names, so @General and general are one agent", () => {
       assert.strictEqual(
-        depthLimits({ maxDepth: 9, allowSameAgentRecursion: false }, ["general", "@General", " coder "]).effective,
+        depthLimits({ allowSameAgentRecursion: false, maxDepth: 9 }, ["general", "@General", " coder "]).effective,
         2,
       );
     });
 
     it("ignores the agent set entirely when same-agent recursion is allowed", () => {
-      assert.deepStrictEqual(depthLimits({ maxDepth: 9, allowSameAgentRecursion: true }, ["general"]), {
-        configured: 9, effective: 9, boundBy: "agent-cap",
+      assert.deepStrictEqual(depthLimits({ allowSameAgentRecursion: true, maxDepth: 9 }, ["general"]), {
+        boundBy: "agent-cap", configured: 9, effective: 9,
       });
     });
 
     it("says which one bound, in the refusal the parent reads", () => {
       const result = refuses(
-        depth(["general", "coder"], "explore", { maxDepth: 4, agents: ["general", "coder"] }),
+        depth(["general", "coder"], "explore", { agents: ["general", "coder"], maxDepth: 4 }),
         "the chain is at the agent-set bound, not the configured cap",
       );
       assert.match(result.error, /only 2 distinct agent/);

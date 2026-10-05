@@ -23,7 +23,7 @@ import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, never
 // declaration the production code compiles against — so the fake is held to the
 // host's own words rather than to a hand-kept list that drifts in the one
 // direction which hides a defect.
-import { missingSessionError, hostOutcomeWords } from "./sdk-contract.js";
+import { hostOutcomeWords, missingSessionError } from "./sdk-contract.js";
 // The role the reader looks for, named by the module that looks for it. A mock
 // message part that hardcodes the role is a message the plugin may correctly
 // ignore, and a test that builds one still passes.
@@ -51,18 +51,18 @@ import {
 // One builder for every assistant message the fake writes, in the host's
 // own v2 spelling: flat `type`, flat clock, `content` members.
 const assistantMessage = (text, time, extra) => ({
-  type: "assistant",
+  content: [{ text, type: "text" }],
   time,
-  content: [{ type: "text", text }],
+  type: "assistant",
   ...extra,
 });
-export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { created: at, completed: at }, extra);
+export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { completed: at, created: at }, extra);
 
 /** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
 export const unclockedSaid = (text = "go", role = "user") => ({
   ...hostSaid(text),
-  type: role,
   time: undefined,
+  type: role,
 });
 
 /**
@@ -72,9 +72,9 @@ export const unclockedSaid = (text = "go", role = "user") => ({
  * separately, so a case about the shape alone has no session to invent.
  */
 export const sessionUpdatedEnvelope = (status) => ({
-  type: "sync",
-  name: "session.updated.1",
   data: { info: { status } },
+  name: "session.updated.1",
+  type: "sync",
 });
 
 /**
@@ -109,7 +109,7 @@ const permissionEndpoint = (state, hooks) =>
     const { sessionID, requestID, decision } = args;
     if (hooks.permissionReplyThrows) throw new Error("permission.reply failed");
     assertPermissionReply(args);
-    state.permissionCalls.push({ sessionID, requestID, decision });
+    state.permissionCalls.push({ decision, requestID, sessionID });
     return { ok: true };
   };
 
@@ -180,7 +180,7 @@ export function deferred() {
     resolve = res;
     reject = rej;
   });
-  return { promise, resolve, reject };
+  return { promise, reject, resolve };
 }
 
 /**
@@ -190,7 +190,7 @@ export function deferred() {
  */
 export function armGate(state, name, { fails = false, maybe = false } = {}) {
   const gate = deferred();
-  state[name] = { promise: gate.promise, used: false, fails, release: gate.resolve };
+  state[name] = { fails, promise: gate.promise, release: gate.resolve, used: false };
   // The gate name is the fault name: one spelling, so the teardown rule needs no
   // translation table between "what a test armed" and "what a branch records".
   armFault(state, name);
@@ -321,7 +321,7 @@ export const hostSaying = (text, at = Date.now()) => assistantMessage(text, { cr
  * and it is what `session.get` hands production.
  */
 const openHostTurn = (state, id) => {
-  state.turns.set(id, { outcome: undefined, idle: undefined });
+  state.turns.set(id, { idle: undefined, outcome: undefined });
 };
 
 const closeHostTurn = (state, id, outcome) => {
@@ -330,7 +330,7 @@ const closeHostTurn = (state, id, outcome) => {
   // ended must not rewrite history, or an interrupt of a finished turn would
   // report the finished work as interrupted.
   if (state.turns.get(id)?.outcome !== undefined) return;
-  state.turns.set(id, { outcome, idle: Date.now() });
+  state.turns.set(id, { idle: Date.now(), outcome });
 };
 
 /** The verdict a closing idle implies, read off the transcript it is closing. */
@@ -384,7 +384,7 @@ export function applyHostStatus(state, event) {
  * this, and tests used to spell the literals inline, which is how a test can end
  * up asserting against a shape the host never emits.
  */
-const hostEvent = (type, id, properties) => ({ type, data: { sessionID: id, ...properties } });
+const hostEvent = (type, id, properties) => ({ data: { sessionID: id, ...properties }, type });
 
 /**
  * The server's lifecycle event shapes, declared once. `updated` and `error` take
@@ -418,14 +418,14 @@ export const events = {
    * `sessionID` is the unattributable ask the gate must never touch.
    */
   permissionAsked: (sessionID, properties) => ({
-    type: PERMISSION_ASKED,
     data: { ...(sessionID ? { sessionID } : {}), ...properties },
+    type: PERMISSION_ASKED,
   }),
   /** The ask a live child would raise, spelled the way the manifest spells it. */
-  ask: (sessionID, requestId, action = "edit") => events.permissionAsked(sessionID, { id: requestId, action, resources: [] }),
+  ask: (sessionID, requestId, action = "edit") => events.permissionAsked(sessionID, { action, id: requestId, resources: [] }),
   /** The retirement of an ask — a decision, so it is a settlement the gate does not owe anyone. */
-  permissionReplied: (props) => ({ type: PERMISSION_REPLIED, data: props }),
-  permissionCancelled: (props) => ({ type: FORM_CANCELLED, data: props }),
+  permissionReplied: (props) => ({ data: props, type: PERMISSION_REPLIED }),
+  permissionCancelled: (props) => ({ data: props, type: FORM_CANCELLED }),
 };
 
 /**
@@ -451,7 +451,7 @@ const noticeRecord = (to, text) => {
   if (!kind) {
     throw new Error(`parent-directed payload carries no Kind field:\n${text}`);
   }
-  return { to, kind, message: text };
+  return { kind, message: text, to };
 };
 
 /**
@@ -606,8 +606,8 @@ export function createMockClient(hooks = {}) {
   // The registry when a case seeds no agents: the same two the live host publishes,
   // named once so the list reader and the routing guard cannot disagree.
   const defaultAgents = () => [
-    { id: "explore", name: "Explore", mode: "subagent", permissions: [] },
-    { id: "general", name: "General", mode: "subagent", permissions: [] },
+    { id: "explore", mode: "subagent", name: "Explore", permissions: [] },
+    { id: "general", mode: "subagent", name: "General", permissions: [] },
   ];
 
   // Sessions the host already knows about when the test starts, for boot-time
@@ -641,7 +641,7 @@ export function createMockClient(hooks = {}) {
         // The host's own records: a lowercase registry id plus a display label, which
         // are NOT interchangeable — routing resolves the id, case-sensitively.
         const data = hooks.agentsList ?? defaultAgents();
-        return { location: { directory: state.directory }, data };
+        return { data, location: { directory: state.directory } };
       },
     },
     // The question namespace, modelled on the host's generated contract rather
@@ -667,7 +667,7 @@ export function createMockClient(hooks = {}) {
         const id = `${prefix}${state.sessions.size + 1}`;
         state.sessions.add(id);
         setHostTurn(state, id, "open");
-        state.sessionBodies.set(id, { title, parentID });
+        state.sessionBodies.set(id, { parentID, title });
         // The host created the session and then answered with something no id can
         // be read out of. The session is real — it is in `state.sessions`, so
         // `sessionCount` counts it and nothing ever aborts it — which is the whole
@@ -754,7 +754,7 @@ export function createMockClient(hooks = {}) {
               }),
             );
           }
-          state.promptBodies.push({ to: sessionID, text });
+          state.promptBodies.push({ text, to: sessionID });
         }
         if (hooks.promptRefusal) {
           // v2 says NO by REJECTING: every client method returns Promise<T> and an
@@ -764,7 +764,7 @@ export function createMockClient(hooks = {}) {
           const { status, message } = hooks.promptRefusal;
           throw Object.assign(new Error(message), { name: "ApiError", status });
         }
-        return Promise.resolve({ parts: [{ type: "text", text: "PROMPT_OK" }] });
+        return Promise.resolve({ parts: [{ text: "PROMPT_OK", type: "text" }] });
       },
       // v2 gives a plugin NO status channel, so the fake does not serve one: keeping
       // a map here would keep a v1 belief alive that production has already given up.
@@ -779,7 +779,7 @@ export function createMockClient(hooks = {}) {
           fault(state, "unreadableTranscript");
           throw state.unreadableError.get(sessionID) ?? Object.assign(
             new Error(`Session "${sessionID}" transcript unavailable.`),
-            { reason: "UnexpectedStatus", cause: { status: 500 } },
+            { cause: { status: 500 }, reason: "UnexpectedStatus" },
           );
         }
         if (state.transcripts.has(sessionID)) {
@@ -825,7 +825,7 @@ export function createMockClient(hooks = {}) {
         return { ok: true };
       },
       switchModel: async ({ sessionID, model }) => {
-        state.routed.set(sessionID, { ...state.routed.get(sessionID), providerID: model?.providerID, modelID: model?.id });
+        state.routed.set(sessionID, { ...state.routed.get(sessionID), modelID: model?.id, providerID: model?.providerID });
         return { ok: true };
       },
       interrupt: async ({ sessionID }) => {
@@ -967,7 +967,7 @@ export const FAKE_SOURCE = readFileSync(new URL(import.meta.url), "utf8");
  */
 export function hostCallArgs(ns, method, probeId) {
   if (ns === "permission" && method === "reply")
-    return { sessionID: probeId, requestID: "prb_shape_probe", decision: "once" };
+    return { decision: "once", requestID: "prb_shape_probe", sessionID: probeId };
   if (ns === "session" && method === "prompt") return { sessionID: probeId, text: "probe" };
   if (ns === "session" && method === "create") return { title: "probe" };
   if (ns === "session") return { sessionID: probeId };
@@ -980,9 +980,9 @@ export function hostCallArgs(ns, method, probeId) {
  * suite because the tools map is a fact about the HOST, and a suite that wrote
  * one would be the second place that shape is spelled.
  */
-export const agentDeclaring = (permissions) => [{ name: "explore", mode: "subagent", permissions }];
+export const agentDeclaring = (permissions) => [{ mode: "subagent", name: "explore", permissions }];
 
 /** The ruleset entries as this plugin spells them: the host's ordered walk, two effects. */
 export const permitting = (...rules) => rules;
-export const allowAction = (action) => ({ action, resource: "*", effect: "allow" });
-export const denyAction = (action) => ({ action, resource: "*", effect: "deny" });
+export const allowAction = (action) => ({ action, effect: "allow", resource: "*" });
+export const denyAction = (action) => ({ action, effect: "deny", resource: "*" });

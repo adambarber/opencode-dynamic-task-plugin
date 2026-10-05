@@ -38,8 +38,8 @@ describe("task_notify: the child-to-parent channel", () => {
 
   it("distinct long notices sharing a prefix both deliver", async () => {
     const { h, c } = await withChild();
-    const first = await c.notify("a".repeat(200) + "1");
-    const second = await c.notify("a".repeat(200) + "2");
+    const first = await c.notify(`${"a".repeat(200)  }1`);
+    const second = await c.notify(`${"a".repeat(200)  }2`);
     answerSays(first, "Message sent to parent");
     answerSays(second, "Message sent to parent", "prefix collision must not suppress");
     assertNoticeCount(h, 2, "two long notices sharing a prefix both deliver");
@@ -195,9 +195,7 @@ describe("a child that needs input is not a success", () => {
       pending: [],
       tasks: {
         ses_blocked1: {
-          childSessionId: "ses_blocked1", parentSessionId: "p1", agentName: "explore",
-          description: "waiting on the key", lineage: ["explore"], state: "blocked",
-          startedAt: now - 5000, retainedAt: now - 100,
+          agentName: "explore", childSessionId: "ses_blocked1", description: "waiting on the key", lineage: ["explore"], parentSessionId: "p1", retainedAt: now - 100, startedAt: now - 5000, state: "blocked",
         },
       },
     }));
@@ -257,7 +255,7 @@ describe("the background prompt tells a child the truth about its own voice", ()
   });
 
   it("keeps the instruction when the agent says nothing about its tools", async () => {
-    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent", permissions: [] }] } });
+    const h = await setupHarness({ hooks: { agentsList: [{ mode: "subagent", name: "explore", permissions: [] }] } });
     answerSays(await openingFor(h, "unknown tool set"), NOTIFY_TOOL, "no declaration means no reason to hide the channel");
   });
 });
@@ -285,7 +283,7 @@ describe("the spawn confirmation tells the parent what its child cannot report",
   });
 
   it("says nothing extra when the tool set is unknown", async () => {
-    const h = await setupHarness({ hooks: { agentsList: [{ name: "explore", mode: "subagent", permissions: [] }] } });
+    const h = await setupHarness({ hooks: { agentsList: [{ mode: "subagent", name: "explore", permissions: [] }] } });
     const out = await confirmationFor(h, "undeclared worker");
     answerOmits(out, `no ${NOTIFY_TOOL}`, "absence of knowledge must not manufacture a warning either");
   });

@@ -36,8 +36,8 @@ describe("settlement: the notification layer owns outcomes", () => {
   });
   it("parentless settlements leave a visible non-delivery record", async () => {
     const { h, c, id, out } = await withChild({
-      spawn: { description: "orphan task", prompt: "hi" },
       ctx: {},
+      spawn: { description: "orphan task", prompt: "hi" },
       });
     answerSays(out, "notification: disabled");
     await h.settle(id);

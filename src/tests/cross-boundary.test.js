@@ -7,7 +7,7 @@
  * existed was the subject, not the line count.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { readFileSync } from "node:fs";
 import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
 

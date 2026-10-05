@@ -29,10 +29,10 @@ import { withSingleSlot } from "./integration.js";
  * A case that only wants to observe the tool's wording gets the answer back.
  */
 export async function withStoppedChild({ harness = {}, spawn = {}, caller = PARENT } = {}) {
-  const { h, c } = await withChild({ harness, spawn, ctx: { sessionID: caller } });
+  const { h, c } = await withChild({ ctx: { sessionID: caller }, harness, spawn });
   const answer = await interruptAs(h, c.id, caller);
   assertStopped(h, c.id, answer, `a child of ${caller} is the plugin's to stop`);
-  return { h, c, answer };
+  return { answer, c, h };
 }
 
 /**
@@ -50,7 +50,7 @@ export async function withRefusedStop({ harness = {}, arrange, target, caller, c
   const asked = target ?? seeded.id;
   const answer = await interruptAs(h, asked, speaking);
   assertRefusedWithoutReachingTheHost(h, answer, asked, note);
-  return { h, answer, ...seeded };
+  return { answer, h, ...seeded };
 }
 
 /**
@@ -72,7 +72,7 @@ export async function withSettledMiddleChild() {
  * session idle, both would pass against a plugin that had no guard at all.
  */
 export async function withSelfStop({ note = "a caller naming its own session" } = {}) {
-  return withRefusedStop({ harness: { hostStatusSeed: { [PARENT]: "open" } }, target: PARENT, note });
+  return withRefusedStop({ harness: { hostStatusSeed: { [PARENT]: "open" } }, note, target: PARENT });
 }
 
 /**
@@ -85,15 +85,15 @@ export async function withOrphan() {
   const h = await withSingleSlot();
   const before = new Set(sessionIds(h.client));
   const answers = await Promise.all([
-    h.trySpawn({ description: "winner", subagent_type: "explore", prompt: "hi" }),
-    h.trySpawn({ description: "loser", subagent_type: "explore", prompt: "hi" }),
+    h.trySpawn({ description: "winner", prompt: "hi", subagent_type: "explore" }),
+    h.trySpawn({ description: "loser", prompt: "hi", subagent_type: "explore" }),
   ]);
   // The orphan is named by what it IS — a created session no confirmation claims.
   // Reading it off `wasAborted` would make the fixture depend on what is under test.
   const created = sessionIds(h.client).filter((id) => !before.has(id));
   const orphan = created.find((id) => !answers.some((a) => a.includes(id)));
   assert.strictEqual(typeof orphan, "string", "fixture: the race must produce an orphan");
-  return { h, answers, orphan };
+  return { answers, h, orphan };
 }
 
 /** A child whose abort the host loses once, so the bound is the only thing that answers. */
@@ -103,7 +103,7 @@ export async function withLostAbort() {
     spawn: { description: "doomed" },
   });
   assert.strictEqual(c.id, "ses_mock_1", "fixture: the hook names the child it will lose");
-  return { h, c };
+  return { c, h };
 }
 
 /**
@@ -126,6 +126,6 @@ export async function withRefusedSecondSpawn() {
   const h = await withSingleSlot();
   await h.spawn({ description: "one" });
   const before = new Set(sessionIds(h.client));
-  const second = await h.trySpawn({ description: "two", subagent_type: "explore", prompt: "hi" });
-  return { h, second, created: sessionIds(h.client).filter((id) => !before.has(id)) };
+  const second = await h.trySpawn({ description: "two", prompt: "hi", subagent_type: "explore" });
+  return { created: sessionIds(h.client).filter((id) => !before.has(id)), h, second };
 }

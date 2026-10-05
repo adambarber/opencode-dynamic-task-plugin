@@ -11,7 +11,7 @@
  * that rejection is silent at boot: no tools appear and no error reaches the user.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import pluginEntry from "../../dist/index.js";
 
 describe("plugin entry: decodes as a v2 plugin definition", () => {

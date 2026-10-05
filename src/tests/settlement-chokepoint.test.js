@@ -30,7 +30,7 @@ import { announcementAfterKill, assert, describe, failEdge, it } from "./support
  */
 const DEAD_EDGE = (hint) => assert.match(hint.message, /never run/i, "a dead edge is dead, not ready");
 /** A steer is the only kill here that needs a session id and a prompt. */
-const STEER = (ready, id) => ready.tool.task_continue.execute({ session_id: id, prompt: "keep going" }, { sessionID: "p1" });
+const STEER = (ready, id) => ready.tool.task_continue.execute({ prompt: "keep going", session_id: id }, { sessionID: "p1" });
 
 describe("a held wait survives every way a child can end", () => {
   it("a child that completes releases the parent", async () => {

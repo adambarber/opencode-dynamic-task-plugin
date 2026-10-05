@@ -17,11 +17,11 @@
  * because the host owns escape.
  */
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
-import { withTempDir } from "./fixtures.js";
-import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps } from "../../../dist/tui/index.js";
 
@@ -57,11 +57,9 @@ export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
  * `client.agent.list()` proves a reader the host cannot run.
  */
 export function hostApi(directory, { agents = REGISTERED } = {}) {
-  const seen = { layers: [], toasts: [], selects: [], slots: [] };
+  const seen = { layers: [], selects: [], slots: [], toasts: [] };
   const pending = [];
   return {
-    seen,
-    pending,
     api: {
       location: { directory },
       // The row set is the HOST's registered agents, read the way its own agent
@@ -69,7 +67,7 @@ export function hostApi(directory, { agents = REGISTERED } = {}) {
       data: {
         location: {
           agent: {
-            list: () => agents.map((name) => ({ name, mode: "subagent", permissions: [] })),
+            list: () => agents.map((name) => ({ mode: "subagent", name, permissions: [] })),
           },
         },
       },
@@ -96,6 +94,8 @@ export function hostApi(directory, { agents = REGISTERED } = {}) {
         },
       },
     },
+    pending,
+    seen,
   };
 }
 
@@ -194,7 +194,7 @@ export async function booted(directory, opts) {
   // layer: the property under test is that NO binding of ours is on a key the host
   // needs, which a per-layer lookup cannot express.
   const bindings = host.seen.layers.flatMap((layer) => layer.bindings ?? []);
-  return { ...host, command, bindings };
+  return { ...host, bindings, command };
 }
 
 /** A project directory holding the given overlay, with nothing booted and nothing pressed. */
@@ -204,7 +204,7 @@ export const withProject = (fn, { overlay, active = [], retained = [] } = {}) =>
     if (active.length > 0 || retained.length > 0) {
       // Kept so a case can prove the list does not need it: a ledger-shaped directory
       // that the list opens over without reading is the claim.
-      writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ retained: Object.fromEntries(retained), active: Object.fromEntries(active), pending: [] }));
+      writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ active: Object.fromEntries(active), pending: [], retained: Object.fromEntries(retained) }));
     }
     return fn(directory);
   });
@@ -231,9 +231,7 @@ export const withBooted = (fn, opts) => withProject(async (directory) => fn(awai
  */
 export const withConfigScreen = (configBody, fn) =>
   withProject(async (directory) => {
-    const configPath = join(directory, DYNAMIC_TASK_FILE);
-    mkdirSync(dirname(configPath), { recursive: true });
-    writeFileSync(configPath, JSON.stringify(configBody));
+    writeProjectConfig(directory, configBody);
     const host = await booted(directory);
     await host.command.run();
     await settle();

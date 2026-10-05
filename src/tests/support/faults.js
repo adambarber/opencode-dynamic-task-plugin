@@ -54,11 +54,11 @@ export const FAULTS = Object.freeze([
  * the host went hostile.
  */
 export const ARMERS = Object.freeze({
-  silentHost: "silentHost",
   gateAbort: "abortGate",
   gateChildPrompt: "promptGate",
   gateMessageRead: "messageReadGate",
   makeUnreadable: "unreadableTranscript",
+  silentHost: "silentHost",
 });
 
 /** Record that a fault is ARMED. Not the same as firing — see `armedFaults`. */

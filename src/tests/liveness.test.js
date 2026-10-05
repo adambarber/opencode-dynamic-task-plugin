@@ -18,21 +18,21 @@
  * the previous version of this module read as a finished turn.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { compareStrings } from "./support/assertions.js";
 import {
-  hostTurnInFlight,
-  hostTurnRunning,
-  isSessionMissing,
   NOT_FOUND_REASON,
   PROTOCOL_NOT_FOUND_TAG,
   SESSION_NOT_FOUND_TAG,
+  SessionExistence,
+  UntrackedStatus,
+  hostTurnInFlight,
+  hostTurnRunning,
+  isSessionMissing,
   parentTurnStuck,
   readLiveness,
   readSessionPresence,
-  SessionExistence,
   statusFromHostTurn,
-  UntrackedStatus,
 } from "../../dist/shared/liveness.js";
 import { opaqueHost } from "./support/opaque-host.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
@@ -42,9 +42,9 @@ import { clientErrorReasons, hostOutcomeWords } from "./support/sdk-contract.js"
 // word list is the SDK's, so a host that adds or renames one lands in this table's
 // absence and the case below fails rather than silently going untested.
 const READING_OF = {
-  succeeded: UntrackedStatus.Unknown,
   failed: UntrackedStatus.Unknown,
   interrupted: UntrackedStatus.Unknown,
+  succeeded: UntrackedStatus.Unknown,
 };
 
 describe("liveness vocabulary", () => {
@@ -132,7 +132,7 @@ describe("liveness: what the host did not say is not a reading", () => {
     // error, or a status at the top level — is what the previous reader looked for,
     // and a v2 host produces neither, so every lost child read as merely unread.
     const refusing = (error) => opaqueHost({ session: { get: async () => { throw error; } } });
-    const notFound = () => Object.assign(new Error("nope"), { reason: NOT_FOUND_REASON, cause: { status: 404 } });
+    const notFound = () => Object.assign(new Error("nope"), { cause: { status: 404 }, reason: NOT_FOUND_REASON });
 
     const missing = await readSessionPresence(refusing(notFound()), "ses_x");
     assert.strictEqual(missing.existence, SessionExistence.Missing, "a 404 on the cause is a missing session");
@@ -141,13 +141,13 @@ describe("liveness: what the host did not say is not a reading", () => {
     // The contrast: a refusal that is not the host's not-found says nothing about
     // existence, and reading it as one ends a child the host still has.
     for (const error of [
-      Object.assign(new Error("nope"), { reason: NOT_FOUND_REASON, cause: { status: 403 } }),
+      Object.assign(new Error("nope"), { cause: { status: 403 }, reason: NOT_FOUND_REASON }),
       Object.assign(new Error("nope"), { status: 404 }),
       Object.assign(new Error("nope"), { name: "NotFoundError" }),
     ]) {
       const other = await readSessionPresence(refusing(error), "ses_x");
       assert.strictEqual(other.existence, SessionExistence.Unread,
-        `a refusal shaped ${JSON.stringify({ reason: error.reason, name: error.name, status: error.status })} ` +
+        `a refusal shaped ${JSON.stringify({ name: error.name, reason: error.reason, status: error.status })} ` +
           "is not the host's not-found, and must not end a session the host still has");
     }
 
@@ -161,7 +161,7 @@ describe("liveness: what the host did not say is not a reading", () => {
     // not closed. The walk over the tail must reach it and answer with the start,
     // because "no completion" and "no clock" are different sentences and only the
     // first one is about a live message.
-    const closed = { info: { role: ASSISTANT_ROLE, time: { created: 100, completed: 200 } } };
+    const closed = { info: { role: ASSISTANT_ROLE, time: { completed: 200, created: 100 } } };
     const open = { info: { role: ASSISTANT_ROLE, time: { created: 300 } } };
     const host = answering({ id: "ses_x" });
 
@@ -195,7 +195,7 @@ describe("liveness: a turn is not a message", () => {
   // One builder for the three cases below: the transcript is the constant, the
   // session object is the variable — which is the whole claim of the describe.
   const hostWithMessages = (messages, session) =>
-    opaqueHost({ session: { get: async () => session, context: async () => messages } });
+    opaqueHost({ session: { context: async () => messages, get: async () => session } });
 
   // Both open-turn cases below read the same shape — no verdict on the session —
   // and differ only in the transcript they hand it.
@@ -208,9 +208,9 @@ describe("liveness: a turn is not a message", () => {
   const step = (seq, completedAt) => ({
     info: {
       role: ASSISTANT_ROLE,
-      time: completedAt === undefined ? { created: seq } : { created: seq, completed: completedAt },
+      time: completedAt === undefined ? { created: seq } : { completed: completedAt, created: seq },
     },
-    parts: [{ type: "text", text: `step ${seq}` }],
+    parts: [{ text: `step ${seq}`, type: "text" }],
   });
 
   it("calls a RUNNING turn running while every one of its messages has completed", async () => {
@@ -238,7 +238,7 @@ describe("liveness: a turn is not a message", () => {
     // The transcript's last message carries an error, and the host has recorded no
     // verdict. The turn is the host's to close; a reader that promoted a message's
     // error into a finished turn would settle a child that is still running.
-    const messages = [{ ...step(1, 1), info: { role: ASSISTANT_ROLE, time: { created: 1, completed: 2 }, error: { name: "Error" } } }];
+    const messages = [{ ...step(1, 1), info: { error: { name: "Error" }, role: ASSISTANT_ROLE, time: { completed: 2, created: 1 } } }];
 
     const reading = await readOpenTurn(messages);
     assert.strictEqual(hostTurnRunning(reading), true, "a message error is not a turn verdict");
@@ -251,10 +251,10 @@ describe("isSessionMissing names every not-found the host sends", () => {
   // name, a message about some OTHER thing being gone — must never match.
   const cases = [
     ["dotted core tag", { _tag: SESSION_NOT_FOUND_TAG, sessionID: "ses_x" }, true],
-    ["dotted core type", { type: SESSION_NOT_FOUND_TAG, sessionID: "ses_x" }, true],
+    ["dotted core type", { sessionID: "ses_x", type: SESSION_NOT_FOUND_TAG }, true],
     ["protocol tag", { _tag: PROTOCOL_NOT_FOUND_TAG, message: "Session not found: ses_x" }, true],
-    ["protocol type", { type: PROTOCOL_NOT_FOUND_TAG, message: "Session not found: ses_x" }, true],
-    ["ClientError rejection", Object.assign(new Error("nope"), { reason: NOT_FOUND_REASON, cause: { status: 404 } }), true],
+    ["protocol type", { message: "Session not found: ses_x", type: PROTOCOL_NOT_FOUND_TAG }, true],
+    ["ClientError rejection", Object.assign(new Error("nope"), { cause: { status: 404 }, reason: NOT_FOUND_REASON }), true],
     ["session-scoped message", { message: "Session not found: ses_x" }, true],
     ["agent-not-found tag", { _tag: "Session.AgentNotFoundError", message: "Agent not found: General" }, false],
     ["agent-not-found message", { message: "Agent not found: General" }, false],

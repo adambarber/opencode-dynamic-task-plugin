@@ -1,6 +1,6 @@
 import assert from "node:assert";
 
-import { createMockClient, FAKE_SOURCE, setHostTurn } from "./support/mock-host.js";
+import { FAKE_SOURCE, createMockClient, setHostTurn } from "./support/mock-host.js";
 import { listTestSupportFiles, readSource } from "./support/corpus.js";
 import { hostOutcomeWords } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";

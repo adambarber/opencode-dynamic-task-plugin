@@ -33,11 +33,11 @@ import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
 
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({
-  childSessionId: "ses_1",
-  parentSessionId: "parent_1",
   agentName: "explore",
+  childSessionId: "ses_1",
   description: "t",
   lineage: [],
+  parentSessionId: "parent_1",
   ...overrides,
 });
 
@@ -71,7 +71,7 @@ export const activeEntry = (overrides = {}) => {
   const store = createTaskStore();
   const { childSessionId } = registerActiveTask(
     store,
-    registration({ childSessionId: "ses_2", agentName: "general", description: "still running", lineage: ["general"] }),
+    registration({ agentName: "general", childSessionId: "ses_2", description: "still running", lineage: ["general"] }),
     undefined,
   );
   annotateNotice(store, childSessionId, "mid-flight", "progress");
@@ -97,7 +97,7 @@ export const runningEntry = (childSessionId, overrides = {}) => ({
  * because a case asserting a rendering is not asserting on a clock.
  */
 export const notifiedAs = (kind, outcome, target = {}) =>
-  notifyRecord({ parentSessionId: UNKNOWN_PARENT, childSessionId: "ses_1", kind, ...target }, "delivered", outcome);
+  notifyRecord({ childSessionId: "ses_1", kind, parentSessionId: UNKNOWN_PARENT, ...target }, "delivered", outcome);
 
 export { noticeRecord };
 /**
@@ -106,7 +106,7 @@ export { noticeRecord };
  */
 export const owedEntry = (overrides = {}) => ({
   ...owedDelivery(
-    { parentSessionId: "parent_1", childSessionId: "ses_1", kind: "completed" },
+    { childSessionId: "ses_1", kind: "completed", parentSessionId: "parent_1" },
     "[dynamic-task-notify]\nsession owed",
     1,
   ),

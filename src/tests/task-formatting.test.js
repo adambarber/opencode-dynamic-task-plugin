@@ -7,7 +7,7 @@
  * shape with no compiler over it, and it drifts silently in both directions.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { noticeRecord } from "../../dist/shared/notice-claim.js";
 import { notifiedAs } from "./support/records.js";
@@ -25,9 +25,9 @@ import { SessionExistence } from "../../dist/shared/liveness.js";
 const reading = (hostTurn, lastMessageAt) => ({
   existence: SessionExistence.Present,
   hostTurn,
-  statusAnswered: true,
   lastMessageAt,
   messageCount: 1,
+  statusAnswered: true,
 });
 
 // The record the view formatters read. Production owns the shape
@@ -37,11 +37,11 @@ const reading = (hostTurn, lastMessageAt) => ({
 // to be spelled out as 1 with no assertion behind it: a declared field is a claim
 // that the field matters, and this one never did.
 const resultRecord = (overrides = {}) =>
-  taskResultRecord({ sessionId: "s", status: "completed", latestText: "hi", tracked: true, ...overrides });
+  taskResultRecord({ latestText: "hi", sessionId: "s", status: "completed", tracked: true, ...overrides });
 
 // A settled store record beside a stated turn reading: the shape two cases below
 // share, which differ only in the reading they place beside it.
-const settledRecord = (liveness) => resultRecord({ status: "completed", task: taskRecord({ state: "completed" }), liveness });
+const settledRecord = (liveness) => resultRecord({ liveness, status: "completed", task: taskRecord({ state: "completed" }) });
 
 /**
  * formatTaskResultSummary over a settled record carrying this notification, and
@@ -60,8 +60,7 @@ function summaryWith(kind, outcome, target = {}) {
 // test then asserts on nonsense.
 function taskRecord(overrides = {}) {
   return {
-    childSessionId: "ses_1", parentSessionId: "p", agentName: "a", description: "d",
-    lineage: [], state: "active", startedAt: Date.now(), retainedAt: Date.now(),
+    agentName: "a", childSessionId: "ses_1", description: "d", lineage: [], parentSessionId: "p", retainedAt: Date.now(), startedAt: Date.now(), state: "active",
     ...overrides,
   };
 }
@@ -96,7 +95,7 @@ describe("readers say WHY a child failed", () => {
    */
   const erroredWith = (failureClass) => formatTaskResultSummary(resultRecord({
     status: "error",
-    task: taskRecord({ state: "error", failureClass }),
+    task: taskRecord({ failureClass, state: "error" }),
   }));
 
   it("task_result names the class of a settled failure", () => {
@@ -107,7 +106,7 @@ describe("readers say WHY a child failed", () => {
   });
 
   it("task_status names it beside the settled clock", () => {
-    const detail = formatTaskStatusDetail(taskRecord({ state: "error", failureClass: "structural" }));
+    const detail = formatTaskStatusDetail(taskRecord({ failureClass: "structural", state: "error" }));
     assert.strictEqual(classLine(detail), "Failure class: structural — the work failed, not the connection. This one is a real failure and needs a decision.");
   });
 
@@ -126,11 +125,11 @@ describe("readers say WHY a child failed", () => {
 // has read one notification can read the other.
 describe("the retained roll-up says the SHAPE of a fleet, not its size", () => {
   const listOf = (rows) => formatTaskListSummary({
-    tree: [],
     activeCount: 0,
-    retained: rows,
     maxConcurrent: 4,
     pruned: 0,
+    retained: rows,
+    tree: [],
   });
 
   const retained = (state, failureClass) => ({ ...taskRecord({ state }), failureClass });
@@ -168,14 +167,14 @@ describe("task_result briefs the parent on what the child touched", () => {
   const summaryOf = (touchedFiles) => formatTaskResultSummary(resultRecord({ touchedFiles }));
 
   it("names each change with its verb, so a read is not mistaken for one", () => {
-    const summary = summaryOf([{ verb: "edit", path: "/p/a.ts", incomplete: false }]);
+    const summary = summaryOf([{ incomplete: false, path: "/p/a.ts", verb: "edit" }]);
     assert.match(summary, /Changed: edit \/p\/a\.ts/);
   });
 
   // A change that never completed is not the same amount of work to redo as one
   // that landed, and a file listing cannot tell them apart.
   it("says which of them did not finish", () => {
-    const summary = summaryOf([{ verb: "write", path: "/p/b.ts", incomplete: true }]);
+    const summary = summaryOf([{ incomplete: true, path: "/p/b.ts", verb: "write" }]);
     assert.match(summary, /write \/p\/b\.ts \(incomplete\)/);
   });
 
@@ -240,7 +239,7 @@ describe("formatTaskResultSummary", () => {
     // count and the untracked default itself all come from the production
     // builder, which is the only declaration of them.
     const result = formatTaskResultSummary(
-      resultRecord({ sessionId: "ses_gone", status: "error", tracked: false, error: "boom (not retryable)" }),
+      resultRecord({ error: "boom (not retryable)", sessionId: "ses_gone", status: "error", tracked: false }),
     );
     assert.match(result, /^## Task Result/);
     assert.match(result, /Status: error/);
@@ -257,8 +256,8 @@ describe("formatTaskResultSummary", () => {
 
   it("surfaces delivery attempts when provided", () => {
     const result = formatTaskResultSummary(resultRecord({
+      notification: notifiedAs("completed", { attempts: 2, delivered: true }),
       status: "idle",
-      notification: notifiedAs("completed", { delivered: true, attempts: 2 }),
     }));
     assert.match(result, /Last notification: completed \(delivered in 2 attempt/);
   });
@@ -273,19 +272,19 @@ describe("formatTaskResultSummary", () => {
     const base = resultRecord();
     const withNotification = (kind, outcome) =>
       formatTaskResultSummary({ ...base, notification: notifiedAs(kind, outcome) });
-    assert.ok(withNotification("completed", { delivered: true, attempts: 1 }).includes("delivered in 1 attempt"));
-    assert.ok(withNotification("timeout", { delivered: false, attempts: 2 }).includes("FAILED after 2 attempt"));
+    assert.ok(withNotification("completed", { attempts: 1, delivered: true }).includes("delivered in 1 attempt"));
+    assert.ok(withNotification("timeout", { attempts: 2, delivered: false }).includes("FAILED after 2 attempt"));
     assert.ok(!formatTaskResultSummary(base).includes("notification:"));
   });
 
   it("renders a suppressed duplicate as Suppressed, never FAILED", () => {
-    const out = summaryWith("notice", { delivered: false, attempts: 0, suppressed: true }, { parentSessionId: "p1" });
+    const out = summaryWith("notice", { attempts: 0, delivered: false, suppressed: true }, { parentSessionId: "p1" });
     assert.ok(out.includes("Suppressed (duplicate — already delivered)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `suppression is not failure. got: ${out}`);
   });
 
   it("renders a parentless non-delivery honestly", () => {
-    const out = summaryWith("completed", { delivered: false, attempts: 0 });
+    const out = summaryWith("completed", { attempts: 0, delivered: false });
     assert.ok(out.includes("Not delivered (no parent session)"), `got: ${out}`);
     assert.ok(!out.includes("FAILED"), `nowhere to dial is not a failed dial. got: ${out}`);
   });
@@ -296,12 +295,11 @@ describe("formatTaskResultSummary", () => {
 // here, at the formatter, so they are pinned here.
 describe("task formatting: fleet views", () => {
   const treeRow = (over = {}) => ({
-    childSessionId: "ses_a", agentName: "explore", description: "A task", state: "active",
-    startedAt: Date.now() - 45_000, depth: 0, parentSessionId: "p1", parentTracked: true, ...over,
+    agentName: "explore", childSessionId: "ses_a", depth: 0, description: "A task", parentSessionId: "p1", parentTracked: true, startedAt: Date.now() - 45_000, state: "active", ...over,
   });
   const rowFor = (summary, sessionId) =>
     summary.split("\n").find((line) => line.includes(sessionId)) ?? `(no line for ${sessionId})`;
-  const listOf = (over = {}) => formatTaskListSummary({ tree: [], activeCount: 0, retained: [], maxConcurrent: 4, pruned: 0, ...over });
+  const listOf = (over = {}) => formatTaskListSummary({ activeCount: 0, maxConcurrent: 4, pruned: 0, retained: [], tree: [], ...over });
   // The detail view's own seam, so a case states the record it is about and the
   // words it expects rather than the renderer's two arguments. `listOf` is the
   // same seam for the fleet view; a case that spelled either one out was writing
@@ -313,21 +311,20 @@ describe("task formatting: fleet views", () => {
   };
   /** One agent's occupancy, in the shape the reader hands the formatter. */
   const occupancy = (agent, over = {}) => ({
-    agent, active: 0, maxConcurrent: 4, stated: {}, depthConfigured: 2,
-    depthEffective: 2, depthBoundBy: null, ...over,
+    active: 0, agent, depthBoundBy: null, depthConfigured: 2, depthEffective: 2, maxConcurrent: 4, stated: {}, ...over,
   });
   /** A rendered list as its LINES, for the two cases that are about where blocks sit. */
   const linesOf = (over = {}) => listOf(over).split("\n");
   /** Where a block starts, in lines. -1 when the block was not rendered at all. */
   const blockAt = (lines, at) => lines.findIndex((line) => line.startsWith(at));
   /** The smallest fleet there is: one running task, nothing retained, no agent set. */
-  const ONE_TASK = { tree: [treeRow()], activeCount: 1 };
+  const ONE_TASK = { activeCount: 1, tree: [treeRow()] };
 
   // One seam for the two cases below, so each names the STATE it is about rather
   // than re-spelling the record and the render chain — which jscpd reads as a
   // clone of every other 4-line fixture in this file, whether or not any logic
   // is shared.
-  const rendering = (over) => detailOf({}, notifiedAs("error", { delivered: false, attempts: 3, ...over }));
+  const rendering = (over) => detailOf({}, notifiedAs("error", { attempts: 3, delivered: false, ...over }));
 
   it("renders a written-off notice as EXPIRED, not as a failure", () => {
     // The one fact a parent can act on. "FAILED" says the plugin tried and lost
@@ -355,7 +352,7 @@ describe("task formatting: fleet views", () => {
   });
 
   it("the display name is the stored label, and the routing id only where no label was stored", () => {
-    assert.strictEqual(agentDisplayName({ agentName: "general", agentLabel: "General" }), "General");
+    assert.strictEqual(agentDisplayName({ agentLabel: "General", agentName: "general" }), "General");
     assert.strictEqual(agentDisplayName({ agentName: "general" }), "general");
     const summary = listOf({ tree: [treeRow({ agentName: "general" })] });
     assert.match(rowFor(summary, "ses_a"), /@general/, `a labelless row reads raw. got: ${summary}`);
@@ -364,15 +361,14 @@ describe("task formatting: fleet views", () => {
   it("formatTaskListSummary counts the running rows and indents the tree", () => {
     const now = Date.now();
     const summary = listOf({
+      activeCount: 2,
+      retained: [{
+        agentName: "reviewer", childSessionId: "ses_r", description: "R task", startedAt: now - 5000, state: "completed",
+      }],
       tree: [
         treeRow({ startedAt: now - 45_000 }),
         treeRow({ childSessionId: "ses_b", depth: 1, parentSessionId: "ses_a", startedAt: now - 5000 }),
       ],
-      activeCount: 2,
-      retained: [{
-        childSessionId: "ses_r", agentName: "reviewer", description: "R task",
-        state: "completed", startedAt: now - 5000,
-      }],
     });
     assert.ok(summary.includes("Active: 2/4"), `got: ${summary}`);
     assert.ok(summary.includes("45s"), `ages render. got: ${summary}`);
@@ -384,7 +380,7 @@ describe("task formatting: fleet views", () => {
   // Rendered flush it would read as a root, and a root is a task whose parent
   // nobody has stopped.
   it("a row whose parent is not tracked names the link it lost", () => {
-    const summary = listOf({ tree: [treeRow({ parentTracked: false, parentSessionId: "ses_gone" })], activeCount: 1 });
+    const summary = listOf({ activeCount: 1, tree: [treeRow({ parentSessionId: "ses_gone", parentTracked: false })] });
     assert.match(rowFor(summary, "ses_a"), /spawned by ses_gone, not tracked/, `got: ${summary}`);
   });
 
@@ -398,7 +394,7 @@ describe("task formatting: fleet views", () => {
     // The fix is not a second rule: it is the SAME reading, asked once. A view that
     // computed its own version of "when did this child last move" would be free to drift
     // from the diagnosis it is meant to corroborate, and drift here is invisible.
-    const long = listOf({ tree: [treeRow({ startedAt: Date.now() - 20 * 60_000, lastActivityAt: Date.now() - 2_000 })], activeCount: 1 });
+    const long = listOf({ activeCount: 1, tree: [treeRow({ lastActivityAt: Date.now() - 2_000, startedAt: Date.now() - 20 * 60_000 })] });
     assert.match(rowFor(long, "ses_a"), /\(2s ago\)/, "the row reports the event, so a working child does not look stale");
     assert.doesNotMatch(rowFor(long, "ses_a"), /20m/, "and not the age of its spawn, which is a different fact");
   });
@@ -409,7 +405,7 @@ describe("task formatting: fleet views", () => {
     // MOTION and not a stall: the detail view's own warning has to say "one long tool
     // call is silent too", so a row claiming a stall would be asserting something the
     // plugin cannot support. It can support "I have not heard from this child".
-    const silent = listOf({ tree: [treeRow({ startedAt: Date.now() - 25 * 60_000 })], activeCount: 1 });
+    const silent = listOf({ activeCount: 1, tree: [treeRow({ startedAt: Date.now() - 25 * 60_000 })] });
     assert.match(rowFor(silent, "ses_a"), /\(no events for 25m\)/, "the row says what is knowable, and stops there");
   });
 
@@ -417,7 +413,7 @@ describe("task formatting: fleet views", () => {
     // The falsifier. A marker on every row teaches the reader that the marker means
     // nothing, which is the same failure as marking nothing at all — the reader stops
     // looking either way.
-    const fresh = listOf({ tree: [treeRow()], activeCount: 1 });
+    const fresh = listOf({ activeCount: 1, tree: [treeRow()] });
     assert.doesNotMatch(rowFor(fresh, "ses_a"), /no events/, "a child heard from seconds ago needs no note");
   });
 
@@ -467,7 +463,7 @@ describe("task formatting: fleet views", () => {
     const base = taskRecord();
     // 20m since spawn, an event 2s ago: the child is demonstrably working, so
     // the stall line is a false alarm and must not render.
-    const working = detailOf({ ...base, startedAt: Date.now() - 20 * 60 * 1000, lastActivityAt: Date.now() - 2000 });
+    const working = detailOf({ ...base, lastActivityAt: Date.now() - 2000, startedAt: Date.now() - 20 * 60 * 1000 });
     assert.match(working, /Last plugin event: 2s ago/);
     assert.ok(!working.includes("stalled"), `observed activity suppresses the stall line. got: ${working}`);
     // No heartbeat yet (plugin booted after the spawn): the spawn stays the
@@ -484,20 +480,20 @@ describe("task formatting: fleet views", () => {
 
   it("formatTaskStatusDetail renders tracked metadata offline", () => {
     const detail = detailOf({
-      description: "Deep dive",
-      lineage: ["planner"],
-      startedAt: 1,
-      requestedModel: { providerID: "prov", modelID: "model" },
       dependsOn: ["ses_dep"],
+      description: "Deep dive",
       lastNotice: noticeRecord("blocked on credentials", "needs_input", Date.now()),
+      lineage: ["planner"],
+      requestedModel: { modelID: "model", providerID: "prov" },
+      startedAt: 1,
     });
     renders(detail, ["ses_1", "planner", "prov/model", "ses_dep", "blocked on credentials"]);
   });
 
   it("formatTaskStatusDetail surfaces delivery records", () => {
     const detail = detailOf(
-      { state: "completed", startedAt: 1, retainedAt: 2 },
-      notifiedAs("error", { delivered: false, attempts: 2 }),
+      { retainedAt: 2, startedAt: 1, state: "completed" },
+      notifiedAs("error", { attempts: 2, delivered: false }),
     );
     renders(detail, ["FAILED"]);
   });

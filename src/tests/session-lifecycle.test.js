@@ -7,7 +7,7 @@
  * reader had to hold the whole plugin's contract in mind to check one function.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { compareStrings } from "./support/assertions.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -176,9 +176,9 @@ describe("getEventLifecycleStatus", () => {
   // table: a new host event type is a new row, not a fourth copy of the same
   // three lines.
   for (const [why, event, expected] of [
-    ["a session.error event with no status field", { type: SESSION_ERROR, data: { sessionID: "s1", error: { name: "APIError", data: { message: "Too Many Requests" } } } }, "error"],
-    ["a failure event carrying only a session id", { type: SESSION_ERROR, data: { sessionID: "s1" } }, "error"],
-    ["a non-error event still reads its own status", { type: SESSION_IDLE, data: { sessionID: "s1", status: "idle" } }, "idle"],
+    ["a session.error event with no status field", { data: { error: { data: { message: "Too Many Requests" }, name: "APIError" }, sessionID: "s1" }, type: SESSION_ERROR }, "error"],
+    ["a failure event carrying only a session id", { data: { sessionID: "s1" }, type: SESSION_ERROR }, "error"],
+    ["a non-error event still reads its own status", { data: { sessionID: "s1", status: "idle" }, type: SESSION_IDLE }, "idle"],
   ]) {
     it(`${JSON.stringify(why)} reads as ${JSON.stringify(expected) || "(nothing)"}`, () => {
       assertIs(getEventLifecycleStatus(event), expected, why);
@@ -193,12 +193,12 @@ describe("isTerminalSessionEvent", () => {
     ["treats sync session.updated idle as terminal", sessionUpdatedEnvelope("idle"), true],
     ["treats sync session.updated error as terminal", sessionUpdatedEnvelope({ type: "error" }), true],
     ["treats a bare deletion as terminal", {
-      type: SESSION_DELETED,
       data: { sessionID: "s1" },
+      type: SESSION_DELETED,
     }, true],
     ["treats session.idle event as terminal", { type: SESSION_IDLE }, true],
     ["treats session.error event as terminal", { type: SESSION_ERROR }, true],
-    ["does not treat an ordinary session event as terminal", { type: "message.updated", data: { sessionID: "ses_x" } }, false],
+    ["does not treat an ordinary session event as terminal", { data: { sessionID: "ses_x" }, type: "message.updated" }, false],
   ];
   for (const [name, event, expected] of shapes) {
     it(name, () => {
@@ -208,7 +208,7 @@ describe("isTerminalSessionEvent", () => {
 
   it("matches the broad catch-all", () => {
     assert.strictEqual(
-      isTerminalSessionEvent({ type: "session.custom", data: { sessionID: "s1", status: "idle" } }),
+      isTerminalSessionEvent({ data: { sessionID: "s1", status: "idle" }, type: "session.custom" }),
       true
     );
   });
@@ -244,9 +244,9 @@ const inLedgerFile = (fn) => withTempFile(tmpLedgerPath(), fn);
 const withSavedLedger = (fn) =>
   inLedgerFile((file) => {
     const saved = {
-      retained: new Map([["ses_1", retainedEntry()]]),
       active: new Map([["ses_2", activeEntry()]]),
       pending: [owedEntry()],
+      retained: new Map([["ses_1", retainedEntry()]]),
     };
     saveTaskLedger(saved, file);
     return fn(file, saved);
@@ -336,9 +336,9 @@ describe("task ledger persistence", () => {
   it("an active entry missing a base field is dropped, not half-restored", async () => {
     const { startedAt: _noClock, ...clockless } = activeEntry({ childSessionId: "ses_nostart" });
     const loaded = await loadRaw({
-      tasks: {},
+      active: { ses_nostart: clockless, ses_ok: activeEntry({ childSessionId: "ses_ok" }) },
       pending: [],
-      active: { ses_ok: activeEntry({ childSessionId: "ses_ok" }), ses_nostart: clockless },
+      tasks: {},
     });
     assert.deepStrictEqual([...loaded.active.keys()], ["ses_ok"], "only the whole entry returns");
   });
@@ -347,7 +347,7 @@ describe("task ledger persistence", () => {
   // cannot be redelivered (no parent, no text, or an unknown kind), and half of
   // one is worse than none — the boot would dial a message nobody can account for.
   it("drops a queue entry missing any field, never half of it", async () => {
-    const loaded = await loadRaw({ tasks: {}, pending: [
+    const loaded = await loadRaw({ pending: [
       owedEntry({ childSessionId: "ses_noparent", parentSessionId: undefined }),
       owedEntry({ childSessionId: "ses_notext", text: "" }),
       owedEntry({ childSessionId: "ses_badkind", kind: "shout" }),
@@ -355,7 +355,7 @@ describe("task ledger persistence", () => {
       // Built with fromEntries so the suite does not itself carry a dupe key.
       owedEntry(Object.fromEntries([["childSessionId", "ses_noid"], ["childSessionId", 42]])),
       owedEntry(),
-    ] });
+    ], tasks: {} });
     assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
   });
 
@@ -371,7 +371,7 @@ describe("task ledger persistence", () => {
       empty(bad);
     });
     await withTempFile(tmpLedgerPath(), async (future) => {
-      writeFileSync(future, JSON.stringify({ version: 999, tasks: {}, pending: [owedEntry()] }));
+      writeFileSync(future, JSON.stringify({ pending: [owedEntry()], tasks: {}, version: 999 }));
       empty(future);
     });
   });
@@ -390,15 +390,15 @@ describe("task ledger persistence", () => {
     ["rejects entries disagreeing with their map key",
       { ses_a: { ...retainedEntry(), childSessionId: "ses_b" } }, []],
     ["drops entries with unknown states or invalid ids", {
-      ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
       ses_bad: { ...retainedEntry(), childSessionId: "ses_bad", state: "flying" },
       ses_noid: { ...retainedEntry(), childSessionId: 42 },
+      ses_ok: { ...retainedEntry(), childSessionId: "ses_ok" },
     }, ["ses_ok"]],
   ];
   for (const [name, tasks, keepers] of survived) {
     it(name, async () => {
       await inLedgerFile(async (file) => {
-        writeFileSync(file, JSON.stringify({ version: 3, tasks, active: {}, pending: [] }));
+        writeFileSync(file, JSON.stringify({ active: {}, pending: [], tasks, version: 3 }));
         assert.deepStrictEqual([...loadTaskLedger(file).retained.keys()], keepers);
       });
     });
@@ -408,7 +408,7 @@ describe("task ledger persistence", () => {
     await inLedgerFile(async (file) => {
       const nanEntry = { ...retainedEntry(), startedAt: NaN };
       const mixedLineage = { ...retainedEntry(), childSessionId: "ses_mix", lineage: ["x", 42] };
-      saveTaskLedger({ retained: new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]), active: new Map(), pending: [] }, file);
+      saveTaskLedger({ active: new Map(), pending: [], retained: new Map([["ses_nan", nanEntry], ["ses_mix", mixedLineage]]) }, file);
       const loaded = loadTaskLedger(file).retained;
       assert.strictEqual(loaded.has("ses_nan"), false, "NaN does not survive the durability boundary");
       assert.strictEqual(loaded.has("ses_mix"), false, "mixed lineage is rejected, not silently shortened");
@@ -419,7 +419,7 @@ describe("task ledger persistence", () => {
   // is discarded wholesale, because a partially-restored past is worse than a
   // clean boot — a retained history that silently lost entries reads as history.
   it("a v2 ledger is discarded whole, retained records and owed notices alike", async () => {
-    const loaded = await loadRaw({ version: 2, tasks: { ses_1: retainedEntry() }, pending: [owedEntry()] });
+    const loaded = await loadRaw({ pending: [owedEntry()], tasks: { ses_1: retainedEntry() }, version: 2 });
     assert.strictEqual(loaded.retained.size, 0, "no half-restored history");
     assert.strictEqual(loaded.active.size, 0, "and no running task from a past this build cannot read");
     assert.deepStrictEqual(loaded.pending, [], "no debt from a world this reader cannot describe");
@@ -439,7 +439,7 @@ describe("task ledger persistence", () => {
 describe("the ledger's documented shape is the shape it writes", () => {
   it("names every key the writer actually produces", async () => {
     const file = `${tmpdir()}/dt-shape-${process.pid}.json`;
-    saveTaskLedger({ retained: new Map(), active: new Map(), pending: [] }, file);
+    saveTaskLedger({ active: new Map(), pending: [], retained: new Map() }, file);
     const written = Object.keys(JSON.parse(readFileSync(file, "utf8")));
 
     const source = readFileSync(
@@ -479,15 +479,15 @@ describe("the ledger's documented shape is the shape it writes", () => {
 // change. Every case asserts it survives, which is the entire claim.
 describe("a ledger change never touches an entry it does not name", () => {
   const entry = (id, agent) => ({
-    childSessionId: id,
-    parentSessionId: "ses_p",
     agentName: agent,
+    childSessionId: id,
     description: `work for ${agent}`,
     lineage: [agent],
-    state: "active",
+    parentSessionId: "ses_p",
     startedAt: 1000,
+    state: "active",
   });
-  const ledgerWith = (over = {}) => ({ retained: new Map(), active: new Map(), pending: [], ...over });
+  const ledgerWith = (over = {}) => ({ active: new Map(), pending: [], retained: new Map(), ...over });
   const keys = (map) => [...map.keys()].toSorted(compareStrings);
 
   it("a running task joins whatever else the file holds", () => {
@@ -496,10 +496,10 @@ describe("a ledger change never touches an entry it does not name", () => {
     const theirs = entry("ses_theirs", "general");
     const onDisk = ledgerWith({
       active: new Map([["ses_theirs", theirs]]),
-      retained: new Map([["ses_settled", { ...theirs, childSessionId: "ses_settled", state: "completed", retainedAt: 1 }]]),
-      pending: [{ childSessionId: "ses_theirs", parentSessionId: "ses_p", kind: "completion", text: "owed" }],
+      pending: [{ childSessionId: "ses_theirs", kind: "completion", parentSessionId: "ses_p", text: "owed" }],
+      retained: new Map([["ses_settled", { ...theirs, childSessionId: "ses_settled", retainedAt: 1, state: "completed" }]]),
     });
-    const merged = mergeLedgerChange(onDisk, [{ kind: "running", id: "ses_mine", record: entry("ses_mine", "general") }]);
+    const merged = mergeLedgerChange(onDisk, [{ id: "ses_mine", kind: "running", record: entry("ses_mine", "general") }]);
 
     assert.deepStrictEqual(keys(merged.active), ["ses_mine", "ses_theirs"], "the other process's running task is untouched");
     assert.deepStrictEqual(keys(merged.retained), ["ses_settled"], "and so is its settled history");
@@ -511,25 +511,25 @@ describe("a ledger change never touches an entry it does not name", () => {
     const onDisk = ledgerWith({
       active: new Map([["ses_theirs", entry("ses_theirs", "general")], ["ses_mine", entry("ses_mine", "general")]]),
     });
-    const settled = { ...entry("ses_mine", "general"), state: "completed", retainedAt: 2000 };
-    const merged = mergeLedgerChange(onDisk, [{ kind: "settled", id: "ses_mine", record: settled }]);
+    const settled = { ...entry("ses_mine", "general"), retainedAt: 2000, state: "completed" };
+    const merged = mergeLedgerChange(onDisk, [{ id: "ses_mine", kind: "settled", record: settled }]);
     assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "the settled task left the running set");
     assert.deepStrictEqual(keys(merged.retained), ["ses_mine"], "and is retained, in the same write");
   });
 
   it("forgetting a task clears it from both halves and nothing else", () => {
     const onDisk = ledgerWith({
-      retained: new Map([["ses_mine", { ...entry("ses_mine", "general"), state: "completed", retainedAt: 1 }]]),
       active: new Map([["ses_theirs", entry("ses_theirs", "general")]]),
+      retained: new Map([["ses_mine", { ...entry("ses_mine", "general"), retainedAt: 1, state: "completed" }]]),
     });
-    const merged = mergeLedgerChange(onDisk, [{ kind: "forgotten", id: "ses_mine" }]);
+    const merged = mergeLedgerChange(onDisk, [{ id: "ses_mine", kind: "forgotten" }]);
     assert.deepStrictEqual(keys(merged.retained), [], "the forgotten task is gone");
     assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "and forgetting one task is not a reason to forget another");
   });
 
   it("an owed notice joins another process's, and delivering one drops only that one", () => {
-    const theirs = { childSessionId: "ses_theirs", parentSessionId: "ses_p", kind: "completion", text: "theirs" };
-    const mine = { childSessionId: "ses_mine", parentSessionId: "ses_p", kind: "completion", text: "mine" };
+    const theirs = { childSessionId: "ses_theirs", kind: "completion", parentSessionId: "ses_p", text: "theirs" };
+    const mine = { childSessionId: "ses_mine", kind: "completion", parentSessionId: "ses_p", text: "mine" };
     const onDisk = ledgerWith({ pending: [theirs] });
 
     const owed = mergeLedgerChange(onDisk, [{ kind: "owed", record: mine }]);
@@ -540,7 +540,7 @@ describe("a ledger change never touches an entry it does not name", () => {
   });
 
   it("the same notice owed twice is one notice, not two", () => {
-    const entry2 = { childSessionId: "ses_mine", parentSessionId: "ses_p", kind: "completion", text: "mine" };
+    const entry2 = { childSessionId: "ses_mine", kind: "completion", parentSessionId: "ses_p", text: "mine" };
     const twice = mergeLedgerChange(ledgerWith(), [
       { kind: "owed", record: entry2 },
       { kind: "owed", record: { ...entry2 } },
@@ -551,8 +551,8 @@ describe("a ledger change never touches an entry it does not name", () => {
   it("a batch of changes lands as one write's worth of work", () => {
     const onDisk = ledgerWith({ active: new Map([["ses_theirs", entry("ses_theirs", "general")]]) });
     const merged = mergeLedgerChange(onDisk, [
-      { kind: "running", id: "ses_mine", record: entry("ses_mine", "general") },
-      { kind: "stopped", id: "ses_mine" },
+      { id: "ses_mine", kind: "running", record: entry("ses_mine", "general") },
+      { id: "ses_mine", kind: "stopped" },
     ]);
     assert.deepStrictEqual(keys(merged.active), ["ses_theirs"], "the batch applied in order, and stopped what running started");
   });

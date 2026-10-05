@@ -9,7 +9,7 @@
  * would report green through.
  */
 
-import { describe, it, beforeEach, assert } from "./support/runner.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import {
@@ -29,7 +29,7 @@ import {
 } from "../../dist/shared/caps.js";
 import { resolveAdmission } from "../../dist/shared/admission.js";
 import { toAgentRecords } from "../../dist/shared/agent-record.js";
-import { activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState, TaskState } from "../../dist/shared/task-state.js";
+import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
 
@@ -51,7 +51,7 @@ function live(dir) {
 
 /** A registration for one agent, so a case can say which budget it is spending. */
 function registration(childSessionId, agent = "general") {
-  return { childSessionId, parentSessionId: "p", agentName: agent, description: "d", lineage: [] };
+  return { agentName: agent, childSessionId, description: "d", lineage: [], parentSessionId: "p" };
 }
 
 /**
@@ -89,7 +89,7 @@ describe("agent overlay: the file", () => {
   });
 
   it("an absent file is not a problem — it is the normal case", () => {
-    assert.deepStrictEqual(readAgentOverlay(tempProject()), { raw: null, problem: null });
+    assert.deepStrictEqual(readAgentOverlay(tempProject()), { problem: null, raw: null });
   });
 
   it("reports WHY a file was unusable rather than failing silently", () => {
@@ -219,7 +219,7 @@ describe("the key space", () => {
     // reason no operator could act on. The boundary is where the field becomes the
     // string the reader requires, because four consumers downstream rely on it.
     const store = createTaskStore();
-    const record = registerActiveTask(store, { childSessionId: "ses_a", parentSessionId: "p", description: "d", lineage: [] });
+    const record = registerActiveTask(store, { childSessionId: "ses_a", description: "d", lineage: [], parentSessionId: "p" });
     assert.strictEqual(typeof record.agentName, "string", "the field the durable validator checks is present");
   });
 });
@@ -317,14 +317,14 @@ describe("agent overlay: a cap takes effect without a restart", () => {
    */
   const oneSlot = () => {
     const store = createTaskStore();
-    return { store, cap: normalizeDynamicTaskConfig({ maxConcurrent: 1 }) };
+    return { cap: normalizeDynamicTaskConfig({ maxConcurrent: 1 }), store };
   };
 
   /** The one-slot store with `id` already occupying it. */
   const slotHeldBy = (id) => {
     const { store, cap } = oneSlot();
     registerActiveTask(store, registration(id), cap);
-    return { store, cap };
+    return { cap, store };
   };
 
   /** A store whose single boot slot is already taken. */
@@ -338,7 +338,7 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     registerActiveTask(store, registration("ses_settled"), cap);
     transitionState(store, "ses_settled", TaskState.Completed);
     registerActiveTask(store, registration("ses_holder"), cap);
-    return { store, cap };
+    return { cap, store };
   };
 
   it("with no overlay installed, policy is the frozen config, by identity", () => {

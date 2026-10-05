@@ -8,10 +8,10 @@
  * asserting against a value nothing reads.
  */
 
-import { describe, it, beforeEach, afterEach, assert } from "./support/runner.js";
+import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { debugLog, getDebugLogPath, LOG_CAP_BYTES, safeDebugPayload } from "../../dist/debug-logger.js";
+import { LOG_CAP_BYTES, debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
 import { SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { withEnv } from "./support/harness.js";
 
@@ -19,8 +19,8 @@ describe("safeDebugPayload", () => {
   it("keeps event metadata but removes blocked fields (prompt, fullPrompt)", () => {
     const payload = safeDebugPayload({
       eventType: SESSION_IDLE,
-      prompt: "x".repeat(5000),
       latestText: "done",
+      prompt: "x".repeat(5000),
     });
     assert.strictEqual(payload.eventType, SESSION_IDLE);
     assert.ok(!("prompt" in payload));
@@ -35,7 +35,7 @@ describe("safeDebugPayload", () => {
   });
 
   it("respects DYNAMIC_TASK_DEBUG_BLOCKLIST env var", () => {
-    const result = safeDebugPayload({ prompt: "x", token: "secret", latestText: "done" });
+    const result = safeDebugPayload({ latestText: "done", prompt: "x", token: "secret" });
     assert.ok(!("prompt" in result), "prompt must be blocked by default blocklist");
   });
 
@@ -78,13 +78,13 @@ describe("debugLog — closed to 100% coverage", () => {
 
   beforeEach(() => {
     // Clean up any logs from previous runs
-    try { rmSync(LOG_DIR, { recursive: true, force: true }); } catch { /* ok */ }
+    try { rmSync(LOG_DIR, { force: true, recursive: true }); } catch { /* ok */ }
     process.env.DYNAMIC_TASK_DEBUG = "1";
   });
 
   afterEach(() => {
     delete process.env.DYNAMIC_TASK_DEBUG;
-    try { rmSync(LOG_DIR, { recursive: true, force: true }); } catch { /* ok */ }
+    try { rmSync(LOG_DIR, { force: true, recursive: true }); } catch { /* ok */ }
   });
 
   it("writes a log file when DYNAMIC_TASK_DEBUG=1", () => {

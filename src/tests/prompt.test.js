@@ -7,7 +7,7 @@
  * would be a second, divergent definition of what a message is.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { settled } from "./support/harness.js";
 import { opaqueHost } from "./support/opaque-host.js";
 import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride, touchedFiles } from "../../dist/shared/prompt.js";
@@ -18,8 +18,8 @@ import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.j
 // assistant turn that said X") instead of the envelope that carries it — the
 // envelope is an implementation detail of the host, and restating it per case
 // is how two cases end up asserting different things under the same name.
-const textPart = (text) => ({ type: "text", text });
-const turn = (role, text) => ({ role, parts: [textPart(text)] });
+const textPart = (text) => ({ text, type: "text" });
+const turn = (role, text) => ({ parts: [textPart(text)], role });
 
 // The host's assistant turn as it actually arrives when the turn was ABORTED:
 // an error envelope, and no `parts` key at all. Transcribed from the host's own
@@ -30,8 +30,8 @@ const turn = (role, text) => ({ role, parts: [textPart(text)] });
 // shipped a 12% false-success rate: the one turn that produced no output was the
 // one turn the reader could not see.
 const abortedTurn = (name = "MessageAbortedError", message = "Aborted") => ({
+  error: { data: { message }, name },
   role: ASSISTANT_ROLE,
-  error: { name, data: { message } },
 });
 
 describe("describeModelShapeError", () => {
@@ -77,19 +77,19 @@ describe("extractTextFromParts", () => {
 // from that corpus rather than invented, because a `filePath` at the top level
 // would pass a reader built against a shape the host never sends.
 const toolCall = (tool, filePath, status = "completed") => ({
-  type: "tool",
+  state: { input: filePath === undefined ? {} : { filePath }, status },
   tool,
-  state: { status, input: filePath === undefined ? {} : { filePath } },
+  type: "tool",
 });
 
 describe("touchedFiles: the files a child actually changed", () => {
-  const touchedIn = (parts) => touchedFiles([{ role: ASSISTANT_ROLE, parts }]);
+  const touchedIn = (parts) => touchedFiles([{ parts, role: ASSISTANT_ROLE }]);
 
   it("names what it wrote and edited, with the verb", () => {
     const files = touchedIn([toolCall("edit", "/p/a.ts"), toolCall("write", "/p/b.ts")]);
     assert.deepEqual(files, [
-      { verb: "edit", path: "/p/a.ts", incomplete: false },
-      { verb: "write", path: "/p/b.ts", incomplete: false },
+      { incomplete: false, path: "/p/a.ts", verb: "edit" },
+      { incomplete: false, path: "/p/b.ts", verb: "write" },
     ]);
   });
 
@@ -105,8 +105,8 @@ describe("touchedFiles: the files a child actually changed", () => {
   it("marks a change that never completed, whether rejected or still running", () => {
     const files = touchedIn([toolCall("write", "/p/b.ts", "error"), toolCall("edit", "/p/c.ts", "running")]);
     assert.deepEqual(files, [
-      { verb: "write", path: "/p/b.ts", incomplete: true },
-      { verb: "edit", path: "/p/c.ts", incomplete: true },
+      { incomplete: true, path: "/p/b.ts", verb: "write" },
+      { incomplete: true, path: "/p/c.ts", verb: "edit" },
     ]);
   });
 
@@ -122,13 +122,13 @@ describe("touchedFiles: the files a child actually changed", () => {
 
 describe("messageErrorDetail", () => {
   const assistantTurn = (error, parts = []) => ({
-    info: error === undefined ? { role: ASSISTANT_ROLE } : { role: ASSISTANT_ROLE, error },
+    info: error === undefined ? { role: ASSISTANT_ROLE } : { error, role: ASSISTANT_ROLE },
     parts,
   });
 
   it("extracts ApiError.data.message from the info envelope", () => {
     assert.strictEqual(
-      messageErrorDetail(assistantTurn({ name: "APIError", data: { message: "Too Many Requests", statusCode: 429 } })),
+      messageErrorDetail(assistantTurn({ data: { message: "Too Many Requests", statusCode: 429 }, name: "APIError" })),
       "Too Many Requests",
     );
   });
@@ -149,7 +149,7 @@ describe("messageErrorDetail", () => {
 
   it("reads the legacy flat error role from its text parts", () => {
     assert.strictEqual(
-      messageErrorDetail({ role: "error", parts: [{ type: "text", text: "provider exploded" }] }),
+      messageErrorDetail({ parts: [{ text: "provider exploded", type: "text" }], role: "error" }),
       "provider exploded",
     );
   });
@@ -177,7 +177,7 @@ describe("prompt dance: invokePrompt", () => {
     let captured;
     const client = clientAnswering((args) => {
       captured = args;
-      return { parts: [{ type: "text", text: "hi" }] };
+      return { parts: [{ text: "hi", type: "text" }] };
     });
     // `invokePrompt` is fire-and-forget by contract, so the write is observed at
     // the TRANSPORT rather than in a return value the caller never had.
@@ -203,12 +203,12 @@ describe("prompt dance: invokePrompt", () => {
 
 describe("prompt dance: parseModelOverride", () => {
   it("splits provider and model on the first slash", () => {
-    assert.deepStrictEqual(parseModelOverride("prov/model-x"), { providerID: "prov", modelID: "model-x" });
-    assert.deepStrictEqual(parseModelOverride("a/b/c"), { providerID: "a", modelID: "b/c" });
+    assert.deepStrictEqual(parseModelOverride("prov/model-x"), { modelID: "model-x", providerID: "prov" });
+    assert.deepStrictEqual(parseModelOverride("a/b/c"), { modelID: "b/c", providerID: "a" });
   });
 
   it("keeps providerless models with an empty provider", () => {
-    assert.deepStrictEqual(parseModelOverride("lonely"), { providerID: "", modelID: "lonely" });
+    assert.deepStrictEqual(parseModelOverride("lonely"), { modelID: "lonely", providerID: "" });
   });
 
   it("rejects empty and non-string overrides", () => {
@@ -263,10 +263,10 @@ describe("prompt dance: extractor shape coverage", () => {
 
 describe("message/part family guards (Task 08)", () => {
   it("isTextPart accepts only parts that declare themselves text with string content", () => {
-    assert.ok(isTextPart({ type: "text", text: "hi" }));
-    assert.ok(isTextPart({ type: "text", text: "" }));
+    assert.ok(isTextPart({ text: "hi", type: "text" }));
+    assert.ok(isTextPart({ text: "", type: "text" }));
     assert.ok(!isTextPart({ type: "text" }));
-    assert.ok(!isTextPart({ type: "text", text: 42 }));
+    assert.ok(!isTextPart({ text: 42, type: "text" }));
     assert.ok(!isTextPart({ type: "image", url: "x" }));
     assert.ok(!isTextPart({ text: "legacy, untyped" }));
     assert.ok(!isTextPart("text"));
@@ -275,7 +275,7 @@ describe("message/part family guards (Task 08)", () => {
 
   it("isMessage is a record that declares a role; parts are content, not identity", () => {
     assert.ok(isMessage({ parts: [] }));
-    assert.ok(isMessage({ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "x" }] }));
+    assert.ok(isMessage({ parts: [{ text: "x", type: "text" }], role: ASSISTANT_ROLE }));
     assert.ok(!isMessage({ parts: "nope" }));
     assert.ok(!isMessage({}));
     assert.ok(!isMessage(null));
@@ -302,16 +302,16 @@ describe("message/part family guards (Task 08)", () => {
 
   it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
     assert.strictEqual(messageRoleOf({ info: { role: ASSISTANT_ROLE }, parts: [] }), "assistant");
-    assert.strictEqual(messageRoleOf({ role: "user", parts: [] }), "user");
+    assert.strictEqual(messageRoleOf({ parts: [], role: "user" }), "user");
     assert.strictEqual(messageRoleOf({ parts: [] }), "");
-    assert.strictEqual(messageRoleOf({ info: "junk", role: "system", parts: [] }), "system");
+    assert.strictEqual(messageRoleOf({ info: "junk", parts: [], role: "system" }), "system");
     assert.strictEqual(messageRoleOf({ info: { role: 42 }, parts: [] }), "");
   });
 
   it("the extraction group is built on the guards: same answers through either door", () => {
-    const parts = [{ type: "text", text: "a" }, { type: "tool", x: 1 }, { type: "text", text: "b" }];
+    const parts = [{ text: "a", type: "text" }, { type: "tool", x: 1 }, { text: "b", type: "text" }];
     assert.strictEqual(extractTextFromParts(parts), "a\nb");
-    const messages = [{ info: { role: "user" }, parts: [] }, { role: ASSISTANT_ROLE, parts: [{ type: "text", text: "final" }] }];
+    const messages = [{ info: { role: "user" }, parts: [] }, { parts: [{ text: "final", type: "text" }], role: ASSISTANT_ROLE }];
     assert.strictEqual(getLatestAssistantText(messages), "final");
     // Non-message entries are skipped by the guard, never thrown on.
     assert.strictEqual(getLatestAssistantText([null, "junk", ...messages]), "final");
@@ -346,7 +346,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // every site, any of which could disagree about what "empty" means.
   const assertHydrated = async (read, expected) => assert.deepStrictEqual(
     await hydrateLatestOutcome(clientReading(read), "ses_1"),
-    { text: "", errorDetail: "", unreadable: false, ...expected },
+    { errorDetail: "", text: "", unreadable: false, ...expected },
   );
 
   it("reads the latest assistant text from the session", async () => {
@@ -355,7 +355,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
 
   it("surfaces the message-level error detail from the same read", async () => {
     const failedTurn = [{
-      info: { role: ASSISTANT_ROLE, error: { name: "APIError", data: { message: "Too Many Requests" } } },
+      info: { error: { data: { message: "Too Many Requests" }, name: "APIError" }, role: ASSISTANT_ROLE },
       parts: [],
     }];
     await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });
@@ -368,11 +368,11 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // lost error is — so the outcome keeps both and the kind becomes `error`.
   it("reports an aborted turn as the failure it is, not the turn before it", async () => {
     const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
-    await assertHydrated(() => stream, { text: "the child's real last words", errorDetail: "Aborted" });
+    await assertHydrated(() => stream, { errorDetail: "Aborted", text: "the child's real last words" });
   });
 
   it("an aborted turn with nothing said before it is still a failure, not (completed)", async () => {
-    await assertHydrated(() => [abortedTurn()], { text: "", errorDetail: "Aborted" });
+    await assertHydrated(() => [abortedTurn()], { errorDetail: "Aborted", text: "" });
   });
 
   // A read that could not be made is not a read that found nothing, and the

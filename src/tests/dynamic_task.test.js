@@ -32,7 +32,7 @@ describe("dynamic_task validation", () => {
 
   it("rejects unknown agents", async () => {
     const h = await setupHarness();
-    const out = await h.trySpawn({ description: "task t", subagent_type: "nope", prompt: "hi" });
+    const out = await h.trySpawn({ description: "task t", prompt: "hi", subagent_type: "nope" });
     answerSays(out, 'Agent "nope" not found');
     });
 
@@ -40,13 +40,13 @@ describe("dynamic_task validation", () => {
     const h = await setupHarness();
     answerSays(await h.trySpawn({ description: "task t", subagent_type: "explore" }), "Invalid prompt");
     const overlong = "x".repeat(100001);
-    answerSays(await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: overlong }), "Prompt too long");
+    answerSays(await h.trySpawn({ description: "task t", prompt: overlong, subagent_type: "explore" }), "Prompt too long");
     });
 
   it("rejects bare model ids at admission, before creating a session", async () => {
     const h = await setupHarness();
     const before = sessionCount(h.client);
-    const out = await h.trySpawn({ description: "task t", subagent_type: "explore", prompt: "hi", model: "GLM-5.3-Flash" });
+    const out = await h.trySpawn({ description: "task t", model: "GLM-5.3-Flash", prompt: "hi", subagent_type: "explore" });
     answerSays(out, "Invalid model");
     answerSays(out, "providerID/modelID", "names the shape");
     answerSays(out, "GLM-5.3-Flash", "names the suspect");
@@ -65,13 +65,13 @@ describe("dynamic_task validation", () => {
 
   it("rejects overlong descriptions at admission", async () => {
     const h = await setupHarness();
-    const out = await h.trySpawn({ description: "x".repeat(3000), subagent_type: "explore", prompt: "hi" });
+    const out = await h.trySpawn({ description: "x".repeat(3000), prompt: "hi", subagent_type: "explore" });
     answerSays(out, "Description too long", "labels stay short");
     });
 
   it("rejects blocked agents when the operator configures the blocklist", async () => {
     const h = await setupHarness({ options: { blockedAgents: ["general"] } });
-    const out = await h.trySpawn({ description: "task t", subagent_type: "general", prompt: "hi" });
+    const out = await h.trySpawn({ description: "task t", prompt: "hi", subagent_type: "general" });
     answerSays(out, "blocked");
     });
 
@@ -108,7 +108,7 @@ describe("dynamic_task validation", () => {
   // act on, and one that only names the title is a guess when there is a parent.
   it("a create response with no session id reports the orphan it cannot clean up", async () => {
     const h = await setupHarness({ hooks: { createReturnsIdless: true } });
-    const out = await h.trySpawn({ description: "unnamed child", subagent_type: "explore", prompt: "hi" });
+    const out = await h.trySpawn({ description: "unnamed child", prompt: "hi", subagent_type: "explore" });
 
     assert.strictEqual(sessionCount(h.client), 1, "the host DID create a session, so the orphan is real");
     answerSays(out, "unnamed child", "the title is how the parent finds the session nobody reported");
@@ -121,7 +121,7 @@ describe("dynamic_task validation", () => {
   // hold the spawn call. No clock can rescue this — there is no clock.
   it("returns immediately even while the child prompt never settles", async () => {
     const hooks = { promptHangIds: new Set() };
-    const h = await setupHarness({ hooks: hooks });
+    const h = await setupHarness({ hooks });
     hooks.promptHangIds.add("ses_mock_1");
     const { out, id } = await h.spawn();
     answerSays(out, "in background");
@@ -141,34 +141,34 @@ async function withRefusedDep(ended = (h, dep) => h.settle(dep.id)) {
   const h = await setupHarness();
   const dep = await h.spawn({ description: "dep task" });
   const refused = await h.trySpawn({
-    description: "blocked task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id],
+    depends_on: [dep.id], description: "blocked task", prompt: "hi", subagent_type: "explore",
   });
   answerSays(refused, "Dependencies pending");
   answerSays(refused, dep.id, "names the dep");
   await ended(h, dep);
-  return { h, dep, refused };
+  return { dep, h, refused };
 }
 
 describe("admission dependencies", () => {
   it("refuses until deps complete, admits after", async () => {
     const { h, dep } = await withRefusedDep();
-    const admitted = await h.spawn({ description: "ready task", depends_on: [dep.id] });
+    const admitted = await h.spawn({ depends_on: [dep.id], description: "ready task" });
     assert.ok(admitted.out.includes("in background"), `got: ${admitted.out}`);
     });
 
   it("names the blocking dep state, and depends_on_settled admits settled failures", async () => {
     const { h, dep } = await withRefusedDep((harness, d) => harness.fireEvent(events.error(d.id)));
-    const again = await h.trySpawn({ description: "strict task", subagent_type: "explore", prompt: "hi", depends_on: [dep.id] });
+    const again = await h.trySpawn({ depends_on: [dep.id], description: "strict task", prompt: "hi", subagent_type: "explore" });
     answerSays(again, `${dep.id} (error)`, "names the terminal state");
 
-    const admitted = await h.spawn({ description: "lenient task", depends_on_settled: [dep.id] });
+    const admitted = await h.spawn({ depends_on_settled: [dep.id], description: "lenient task" });
     assert.ok(admitted.out.includes("in background"), `settled failure satisfies. got: ${admitted.out}`);
     const status = await h.tool.task_status.execute({ session_id: admitted.id });
     answerSays(status, dep.id, "the settled wait is recorded");
     });
 
   it("unknown deps are treated as satisfied", async () => {
-    const { out } = await withChild({ spawn: { description: "lone task", depends_on: ["ses_gone"] } });
+    const { out } = await withChild({ spawn: { depends_on: ["ses_gone"], description: "lone task" } });
     answerSays(out, "in background");
   });
 });
@@ -176,7 +176,7 @@ describe("admission dependencies", () => {
 /** The scenario, ready to observe: a fresh parent, one running edge, one refused dispatch. */
 async function refusedDispatchScenario(kind) {
   const h = await setupHarness();
-  return { h, edge: await refusedOnOneEdge(h, "consume the edge", kind) };
+  return { edge: await refusedOnOneEdge(h, "consume the edge", kind), h };
 }
 
 // A refused depends_on was advice in a string and nothing else. The plugin
@@ -257,7 +257,7 @@ describe("admission lineage", () => {
     const strict = await setupHarness();
     const one = await strict.spawn({ description: "parent task" });
     const denied = await strict.tool.dynamic_task.execute(
-    { description: "nested task", subagent_type: "explore", prompt: "hi" },
+    { description: "nested task", prompt: "hi", subagent_type: "explore" },
     { sessionID: one.id },
     );
     answerSays(denied, "Recursive delegation blocked");
@@ -283,7 +283,7 @@ describe("prompt routing contract", () => {
     assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
     const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1, "child prompt recorded");
-    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", providerID: "prov", modelID: "model-x" });
+    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", modelID: "model-x", providerID: "prov" });
     });
 
   it("prompts without override route the agent and no model", async () => {

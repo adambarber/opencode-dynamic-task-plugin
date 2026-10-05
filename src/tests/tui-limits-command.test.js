@@ -38,11 +38,11 @@ import { displayName } from "../../dist/tui/agent-editor.js";
 import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, capPickerProps, fitsItsDialog } from "../../dist/tui/index.js";
 
 import {
-  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, backToCaps, capRow, capText, choose, clearRow, chooseValue, dialogRowText, rowsText,
+  BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, backToCaps, booted, capRow, capText, choose, chooseValue, clearRow, dialogRowText,
   everyRowClaims, havingWritten, openList, readOverlay,
-  row, rowText, rowsOn, titlesOf, top, valueRow, withBooted,
-  withCapsOpen, withConfigScreen, withList, withOpen, withPickerClaimed, withPickerOpen,
-  withProject, booted,
+  row, rowText, rowsOn, rowsText, titlesOf, top, valueRow,
+  withBooted, withCapsOpen, withConfigScreen, withList, withOpen, withPickerClaimed,
+  withPickerOpen, withProject,
 } from "./support/limits-screen.js";
 
 /** The whole screen, in the order the host will draw it: the total, then the agents. */
@@ -328,13 +328,13 @@ describe("the host's own layout, as measured rather than modelled", () => {
     // A width is a fact about the content; a content change that makes a width unnecessary
     // should be allowed to delete the width, or it will outlive its reason.
     for (const name of REGISTERED) {
-      assert.ok(fitsItsDialog({ title: `${name}:`, description: "4 concurrency * 3/4 depth" }), `${name} and both of its figures fit one row`);
+      assert.ok(fitsItsDialog({ description: "4 concurrency * 3/4 depth", title: `${name}:` }), `${name} and both of its figures fit one row`);
     }
   });
 
   it("a description shares the title's line, so a long name eats it", () => {
-    assert.ok(!fitsItsDialog({ title: "M".repeat(40), description: "x".repeat(20) }), "40 + 1 + 20 is 61, over a row of 52");
-    assert.ok(fitsItsDialog({ title: "M".repeat(30), description: "x".repeat(20) }), "30 + 1 + 20 is 51, and fits");
+    assert.ok(!fitsItsDialog({ description: "x".repeat(20), title: "M".repeat(40) }), "40 + 1 + 20 is 61, over a row of 52");
+    assert.ok(fitsItsDialog({ description: "x".repeat(20), title: "M".repeat(30) }), "30 + 1 + 20 is 51, and fits");
   });
 });
 
@@ -429,7 +429,7 @@ describe("a row fits the dialog it is drawn in", () => {
 /** What the two cap rows read as the terminal will show them, for an agent capped at 2. */
 const AGENT_CAP_ROWS = AGENT_CAP_NAMES.map((cap) => {
   const entry = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-  return CAP_LABEL[cap] + " " + namedCell(capCellOf(entry, cap));
+  return `${CAP_LABEL[cap]  } ${  namedCell(capCellOf(entry, cap))}`;
 });
 
 /**
@@ -456,7 +456,7 @@ describe("choosing a cap", () => {
       const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
       assert.deepEqual(
         rowsText(top(host.seen)).slice(0, -1),
-        AGENT_CAP_NAMES.map((cap) => CAP_LABEL[cap] + " " + namedCell(capCellOf(row2, cap))),
+        AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]  } ${  namedCell(capCellOf(row2, cap))}`),
         "and the two caps are still the whole list, each carrying its own figure beside its label",
       );
       await choose(host, backRow(host, ALL_AGENTS_LABEL));
@@ -681,7 +681,7 @@ describe("the flow, end to end on disk", () => {
     // the ledger file in the render path. The number is gone, and with it the read.
     withOpen((host) => {
       assert.match(rowText(top(host.seen), "explore"), /2 concurrency/);
-    }, { overlay: { agents: { explore: { maxConcurrent: 2 } } }, active: [{ childSessionId: "ses_x", agentName: "explore" }] }));
+    }, { active: [{ agentName: "explore", childSessionId: "ses_x" }], overlay: { agents: { explore: { maxConcurrent: 2 } } } }));
 });
 
 /**

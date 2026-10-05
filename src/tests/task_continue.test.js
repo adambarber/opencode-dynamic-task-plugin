@@ -10,7 +10,7 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, dialCount, promptsSaying, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
+import { bounded, dialCount, promptTextsTo, promptsSaying, promptsToCarrying, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
 import { deferred, events, promptText } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
@@ -44,7 +44,7 @@ async function steerLosingToInterrupt(gateOpts) {
   const { release, steer } = await steerAtTheGate(h, c, gateOpts);
   await c.interrupt();
   release();
-  return { h, c, id, out: await steer };
+  return { c, h, id, out: await steer };
 }
 
 /**
@@ -78,7 +78,7 @@ async function reviveAfterFailedDelivery() {
   await h.settle(id); // attempt 1 fails; the retry is armed at the fixed backoff
   const cont = await c.steer("turn two");
   answerSays(cont, "Follow-up sent");
-  return { h, c, id };
+  return { c, h, id };
 }
 
 /**
@@ -117,7 +117,7 @@ describe("task_continue branches", () => {
     const h = await setupHarness();
     await assertNeedsSessionId(h.tool.task_continue);
     const overlong = "x".repeat(100001);
-    const long = await h.tool.task_continue.execute({ session_id: "ses_mock_1", prompt: overlong });
+    const long = await h.tool.task_continue.execute({ prompt: overlong, session_id: "ses_mock_1" });
     answerSays(long, "Prompt too long");
     });
 
@@ -148,7 +148,7 @@ describe("task_continue branches", () => {
     // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
     // well be running, so the task stays active and waits for its own event.
     ["a retryable prompt failure leaves the task active — its event settles it",
-      { hooks: { childPromptFailOnce: { message: "connect ETIMEDOUT", code: "ETIMEDOUT" } } },
+      { hooks: { childPromptFailOnce: { code: "ETIMEDOUT", message: "connect ETIMEDOUT" } } },
       async () => { await sleep(50); }], // the fire-and-forget catch has run
   ];
   for (const [name, harness, disturb] of disturbances) {
@@ -235,7 +235,7 @@ describe("task_continue branches", () => {
       const { release } = h.client.gateChildPrompt();
       const { c } = await h.spawn({ prompt: "turn one" });
       const { release: releaseAbort, steer } = await steerAtTheGate(h, c);
-      await settle({ h, c, release });
+      await settle({ c, h, release });
       await sleep(30);
       releaseAbort(); // the abort lands; the steer re-validates and finds it settled
       const out = await steer;
@@ -331,18 +331,18 @@ describe("task_continue branches", () => {
     const h = await setupHarness();
     const { id, c } = await h.spawn({ model: "nvidia/z-ai/glm-5.3" });
     await h.settle(id);
-    const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "other/thing-1" });
+    const out = await h.tool.task_continue.execute({ model: "other/thing-1", prompt: "again", session_id: id });
     answerSays(out, "Follow-up sent");
     // v2 routes via `switchModel`, not a model key on the prompt body — the prompt
     // itself carries only text, and the route is the host's own record of it.
-    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", providerID: "other", modelID: "thing-1" });
+    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", modelID: "thing-1", providerID: "other" });
     await statusSays(c, "Model: other/thing-1", "persists on the record");
     });
 
   it("a bare model on continue fails without touching the task", async () => {
     const { h, c, id } = await withSettledChild();
     const before = sentPrompts(h.client).length;
-    const out = await h.tool.task_continue.execute({ session_id: id, prompt: "again", model: "bare-id" });
+    const out = await h.tool.task_continue.execute({ model: "bare-id", prompt: "again", session_id: id });
     answerSays(out, "Invalid model");
     assert.strictEqual(sentPrompts(h.client).length, before, "no prompt fires");
     await statusSays(c, "completed", "still settled");
@@ -351,8 +351,8 @@ describe("task_continue branches", () => {
   it("unknown sessions are refused as untracked", async () => {
     const h = await setupHarness();
     const out = await h.tool.task_continue.execute({
-      session_id: "ses_missing",
       prompt: "hello?",
+      session_id: "ses_missing",
       });
     answerSays(out, "not a tracked task");
     });
@@ -388,7 +388,7 @@ describe("outcome correctness: failed turns never report success", () => {
   const erroredMessages = () => [
   { info: { role: "user" }, parts: [] },
   {
-    info: { role: ASSISTANT_ROLE, error: { name: "APIError", data: { message: "Too Many Requests", statusCode: 429, isRetryable: true } } },
+    info: { error: { data: { isRetryable: true, message: "Too Many Requests", statusCode: 429 }, name: "APIError" }, role: ASSISTANT_ROLE },
     parts: [],
     },
   ];
@@ -417,7 +417,7 @@ describe("outcome correctness: failed turns never report success", () => {
     const h = await eventHarness({ messages: () => [] });
     const { id } = await h.spawn({ description: "err evt" });
     const note = (await h.noticeAfter(
-      events.error(id, { name: "APIError", data: { message: "Too Many Requests" } }),
+      events.error(id, { data: { message: "Too Many Requests" }, name: "APIError" }),
     )).message;
     textDeclaresKind(note, "error", "the error event settles error");
     });
@@ -454,7 +454,7 @@ describe("outcome correctness: failed turns never report success", () => {
   it("concurrent interrupts converge on interrupted, never stuck-active", async () => {
     const h = await setupHarness();
     const { release } = h.client.gateAbort({ fails: true });
-    const c = (await h.spawn()).c;
+    const {c} = (await h.spawn());
     const p1 = c.interrupt();
     await sleep(10);
     const r2 = await c.interrupt();
@@ -472,8 +472,8 @@ describe("outcome correctness: failed turns never report success", () => {
           tasks[`ses_boot${i}`] = retainedEntry({
             childSessionId: `ses_boot${i}`,
             parentSessionId: "p",
-            startedAt: now - 1000,
             retainedAt: now - i,
+            startedAt: now - 1000,
           });
         }
         return { tasks };

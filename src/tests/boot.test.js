@@ -11,7 +11,7 @@
 import { describe, it } from "./support/runner.js";
 import { compareStrings } from "./support/assertions.js";
 import assert from "node:assert";
-import { existsSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
@@ -42,13 +42,13 @@ import { ENV } from "../../dist/shared/config.js";
  * and a record dated 1970 is expired before the boot's retention sweep sees it.
  */
 const partlyBadLedger = () => JSON.stringify({
-  version: 3,
-  tasks: {
-    ses_real: retainedEntry({ childSessionId: "ses_real", state: "completed", retainedAt: Date.now() }),
-    ses_broken: { state: "completed" },
-  },
   active: {},
   pending: [],
+  tasks: {
+    ses_broken: { state: "completed" },
+    ses_real: retainedEntry({ childSessionId: "ses_real", retainedAt: Date.now(), state: "completed" }),
+  },
+  version: 3,
 });
 
 /**
@@ -92,7 +92,7 @@ async function bootWithUnwritableLedger({ debug = false } = {}) {
     const h = await setupHarness({ directory });
     const { id } = await h.spawn({ description: "unpersistable" });
     await h.settle(id);
-    return { h, id, directory };
+    return { directory, h, id };
   };
   return debug ? withEnv("DYNAMIC_TASK_DEBUG", "1", run) : run();
 }
@@ -116,7 +116,7 @@ describe("a ledger write that cannot land is recorded, not swallowed", () => {
     // unreadable file alone must not fire — and it does not, because the world
     // is reached by permission rather than by content.
     const directory = tmpProjectDir();
-    writeLedger(directory, { tasks: {}, active: {}, pending: [] });
+    writeLedger(directory, { active: {}, pending: [], tasks: {} });
     const h = await setupHarness({ directory });
     const { id } = await h.spawn({ description: "unpersistable, but readable" });
     chmodSync(directory, 0o555);
@@ -163,7 +163,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   });
 
   it("a file this build cannot speak is reported by version, not swallowed", async () => {
-    const h = await bootOnCorrupt(JSON.stringify({ version: 2, tasks: {}, active: {}, pending: [] }));
+    const h = await bootOnCorrupt(JSON.stringify({ active: {}, pending: [], tasks: {}, version: 2 }));
     const said = JSON.stringify(h.events("ledger-read-discarded"));
     answerMatches(said, /discarded/i, "an old version is still a discarded file");
     answerMatches(said, /version/i, "and the version is what an operator needs to act on");
@@ -175,7 +175,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   });
 
   it("a good ledger reports nothing — silence must still mean healthy", async () => {
-    const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
+    const h = await bootOn(() => ({ active: {}, pending: [], tasks: {} }));
     const aboutTheLedger = h.events("ledger-read-discarded");
     assert.deepStrictEqual(aboutTheLedger, [], `a healthy boot reports no loss. got: ${JSON.stringify(aboutTheLedger)}`);
   });
@@ -193,7 +193,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   // see them deletes them. So the refusal is not politeness about a broken file; it
   // is the same rule the merge already follows for a file it CAN read.
   it("a file this build cannot parse is left on disk, not overwritten by the boot that reported it", async () => {
-    const lost = { version: 2, tasks: { ses_old: retainedEntry({ childSessionId: "ses_old", state: "completed", retainedAt: Date.now() }) } };
+    const lost = { tasks: { ses_old: retainedEntry({ childSessionId: "ses_old", retainedAt: Date.now(), state: "completed" }) }, version: 2 };
     const h = await bootOn(() => lost);
     const ledgerPath = resolveTaskLedgerPath(h.directory);
 
@@ -217,9 +217,9 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
     await settledOnDisk(h, id);
 
     const onDisk = fileSays(resolveTaskLedgerPath(h.directory));
-    assert.ok(onDisk.tasks["ses_real"], "the record that did parse is still on disk");
+    assert.ok(onDisk.tasks.ses_real, "the record that did parse is still on disk");
     assert.ok(onDisk.tasks[id], "and the record this boot settled is written beside it");
-    assert.ok(onDisk.tasks["ses_broken"] === undefined, "the record that did not parse is not invented");
+    assert.ok(onDisk.tasks.ses_broken === undefined, "the record that did not parse is not invented");
   });
 });
 
@@ -232,7 +232,7 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
  * silently. The shape belongs to one door; what belongs in the two halves is the
  * case's own decision.
  */
-const bootWithLedger = (halves, hooks) => bootOn(() => ({ tasks: {}, active: {}, pending: [], ...halves }), hooks);
+const bootWithLedger = (halves, hooks) => bootOn(() => ({ active: {}, pending: [], tasks: {}, ...halves }), hooks);
 
 /**
  * The host log's account of records a READABLE ledger could not keep.
@@ -286,8 +286,8 @@ describe("a ledger claiming one task is both running and finished", () => {
     // corroborates, and the case is about the file, not the race.
     const h = await bootWithLedger(
       {
-        tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
         active: { ses_both: runningEntry("ses_both") },
+        tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
       },
       { hooks: { hostTurnSeed: { ses_both: undefined } } },
     );
@@ -306,7 +306,7 @@ describe("ledger follows the plugin directory, never the process cwd", () => {
     const cwdLedger = resolveTaskLedgerPath(process.cwd());
     const cwdBefore = existsSync(cwdLedger) ? readFileSync(cwdLedger, "utf8") : null;
 
-    const h = await setupHarness({ hooks: {}, directory: dir });
+    const h = await setupHarness({ directory: dir, hooks: {} });
     const { id } = await h.spawn({ description: "scoped" });
     await settledOnDisk(h, id);
 
@@ -343,11 +343,10 @@ describe("boot redelivers what the last boot owed", () => {
     bootOn(() => {
       const debts = Array.from({ length: count }, (_, i) => owedDebt(`ses_parent_${i}`, `ses_child_${i}`));
       return {
-        tasks: Object.fromEntries(debts.map((d) => [d.childSessionId, retainedEntry({
-          childSessionId: d.childSessionId, parentSessionId: d.parentSessionId,
-          agentName: "general", description: "owed",
-        })])),
         pending: debts,
+        tasks: Object.fromEntries(debts.map((d) => [d.childSessionId, retainedEntry({
+          agentName: "general", childSessionId: d.childSessionId, description: "owed", parentSessionId: d.parentSessionId,
+        })])),
       };
     }),
   );
@@ -355,13 +354,12 @@ describe("boot redelivers what the last boot owed", () => {
   // Every case here is the same world with one debt in it, so the world is built
   // once: a project directory carrying an owed notice, and a plugin booted on it.
   const bootWithOwed = (owedEntries, hooks = {}) => bootOn(() => ({
+    pending: owedEntries,
     tasks: {
       ses_owed: retainedEntry({
-        childSessionId: "ses_owed", parentSessionId: "ses_parent",
-        agentName: "general", description: "owed",
+        agentName: "general", childSessionId: "ses_owed", description: "owed", parentSessionId: "ses_parent",
       }),
     },
-    pending: owedEntries,
   }), { hooks });
 
   const onDisk = (directory) => {
@@ -399,7 +397,7 @@ describe("boot redelivers what the last boot owed", () => {
   });
 
   it("a healthy boot still says nothing about debts — silence must keep meaning healthy", async () => {
-    const h = await bootOn(() => ({ tasks: {}, active: {}, pending: [] }));
+    const h = await bootOn(() => ({ active: {}, pending: [], tasks: {} }));
     const aboutDebts = h.pluginLog().match(/owed|outstanding|unpaid/gi) ?? [];
     assert.deepStrictEqual(aboutDebts, [], `a boot with nothing owed reports no debt. got: ${JSON.stringify(aboutDebts)}`);
   });
@@ -467,8 +465,8 @@ describe("boot redelivers what the last boot owed", () => {
 
   it("a v2 ledger boots clean rather than half-restored", async () => {
     const directory = tmpProjectDir();
-    writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ version: 2, tasks: {} }));
-    const h = await setupHarness({ hooks: {}, directory });
+    writeFileSync(resolveTaskLedgerPath(directory), JSON.stringify({ tasks: {}, version: 2 }));
+    const h = await setupHarness({ directory, hooks: {} });
     assert.deepStrictEqual(h.notices(), [], "nothing to redeliver from a past this build cannot read");
     assert.strictEqual(onDisk(directory).version, 2, "and no debt invented from it — the file is untouched");
   });
@@ -613,7 +611,7 @@ describe("boot reconciles what the last boot was still running", () => {
 
   it("a spawned task is on disk while it runs, and gone from the active set once it settles", async () => {
     const directory = tmpProjectDir();
-    const h = await setupHarness({ hooks: {}, directory });
+    const h = await setupHarness({ directory, hooks: {} });
     const { id } = await h.spawn({ description: "durable active" });
     await sleep(30); // the spawn observer writes synchronously; the sleep is for CI, not the contract.
     assert.deepStrictEqual(Object.keys(ledgerActive(directory)), [id], "a running child is durable");
@@ -650,8 +648,8 @@ describe("two plugin instances sharing one project", () => {
 
   it("neither deletes the other's running task", async () => {
     const directory = tmpProjectDir();
-    const a = await setupHarness({ hooks: { sessionPrefix: "a" }, directory });
-    const b = await setupHarness({ hooks: { sessionPrefix: "b" }, directory });
+    const a = await setupHarness({ directory, hooks: { sessionPrefix: "a" } });
+    const b = await setupHarness({ directory, hooks: { sessionPrefix: "b" } });
 
     const first = await a.spawn({ description: "work from the first window" });
     const second = await b.spawn({ description: "work from the second window" });

@@ -6,13 +6,13 @@
  * and what an unusable value at one level does to the level below it.
  */
 
-import { describe, it, assert } from "./support/runner.js";
-import { writeFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { assert, describe, it } from "./support/runner.js";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** The repository root, for the source-count pin that cannot retype the path. */
 
-import { ENV, DEFAULT_CONFIG, DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
+import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
 import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { REPO_ROOT } from "./support/corpus.js";
@@ -65,9 +65,9 @@ describe("normalizeDynamicTaskConfig", () => {
 
   it("respects plugin tuple options overriding defaults", () => {
     const config = normalizeDynamicTaskConfig({
-      maxDepth: 3,
-      maxConcurrent: 8,
       blockedAgents: ["general", "coder"],
+      maxConcurrent: 8,
+      maxDepth: 3,
     });
     assert.strictEqual(config.maxDepth, 3);
     assert.strictEqual(config.maxConcurrent, 8);
@@ -75,7 +75,7 @@ describe("normalizeDynamicTaskConfig", () => {
   });
 
   it("ignores unknown, malformed, or hostile option fields", () => {
-    const config = normalizeDynamicTaskConfig({ unknownField: "ignored", maxConcurrent: "8" });
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: "8", unknownField: "ignored" });
     assert.strictEqual(config.maxConcurrent, 4, "string numbers must not slip in");
     assert.ok(!("unknownField" in config));
   });
@@ -135,7 +135,7 @@ describe("normalizeDynamicTaskConfig", () => {
 
 describe("config file layer", () => {
   it("file config fills gaps below tuple options", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 3 }, { maxDepth: 5, maxConcurrent: 9 });
+    const config = normalizeDynamicTaskConfig({ maxConcurrent: 3 }, { maxConcurrent: 9, maxDepth: 5 });
     assert.strictEqual(config.maxDepth, 5, "file value survives");
     assert.strictEqual(config.maxConcurrent, 3, "tuple options win over file");
   });
@@ -265,7 +265,7 @@ describe("config field parsing edges", () => {
   // NaN is the interesting one: it is a number, and a `<= 0` guard would let it
   // through, so the whole "safe" claim would rest on a TTL of NaN.
   it("rejects non-positive numbers everywhere", () => {
-    assertSafeDefaults(normalizeDynamicTaskConfig({ maxDepth: 0, maxConcurrent: -3, agentCacheTtlMs: NaN }));
+    assertSafeDefaults(normalizeDynamicTaskConfig({ agentCacheTtlMs: NaN, maxConcurrent: -3, maxDepth: 0 }));
   });
 
   it("ignores non-boolean allowSameAgentRecursion", () => {
@@ -283,15 +283,15 @@ describe("agents: which policy an agent name resolves to", () => {
    * about the spelling instead.
    */
   const shared = normalizeDynamicTaskConfig({
-    maxDepth: 3,
-    maxConcurrent: 5,
     agents: { deep: { maxDepth: 4 }, quick: { maxConcurrent: 2 } },
+    maxConcurrent: 5,
+    maxDepth: 3,
   });
 
   /** An agent's CAPS, without the name — two agents mean the same policy when these match. */
   const caps = (config, name) => {
     const { maxDepth, maxConcurrent } = resolveAgentCaps(config, name);
-    return { maxDepth, maxConcurrent };
+    return { maxConcurrent, maxDepth };
   };
 
   it("with no agents configured, any name runs on the top-level numbers", () => {
@@ -303,12 +303,12 @@ describe("agents: which policy an agent name resolves to", () => {
   });
 
   it("a configured agent resolves to its own numbers", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, agents: { deep: bothCaps(1, 3) } });
+    const config = normalizeDynamicTaskConfig({ agents: { deep: bothCaps(1, 3) }, maxConcurrent: 4 });
     assert.deepStrictEqual(resolveAgentCaps(config, "deep"), { agent: "deep", maxConcurrent: 1, maxDepth: 3 });
   });
 
   it("an agent that omits one number inherits the top-level value for it", () => {
-    const config = normalizeDynamicTaskConfig({ maxConcurrent: 4, maxDepth: 5, agents: { deep: { maxDepth: 3 } } });
+    const config = normalizeDynamicTaskConfig({ agents: { deep: { maxDepth: 3 } }, maxConcurrent: 4, maxDepth: 5 });
     assert.deepStrictEqual(resolveAgentCaps(config, "deep"), { agent: "deep", maxConcurrent: 4, maxDepth: 3 });
   });
 
@@ -338,10 +338,10 @@ describe("agents: which policy an agent name resolves to", () => {
   });
 
   it("an agent with unusable numbers is dropped, not coerced to zero and not inherited", () => {
-    const config = normalizeDynamicTaskConfig({ maxDepth: 2, agents: { zero: { maxConcurrent: 0 }, neg: { maxDepth: -2 } } });
+    const config = normalizeDynamicTaskConfig({ agents: { neg: { maxDepth: -2 }, zero: { maxConcurrent: 0 } }, maxDepth: 2 });
     assert.deepStrictEqual(knownCappedAgents(config), [], "a knob the operator set and we cannot honour is not a cap at all");
     assert.deepStrictEqual(
-      knownCappedAgents(normalizeDynamicTaskConfig({ maxDepth: 2, agents: { zero: { maxConcurrent: 0 }, ok: { maxDepth: 9 } } })),
+      knownCappedAgents(normalizeDynamicTaskConfig({ agents: { ok: { maxDepth: 9 }, zero: { maxConcurrent: 0 } }, maxDepth: 2 })),
       ["ok"],
       "and one usable knob is enough to keep an agent that also carries an unusable one",
     );
@@ -352,13 +352,13 @@ describe("agents: which policy an agent name resolves to", () => {
     // operator was told to declare it. Here the name is the host's own and every
     // registered agent is admitted without being configured — which is what makes the
     // screen able to show one row per agent on a project that has never touched it.
-    assert.deepStrictEqual(caps(shared, "typo"), { maxDepth: 3, maxConcurrent: 5 },
+    assert.deepStrictEqual(caps(shared, "typo"), { maxConcurrent: 5, maxDepth: 3 },
       "an uncapped agent runs on the top-level numbers, which is what the host's own agents do");
   });
 });
 
 describe("agents: capacity", () => {
-  const config = normalizeDynamicTaskConfig({ maxConcurrent: 2, agents: { quick: bothCaps(1, 2) } });
+  const config = normalizeDynamicTaskConfig({ agents: { quick: bothCaps(1, 2) }, maxConcurrent: 2 });
   const quick = resolveAgentCaps(config, "quick");
 
   it("returns null when the agent is under its own cap", () => {

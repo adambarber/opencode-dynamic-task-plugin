@@ -22,11 +22,11 @@
  *     node in the wrong place.
  */
 const box = (children, parent = null) => {
-  const node = { parent, getChildren: () => children };
+  const node = { getChildren: () => children, parent };
   for (const child of children) child.parent = node;
   return node;
 };
-const text = (value, parent = null) => ({ parent, getChildren: () => [], get plainText() { return value; } });
+const text = (value, parent = null) => ({ getChildren: () => [], parent, get plainText() { return value; } });
 
 /**
  * The host's own tree, shaped as `packages/tui/src/component/prompt/index.tsx` builds it:
@@ -40,5 +40,5 @@ const text = (value, parent = null) => ({ parent, getChildren: () => [], get pla
 export function renderTree({ footer = true, hint = footer ? "ctrl+p commands" : "palette" } = {}) {
   const line = box([text("/src/project"), text("109.7K (10%)"), text(hint)]);
   const root = box([box([text("a message")]), box([line])]);
-  return { root, line };
+  return { line, root };
 }

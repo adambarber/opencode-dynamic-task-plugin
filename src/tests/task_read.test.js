@@ -27,7 +27,7 @@ async function withBrokenAbortSettledChild() {
   const h = await setupHarness({ hooks: { abortThrows: "ECONNREFUSED" } });
   const { id, c } = await h.spawn();
   await h.settle(id);
-  return { h, c, id, out: await c.interrupt() };
+  return { c, h, id, out: await c.interrupt() };
 }
 
 describe("task_result and task_interrupt paths", () => {
@@ -186,8 +186,8 @@ describe("task_result and task_interrupt paths", () => {
   // session that is still working.
   it("an untracked session with no status channel is unknown, not idle", async () => {
     const h = await eventHarness({
+      messages: () => [{ parts: [{ text: "working", type: "text" }], role: ASSISTANT_ROLE }],
       presenceThrows: new Error("status down"),
-      messages: () => [{ role: ASSISTANT_ROLE, parts: [{ type: "text", text: "working" }] }],
     });
     const summary = await h.tool.task_result.execute({ session_id: "ses_any" });
     answerSays(summary, "Status: unknown");
@@ -291,7 +291,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
 
   it("scope self stops only the session it was handed", async () => {
     const { h, child, grandchild } = await withDispatchTree();
-    const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "self" });
+    const out = await h.tool.task_interrupt.execute({ scope: "self", session_id: child.id });
     answerOmits(out, grandchild.id, "a descendant was not acted on, so it is not named");
     assert.ok((await stateOfMember(h, child.id)).includes("interrupted"), "the handed session is stopped");
     assert.ok((await stateOfMember(h, grandchild.id)).includes("active"), "the descendant is still running");
@@ -299,7 +299,7 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
 
   it("an unrecognized scope is refused, never silently widened or narrowed", async () => {
     const { h, child, grandchild } = await withDispatchTree();
-    const out = await h.tool.task_interrupt.execute({ session_id: child.id, scope: "everything" });
+    const out = await h.tool.task_interrupt.execute({ scope: "everything", session_id: child.id });
     answerSays(out, "everything", "the rejected value is quoted back");
     answerSays(out, "subtree", "the choices are named");
     assert.ok((await stateOfMember(h, grandchild.id)).includes("active"), "nothing was stopped");
@@ -360,9 +360,9 @@ describe("task fleet views", () => {
     // depth follows from the case instead of from whatever the mock happens to
     // publish today.
     const AGENTS = [
-      { name: "architect", mode: "subagent", permissions: [] },
-      { name: "coder", mode: "subagent", permissions: [] },
-      { name: "explore", mode: "subagent", permissions: [] },
+      { mode: "subagent", name: "architect", permissions: [] },
+      { mode: "subagent", name: "coder", permissions: [] },
+      { mode: "subagent", name: "explore", permissions: [] },
     ];
 
     // One name for the three steps every case below is: build a harness, list,
@@ -370,7 +370,7 @@ describe("task fleet views", () => {
     // because the repeated part was the arrangement rather than the decision, the
     // duplication gate reported pairs of cases that share nothing but their plumbing.
     const listed = async (options, hooks = { agentsList: AGENTS }) => {
-      const h = await setupHarness({ options, hooks });
+      const h = await setupHarness({ hooks, options });
       return h.tool.task_list.execute({});
     };
 
@@ -412,7 +412,7 @@ describe("task fleet views", () => {
     it("counts a running task against the AGENT it was dispatched as", async () => {
       // Not `listed`, because the case is about what a SPAWN does to the count, so
       // it has to hold the harness to spawn through rather than have one built for it.
-      const h = await setupHarness({ options: { agents: { explore: { maxConcurrent: 3 } } }, hooks: { agentsList: AGENTS } });
+      const h = await setupHarness({ hooks: { agentsList: AGENTS }, options: { agents: { explore: { maxConcurrent: 3 } } } });
       await h.spawn({ description: "an explore child" });
       const list = await h.tool.task_list.execute({});
       assert.match(list, /- explore 1\/3/, "the task is charged to the agent it ran as");
@@ -427,7 +427,7 @@ describe("task fleet views", () => {
     });
 
     it("a BLOCKED agent cannot lengthen a chain, so it does not raise the depth", async () => {
-      assert.match(await listed({ maxDepth: 9, blockedAgents: ["coder"] }), /depth 2 \(agent set binds; cap is 9\)/,
+      assert.match(await listed({ blockedAgents: ["coder"], maxDepth: 9 }), /depth 2 \(agent set binds; cap is 9\)/,
         "three published agents, one of them unusable, is depth 2 — not 3");
     });
 
@@ -435,7 +435,7 @@ describe("task fleet views", () => {
       // Stated on an agent the overlay caps, because that is the only case where a row
       // exists at all: with a failed read and nothing capped there is no agent to report
       // on, and the line is simply absent rather than reporting a depth of nothing.
-      const config = { maxDepth: 4, agents: { explore: { maxDepth: 4 } } };
+      const config = { agents: { explore: { maxDepth: 4 } }, maxDepth: 4 };
       const lines = await agentsLine(config, { agentsListThrows: true });
       assert.deepEqual(lines, [`- explore 0/4 at once (yours) · depth ${config.maxDepth} (dispatchable agents unknown)`],
         "an unreadable agent set is an unknown; saying 0 would claim no delegation is possible");

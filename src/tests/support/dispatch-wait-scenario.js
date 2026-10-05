@@ -20,10 +20,10 @@ import { setupHarness } from "./harness.js";
  */
 export async function refuseDispatch(h, description, depends_on, depends_on_settled) {
   const refusal = await h.trySpawn({
+    depends_on,
     description,
     prompt: "do the downstream thing",
     subagent_type: "general",
-    depends_on,
     ...(depends_on_settled ? { depends_on_settled } : {}),
   });
   assert.match(refusal, /Dependencies pending/, "the dispatch was refused");
@@ -43,7 +43,7 @@ export async function refuseDispatch(h, description, depends_on, depends_on_sett
  * which is the gate working.
  */
 export async function failEdge(h, id) {
-  await h.fireEvent(events.error(id, { name: "Error", data: { message: "child failed" } }));
+  await h.fireEvent(events.error(id, { data: { message: "child failed" }, name: "Error" }));
   await h.settle(id);
 }
 
@@ -106,5 +106,5 @@ export async function announcementAfterKill({ fault, kill }) {
   const edge = await refusedOnOneEdge(h, WAITING_FOR);
   if (fault) faults[fault].add(edge.id);
   const hint = await announcedAbout(h, WAITING_FOR, () => kill(h, edge.id));
-  return { h, edge, hint };
+  return { edge, h, hint };
 }

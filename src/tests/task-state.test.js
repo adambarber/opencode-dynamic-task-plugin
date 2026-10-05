@@ -8,8 +8,8 @@
  * together rather than being spread across whichever suite happened to touch them.
  */
 
-import { describe, it, beforeEach, assert } from "./support/runner.js";
-import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, recordSettledOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
+import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { annotateNotice, markTurnReplacement } from "../../dist/shared/notice-claim.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
@@ -38,13 +38,13 @@ function storeWithActive(cfg = defaultConfig) {
 // because "this write must not persist" is a decision about which of the two
 // carried it.
 function recordChanges(store) {
-  const sink = { retained: [], active: [] };
+  const sink = { active: [], retained: [] };
   store.onRetainedChange = (changes) => { sink.retained.push(...changes); };
   store.onActiveChange = (changes) => { sink.active.push(...changes); };
   return sink;
 }
 
-const kinds = (changes) => changes.map((c) => c.kind).join();
+const kinds = (changes) => changes.map((c) => c.kind).join(",");
 
 /** The kind of the change a sink was handed LAST — the one an amendment just made. */
 const lastKind = (changes) => changes.at(-1)?.kind ?? "";
@@ -52,17 +52,17 @@ const lastKind = (changes) => changes.at(-1)?.kind ?? "";
 /** The same store with both change sinks recorded: the callback cases' subject. */
 function recordingStore(cfg = defaultConfig) {
   const store = storeWithActive(cfg);
-  return { store, changes: recordChanges(store) };
+  return { changes: recordChanges(store), store };
 }
 
 function fillBackgroundTasks(store, config, ids) {
   for (const id of ids) {
-    registerActiveTask(store, childParams({ id, agent: id, description: id }), config);
+    registerActiveTask(store, childParams({ agent: id, description: id, id }), config);
   }
 }
 
 function seedSesActive(store, config) {
-  registerActiveTask(store, childParams({ id: "ses_active", agent: "reviewer" }), config);
+  registerActiveTask(store, childParams({ agent: "reviewer", id: "ses_active" }), config);
 }
 
 /** A store already holding the configured maximum of active children. */
@@ -120,7 +120,7 @@ describe("task-state: registerActiveTask", () => {
 
   it("registers an active record for the session", () => {
     const store = createTaskStore();
-    const task = registerActiveTask(store, childParams({ id: "ses_1", agent: "reviewer", description: "test task", lineage: ["explore"] }), config);
+    const task = registerActiveTask(store, childParams({ agent: "reviewer", description: "test task", id: "ses_1", lineage: ["explore"] }), config);
     assert.strictEqual(task.state, "active");
     assert.strictEqual(store.activeTasks.size, 1);
   });
@@ -128,14 +128,14 @@ describe("task-state: registerActiveTask", () => {
   it("throws ConcurrencyLimitExceeded when at the limit", () => {
     const store = storeAtLimit(config);
     assert.throws(() => {
-      registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
+      registerActiveTask(store, childParams({ agent: "a4", id: "ses_4" }), config);
     }, /Concurrency/);
   });
 
   it("settlement frees the slot for the next registration", () => {
     const store = storeAtLimit(config);
     transitionState(store, "ses_1", "completed");
-    const task = registerActiveTask(store, childParams({ id: "ses_4", agent: "a4" }), config);
+    const task = registerActiveTask(store, childParams({ agent: "a4", id: "ses_4" }), config);
     assert.strictEqual(task.state, "active");
   });
 });
@@ -181,8 +181,8 @@ describe("task-state: transitionState", () => {
     const stamped = {
       lastActivityAt: noteActivity(store, "ses_active"),
       lastNotice: annotateNotice(store, "ses_active", "interim", "progress"),
-      turnLiveAt: noteActivity(store, "ses_active", false),
       replacedAt: markTurnReplacement(store, "ses_active"),
+      turnLiveAt: noteActivity(store, "ses_active", false),
     };
     for (const field of ADVISORY_FIELDS) {
       assert.ok(stamped[field], `the event funnel stamps ${field} on the active record`);
@@ -286,7 +286,7 @@ describe("task-state: revival and annotations", () => {
   it("revival passes through the concurrency gate", () => {
     const limited = singleSlotConfig();
     const store = storeSettledAs("completed", limited);
-    registerActiveTask(store, childParams({ id: "ses_other", agent: "a2" }), limited);
+    registerActiveTask(store, childParams({ agent: "a2", id: "ses_other" }), limited);
     assert.throws(() => reviveRetainedTask(store, "ses_active", limited), /Concurrency/);
     assert.strictEqual(store.retainedTasks.get("ses_active").state, "completed", "rejected revival leaves the record untouched");
   });
@@ -347,7 +347,7 @@ describe("task-state: recordSettledOutcome", () => {
 describe("task store: retained-change callback", () => {
 
   function seedActive(store, id) {
-    registerActiveTask(store, childParams({ id: id }), defaultConfig);
+    registerActiveTask(store, childParams({ id }), defaultConfig);
   }
 
   it("notifies on retained writes, silent on active-only writes", () => {
@@ -374,7 +374,7 @@ describe("task store: retained-change callback", () => {
     seedActive(store, "s1");
     transitionState(store, "s1", "completed");
     store.retainedTasks.get("s1").retainedAt = 0;
-    assert.strictEqual(pruneRetainedTasks(store, { retainedTaskTtlMs: 1000, retainedTaskMaxEntries: 100 }), 1);
+    assert.strictEqual(pruneRetainedTasks(store, { retainedTaskMaxEntries: 100, retainedTaskTtlMs: 1000 }), 1);
     assertIs(kinds(changes.retained), "settled,forgotten");
   });
 });
@@ -383,9 +383,7 @@ describe("task-state: restoreRetained", () => {
 
   function ledgerEntry(id, state = "completed") {
     return {
-      childSessionId: id, parentSessionId: "p", agentName: "a",
-      description: "d", lineage: [], state,
-      startedAt: 1, retainedAt: 2,
+      agentName: "a", childSessionId: id, description: "d", lineage: [], parentSessionId: "p", retainedAt: 2, startedAt: 1, state,
     };
   }
 
@@ -415,7 +413,7 @@ describe("task-state: restoreRetained", () => {
   // N records differs only in N, which is why N is a number.
   const countingStore = () => {
     const store = createTaskStore();
-    const writes = { retained: 0, active: 0 };
+    const writes = { active: 0, retained: 0 };
     store.onRetainedChange = () => { writes.retained++; };
     store.onActiveChange = () => { writes.active++; };
     return { store, writes };
@@ -488,7 +486,7 @@ describe("task-state: restoreRetained", () => {
       changes.filter((change) => change.kind === LedgerChangeKind.Forgotten).forEach((change) => forgotten.push(change.id));
     };
     restoreRetained(store, twoAges(order), 1);
-    return { standing: [...store.retainedTasks.keys()], forgotten };
+    return { forgotten, standing: [...store.retainedTasks.keys()] };
   };
 
   it("evicts the OLDEST record, whichever order the file arrived in", () => {
@@ -501,7 +499,7 @@ describe("task-state: restoreRetained", () => {
 });
 
 describe("pruneRetainedTasks — TTL and max entry eviction", () => {
-  const config = normalizeDynamicTaskConfig({ retainedTaskTtlMs: 50, retainedTaskMaxEntries: 2 });
+  const config = normalizeDynamicTaskConfig({ retainedTaskMaxEntries: 2, retainedTaskTtlMs: 50 });
 
   // Retention prunes on `retainedAt`, so an age IS the fixture, and every record
   // in a store must be aged against the same clock the prune will read. Stated
@@ -551,7 +549,7 @@ describe("findTask — edge cases", () => {
 
   it("finds a running task", () => {
     const store = createTaskStore();
-    registerActiveTask(store, childParams({ id: "ses_live", description: "t" }), defaultConfig);
+    registerActiveTask(store, childParams({ description: "t", id: "ses_live" }), defaultConfig);
     assert.strictEqual(findTask(store, "ses_live")?.state, "active", "a running task is findable");
   });
 });

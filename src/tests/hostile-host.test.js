@@ -113,10 +113,10 @@ describe("a host that accepts every call and answers none", () => {
       ["task_result", (h) => h.tool.task_result.execute({ session_id: "ses_mock_1" })],
       [
         "task_spawn",
-        (h) => h.tool.dynamic_task.execute({ description: "doomed", subagent_type: "explore", prompt: "hi" }),
+        (h) => h.tool.dynamic_task.execute({ description: "doomed", prompt: "hi", subagent_type: "explore" }),
       ],
       ["task_interrupt", (h) => h.tool.task_interrupt.execute({ session_id: "ses_mock_1" })],
-      ["task_continue", (h) => h.tool.task_continue.execute({ session_id: "ses_mock_1", prompt: "again" })],
+      ["task_continue", (h) => h.tool.task_continue.execute({ prompt: "again", session_id: "ses_mock_1" })],
       [NOTIFY_TOOL, (h) => h.tool.task_notify.execute({ message: "still here" })],
     ];
 
@@ -131,7 +131,7 @@ describe("a host that accepts every call and answers none", () => {
 
   it("a spawn that cannot create a session says so, and does not report a dispatch", async () => {
     const answer = await underSilence("task_spawn", (h) =>
-      h.tool.dynamic_task.execute({ description: "doomed", subagent_type: "explore", prompt: "hi" }),
+      h.tool.dynamic_task.execute({ description: "doomed", prompt: "hi", subagent_type: "explore" }),
     );
 
     // A refusal, not a timeout reported as success: the parent must be able to
@@ -159,7 +159,7 @@ describe("a host that accepts every call and answers none", () => {
     // Production's own vocabulary decides this, not wording invented here: the
     // failed read must name a failure, and must NOT claim the child said nothing —
     // that rendering is reserved for a transcript the host actually sent, empty.
-    answerMatches(unreadable, new RegExp(`${API_UNAVAILABLE}|${SEE_ERROR_ABOVE}`.replace(/[()]/g, "\\$&")));
+    answerMatches(unreadable, new RegExp(`${API_UNAVAILABLE}|${SEE_ERROR_ABOVE}`.replace(/[()]/g, String.raw`\$&`)));
     answerOmits(unreadable, NO_ASSISTANT_TEXT);
     assert.notStrictEqual(
       readable,

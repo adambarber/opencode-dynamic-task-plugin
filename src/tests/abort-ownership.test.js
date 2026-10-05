@@ -38,8 +38,8 @@ import {
   withOrphan,
   withRefusedStop,
   withSelfStop,
-  withStoppedTreeChild,
   withStoppedChild,
+  withStoppedTreeChild,
 } from "./support/index.js";
 
 // The caller's own session, as the host names it. The harness uses this id for
@@ -87,8 +87,8 @@ describe("abort ownership", () => {
     // — indistinguishable from success, which is why the request is the assertion.
     await withRefusedStop({
       arrange: async (h) => h.spawn({ description: "one" }),
-      target: "ses_someone_elses",
       note: "an id this plugin never made",
+      target: "ses_someone_elses",
     });
   });
 
@@ -167,7 +167,7 @@ describe("abort ownership", () => {
     // not carry it.
     const { h, c } = await withChild({ spawn: { description: "survivor" } });
 
-    await h.tool.task_continue.execute({ session_id: c.id, prompt: "no" }, { sessionID: c.id });
+    await h.tool.task_continue.execute({ prompt: "no", session_id: c.id }, { sessionID: c.id });
 
     const status = await h.tool.task_status.execute({ session_id: c.id });
     answerOmits(status, "replacement turn has not started", "the child was not left mid-steer");
@@ -194,8 +194,8 @@ describe("abort ownership", () => {
     // wrapped in `bounded`, which would await a host that never answers.
     const raced = withRefusedStop({
       harness: { hooks: { abortHangIds: new Set(["ses_stranger"]) } },
-      target: "ses_stranger",
       note: "an unowned id",
+      target: "ses_stranger",
     });
 
     const answer = await Promise.race([raced, sleep(1000).then(() => "THE TOOL NEVER ANSWERED")]);

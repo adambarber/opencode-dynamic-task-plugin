@@ -13,7 +13,7 @@
 
 import assert from "node:assert";
 import { readFileSync, writeFileSync } from "node:fs";
-import { setupHarness, sleep, tmpProjectDir, withTempFile, tmpFilePath } from "./harness.js";
+import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
 import { events } from "./mock-host.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { resolveTaskLedgerPath } from "../../../dist/shared/session-lifecycle.js";
@@ -33,7 +33,7 @@ import { resolveTaskLedgerPath } from "../../../dist/shared/session-lifecycle.js
  */
 export async function childFailingWith(detail) {
   const h = await setupHarness({
-    hooks: { messages: () => [{ info: { role: ASSISTANT_ROLE, error: { data: { message: detail } } } }] },
+    hooks: { messages: () => [{ info: { error: { data: { message: detail } }, role: ASSISTANT_ROLE } }] },
   });
   const { id } = await h.spawn({ description: `child that dies of: ${detail}` });
   return { h, id };
@@ -68,7 +68,7 @@ export const bootOn = async (seed, { hooks = {} } = {}) => {
   // second boot helper is a second arrangement that can drift from the first.
   if (typeof document === "string") writeFileSync(resolveTaskLedgerPath(directory), document);
   else writeLedger(directory, document);
-  return { directory, ...(await setupHarness({ hooks, directory })) };
+  return { directory, ...(await setupHarness({ directory, hooks })) };
 };
 
 /**
@@ -100,7 +100,7 @@ export const withSingleSlot = () => setupHarness({ options: { maxConcurrent: 1 }
  * and it was spelled out by hand at every one of these sites — so a required
  * field could be missing from the very case testing its neighbour.
  */
-export const dispatchArgs = (description, over = {}) => ({ description, subagent_type: "explore", prompt: "hi", ...over });
+export const dispatchArgs = (description, over = {}) => ({ description, prompt: "hi", subagent_type: "explore", ...over });
 
 /**
  * A harness whose prompt to exactly ONE session fails, and nothing else does.

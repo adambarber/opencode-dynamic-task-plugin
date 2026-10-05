@@ -15,7 +15,7 @@
  */
 
 import assert from "node:assert";
-import { readFileSync, readdirSync, unlinkSync, appendFileSync, mkdtempSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import nodePath, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
@@ -25,7 +25,7 @@ import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { getDebugLogPath, DEBUG_DIR } from "../../../dist/debug-logger.js";
+import { DEBUG_DIR, getDebugLogPath } from "../../../dist/debug-logger.js";
 import {
   applyHostStatus,
   createMockClient,
@@ -529,12 +529,12 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      */
     async spawn(args = {}, ctx = { sessionID: PARENT }) {
       const out = await harness.tool.dynamic_task.execute(
-        { description: "bg task", subagent_type: "explore", prompt: "Return DONE", ...args },
+        { description: "bg task", prompt: "Return DONE", subagent_type: "explore", ...args },
         ctx,
       );
       const id = extractSessionId(out);
       if (id) spawned.push(id);
-      return { out, id, c: bindChild(harness, id, args, ctx) };
+      return { c: bindChild(harness, id, args, ctx), id, out };
     },
     /**
      * A child that already exists, with its tools bound to it. Every test in a
@@ -640,7 +640,7 @@ export const PARENT = "p1";
 export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: PARENT } } = {}) {
   const h = await setupHarness(harness);
   const { id, out, c } = await h.spawn(spawn, ctx);
-  return { h, c, id, out };
+  return { c, h, id, out };
 }
 
 /** `withChild` plus one step, for the arrangements that are this one and then something. */
@@ -695,15 +695,15 @@ export async function withAskedChild(requestId) {
 export async function withLoggedChild({ hooks = {} } = {}, body) {
   const directory = tmpProjectDir();
   return withEnv("DYNAMIC_TASK_DEBUG", "1", async () => {
-    const { h, c, id, out } = await withSettledChild({ harness: { hooks, directory } });
+    const { h, c, id, out } = await withSettledChild({ harness: { directory, hooks } });
     return body({
-      h,
       c,
-      id,
-      out,
       directory,
+      h,
+      id,
       /** The child's debug log, as the operator would read it. */
       log: () => readFileSync(getDebugLogPath(PARENT, id), "utf8"),
+      out,
     });
   });
 }
@@ -725,7 +725,7 @@ export async function withDispatchTree(harness = {}) {
     { description: "grandchild task", subagent_type: "general" },
     { sessionID: child.id },
   );
-  return { h, child, grandchild };
+  return { child, grandchild, h };
 }
 
 /**
@@ -838,10 +838,10 @@ export async function setupTwoTurnHarness() {
  */
 export const darkTheme = () => ({
   current: {
-    text: RGBA.fromInts(0xd0, 0xd0, 0xd0),
-    textMuted: RGBA.fromInts(0x6c, 0x6c, 0x6c),
-    accent: RGBA.fromInts(0x88, 0x88, 0xff),
+    accent: RGBA.fromInts(0x88, 0x88, 0xFF),
     syntaxComment: RGBA.fromInts(0x50, 0x50, 0x50),
+    text: RGBA.fromInts(0xD0, 0xD0, 0xD0),
+    textMuted: RGBA.fromInts(0x6C, 0x6C, 0x6C),
   },
   mode: () => "dark",
 });
@@ -857,7 +857,7 @@ export const darkTheme = () => ({
  * starts describing a shape the production code no longer has, and it fails as a wrong
  * number rather than as an error, which is the worst way to fail.
  */
-export const capCell = (value, stated = true, limit = null) => ({ value, stated, bounded: limit });
+export const capCell = (value, stated = true, limit = null) => ({ bounded: limit, stated, value });
 import { RGBA } from "@opentui/core";
 
 /**
@@ -880,6 +880,20 @@ export function v2Context(client, directory, options = {}) {
 
   const context = {
     ...client,
+    event: {
+      subscribe: () => ({
+        async *[Symbol.asyncIterator]() {
+          for (;;) {
+            if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
+            while (queue.length > 0) {
+              yield queue.shift();
+              // the loop body has run for this event; release its own delivery
+              waiting.shift()?.();
+            }
+          }
+        },
+      }),
+    },
     location: { directory },
     options,
     tool: {
@@ -897,25 +911,10 @@ export function v2Context(client, directory, options = {}) {
         return true;
       },
     },
-    event: {
-      subscribe: () => ({
-        async *[Symbol.asyncIterator]() {
-          for (;;) {
-            if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
-            while (queue.length > 0) {
-              yield queue.shift();
-              // the loop body has run for this event; release its own delivery
-              waiting.shift()?.();
-            }
-          }
-        },
-      }),
-    },
   };
 
   return {
     context,
-    rawTools: tools,
     deliverEvent: async (event) => {
       // Two SEPARATE wait lists, because the generator and the deliverer park at
       // different moments. Sharing one slot lost the wake-up: the generator parked
@@ -929,6 +928,7 @@ export function v2Context(client, directory, options = {}) {
       // the subscriber has the event; give the turn it kicked off a tick to start
       await sleep(0);
     },
+    rawTools: tools,
   };
 }
 

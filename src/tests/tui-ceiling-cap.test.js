@@ -91,7 +91,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
     // Two different lists for one concept is how an operator ends up able to set a total
     // no per-agent cap can reach, with neither screen explaining the asymmetry. Stated,
     // so the way back to the config file is on the screen too.
-    const picker = ceilingPickerProps({ value: 12, stated: true, bounded: null });
+    const picker = ceilingPickerProps({ bounded: null, stated: true, value: 12 });
     assert.deepEqual(titlesOf(picker), [...CAP_CHOICES.maxConcurrent.map(String), "Use the config default", BACK_LABEL]);
     assert.doesNotMatch(picker.title, /lane/i);
   });

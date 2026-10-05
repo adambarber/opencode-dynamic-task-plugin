@@ -138,7 +138,7 @@ describe("fetchAgents", () => {
   // Failed admission with "(none discovered)".
   it("reads the client's envelope", async () => {
     const respond = {
-      data: [{ name: "general", mode: "subagent", permissions: [] }],
+      data: [{ mode: "subagent", name: "general", permissions: [] }],
       location: { directory: "/mock/project" },
     };
     assert.deepStrictEqual(await agentNames(clientWith(respond)), ["general"]);
@@ -425,7 +425,7 @@ describe("admission gate: parseAgentList", () => {
   });
 
   it("normalises every field, so no reader has to ask the payload again", () => {
-    const [agent] = parseAgentList([{ extra: 1, mode: "primary", name: "a", permissions: [{ action: NOTIFY_TOOL, resource: "*", effect: "deny" }] }]);
+    const [agent] = parseAgentList([{ extra: 1, mode: "primary", name: "a", permissions: [{ action: NOTIFY_TOOL, effect: "deny", resource: "*" }] }]);
     assert.strictEqual(agent.mode, "primary");
     assert.deepStrictEqual(agent.permissions, [{ action: NOTIFY_TOOL, effect: "deny", resource: "*" }]);
     assert.ok(!("extra" in agent), "a field this plugin never asked for does not travel with the record");

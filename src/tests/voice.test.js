@@ -7,7 +7,7 @@
  * either is a user about to be surprised by the plugin's own design.
  */
 
-import { describe, it, assert } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { TASK_CONTINUE_DESCRIPTION, parentUndelivered } from "../../dist/shared/voice.js";
 
 describe("operator voice: continue description", () => {

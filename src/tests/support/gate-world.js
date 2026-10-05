@@ -10,7 +10,7 @@
  * the world it hands back is a live view, so a case cannot capture a stale one.
  */
 
-import { beforeEach, afterEach } from "./runner.js";
+import { afterEach, beforeEach } from "./runner.js";
 import { recordingClient } from "./mock-host.js";
 import { PARENT } from "./harness.js";
 import { clearNotifyLedger, configurePendingPersistence, restorePendingDeliveries } from "../../../dist/shared/notify.js";
@@ -48,16 +48,16 @@ export function isolatedGate({ respond = async () => ({ ok: true }), status } = 
     world = null;
   });
   return {
-    get client() {
-      return live().client;
-    },
     get calls() {
       return live().calls;
     },
+    get client() {
+      return live().client;
+    },
+    setStatus: (id, type) => live().setStatus(id, type),
     /** The texts the world was actually asked to write, in order. */
     get wrote() {
       return live().calls.map((call) => call.text);
     },
-    setStatus: (id, type) => live().setStatus(id, type),
   };
 }

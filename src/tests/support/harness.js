@@ -22,19 +22,16 @@ import { afterEach } from "node:test";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
-import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
-import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { DEBUG_DIR, getDebugLogPath } from "../../../dist/debug-logger.js";
+import { DEBUG_DIR } from "../../../dist/debug-logger.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
 import {
   applyHostStatus,
   createMockClient,
   events,
-  promptText,
   setHostTurn,
-  unclockedSaid,
 } from "./mock-host.js";
+import { textTools, v2Context } from "./v2-context.js";
 
 export {
   abortRequests,
@@ -55,8 +52,22 @@ export {
   sessionIds,
   wasAborted,
 } from "./client-queries.js";
+import { sleep } from "./timing.js";
 
-export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export { drain, settled, sleep } from "./timing.js";
+export {
+  resultForChild,
+  resultForUnreadableChild,
+  setupTwoTurnHarness,
+  withAskedChild,
+  withChild,
+  withDispatchTree,
+  withLoggedChild,
+  withSettledChild,
+  withSettledDispatchTree,
+} from "./child-fixtures.js";
+export { textTools, v2Context } from "./v2-context.js";
+
 
 /**
  * Run `fn` with a seam installed, and put the seam back when the case ends —
@@ -239,31 +250,7 @@ export function assertStopped(h, targets, _answer, note) {
 
 
 
-/**
- * Yield until the queue has run once, so a fire-and-forget write has had its
- * reaction delivered. NOT a sleep: the point is the turn of the loop, and the
- * length of a bound is a fact no test should be guessing at.
- *
- * A MACROTASK, and that is load-bearing: `drain` waits for a production DEADLINE, and
- * a deadline is a timer. `setImmediate` yields within the timers phase, so a drain
- * built on it spins 200 turns in under 5ms and reports "the chain did not drain" for
- * a 20ms bound that has not been given 20ms yet — a helper that cannot observe the
- * thing it exists to observe.
- */
-export const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** Await `settled()` until `chainOf()` reports nothing left in flight. */
-export const drain = async (chainOf, chainName = "unnamed") => {
-  const started = process.hrtime.bigint();
-  const elapsedMs = () => Number((process.hrtime.bigint() - started) / 1000n) / 1000;
-  for (let turn = 0; chainOf() > 0; turn++) {
-    assert.ok(
-      turn < 200,
-      `the writes never reached their bound — the chain did not drain (${chainName}) after ${elapsedMs()}ms`,
-    );
-    await settled();
-  }
-};
 
 
 
@@ -565,11 +552,6 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: PARENT }) {
 }
 
 /**
- * Boot the plugin, spawn one child, and return the pair a tool test needs.
- * This is the suite's standard arrangement, so it is declared once here rather
- * than forty times as boot-then-spawn.
- */
-/**
  * The session the harness calls the parent, stated ONCE. It was spelled as the
  * literal "p1" in six places, so a suite that named its own parent could diverge
  * from the fixtures it was built on and fail as a missing session rather than as
@@ -577,131 +559,6 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: PARENT }) {
  */
 export const PARENT = "p1";
 
-export async function withChild({ harness = {}, spawn = {}, ctx = { sessionID: PARENT } } = {}) {
-  const h = await setupHarness(harness);
-  const { id, out, c } = await h.spawn(spawn, ctx);
-  return { c, h, id, out };
-}
-
-/** `withChild` plus one step, for the arrangements that are this one and then something. */
-async function withChildThen(step, opts) {
-  const child = await withChild(opts);
-  await step(child.h, child.id);
-  return child;
-}
-
-/**
- * Boot, spawn one child, and settle it — the precondition for reading a
- * child's settled state. Naming it keeps a test from spelling out the same
- * three steps to ask the same question.
- */
-export async function withSettledChild(opts = {}) {
-  return withChildThen((h, id) => h.settle(id), opts);
-}
-
-/**
- * Boot, spawn one child, and have the host ASK it a permission — the arrangement
- * every permission-gate case starts from.
- *
- * Named because the preamble is load-bearing: the ask must reach the gate under
- * the session id the child was dispatched with, and a case that hand-rolled it
- * could use a different one without noticing. A gate that never sees the ask
- * never answers it, so the ask is part of the setup, not the test.
- */
-export async function withAskedChild(requestId) {
-  return withChildThen((h, id) => h.fireEvent(events.ask(id, requestId)));
-}
-
-/**
- * Boot, spawn, settle, and run `body` with debug logging on, handing it the
- * child's debug log — the arrangement every "this must reach the log" assertion
- * needs.
- *
- * A callback, not a handle, and that is the whole point: `debugLog` gates on
- * DYNAMIC_TASK_DEBUG at CALL time, so a fixture that enabled it only for boot
- * would hand back a log that is frozen at the registration line. Every event
- * after the setup — which is every event a log assertion is actually about —
- * would be silently dropped, and an assertion against that log passes against
- * silence. A fixture that cannot outlive its own setup is a fixture that
- * manufactures the failure it is meant to detect.
- *
- * Named because the alternative is four steps (a temp project dir, debug
- * enabled, a settled child, then the log) re-derived per test — and the log path
- * is easy to get subtly wrong. A path that matches nothing reads as an EMPTY
- * log, which is indistinguishable from a gate that logged nothing at all. The
- * derivation belongs next to the debug writer that creates the path, not in
- * each of its readers.
- */
-export async function withLoggedChild({ hooks = {} } = {}, body) {
-  const directory = tmpProjectDir();
-  return withEnv("DYNAMIC_TASK_DEBUG", "1", async () => {
-    const { h, c, id, out } = await withSettledChild({ harness: { directory, hooks } });
-    return body({
-      c,
-      directory,
-      h,
-      id,
-      /** The child's debug log, as the operator would read it. */
-      log: () => readFileSync(getDebugLogPath(PARENT, id), "utf8"),
-      out,
-    });
-  });
-}
-
-/**
- * Boot the plugin and spawn a two-level dispatch tree: a child, and a
- * grandchild that child spawned.
- *
- * Two levels is the deepest tree reachable — lineage accumulates every
- * ancestor's agent NAME and no agent may appear twice, so a chain is bounded by
- * the number of agent types, and the types alternate here for the same reason.
- * Declared once because the fleet views and the subtree stop ask about the same
- * tree, and two copies of "the tree" would be two different trees.
- */
-export async function withDispatchTree(harness = {}) {
-  const h = await setupHarness(harness);
-  const child = await h.spawn({ description: "child task" });
-  const grandchild = await h.spawn(
-    { description: "grandchild task", subagent_type: "general" },
-    { sessionID: child.id },
-  );
-  return { child, grandchild, h };
-}
-
-/**
- * As withDispatchTree, with the grandchild already finished — the shape both
- * the stop and the view have to answer for (a finished node in a running tree).
- */
-export async function withSettledDispatchTree(harness = {}) {
-  const tree = await withDispatchTree(harness);
-  await tree.h.settle(tree.grandchild.id);
-  return tree;
-}
-
-/**
- * task_result for a spawned child whose message read returns exactly
- * `messages`. Liveness is a question about what a child has written, so a test
- * that asks it is one line of arrangement and one expectation.
- */
-export async function resultForChild(messages, opts = {}) {
-  return readForChild((client, id) => client.setTranscript(id, messages), opts);
-}
-
-/**
- * As resultForChild, for the child whose message read itself fails.
- *
- * The failure is armed as a fault rather than faked with a hook, so the teardown
- * rule sees it fire: a fixture that cannot fail cannot prove the failure path.
- */
-export async function resultForUnreadableChild(error = new Error("boom"), opts = {}) {
-  return readForChild((client, id) => client.makeUnreadable(id, error), opts);
-}
-
-async function readForChild(arrange, opts) {
-  const { c, h, id } = await withChild(opts);
-  arrange(h.client, id);
-  return c.result();
-}
 
 /** Release one harness's children. Best-effort: settled children are fine. */
 export async function releaseSpawns(harness) {
@@ -734,33 +591,6 @@ afterEach(async () => {
   }
 });
 
-/**
- * The two-turn harness the claim-order/revival tests share: the message stream
- * names each turn's output, and the FIRST parent notification fails so the
- * gate's retry lands inside the test's timing window.
- */
-export async function setupTwoTurnHarness() {
-  let msgCalls = 0;
-  const harness = await setupHarness({
-    hooks: {
-      messages: () => {
-        msgCalls++;
-        const text = msgCalls === 1 ? "TURN-ONE-OUTPUT" : "TURN-TWO-OUTPUT";
-        return [unclockedSaid(text, ASSISTANT_ROLE)];
-      },
-    },
-  });
-  const origPrompt = harness.client.session.prompt;
-  let parentNotifies = 0;
-  harness.client.session.prompt = (args) => {
-    if (isParentNotification(promptText(args))) {
-      parentNotifies++;
-      if (parentNotifies === 1) return Promise.reject(new Error("parent busy"));
-    }
-    return origPrompt(args);
-  };
-  return harness;
-}
 
 /**
  * A host theme, for the api double.
@@ -800,99 +630,3 @@ export const darkTheme = () => ({
 export const capCell = (value, stated = true, limit = null) => ({ bounded: limit, stated, value });
 import { RGBA } from "@opentui/core";
 
-/**
- * The v2 plugin's own context, built over the fake host's namespaces.
- *
- * A v1 harness called the entry function and read the hook object it returned.
- * v2 has no hook object: the plugin registers tools by handing an editor to
- * `tool.transform` and reads events off an async iterable, so the only honest
- * fake is one that serves those two surfaces and lets the plugin take them.
- */
-export function v2Context(client, directory, options = {}) {
-  const tools = new Map();
-  const queue = [];
-  // FIFO waiter lists, not single slots: deliveries may overlap (`Promise.all` over
-  // a burst of terminal events is the real case), and one slot hands a promise to
-  // the wrong delivery — the burst hung forever. `parked` is woken by a delivery,
-  // `waiting` is signalled by the generator, both in push order.
-  const parked = [];
-  const waiting = [];
-
-  const context = {
-    ...client,
-    event: {
-      subscribe: () => ({
-        async *[Symbol.asyncIterator]() {
-          for (;;) {
-            if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
-            while (queue.length > 0) {
-              yield queue.shift();
-              // the loop body has run for this event; release its own delivery
-              waiting.shift()?.();
-            }
-          }
-        },
-      }),
-    },
-    location: { directory },
-    options,
-    tool: {
-      // Async across a MACROTASK like the real registration: the editor writes land
-      // after `reload` has already published unless setup awaits `transform` first. A
-      // microtask-only fake would let the defect pass — microtasks drain before the
-      // awaited reload resumes — the way the data-store double did.
-      transform: (fn) =>
-        Promise.resolve().then(() => {
-          fn({ add: (info) => tools.set(info.name, info) });
-          return { dispose: async () => {} };
-        }),
-      reload: async () => {
-        context.toolsAtReload = tools.size;
-        return true;
-      },
-    },
-  };
-
-  return {
-    context,
-    deliverEvent: async (event) => {
-      // Two SEPARATE wait lists, because the generator and the deliverer park at
-      // different moments. Sharing one slot lost the wake-up: the generator parked
-      // first writing its resolver, then this overwrote it, so the promise the
-      // generator sat on was never called and delivery hung — it survived only when
-      // the two happened to interleave the other way round.
-      queue.push(event);
-      const consumed = new Promise((resolve) => waiting.push(resolve));
-      parked.shift()?.();
-      await consumed;
-      // the subscriber has the event; give the turn it kicked off a tick to start
-      await sleep(0);
-    },
-    rawTools: tools,
-  };
-}
-
-/**
- * v2 a tool answers `{ content }`, not a bare string. Every suite here wants the
- * string, so the harness unwraps once, at its own boundary, and keeps the tools
- * exactly as the host received them on `rawTools` — the fidelity pin reads those,
- * so this convenience cannot quietly become a different shape than the contract.
- */
-export function textTools(rawTools) {
-  return Object.fromEntries(
-    [...rawTools].map(([name, info]) => [
-      name,
-      {
-        ...info,
-        execute: async (raw, ctx) => {
-          const answer = await info.execute(raw, ctx);
-          assert.ok(
-            answer && typeof answer === "object" && typeof answer.content === "string",
-            `tool ${name} answered ${JSON.stringify(answer)} — v2 returns { content }, not a string`,
-          );
-          return answer.content;
-        },
-      },
-    ]),
-  );
-}

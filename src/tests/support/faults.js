@@ -45,6 +45,8 @@ export const FAULTS = Object.freeze([
   "abortGate",
   "promptGate",
   "messageReadGate",
+  "storageGate",
+  "storageThrows",
   "unreadableTranscript",
 ]);
 
@@ -58,6 +60,7 @@ export const ARMERS = Object.freeze({
   gateAbort: "abortGate",
   gateChildPrompt: "promptGate",
   gateMessageRead: "messageReadGate",
+  gateStorage: "storageGate",
   makeUnreadable: "unreadableTranscript",
   silentHost: "silentHost",
 });

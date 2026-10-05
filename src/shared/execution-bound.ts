@@ -24,14 +24,21 @@
  * not be null.
  */
 export type Bounded<T, D = T> =
-  | { value: T; timedOut: false }
-  | { value: D; timedOut: true };
+  | { finished: Promise<T>; value: T; timedOut: false }
+  | { finished: Promise<T>; value: D; timedOut: true };
+
+/** Nothing was started, so nothing will finish: the one promise that says so. */
+const NOT_STARTED: Promise<never> = new Promise<never>(() => {});
 
 /**
  * The one construction of a bound's timeout report, so an absent host and a host that
  * did not answer in time cannot drift into two shapes for the same fact.
  */
-export const expired = <D>(timedOut: D): Bounded<never, D> => ({ timedOut: true, value: timedOut });
+export const expired = <D>(timedOut: D): Bounded<never, D> => ({
+  finished: NOT_STARTED,
+  timedOut: true,
+  value: timedOut,
+});
 
 /**
  * The bound's arguments, named once: the deadline, the work it covers, and the value
@@ -70,11 +77,15 @@ export function withBound<T, D>(
   timedOut: D,
 ): Promise<Bounded<T, D>> {
   return new Promise<Bounded<T, D>>((resolve, reject) => {
-    const timer = setTimeout(() => resolve(expired(timedOut)), ms);
-    Promise.resolve().then(work).then(
+    // The operation is held here because a bound does NOT cancel it: the deadline
+    // decides when to REPORT, and a caller that orders writes has to be able to
+    // wait on the work itself rather than on the report it received too early.
+    const finished = Promise.resolve().then(work);
+    const timer = setTimeout(() => resolve({ finished, timedOut: true, value: timedOut }), ms);
+    finished.then(
       (value) => {
         clearTimeout(timer);
-        resolve({ timedOut: false, value });
+        resolve({ finished, timedOut: false, value });
       },
       (error: unknown) => {
         clearTimeout(timer);
@@ -107,6 +118,12 @@ export const PARENT_WRITE_BOUND_MS = 2_000;
 // stranded child with a live process and no way to see why.
 export const ABORT_BOUND_MS = 2_000;
 
+// Durable state. The host keeps plugin records in its own SQLite database, so the
+// write is local but not free: it contends for the same write lock as the host's
+// event traffic. Bound it like a parent write and REFUSE on timeout — a refused
+// write is loud and retried by the next mutation; a hung tool call is neither.
+export const STORAGE_WRITE_BOUND_MS = 2_000;
+
 // Deadlines named per KIND, not per call site: a new read or write that must not
 // outlive its caller says which bound it wants instead of inventing a number.
 // The agent list is a read on the same terms as a transcript: one call to a local
@@ -118,9 +135,10 @@ export const ABORT_BOUND_MS = 2_000;
 // distinct failure mode: it is the ONLY read whose answer can be a refusal, and
 // reusing the transcript's bound would let a slow transcript be mistaken for an
 // unanswered existence question.
-export const READ_BOUNDS: { transcript: number; agents: number; presence: number } = {
+export const READ_BOUNDS: { transcript: number; agents: number; presence: number; storage: number } = {
   agents: READ_BOUND_MS,
   presence: READ_BOUND_MS,
+  storage: READ_BOUND_MS,
   transcript: READ_BOUND_MS,
 };
 // Creating the child's session. The same bound and the same argument as the abort:
@@ -142,11 +160,13 @@ export const WRITE_BOUNDS: {
   abort: number;
   create: number;
   question: number;
+  storage: number;
 } = {
   abort: ABORT_BOUND_MS,
   create: CREATE_BOUND_MS,
   parentPrompt: PARENT_WRITE_BOUND_MS,
   question: QUESTION_BOUND_MS,
+  storage: STORAGE_WRITE_BOUND_MS,
 };
 
 /**
@@ -166,22 +186,28 @@ export function shrinkBoundsForTesting(ms: number): () => void {
   const {abort} = WRITE_BOUNDS;
   const {create} = WRITE_BOUNDS;
   const {question} = WRITE_BOUNDS;
+  const {storage} = WRITE_BOUNDS;
+  const {storage: storageRead} = READ_BOUNDS;
   READ_BOUNDS.transcript = ms;
   READ_BOUNDS.agents = ms;
   // Shortened like every other read: the seam changes patience, not the
   // production separation between the presence question and the transcript one.
   READ_BOUNDS.presence = ms;
+  READ_BOUNDS.storage = ms;
   WRITE_BOUNDS.parentPrompt = ms;
   WRITE_BOUNDS.abort = ms;
   WRITE_BOUNDS.create = ms;
   WRITE_BOUNDS.question = ms;
+  WRITE_BOUNDS.storage = ms;
   return () => {
     READ_BOUNDS.transcript = read;
     READ_BOUNDS.agents = agents;
     READ_BOUNDS.presence = presence;
+    READ_BOUNDS.storage = storageRead;
     WRITE_BOUNDS.parentPrompt = write;
     WRITE_BOUNDS.abort = abort;
     WRITE_BOUNDS.create = create;
     WRITE_BOUNDS.question = question;
+    WRITE_BOUNDS.storage = storage;
   };
 }

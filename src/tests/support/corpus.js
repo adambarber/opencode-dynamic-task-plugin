@@ -124,6 +124,15 @@ export function listTestFiles() {
  * handed to production in place of the host is a support file, and a fidelity gate
  * that listed only `*.test.js` would scan the suites and miss every mock in the tree.
  */
+/**
+ * The fake host's OWN modules, found by name. Derived rather than listed, because a
+ * hand-kept list of the fake is a claim that goes stale the moment it is split — and
+ * a stale claim here means a declared fault silently loses its witness.
+ */
+export function listFakeModules() {
+  return listTestSupportFiles().filter((file) => path.basename(file).startsWith("mock-"));
+}
+
 export function listTestSupportFiles() {
   return readdirSync(path.join(TESTS_DIR, "support"))
     .filter((f) => f.endsWith(".js"))

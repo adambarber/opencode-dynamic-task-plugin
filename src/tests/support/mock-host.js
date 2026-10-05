@@ -23,10 +23,10 @@ import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, never
 import { captureNotice, noticeRecord } from "./mock-events.js";
 import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
 import { armGate } from "./mock-gates.js";
+import { createMockStorage } from "./mock-storage.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { missingSessionError } from "./sdk-contract.js";
 import assert from "node:assert";
-import { readFileSync } from "node:fs";
 
 // A suite names the host through ONE import, whichever of these subjects it needs.
 // `export *` rather than a named list: these bindings are also used below, and a
@@ -245,6 +245,10 @@ export function createMockClient(hooks = {}) {
     abortGate: null,
     promptGate: null,
     messageReadGate: null,
+    // The host's durable plugin table. A Map here stands in for the host's SQLite
+    // `kv`, and it is the ONLY place in the fake that pretends to be a disk.
+    kv: new Map(),
+    storageGate: null,
     // The host's status map, shaped as the server holds it: every live
     // session, with the host's own three words. Derived from the events a test
     // delivers (a spawned session is busy, a turn's ending makes it idle, a
@@ -272,6 +276,8 @@ export function createMockClient(hooks = {}) {
     else closeHostTurn(state, id, verdict);
   }
   armHookFaults(state, hooks);
+  const { holdNext: holdNextStorageWrite, storage, untilWrites: untilStorageWrites } =
+    createMockStorage(state, hooks);
 
   const endpoints = {
     testState: state,
@@ -305,6 +311,7 @@ export function createMockClient(hooks = {}) {
     permission: {
       reply: permissionEndpoint(state, hooks),
     },
+    storage,
     session: {
       create: async ({ title, parentID }) => {
         if (armedFlag(state, hooks, "createThrowsOnce") && !state.createThrown) {
@@ -565,6 +572,23 @@ export function createMockClient(hooks = {}) {
     gateMessageRead(opts) {
       return armGate(state, "messageReadGate", opts);
     },
+    // Hold the next durable storage call open. The host writes plugin records in
+    // its own SQLite, so a write can be accepted and never stored — and a state
+    // write that never lands must be refused, not waited on.
+    gateStorage(opts) {
+      return armGate(state, "storageGate", opts);
+    },
+    // Hold ONE storage write until it lands, so a case can watch a write the plugin
+    // already gave up on arrive and observe what the store does about it.
+    holdNextStorageWrite() {
+      return holdNextStorageWrite();
+    },
+    // Resolve once `n` durable writes have LANDED. A store repairing a late landing
+    // does it with a real write, so waiting for the repair waits for the host.
+    untilStorageWrites(n) {
+      return untilStorageWrites(n);
+    },
+    
     // Make this session's transcript refuse to be read, the way a real read
     // fails. A settlement that could not quote the child must say so.
     makeUnreadable(sessionId, error) {
@@ -606,8 +630,6 @@ export function createMockClient(hooks = {}) {
  * run it. Owned here so every such suite asks the same reader: two suites each
  * assembling the path would be the drift this file exists to prevent, one level up.
  */
-export const FAKE_SOURCE = readFileSync(new URL(import.meta.url), "utf8");
-
 /**
  * Is this the answer shape the SDK sends — the payload beside the response it arrived
  * in? Beside the builder because a producer and a recogniser of one shape are one fact,

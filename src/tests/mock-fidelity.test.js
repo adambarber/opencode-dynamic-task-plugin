@@ -1,7 +1,7 @@
 import assert from "node:assert";
 
-import { FAKE_SOURCE, createMockClient, setHostTurn } from "./support/mock-host.js";
-import { listTestSupportFiles, readSource } from "./support/corpus.js";
+import { createMockClient, setHostTurn } from "./support/mock-host.js";
+import { listFakeModules, listTestSupportFiles, readSource } from "./support/corpus.js";
 import { hostOutcomeWords } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";
 import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
@@ -31,7 +31,9 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
     // pin the arrangement; what must hold is that a declared fault is spoken in the
     // fake at all, because a name that lives only in the registry is a fault no branch
     // can ever record.
-    const source = FAKE_SOURCE;
+    const source = listFakeModules()
+      .map((file) => readSource(file).text)
+      .join("\n");
     const unwitnessed = FAULTS.filter((name) => !source.includes(`"${name}"`));
 
     assert.deepStrictEqual(unwitnessed, [], "these faults are declared but no branch names them");

@@ -16,14 +16,16 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
-import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
-import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
-import { withTempDir, writeProjectConfig } from "./fixtures.js";
+import { AGENT_CAP_NAMES, AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
+import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
-import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps } from "../../../dist/tui/index.js";
+import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { withTempDir, writeProjectConfig } from "./fixtures.js";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import tuiModule from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -470,6 +472,35 @@ export const capText = (host, cap) => {
   const found = capRow(host, cap);
   assert.ok(found, `${cap} is a row on the screen underfoot`);
   return rowText(top(host.seen), found.title);
+};
+
+/**
+ * The cap rows of a drawn screen, in draw order, minus the way out.
+ *
+ * Two cases claim the same thing about the caps screen — that both caps are there,
+ * labelled, each with its figure — from two different angles: one is about the EXIT being
+ * last and needs the rows above it to be only the caps, the other is about the hole the
+ * flow found and needs both caps individually pressable. Spelled twice it is one fact
+ * restated at two sites, which is the defect the harness exists to prevent.
+ */
+export const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
+
+/**
+ * The drawn screen carries both caps, in order, each labelled and each with a figure.
+ *
+ * The label is pinned literally; the FIGURE is checked for presence, never recomposed.
+ * Building the expected text from `CAP_LABEL` and `capCellOf` compares production against
+ * production — if `capCellOf` lost the number, both sides would lose it and the case would
+ * pass on a row saying nothing at all. That is exactly what `rowsText` exists to catch.
+ */
+export const assertCapsDrawn = (dialog, why) => {
+  const drawn = capRowsAsDrawn(dialog);
+  assert.equal(drawn.length, AGENT_CAP_NAMES.length, `${why}: one row per cap and the way out, nothing else`);
+  AGENT_CAP_NAMES.forEach((cap, index) => {
+    const label = CAP_LABEL[cap];
+    assert.ok(drawn[index].startsWith(`${label} `), `${why}: row ${index} is ${cap}, and reads "${drawn[index]}"`);
+    assert.notEqual(drawn[index].slice(label.length).trim(), "", `${why}: ${cap} carries its figure, not just its name`);
+  });
 };
 
 /**

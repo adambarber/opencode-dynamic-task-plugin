@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
 import { events } from "./mock-host.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { resolveTaskLedgerPath } from "../../../dist/shared/session-lifecycle.js";
+import { resolveTaskLedgerPath } from "../../../dist/shared/task-ledger.js";
 
 /**
  * A harness whose children fail every turn with `detail`, and one such child.

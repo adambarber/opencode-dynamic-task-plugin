@@ -7,12 +7,11 @@ import {
   BASE, REGISTERED, assertEveryRowFits, booted, capText, openList, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
 } from "./support/limits-screen.js";
 import { CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
-import { describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { existsSync, writeFileSync } from "node:fs";
 import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { BETWEEN } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
-import assert from "node:assert/strict";
 import { bothCaps } from "./support/fixtures.js";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";

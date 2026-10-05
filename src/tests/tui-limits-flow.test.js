@@ -4,32 +4,13 @@
  * `tui-limits-command.test.js`.
  */
 import {
-  BASE, agentEntry, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, rowsText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
+  BASE, assertCapsDrawn, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
 } from "./support/limits-screen.js";
-import { CAP_LABEL, capCellOf } from "../../dist/tui/agent-editor.js";
-import { FROM_CONFIG, namedCell } from "../../dist/tui/theme.js";
-import { describe, it } from "./support/runner.js";
+import { CAP_LABEL } from "../../dist/tui/agent-editor.js";
+import { FROM_CONFIG } from "../../dist/tui/theme.js";
+import { assert, describe, it } from "./support/runner.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import assert from "node:assert/strict";
 import { chmodSync } from "node:fs";
-
-/** What the two cap rows read as the terminal will show them, for an agent capped at 2. */
-const AGENT_CAP_ROWS = AGENT_CAP_NAMES.map((cap) => {
-  const entry = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-  return `${CAP_LABEL[cap]} ${namedCell(capCellOf(entry, cap))}`;
-});
-
-/**
- * The cap rows of a drawn screen, in draw order, minus the way out.
- *
- * Two cases claim the same thing about the caps screen — that both caps are there,
- * labelled, each with its figure — from two different angles: one is about the EXIT being
- * last and needs the rows above it to be only the caps, the other is about the hole the
- * flow found and needs both caps individually pressable. Spelled twice it is four lines
- * and seventy tokens of identical shape, and the gate is right to: the two
- * `AGENT_CAP_NAMES.map` chains are one claim written out, and the line above each says so.
- */
-const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
 
 describe("the flow, end to end on disk", () => {
   it("a chosen cap lands in the overlay the dispatch path reads", () =>
@@ -79,7 +60,7 @@ describe("the flow, end to end on disk", () => {
     // way in at all. The pair was VISIBLE and half of it was editable, which is worse
     // than showing one, because the screen had said both were settings.
     withCapsOpen(async (host) => {
-      assert.deepEqual(capRowsAsDrawn(top(host.seen)), AGENT_CAP_ROWS, "both caps are rows of the agent's own screen, each with its figure");
+      assertCapsDrawn(top(host.seen), "back on the agent's caps");
       for (const cap of AGENT_CAP_NAMES) {
         await choose(host, capRow(host, cap));
         assert.match(top(host.seen).title, new RegExp(`explore — ${CAP_LABEL[cap]}`), `${cap} opens its picker`);

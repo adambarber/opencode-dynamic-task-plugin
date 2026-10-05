@@ -2,15 +2,14 @@
  * Choosing a cap: the picker the host draws, and the claims its title and its rows make.
  * The design thesis and the harness rationale are in `tui-limits-command.test.js`.
  */
-import { ALL_AGENTS_LABEL, BACK_LABEL, capPickerProps } from "../../dist/tui/index.js";
+import { ALL_AGENTS_LABEL, BACK_LABEL, capPickerProps } from "../../dist/tui/props.js";
 import {
-  BOUND_DEPTH, agentEntry, assertEveryRowFits, backRow, backToCaps, choose, clearRow, everyRowClaims, readOverlay, row, rowsOn, rowsText, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen,
+  BOUND_DEPTH, agentEntry, assertCapsDrawn, assertEveryRowFits, backRow, backToCaps, choose, clearRow, everyRowClaims, readOverlay, row, rowsOn, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen,
 } from "./support/limits-screen.js";
-import { CAP_CHOICES, CAP_LABEL, capCellOf } from "../../dist/tui/agent-editor.js";
-import { FROM_CONFIG, boundClause, namedCell } from "../../dist/tui/theme.js";
-import { describe, it } from "./support/runner.js";
+import { CAP_CHOICES, CAP_LABEL } from "../../dist/tui/agent-editor.js";
+import { FROM_CONFIG, boundClause } from "../../dist/tui/theme.js";
+import { assert, describe, it } from "./support/runner.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import assert from "node:assert/strict";
 
 describe("a bound is a note, not a removal", () => {
   it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>
@@ -68,12 +67,7 @@ describe("the picker is the host's own list of values, and a way to leave it", (
     withCapsOpen(async (host) => {
       const titles = titlesOf(top(host.seen));
       assert.equal(titles.at(-1), ALL_AGENTS_LABEL, "the exit is the last row, not a third cap above them");
-      const row2 = agentEntry("explore", { agents: { explore: { maxConcurrent: 2 } } });
-      assert.deepEqual(
-        rowsText(top(host.seen)).slice(0, -1),
-        AGENT_CAP_NAMES.map((cap) => `${CAP_LABEL[cap]} ${namedCell(capCellOf(row2, cap))}`),
-        "and the two caps are still the whole list, each carrying its own figure beside its label",
-      );
+      assertCapsDrawn(top(host.seen), "back on the caps screen");
       await choose(host, backRow(host, ALL_AGENTS_LABEL));
       assert.equal(top(host.seen).title, "Task limits", "which lands on the list, not on a value");
     }));

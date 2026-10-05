@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { CAP_CHOICES, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
 import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
-import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/index.js";
+import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/props.js";
 import { readAgentOverlay } from "../../dist/shared/caps.js";
 import { capRow } from "./support/limits-screen.js";
 

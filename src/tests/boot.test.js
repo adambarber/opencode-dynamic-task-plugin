@@ -28,7 +28,7 @@ import { bootOn, fileSays, settledOnDisk, waitFor, writeLedger } from "./support
  */
 const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
 import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
-import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/session-lifecycle.js";
+import { loadTaskLedger, resolveTaskLedgerPath } from "../../dist/shared/task-ledger.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
 import { ENV } from "../../dist/shared/config.js";
 

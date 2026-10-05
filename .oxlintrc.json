@@ -1,25 +1,35 @@
 {
- "$schema": "./node_modules/oxlint/configuration_schema.json",
- "categories": {
-  "correctness": "deny",
-  "suspicious": "deny",
-  "pedantic": "off",
-  "perf": "deny",
-  "style": "off",
-  "restriction": "off"
- },
- "rules": {
-  "typescript/no-explicit-any": "deny",
-  "typescript/no-unsafe-type-assertion": "deny",
-  "typescript/no-unnecessary-type-assertion": "deny",
-  "typescript/no-non-null-assertion": "deny",
-  "no-unused-vars": [
-   "deny",
-   {
-    "ignoreRestSiblings": true
-   }
-  ],
-  "no-await-in-loop": "off",
-  "typescript/no-meaningless-void-operator": "off"
- }
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "deny",
+    "suspicious": "deny",
+    "pedantic": "off",
+    "perf": "deny",
+    "style": "deny",
+    "restriction": "off"
+  },
+  "rules": {
+    "typescript/no-explicit-any": "deny",
+    "typescript/no-unsafe-type-assertion": "deny",
+    "typescript/no-unnecessary-type-assertion": "deny",
+    "typescript/no-non-null-assertion": "deny",
+    "no-unused-vars": [
+      "deny",
+      {
+        "ignoreRestSiblings": true
+      }
+    ],
+    "no-await-in-loop": "off",
+    "typescript/no-meaningless-void-operator": "off",
+    "eslint/capitalized-comments": "off",
+    "eslint/one-var": "off",
+    "eslint/func-style": "off",
+    "eslint/curly": "off",
+    "eslint/no-ternary": "off",
+    "unicorn/numeric-separators-style": "off",
+    "unicorn/switch-case-braces": "off",
+    "eslint/no-magic-numbers": "off",
+    "eslint/id-length": "off",
+    "unicorn/no-null": "off"
+  }
 }

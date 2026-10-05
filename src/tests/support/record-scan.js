@@ -39,8 +39,8 @@ import path from "node:path";
  * identity triple inline at every `notifyRecord` call and a builder would teach nothing.
  */
 export const SHAPE_HOMES = [
-  { file: "shared/task-state.ts", name: "TaskRecordBase" },
-  { file: "shared/task-state.ts", name: "ActiveTaskState" },
+  { file: "shared/task-records.ts", name: "TaskRecordBase" },
+  { file: "shared/task-records.ts", name: "ActiveTaskState" },
   { file: "shared/settled-record.ts", name: "RetainedTaskState" },
   { file: "shared/task-formatting.ts", name: "TaskResultRecord" },
   { file: "shared/notify-queue.ts", name: "DeliveryTarget" },

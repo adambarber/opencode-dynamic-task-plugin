@@ -11,7 +11,10 @@
  *
  * Re-exported, not wrapped: `describe`/`it`/`beforeEach`/`afterEach` and `assert`
  * keep their identity, so nothing about node:test's behaviour changes.
+ *
+ * `assert` is `node:assert/strict`, not `node:assert`: the loose default coerces
+ * `4` and `"4"` to the same pass, and every suite here wants that to be a failure.
  */
 
 export { describe, it, beforeEach, afterEach } from "node:test";
-export { default as assert } from "node:assert";
+export { default as assert } from "node:assert/strict";

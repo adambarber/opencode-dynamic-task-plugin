@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { REPO_ROOT, lineCount, listSourceFiles } from "./support/corpus.js";
+import { REPO_ROOT, lineCount, listSourceFiles, siteOf } from "./support/corpus.js";
 import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
 
 // --- the duplicate-detection gate ------------------------------------------------
@@ -481,7 +481,7 @@ describe("invariant: no file outgrows the point where a reader stops finding thi
     const files = listSourceFiles();
     assert.ok(files.length > 0, "the corpus resolved to nothing — a stale path");
     const over = files
-      .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: lineCount(readFileSync(f, "utf8")) }))
+      .map((f) => ({ file: siteOf(f), lines: lineCount(readFileSync(f, "utf8")) }))
       .filter(({ lines }) => lines > MAX_LINES)
       .toSorted((a, b) => b.lines - a.lines)
       .map(({ file, lines }) => `${file} (${lines} lines)`);

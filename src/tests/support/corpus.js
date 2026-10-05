@@ -39,8 +39,17 @@ export const REPO_ROOT = path.join(TESTS_DIR, "..", "..");
  * were the only thing several of those modules had in common.
  */
 export function readSource(file) {
-  return { file: path.relative(REPO_ROOT, file), text: readFileSync(file, "utf8") };
+  return { file: siteOf(file), text: readFileSync(file, "utf8") };
 }
+
+/**
+ * A file named the way every failure message names it: relative to the repo root.
+ *
+ * Four rules were each spelling `path.relative(REPO_ROOT, file)` inline, which is the
+ * one line a red run has to agree on — a site reported as an absolute path is a site
+ * nobody can paste into an editor.
+ */
+export const siteOf = (file) => path.relative(REPO_ROOT, file);
 
 /**
  * A production source named the way `SHAPE_HOMES` names it — `shared/task-state.ts`.

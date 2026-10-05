@@ -96,10 +96,12 @@ describe("the flow, end to end on disk", () => {
       }
     }));
 
-  it("the list opens over a directory holding a ledger, because it does not read one", () =>
-    // The row used to print how many tasks were charged to it, which meant a read of
-    // the ledger file in the render path. The number is gone, and with it the read.
+  it("the figure on a row is the operator's number", () =>
+    // The row used to print how many children were charged to it as well, which meant
+    // durable state was read to draw the screen. That number is gone, so the figure a
+    // row carries can only be the overlay's — 7 here, chosen because no count of work
+    // in flight would produce it.
     withOpen((host) => {
-      assert.match(rowText(top(host.seen), "explore"), /2 concurrency/);
-    }, { active: [{ agentName: "explore", childSessionId: "ses_x" }], overlay: { agents: { explore: { maxConcurrent: 2 } } } }));
+      assert.match(rowText(top(host.seen), "explore"), /7 concurrency/);
+    }, { overlay: { agents: { explore: { maxConcurrent: 7 } } } }));
 });

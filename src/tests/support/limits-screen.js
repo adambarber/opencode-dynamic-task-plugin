@@ -20,11 +20,11 @@ import { AGENT_CAP_NAMES, AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverla
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
-import { readFileSync, writeFileSync } from "node:fs";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { readFileSync } from "node:fs";
 import tuiModule from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
@@ -200,14 +200,9 @@ export async function booted(directory, opts) {
 }
 
 /** A project directory holding the given overlay, with nothing booted and nothing pressed. */
-export const withProject = (fn, { overlay, active = [], retained = [] } = {}) =>
+export const withProject = (fn, { overlay } = {}) =>
   withTempDir((directory) => {
     if (overlay !== undefined) writeAgentOverlay(directory, overlay);
-    if (active.length > 0 || retained.length > 0) {
-      // Kept so a case can prove the list does not need it: a ledger-shaped directory
-      // that the list opens over without reading is the claim.
-      writeFileSync(join(directory, ".dynamic-task-ledger.json"), JSON.stringify({ active: Object.fromEntries(active), pending: [], retained: Object.fromEntries(retained) }));
-    }
     return fn(directory);
   });
 

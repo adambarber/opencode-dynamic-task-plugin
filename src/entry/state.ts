@@ -7,8 +7,10 @@ import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
 import { LedgerChangeKind } from "../shared/ledger-change.js";
-import { loadTaskLedger, mergeLedgerChange, resolveTaskLedgerPath, restoreActive, restoreRetained, saveTaskLedger } from "../shared/task-ledger.js";
-import { errorMessage } from "../shared/host-shape.js";
+import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
+import { createLedgerStore } from "../shared/ledger-storage.js";
+import { createStateFacade } from "../shared/state-facade.js";
+import { createStore } from "../shared/durable-store.js";
 import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
 import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
@@ -27,6 +29,16 @@ import { configureDebugRoot, debugLog } from "../debug-logger.js";
 export interface PluginState {
   store: TaskStore;
   config: DynamicTaskConfig;
+}
+
+/**
+ * A durable write the store refused. Loud on the host channel, structured beside it,
+ * and the copy says what is lost rather than only what happened — a refusal that
+ * merely reports itself reads like noise the next boot learns to skip.
+ */
+function reportRefusal(what: string): void {
+  void safeLog("warn", `Dynamic task plugin: ${what}. The value is NOT saved, so this project's durable task state does not yet say so.`);
+  debugLog("ledger", "ledger", "ledger-write-refused", { reason: what });
 }
 
 /**
@@ -64,7 +76,7 @@ function releaseWaitsForSettled(host: OpaqueHost, store: TaskStore, changes: rea
   }
 }
 
-export function initPluginState(directory: string, options: PluginOptions | undefined, host: OpaqueHost): PluginState {
+export async function initPluginState(directory: string, options: PluginOptions | undefined, host: OpaqueHost): Promise<PluginState> {
   // The file's own caps, over the defaults, over env — by the ONE reader the TUI also
   // calls, so the screen an operator reads and the policy a dispatch is judged against
   // cannot be derived from two different files.
@@ -75,7 +87,6 @@ export function initPluginState(directory: string, options: PluginOptions | unde
   // root as the config file above) — never the process CWD, which for
   // tests and multi-project hosts is somebody else's tree.
   configureDebugRoot(directory);
-  const ledgerPath = resolveTaskLedgerPath(directory);
   installLiveAgentCaps(() => {
     const { raw, problem } = readAgentOverlay(directory);
     // Reported once, at the one moment a client exists. The per-dispatch read is
@@ -102,105 +113,35 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     return applyAgentOverlay(config, raw);
   });
 
-const ledger = loadTaskLedger(ledgerPath);
-  // A discarded ledger is a LOST one, and the loss is only actionable if the
-  // operator is told. It used to be a bare `catch {}` that returned an empty
-  // document, which is indistinguishable from a project that has never run a
-  // task — so a parent owed a completion notice simply never received it, with
-  // no log, no record, and nothing in any read to show for it. Two channels,
-  // matching the write failure below: the host log, which is always on and is
-  // where an operator looks when a project has lost track of its tasks, and the
-  // structured debug line, which carries the path. The write failure below is
-  // reported on both for the same reason, which is the reason it is now
-  // reported on both.
-  if (ledger.discarded !== null) {
-    // What the operator can DO about it is part of the report. Telling a project
-    // its records are gone, and then replacing the file those records were in,
-    // makes the instruction impossible to follow: there is nothing left to
-    // inspect, and no way to tell a foreign version from a v3 file this build
-    // merely failed to parse. So the sentence carries both halves — what was
-    // lost, and that the file is being left alone until it is dealt with.
-    const remedy = ledger.unreadable
-      ? " This build will not write to that file either; move it aside or delete it to let durable state resume."
-      : " Records that did parse are still in use and are written back.";
-    void safeLog("warn", `Dynamic task plugin: the durable task ledger at ${ledgerPath} was discarded — ${ledger.discarded}. Tasks and owed notifications recorded there are gone.${remedy}`);
-    debugLog("plugin", "ledger", "ledger-read-discarded", { path: ledgerPath, reason: ledger.discarded });
+  // Durable state is the host's own per-key storage, so the boot is a READ rather
+  // than a file open — and `initPluginState` is async because of it. Nothing below
+  // this line may still be waiting on a filesystem.
+  const ledger = createLedgerStore(createStateFacade(createStore(host, reportRefusal)));
+  const read = await ledger.load();
+
+  // Records the host held that were not records, and a read the host never answered.
+  // Both are reported, and neither is allowed to sound like the ordinary case: a
+  // dropped record is a task the operator may still believe is tracked, and a
+  // partial read is a ledger this boot does NOT know is whole.
+  if (read.dropped > 0 || read.incomplete) {
+    void safeLog("warn", `Dynamic task plugin: durable task state was not read whole — ${read.dropped} record(s) the host held were not records, and the read was ${read.incomplete ? "partial" : "complete"}. A task that is not in this list was not recovered.`);
+    debugLog("ledger", "ledger", "ledger-read-incomplete", { dropped: read.dropped, incomplete: read.incomplete });
   }
-  // One writer for the whole file. Retained records and owed notices live in one
-  // document, so they are written together: a persist that could update one and
-  // lose the other is the same deafness this file exists to prevent.
-  const persistLedger = (changes: readonly LedgerChange[]) => {
-    if (changes.length === 0) return;
-    try {
-      // Re-read, apply, write. The read is the price of not being the process
-      // that deletes someone else's running task: this file is shared by every
-      // opencode process in the project, and a write that carried this process's
-      // whole private view would silently erase the others' records. See
-      // `mergeLedgerChange` for the policy and the ruling behind it.
-      //
-      // A ledger that cannot be read is treated as the one it was before the
-      // change rather than as an invitation to write a fresh slate over another
-      // process's children. `unreadable` is what makes that promise true: it is
-      // the distinction between a file this build READ and one it never saw at
-      // all, and only the second may not be written. The refusal costs this
-      // project its durable state until an operator acts — which is loud, and
-      // bounded, and reversible; the alternative destroys the file the operator
-      // was just told to go and look at, which is neither.
-      const current = loadTaskLedger(ledgerPath);
-      if (current.unreadable) {
-        void safeLog("warn", `Dynamic task plugin: not writing the task ledger at ${ledgerPath} — ${current.discarded}. The file has been left as it was found, and this project's durable task state is off until it is dealt with.`);
-        debugLog("plugin", "ledger", "ledger-write-refused", {
-          path: ledgerPath,
-          reason: current.discarded,
-        });
-        return;
-      }
-      saveTaskLedger(mergeLedgerChange(current, changes), ledgerPath);
-    } catch (error) {
-      // Swallow so a durable-state failure can never break control flow — and
-      // RECORD it, because silence here is the worst possible answer. The
-      // comment above promises "the next mutation retries", and that promise has
-      // a hole: on a run whose last mutation is the one that fails (a child
-      // settles, the operator quits), there is no next mutation, the settlement
-      // never reaches the disk, and the next boot finds a child still active
-      // with a completion notice nobody was told about. The plugin's whole claim
-      // is that it does not lose track of a child, so a lost write is the one
-      // thing it may not lose quietly.
-      //
-      // Project-level, not task-level: a write carries every record at once, so
-      // it belongs to no single child. One well-known file is more findable than
-      // the same line scattered across a hundred task logs.
-      //
-      // BOTH channels, because the comment above the read failure claimed this
-      // symmetry and only half of it was true: a lost WRITE went to a debug log
-      // that is off unless DYNAMIC_TASK_DEBUG=1, so the one loss that leaves a
-      // child active forever with no notice owed to anyone was the quietest of
-      // all — while the loss the host log reports is the one an operator has
-      // already had to notice. The host log is the channel that needs no
-      // environment variable set before the process started, which is the only
-      // kind an operator can rely on being there.
-      void safeLog("warn", `Dynamic task plugin: a write to the task ledger at ${ledgerPath} failed — ${errorMessage(error)}. Task state in this project is not being saved until it succeeds; the in-memory state is still correct for this session.`);
-      debugLog("plugin", "ledger", "ledger-write-failed", {
-        error: errorMessage(error),
-        path: ledgerPath,
-      });
-    }
-  };
-  // Ledger sync: every retained mutation and every change to the running set
-  // persists, through the one writer that holds the whole file. Errors are
-  // swallowed here so a durable-state failure can never break control flow.
+
+  // One writer, now one PER KEY: no read before the write and no whole-file rewrite,
+  // so two processes on one project cannot erase each other's running children.
   store.onRetainedChange = (changes) => {
-    persistLedger(changes);
+    ledger.persist(changes);
     releaseWaitsForSettled(host, store, changes);
   };
-  store.onActiveChange = persistLedger;
-  configurePendingPersistence(persistLedger);
+  store.onActiveChange = ledger.persist;
+  configurePendingPersistence(ledger.persist);
 
   // Crash recovery: rehydrate retained tasks and the running set, and take
   // ownership of the notices the last boot owed.
-  restoreRetained(store, ledger.retained, config.retainedTaskMaxEntries);
+  restoreRetained(store, read.retained, config.retainedTaskMaxEntries);
   pruneRetainedTasks(store, config);
-  restorePendingDeliveries(ledger.pending);
+  restorePendingDeliveries(read.pending);
 
   // The boot pass is the one moment every debt from the last run is visible at
   // once, and until this line existed it was the one moment nothing was. Measured
@@ -229,7 +170,7 @@ const ledger = loadTaskLedger(ledgerPath);
   // The running set is restored BEFORE the pending notices are paid, and
   // reconciliation is detached (below), so an owed notice and a vanished
   // child's notice can neither mask nor reorder each other.
-  const restored = restoreActive(store, ledger.active);
+  const restored = restoreActive(store, read.active);
   if (restored > 0) void reconcileRestored(host, store);
 
   // Pay the debt, oldest first, one pass and no waiting — through the one

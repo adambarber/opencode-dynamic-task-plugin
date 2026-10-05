@@ -1,24 +1,24 @@
 // src/shared/task-ledger.ts
-// The durable ledger: the one file that survives this process.
+// What a durable task record IS: the guards that decide whether host-held bytes are
+// a record, and the hydration that turns one into the live shape.
 //
 // It was the largest of four subjects inside session-lifecycle.ts, and the
 // atomic-write dance pin already sanctioned that file by name — so the behavior
 // this module is trusted for was owned by a module whose name said nothing about
-// persistence. Durable state resolves from the host-provided project `directory`,
-// never process CWD, which for tests and multi-project hosts is somebody else's tree.
+// persistence. WHAT a record is and WHERE it lives were the same file for the whole
+// of the file-backed era, and only the second half of that has moved: the reader and
+// writer are now `ledger-storage.ts`, on the host's own per-key store. A guard still
+// lives here, because two readers that each decided what a record is would be two
+// places for that to drift.
 
 import { type ActiveTaskState, type LineagePath, type RetainedTaskState, type TaskIdentity, type TaskRecordBase, oldestRetainedId } from "./task-state.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import { type LedgerChangeSink, type TaskStore } from "./store.js";
-import { NOTIFY_KINDS, type PendingDelivery, owedIdentity } from "./notify.js";
-import { TaskState, isTaskState, withoutAdvisory } from "./task-records.js";
-import { dirname, join } from "node:path";
-import { errorMessage, isEventRecord } from "./host-shape.js";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-
 import { DEFAULT_CONFIG } from "./config.js";
+import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import { type LedgerChangeSink, type TaskStore } from "./store.js";
+import { TaskState, isTaskState, withoutAdvisory } from "./task-records.js";
 import { emitRetainedChange } from "./change-sinks.js";
-import { homedir } from "node:os";
+import { isEventRecord } from "./host-shape.js";
 import { isFailureClass } from "./failure-class.js";
 
 // A task's durable record must be complete or absent: any field the render
@@ -62,13 +62,49 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
   );
 }
 
-// A settled record additionally carries the clock that ordered it. A running
-// one must NOT: `retainedAt` on an active entry would mean nothing.
-function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { state: Exclude<RetainedTaskState["state"], "active">; retainedAt: number } {
-  return isValidLedgerEntry(value)
+/** A RUNNING durable entry: the ledger entry whose state must be `active`. */
+export type ActiveEntry = ValidLedgerEntry;
+
+export function isActiveEntry(value: unknown): value is ActiveEntry {
+  return isValidLedgerEntry(value) && value.state === TaskState.Active;
+}
+
+/** A SETTLED durable entry: as above, plus the clock that ordered it. */
+export type RetainedEntry = ValidLedgerEntry & {
+  state: Exclude<RetainedTaskState["state"], "active">;
+  retainedAt: number;
+};
+
+export function isRetainedEntry(value: unknown): value is RetainedEntry {
+  return (
+    isValidLedgerEntry(value)
     && value.state !== TaskState.Active
     && typeof value.retainedAt === "number"
-    && Number.isFinite(value.retainedAt);
+    && Number.isFinite(value.retainedAt)
+  );
+}
+
+/** The durable form of a running entry, hydrated into the live shape. */
+export function activeFrom(entry: ActiveEntry): ActiveTaskState {
+  return { ...hydratedBase(entry), state: TaskState.Active };
+}
+
+/**
+ * The durable form of a settled entry, hydrated into the live shape. A class the
+ * record does not carry, or carries as a word this build does not speak, is DROPPED
+ * rather than guessed: a structural failure read as transient is worse than an
+ * unclassified one, because it tells a person the work is fine.
+ */
+export function retainedFrom(entry: RetainedEntry): RetainedTaskState {
+  const { abortError } = entry;
+  const { failureClass } = entry;
+  return {
+    ...hydratedBase(entry),
+    retainedAt: entry.retainedAt,
+    state: entry.state,
+    ...(typeof abortError === "string" ? { abortError } : {}),
+    ...(isFailureClass(failureClass) ? { failureClass } : {}),
+  };
 }
 
 // v3: durable delivery. v2 held settled records only, so a crash between
@@ -79,67 +115,7 @@ function isValidRetainedEntry(value: unknown): value is ValidLedgerEntry & { sta
 // leaves a next boot with nothing to reconcile. Retained kinds are the three
 // terminal states. Every other version is discarded wholesale — a
 // partially-restored past reads as history, and is worse than a clean boot.
-// File shape: { version, tasks: { [childSessionId]: entry }, active: { [childSessionId]: entry }, pending: [owed write] }.
-export const TASK_LEDGER_VERSION = 3;
-
-/**
- * The whole durable file, as the one dance sees it.
- */
-export interface TaskLedgerFile {
-  retained: Map<string, RetainedTaskState>;
-  active: Map<string, ActiveTaskState>;
-  pending: PendingDelivery[];
-}
-
-/**
- * A ledger that was READ, plus why it was thrown away when it was not.
- *
- * `discarded` is null when the file was read (including when there was no file,
- * which is a first boot and loses nothing). It exists because the alternative
- * was a boot that silently invents a clean slate: a torn write, a hand-edited
- * file, or a version this build does not speak all produce an EMPTY ledger, and
- * an empty ledger is indistinguishable from a project that has never run a task.
- * A parent owed a completion notice would never receive it, and the plugin —
- * whose whole claim is that it does not lose track of a child — would have lost
- * one in silence. Discarding is the right call; discarding QUIETLY is not, so
- * the reason travels out beside the maps and the boot reports it. This is the
- * read side of the pair `persistLedger` already reports on the write side.
- *
- * It is a fact about the READ and not a field of the file, which is why it is
- * not on `TaskLedgerFile`: nothing writes a reason for discarding into the
- * document it is describing.
- *
- * `unreadable` is the sharper of the two, and it is a separate field because
- * `discarded` conflates two worlds that must be treated oppositely. A file whose
- * RECORDS were dropped was read: the survivors are in hand, so writing onto it
- * merges onto a known document and is the ordinary case. A file that could not be
- * read at all was not, and writing onto it is not a merge — it is a replacement
- * of whatever the operator (or another process) had, by a view of the world this
- * process built without ever having seen the file. The writer needs that
- * distinction, and reading it out of `discarded`'s prose would make the two
- * wordings load-bearing.
- */
-export interface LoadedTaskLedger extends TaskLedgerFile {
-  discarded: string | null;
-  /** True only when NOTHING was parsed: a torn write, a foreign version, a non-object. */
-  unreadable: boolean;
-}
-
-const FALLBACK_LEDGER_ROOT = join(homedir(), ".local", "share", "opencode-dynamic-task");
-
-// Ledger and debug root resolve from the host-provided project directory —
-// the same root as the plugin config file — never process CWD. With no
-// directory at all (tests, bare hosts), fall back to a private state dir.
-export function resolveTaskLedgerPath(directory: string): string {
-  if (directory) return join(directory, ".dynamic-task-ledger.json");
-  return join(FALLBACK_LEDGER_ROOT, "ledger.json");
-}
-
-// An owed write is all-or-nothing: the boot must be able to deliver it exactly,
-// so a missing parent, an empty text, an unknown kind, or a non-finite attempt
-// count disqualifies the whole entry. Half an entry would dial a message nobody
-// can account for.
-function isPendingDelivery(value: unknown): value is PendingDelivery {
+export function isPendingDelivery(value: unknown): value is PendingDelivery {
   if (!isEventRecord(value)) return false;
   const { parentSessionId, childSessionId, kind, text, attempts } = value;
   return (
@@ -160,9 +136,8 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
   const {dependsOnSettled} = entry;
   const {requestedModel} = entry;
   return {
-    childSessionId: entry.childSessionId,
-    parentSessionId: entry.parentSessionId,
     agentName: entry.agentName,
+    childSessionId: entry.childSessionId,
     description: entry.description,
     // `agentName` above is the whole routing key now. A record written by an older
     // build also carried a `lane`, and it is dropped rather than migrated: the lane
@@ -173,6 +148,7 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
     // guess. `agentName` was already required on every record, so this branch is
     // unreachable in practice; it is here because the durable read is untrusted.
     lineage: entry.lineage.filter((s): s is string => typeof s === "string"),
+    parentSessionId: entry.parentSessionId,
     startedAt: entry.startedAt,
     ...(Array.isArray(dependsOn) ? { dependsOn: dependsOn.filter((d): d is string => typeof d === "string") } : {}),
     ...(Array.isArray(dependsOnSettled) ? { dependsOnSettled: dependsOnSettled.filter((d): d is string => typeof d === "string") } : {}),
@@ -188,85 +164,6 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
 // declares, forced to the one state a restored record may be in.
 export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
   return { ...withoutAdvisory(record), state: TaskState.Active };
-}
-
-export function loadTaskLedger(filePath: string): LoadedTaskLedger {
-  const retained = new Map<string, RetainedTaskState>();
-  const active = new Map<string, ActiveTaskState>();
-  const pending: PendingDelivery[] = [];
-  // Every road out of here that throws durable state away says which road it
-  // was. One count for records dropped inside an otherwise-readable file, and
-  // one reason for a file that could not be read at all: those are different
-  // failures and an operator needs to tell them apart.
-  //
-  // ONE return, on purpose. Three returns that each built the same object is
-  // three places to add a field, and the one somebody forgets is a silent
-  // discard — which is the failure this whole shape exists to remove.
-  let discarded: string | null = null;
-  let unreadable = false;
-  let dropped = 0;
-  if (filePath && existsSync(filePath)) {
-    try {
-      const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
-      if (!isEventRecord(parsed) || parsed.version !== TASK_LEDGER_VERSION || !isEventRecord(parsed.tasks)) {
-        const version = isEventRecord(parsed) ? JSON.stringify(parsed.version) : "not an object";
-        discarded = `unreadable as a v${TASK_LEDGER_VERSION} ledger file (version field: ${version})`;
-        unreadable = true;
-      } else {
-        if (Array.isArray(parsed.pending)) {
-          for (const entry of parsed.pending) {
-            if (isPendingDelivery(entry)) pending.push(entry);
-            else dropped++;
-          }
-        }
-        if (isEventRecord(parsed.active)) {
-          for (const [key, entry] of Object.entries(parsed.active)) {
-            if (isValidLedgerEntry(entry) && entry.state === TaskState.Active && entry.childSessionId === key) {
-              active.set(key, { ...hydratedBase(entry), state: TaskState.Active });
-            } else {
-              dropped++;
-            }
-          }
-        }
-        const taskEntries = isEventRecord(parsed.tasks) ? Object.entries(parsed.tasks) : [];
-        for (const [key, entry] of taskEntries) {
-          // The map key is canonical identity: an entry disagreeing with its key
-          // is corrupt, not merely mislabeled.
-          if (isValidRetainedEntry(entry) && key.startsWith("ses_") && entry.childSessionId === key) {
-            const {abortError} = entry;
-            const {failureClass} = entry;
-            retained.set(key, {
-              ...hydratedBase(entry),
-              retainedAt: entry.retainedAt,
-              state: entry.state,
-              ...(typeof abortError === "string" ? { abortError } : {}),
-              // A class the file does not carry, or carries as a word this build
-              // does not speak, is DROPPED rather than guessed — the same rule the
-              // `lane` field below follows, for the same reason: a structural
-              // failure read as transient is worse than an unclassified one,
-              // because it tells a person the work is fine. A file written before
-              // classes existed lands here with no field and reads as unclassified,
-              // which is the honest reading of a record that never said.
-              ...(isFailureClass(failureClass) ? { failureClass } : {}),
-            });
-          } else {
-            dropped++;
-          }
-        }
-        // A child occupies exactly ONE half. See `dropSettledShadows` for why this
-        // is resolved here rather than trusted from the writer.
-        dropped += dropSettledShadows(retained, active);
-        if (dropped > 0) discarded = `${dropped} record(s) in the file failed validation and were dropped`;
-      }
-    } catch (error: unknown) {
-      // A torn write is the ordinary way to get here, and this is the one place
-      // it is survivable: the file is all the plugin has, and a partial parse is
-      // still a record of what the last boot knew.
-      discarded = `unparseable (${errorMessage(error)})`;
-      unreadable = true;
-    }
-  }
-  return { active, discarded, pending, retained, unreadable };
 }
 
 /**
@@ -291,7 +188,7 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
  * @returns how many records were dropped, so the operator is told the file
  *   contradicted itself rather than only being told what survived.
  */
-function dropSettledShadows(
+export function dropSettledShadows(
   retained: Map<string, RetainedTaskState>,
   active: Map<string, ActiveTaskState>,
 ): number {
@@ -357,111 +254,6 @@ function dropSettledShadows(
  */
 
 
-/**
- * What a set of changes does to a ledger. Pure, and the whole of the merge
- * policy in one place: entries this process did not touch are carried through
- * untouched, which is the entire claim.
- */
-export function mergeLedgerChange(onDisk: TaskLedgerFile, changes: readonly LedgerChange[]): TaskLedgerFile {
-  const retained = new Map(onDisk.retained);
-  const active = new Map(onDisk.active);
-  const pending = [...onDisk.pending];
-  for (const change of changes) {
-    switch (change.kind) {
-      // Grouped in the shape the notice cases below already use: a kind that
-      // differs only in WHICH VERB it uses belongs next to its twin, so each verb
-      // is written once. Spelled as four arms, the pair read as near-identical
-      // blocks — `active.delete(change.id); break;` twice over — which is one
-      // decision restated in the one place a reader looks to learn what a kind does.
-      case LedgerChangeKind.Settled:
-      case LedgerChangeKind.Forgotten: {
-        if (change.kind === LedgerChangeKind.Settled) retained.set(change.id, change.record);
-        else retained.delete(change.id);
-        active.delete(change.id);
-        break;
-      }
-      case LedgerChangeKind.Running:
-      case LedgerChangeKind.Stopped: {
-        if (change.kind === LedgerChangeKind.Stopped) {
-          active.delete(change.id);
-        } else {
-          // A child occupies EXACTLY ONE half of the ledger. A `Running` change is
-          // the reclaim, so it also CLEARS the settled record it replaces. It did not,
-          // and a revived or withdrawn child then sat in both halves at once: the
-          // boot pass found the settled record first and restored a genuinely running
-          // child as completed — a durable false success, not a wrong answer to a live
-          // question, and so invisible to anything that read the store instead of the
-          // file.
-          retained.delete(change.id);
-          active.set(change.id, change.record);
-        }
-        break;
-      }
-      // One lookup for both: what makes two notices the SAME notice is
-      // `owedIdentity`, and the two cases differ only in what they do about it.
-      case LedgerChangeKind.Owed:
-      case LedgerChangeKind.Delivered: {
-        const identity = owedIdentity(change.record);
-        const at = pending.findIndex((owed) => owedIdentity(owed) === identity);
-        if (change.kind === LedgerChangeKind.Delivered) {
-          if (at !== -1) pending.splice(at, 1);
-        } else if (at === -1) pending.push(change.record);
-        else pending[at] = change.record;
-        break;
-      }
-    }
-  }
-  return { active, pending, retained };
-}
-
-export function saveTaskLedger(ledger: TaskLedgerFile, filePath: string): string {
-  if (!filePath) {
-    throw new Error("Task ledger path is required");
-  }
-  const dir = dirname(filePath);
-  if (dir && dir !== ".") {
-    mkdirSync(dir, { recursive: true });
-  }
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
-  writeFileSync(
-    tmpPath,
-    JSON.stringify(
-      {
-        version: TASK_LEDGER_VERSION,
-        tasks: Object.fromEntries(ledger.retained),
-        // Shaped here, at the ledger boundary: the one place that knows which
-        // half of a live record is durable.
-        active: Object.fromEntries([...ledger.active].map(([id, record]) => [id, durableActiveTask(record)])),
-        pending: ledger.pending,
-      },
-      null,
-      2,
-    ),
-  );
-  renameSync(tmpPath, filePath);
-  return filePath;
-}
-
-// Boot revival: the ledger's read side. Entries the reader already validated
-// into the live maps — the reader owns shape truth, this owns placement.
-/**
- * Boot hydration for the running half, as ONE change rather than N.
- *
- * One write, and that is the load-bearing part. Placing each record through
- * `setActive` meant a boot rewrote the file once per restored task, each write
- * serializing a map that had already grown: restoring 200 records issued 200
- * writes and 4.8 MB of JSON to produce a 30 KB file, every boot, for no change in
- * content — the file ALREADY holds these records, they were just read from it.
- *
- * So the restore places and then tells the funnel ONCE. It does not bypass it —
- * spawn, revive and settlement still go through `setActive`/`removeActive` — and
- * a restore that dropped a record (the cap fired, or the other half outranked
- * it) is still followed by a write, so the file never disagrees with memory.
- *
- * The concurrency cap is deliberately NOT applied: it is an admission policy
- * about work this process starts, and these tasks are already running
- * server-side. Over-cap actives block new admissions until they settle.
- */
 /**
  * The one boot restore, for either half of the ledger.
  *

@@ -47,7 +47,7 @@ async function setup(context: Context): Promise<void> {
   // instance's events into another project's store. Debug root and
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
-  const { config, store } = initPluginState(directory, options, host);
+  const { config, store } = await initPluginState(directory, options, host);
   const deps = { config, directory, host, store };
   const tools = buildToolMap(deps);
 

@@ -65,14 +65,33 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
   // The whole point of `apply`: the chain advances on the DEADLINE so a host that
   // never answers cannot wedge every write behind one hung call, and last-write-wins
   // is restored afterwards rather than assumed.
+  //
+  // A host that REFUSES is a third answer, and the one that got left unwritten. A
+  // rejection escaping here poisons the chain the next write waits on, so every later
+  // write to every key fails with it and the plugin's view of durability becomes a lie
+  // told to nobody. The refusal is therefore taken INSIDE the bound — one key, one
+  // reason, given up rather than retried into the same answer.
   const apply = async (key: string): Promise<void> => {
     const wanted = intent.get(key) ?? null;
+    const refusal = { why: null as string | null };
     const answer = await callHost(
       host,
       WRITE_BOUNDS.storage,
-      (context) => (wanted === null ? context.storage.remove(key) : context.storage.set(key, wanted)),
+      async (context) => {
+        try {
+          return wanted === null ? await context.storage.remove(key) : await context.storage.set(key, wanted);
+        } catch (error) {
+          refusal.why = errorMessage(error);
+          return undefined;
+        }
+      },
       null,
     );
+    if (refusal.why !== null) {
+      intent.delete(key);
+      onRefusal(`refused the write to ${key}: ${refusal.why}`);
+      return;
+    }
     if (!answer.timedOut) return;
     onRefusal(`refused the write to ${key}: no answer in ${WRITE_BOUNDS.storage}ms`);
     void answer.finished.catch(() => {}).then(() => enqueue(() => apply(key)));

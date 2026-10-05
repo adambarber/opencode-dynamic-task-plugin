@@ -234,8 +234,8 @@ describe("the cap vocabulary", () => {
     // TOTAL over the caps, so this is a fact about the type and not about the two that
     // exist: a cap added to `AGENT_CAP_NAMES` without a label or a value list will not
     // compile, which is the only reason a new cap cannot arrive with an empty picker.
-    assert.deepEqual(Object.keys(CAP_LABEL).sort(), [...AGENT_CAP_NAMES].sort());
-    assert.deepEqual(Object.keys(CAP_CHOICES).sort(), [...AGENT_CAP_NAMES].sort());
+    assert.deepEqual(Object.keys(CAP_LABEL).toSorted(), [...AGENT_CAP_NAMES].toSorted());
+    assert.deepEqual(Object.keys(CAP_CHOICES).toSorted(), [...AGENT_CAP_NAMES].toSorted());
   });
 });
 

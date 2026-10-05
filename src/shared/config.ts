@@ -186,6 +186,20 @@ export const ENV = {
   allowSameAgentRecursion: "DYNAMIC_TASK_ALLOW_SAME_AGENT_RECURSION",
 } as const;
 
+// A knob the defaults actually carry: env can never name a typo, and a new
+// field is covered by defaults with no second spelling to drift.
+function isConfigKey(name: string): name is keyof DynamicTaskConfig {
+  return name in buildDefaultConfig();
+}
+// One generic assignment keeps each env reader paired with its own field;
+// a union-keyed write would need a cast, and this does not.
+function assignEnvOverride<K extends keyof DynamicTaskConfig>(
+  config: DynamicTaskConfig,
+  key: K,
+  value: DynamicTaskConfig[K],
+): void {
+  config[key] = value;
+}
 export function normalizeDynamicTaskConfig(
   options: PluginOptions | null | undefined,
   fileConfig?: unknown,
@@ -214,11 +228,12 @@ export function normalizeDynamicTaskConfig(
   };
 
   const merged: DynamicTaskConfig = { ...base };
-  for (const key of Object.keys(env) as (keyof DynamicTaskConfig)[]) {
+  // The keys env can override. Each key pairs with its own reader below,
+  // so a reader never fills a field it was not written for.
+  const envKeys = Object.keys(env).filter(isConfigKey);
+  for (const key of envKeys) {
     const override = env[key]?.();
-    if (override !== undefined) {
-      (merged[key] as number | string[] | boolean) = override;
-    }
+    if (override !== undefined) assignEnvOverride(merged, key, override);
   }
 
   return {
@@ -274,10 +289,8 @@ export function parseDynamicTaskJsonc(filePath: string): Record<string, unknown>
     const stripped = raw
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(^|[^:])\/\/.*$/gm, "$1");
-    const parsed = JSON.parse(stripped) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
+    const parsed: unknown = JSON.parse(stripped);
+    if (isPlainRecord(parsed)) return parsed;
     return null;
   } catch {
     return null;

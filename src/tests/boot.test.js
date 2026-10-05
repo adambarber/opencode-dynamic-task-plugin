@@ -9,6 +9,7 @@
  */
 
 import { describe, it } from "./support/runner.js";
+import { compareStrings } from "./support/assertions.js";
 import assert from "node:assert";
 import { existsSync, chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -550,7 +551,7 @@ describe("boot reconciles what the last boot was still running", () => {
     await sleep(150);
 
     assert.deepStrictEqual(
-      Object.keys(ledgerActive(directory)).sort(),
+      Object.keys(ledgerActive(directory)).toSorted(),
       ["ses_first", "ses_second"],
       "not knowing leaves a child ACTIVE — inventing a settlement is the expensive error here",
     );
@@ -645,7 +646,7 @@ describe("boot reconciles what the last boot was still running", () => {
 // with no error, and while the deleted process went on running the child. The
 // loss had no failure to find it by, which is the worst shape a data loss takes.
 describe("two plugin instances sharing one project", () => {
-  const activeIds = (directory) => Object.keys(JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active).sort();
+  const activeIds = (directory) => Object.keys(JSON.parse(readFileSync(resolveTaskLedgerPath(directory), "utf8")).active).toSorted();
 
   it("neither deletes the other's running task", async () => {
     const directory = tmpProjectDir();
@@ -658,7 +659,7 @@ describe("two plugin instances sharing one project", () => {
 
     assert.deepStrictEqual(
       activeIds(directory),
-      [first.id, second.id].sort(),
+      [first.id, second.id].toSorted(compareStrings),
       "each instance's running task survives the other instance's write",
     );
   });

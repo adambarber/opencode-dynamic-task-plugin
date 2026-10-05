@@ -12,8 +12,8 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { resultForChild, resultForUnreadableChild, setupHarness, sleep, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
 import { withSettledMiddleChild } from "./support/stop-scenarios.js";
-import { events, hostSaid, unclockedSaid } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
+import { hostSaid, unclockedSaid } from "./support/mock-host.js";
+import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
 import { eventHarness } from "./support/integration.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
@@ -68,7 +68,7 @@ describe("task_result and task_interrupt paths", () => {
   // wrong recoveries: waiting on a dead child, and interrupting a live one.
   const liveness = [
     ["a running child reads the server's word and the child's own last message",
-      async ({ c, id }) => {
+      async ({ c }) => {
         const out = await c.status();
         return [out, [[/Server turn: in progress/, true], [/Last child message: \d+s ago/, true]]];
       }],
@@ -242,7 +242,7 @@ describe("task_result and task_interrupt paths", () => {
     answerSays(out, "ses_ghost", "names the session it will not touch");
     answerSays(out, "not a session this plugin dispatched");
     assert.deepStrictEqual(
-      missing.client._state.abortAttempts,
+      missing.client.testState.abortAttempts,
       [],
       "the server must never be asked about a session this plugin did not start",
     );
@@ -465,8 +465,8 @@ describe("task fleet views", () => {
       const list = await h.tool.task_list.execute({});
       const childLine = lineFor(list, child.id);
       const grandchildLine = lineFor(list, grandchild.id);
-      assert.ok(/^- /.test(childLine), `a root sits flush. got: ${childLine}`);
-      assert.ok(/^  - /.test(grandchildLine), `a descendant is indented under it. got: ${grandchildLine}`);
+      assert.ok(childLine.startsWith("- "), `a root sits flush. got: ${childLine}`);
+      assert.ok(grandchildLine.startsWith("  - "), `a descendant is indented under it. got: ${grandchildLine}`);
     });
 
     it("a finished task is history, not part of the running tree", async () => {

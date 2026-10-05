@@ -17,7 +17,6 @@
 // runs, so this is where "does the plugin load at all" is decided.
 
 import type { Context, Plugin } from "@opencode/plugin/promise/plugin";
-import type { PluginOptions } from "@opencode/plugin";
 import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/session-lifecycle.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
@@ -34,7 +33,7 @@ async function setup(context: Context): Promise<void> {
   // v2 carries plugin options ON the context (`context.options`), not as a second
   // argument — the host calls `setup(context)` with one argument. A two-parameter
   // signature here would typecheck while silently receiving `undefined`.
-  const options = context.options as PluginOptions | undefined;
+  const options = context.options;
   // The one mint. Past this line nothing downstream can name a host namespace.
   const host = asOpaqueHost(context);
 

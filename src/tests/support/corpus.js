@@ -8,6 +8,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compareStrings } from "./assertions.js";
 
 // The tests directory is this module's PARENT: this file lives in support/, and
 // anchoring on its own location would make SRC_DIR src/tests — a corpus that
@@ -61,7 +62,7 @@ export function walkSource(dir, accept, { skipTests = false } = {}) {
       out.push(full);
     }
   }
-  return out.sort();
+  return out.toSorted(compareStrings);
 }
 
 export const isTypeScript = (file) => file.endsWith(".ts");
@@ -88,14 +89,14 @@ export function listProdFiles() {
  * — it used to say "every file under src/" while reading `.ts`/`.js` only.
  */
 export function listSourceFiles() {
-  return [...walkSource(SRC_DIR, isProductionOrSuite), ...walkSource(SCRIPTS_DIR, isProductionOrSuite)].sort();
+  return [...walkSource(SRC_DIR, isProductionOrSuite), ...walkSource(SCRIPTS_DIR, isProductionOrSuite)].toSorted(compareStrings);
 }
 
 export function listTestFiles() {
   return readdirSync(TESTS_DIR)
     .filter((f) => f.endsWith(".test.js"))
     .map((f) => path.join(TESTS_DIR, f))
-    .sort();
+    .toSorted();
 }
 
 /**
@@ -107,7 +108,7 @@ export function listTestSupportFiles() {
   return readdirSync(path.join(TESTS_DIR, "support"))
     .filter((f) => f.endsWith(".js"))
     .map((f) => path.join(TESTS_DIR, "support", f))
-    .sort();
+    .toSorted();
 }
 
 /**

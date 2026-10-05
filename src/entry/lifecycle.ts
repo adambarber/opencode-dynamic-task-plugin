@@ -161,7 +161,7 @@ export function reviveWithPrompt(
   childSessionId: string,
   prompt: string,
   capSource: AgentCapSource | undefined,
-  model?: ModelOverride | undefined,
+  model?: ModelOverride,
 ): ActiveTaskState {
   const revived = reviveRetainedTask(store, childSessionId, capSource, model);
   gateLedger.forgetChild(childSessionId);
@@ -269,7 +269,7 @@ export async function settleRunningChild(
   store: TaskStore,
   childSessionId: string,
   signal: SettlementSignal,
-  capSource?: AgentCapSource | undefined,
+  capSource?: AgentCapSource,
 ): Promise<boolean> {
   const { status, cause } = signal;
   // Turn attribution first, and the reason for it lives on the gate itself. It is
@@ -425,7 +425,7 @@ export async function handleChildLifecycleEvent(
   host: OpaqueHost,
   store: TaskStore,
   event: unknown,
-  capSource?: AgentCapSource | undefined,
+  capSource?: AgentCapSource,
 ): Promise<void> {
   const childSessionId = getSessionIdFromEvent(event);
   if (!childSessionId) return;

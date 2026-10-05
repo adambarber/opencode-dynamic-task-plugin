@@ -198,7 +198,7 @@ export function findCrossBoundaryClones({
       }
     }
   }
-  return findings.sort((x, y) => y.tokens - x.tokens || y.lines - x.lines);
+  return findings.toSorted((x, y) => y.tokens - x.tokens || y.lines - x.lines);
 }
 
 export const corpus = () => ({

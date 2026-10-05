@@ -15,8 +15,8 @@
  */
 
 import assert from "node:assert";
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
-import path, { join } from "node:path";
+import { readFileSync, readdirSync, unlinkSync, appendFileSync, mkdtempSync } from "node:fs";
+import nodePath, { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach } from "node:test";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
@@ -83,7 +83,7 @@ export const bounded = (ms, fn) => withSeam(() => shrinkBoundsForTesting(ms), fn
 export function debugLines(directory) {
   return readLogDir(directory)
     .filter((name) => name !== PLUGIN_LOG)
-    .flatMap((name) => readFileSync(path.join(directory, DEBUG_DIR, name), "utf8").split("\n"))
+    .flatMap((name) => readFileSync(nodePath.join(directory, DEBUG_DIR, name), "utf8").split("\n"))
     .filter((line) => line.trim() !== "")
     .map((line) => JSON.parse(line));
 }
@@ -91,7 +91,7 @@ export function debugLines(directory) {
 /** The prose warnings the plugin leaves for an operator, from `plugin.log`. */
 export function pluginLog(directory) {
   try {
-    return readFileSync(path.join(directory, DEBUG_DIR, PLUGIN_LOG), "utf8");
+    return readFileSync(nodePath.join(directory, DEBUG_DIR, PLUGIN_LOG), "utf8");
   } catch {
     return "";
   }
@@ -101,7 +101,7 @@ const PLUGIN_LOG = "plugin.log";
 
 function readLogDir(directory) {
   try {
-    return readdirSync(path.join(directory, DEBUG_DIR));
+    return readdirSync(nodePath.join(directory, DEBUG_DIR));
   } catch {
     return [];
   }
@@ -134,17 +134,17 @@ export const withEnv = (key, value, fn) =>
  */
 export const tmpLedgerPath = () => `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
 
-export const withTempFile = (path, fn) =>
+export const withTempFile = (target, fn) =>
   // Nothing to install — the case is handed the path, and the undo is the cleanup.
   withSeam(() => () => {
-    for (const file of [path, `${path}.tmp`]) {
+    for (const file of [target, `${target}.tmp`]) {
       try {
         unlinkSync(file);
       } catch {
         /* never created */
       }
     }
-  }, () => fn(path));
+  }, () => fn(target));
 
 /** A unique path in the OS temp dir. The caller does not create it. */
 export const tmpFilePath = (label = "dt") =>
@@ -179,7 +179,7 @@ export function renderedAgeSeconds(detail, label) {
  * Questions about the fake host's recorded state, asked here instead of by 26
  * hand-rolled reach-throughs.
  *
- * The harness owns `_state` — that is the whole point of it — and the tests were
+ * The harness owns `testState` — that is the whole point of it — and the tests were
  * each re-deriving the same queries out of it: `filter((p) => p.to === id)`,
  * `filter((p) => p.body.parts[0].text.includes("pivot"))`, `aborted.includes(id)`.
  * The body shape and the field names then had 26 callers to keep in step, and a
@@ -194,10 +194,10 @@ export function renderedAgeSeconds(detail, label) {
  */
 
 /** Every prompt the host was asked to send, oldest first. */
-export const sentPrompts = (client) => client._state.promptBodies;
+export const sentPrompts = (client) => client.testState.promptBodies;
 
 /** The prompts addressed to one session — "which turns of this child fired". */
-export const promptsTo = (client, sessionId) => client._state.promptBodies.filter((p) => p.to === sessionId);
+export const promptsTo = (client, sessionId) => client.testState.promptBodies.filter((p) => p.to === sessionId);
 
 /** The text of every prompt addressed to one session. */
 export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId).map(promptText);
@@ -224,10 +224,10 @@ export const promptsCarrying = (client, words) => sentPrompts(client).filter(car
 export const promptsSaying = (client, words) => promptsCarrying(client, words).length;
 
 /** Whether a turn was aborted, without leaking the array to compare against. */
-export const wasAborted = (client, sessionId) => client._state.aborted.includes(sessionId);
+export const wasAborted = (client, sessionId) => client.testState.aborted.includes(sessionId);
 
 /** The sessions aborted so far, for a failure message that wants the list. */
-export const abortedSessions = (client) => client._state.aborted;
+export const abortedSessions = (client) => client.testState.aborted;
 
 /**
  * Whether the host was ever ASKED to abort a session.
@@ -238,10 +238,10 @@ export const abortedSessions = (client) => client._state.aborted;
  * test written against `wasAborted` calls that clean. The request is the record.
  */
 export const abortWasRequestedFor = (client, sessionId) =>
-  client._state.abortAttempts.includes(sessionId);
+  client.testState.abortAttempts.includes(sessionId);
 
 /** Every session the host was asked to abort, in order. */
-export const abortRequests = (client) => client._state.abortAttempts;
+export const abortRequests = (client) => client.testState.abortAttempts;
 
 /**
  * `task_interrupt` with the CALLER named, because in every ownership case the
@@ -281,16 +281,16 @@ export function assertStopped(h, targets, _answer, note) {
 }
 
 /** Every session the host has been asked to create. */
-export const sessionIds = (client) => [...client._state.sessions];
+export const sessionIds = (client) => [...client.testState.sessions];
 
 /** How many sessions the host has been asked to create. */
-export const sessionCount = (client) => client._state.sessions.size;
+export const sessionCount = (client) => client.testState.sessions.size;
 
 /** The create body recorded for one session — what the host was told to make. */
-export const sessionBody = (client, sessionId) => client._state.sessionBodies.get(sessionId);
+export const sessionBody = (client, sessionId) => client.testState.sessionBodies.get(sessionId);
 
 /** How many dials the gate made, held or not. */
-export const dialCount = (client) => client._state.notifyCalls.length;
+export const dialCount = (client) => client.testState.notifyCalls.length;
 
 /**
  * Yield until the queue has run once, so a fire-and-forget write has had its
@@ -308,17 +308,18 @@ export const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 /** Await `settled()` until `chainOf()` reports nothing left in flight. */
 export const drain = async (chainOf, chainName = "unnamed") => {
   const started = process.hrtime.bigint();
+  const elapsedMs = () => Number((process.hrtime.bigint() - started) / 1000n) / 1000;
   for (let turn = 0; chainOf() > 0; turn++) {
     assert.ok(
       turn < 200,
-      `the writes never reached their bound — the chain did not drain (${chainName}) after ${Number(process.hrtime.bigint() - started) / 1e6}ms`,
+      `the writes never reached their bound — the chain did not drain (${chainName}) after ${elapsedMs()}ms`,
     );
     await settled();
   }
 };
 
 /** The parent notifications the plugin recorded. */
-export const notifiedNotes = (client) => client._state.notifications;
+export const notifiedNotes = (client) => client.testState.notifications;
 
 /** How many times the host's status channel was read. */
 /** A child declaring it cannot continue without something. The `needs_input` kind is the
@@ -351,7 +352,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   trace("setup:enter");
   const client = createMockClient(hooks);
   trace("setup:client");
-  const state = client._state;
+  const state = client.testState;
 
   // A step that must produce exactly one notice, counted against a baseline so
   // a suite that already has notices is judged only on this step. The sleep is
@@ -553,7 +554,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * host really hostile?".
      */
     witnesses() {
-      return witnesses(client._state);
+      return witnesses(client.testState);
     },
     /**
      * Assert the host really applied `name`. Fails with what DID fire, because
@@ -561,7 +562,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * point there rather than at the plugin behaviour under test.
      */
     assertFired(name) {
-      const seen = witnesses(client._state);
+      const seen = witnesses(client.testState);
       assert.ok(
         (seen[name] ?? 0) > 0,
         `fault "${name}" never fired — the fake did not engage. Fired: ${JSON.stringify(seen)}`,
@@ -576,7 +577,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * made deliberately rather than one the run happened to satisfy.
      */
     maybeFault(name) {
-      client._state.maybe.add(name);
+      client.testState.maybe.add(name);
     },
     /**
      * Arm the silent host the way a case that boots live then loses the host
@@ -782,8 +783,8 @@ afterEach(async () => {
     // indifferent, so the run went green while proving nothing about a hostile
     // host. The rule is here rather than in each test because the property is
     // about the fake, and a test that has to remember it is a test that will not.
-    const unengaged = unengagedFaults(harness.client._state).filter(
-      (name) => !harness.client._state.maybe.has(name),
+    const unengaged = unengagedFaults(harness.client.testState).filter(
+      (name) => !harness.client.testState.maybe.has(name),
     );
     assert.deepStrictEqual(
       unengaged,
@@ -856,7 +857,7 @@ export const darkTheme = () => ({
  * starts describing a shape the production code no longer has, and it fails as a wrong
  * number rather than as an error, which is the worst way to fail.
  */
-export const capCell = (value, stated = true, bounded = null) => ({ value, stated, bounded });
+export const capCell = (value, stated = true, limit = null) => ({ value, stated, bounded: limit });
 import { RGBA } from "@opentui/core";
 
 /**

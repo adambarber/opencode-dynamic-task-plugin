@@ -9,6 +9,7 @@
 // from support/corpus.js rather than repeated.
 
 import { describe, it, assert } from "./support/runner.js";
+import { compareStrings } from "./support/assertions.js";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -358,13 +359,94 @@ describe("invariant: no file outgrows the point where a reader stops finding thi
     assert.strictEqual(lineCount(`\n${body}\n`), 4, "leading blank lines count");
   });
 
+  it("keeps the cast rules denied so no assertion compiles back in", () => {
+    // The rules are the enforcement: oxlint runs in `npm run lint`, and this
+    // pin keeps the config from silently weakening underneath it.
+    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
+    for (const rule of [
+      "typescript/no-explicit-any",
+      "typescript/no-unsafe-type-assertion",
+      "typescript/no-unnecessary-type-assertion",
+      "typescript/no-non-null-assertion",
+    ]) {
+      assert.strictEqual(config.rules[rule], "deny", `${rule} must stay denied`);
+    }
+  });
+
+  it("lints PRODUCTION at full strictness, and says which rules the tests waive", () => {
+    // The whole point is production: the test tree is JavaScript and
+    // untyped, so every type-aware rule about it is a guess. Those waivers are
+    // listed here by name because an unlisted one is a silent hole, and this
+    // pin fails the moment a new rule is waived to make something pass.
+    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
+    const production = config.rules;
+    for (const rule of [
+      "typescript/no-explicit-any",
+      "typescript/no-unsafe-type-assertion",
+      "typescript/no-unnecessary-type-assertion",
+      "typescript/no-non-null-assertion",
+    ]) {
+      assert.strictEqual(production[rule], "deny", `${rule} must stay denied in production`);
+    }
+    // Nothing is waived for production beyond the two the code documents.
+    const waivedInProduction = Object.entries(production)
+      .filter(([, setting]) => setting === "off")
+      .map(([rule]) => rule)
+      .toSorted(compareStrings);
+    assert.deepStrictEqual(waivedInProduction, ["no-await-in-loop", "typescript/no-meaningless-void-operator"]);
+
+    const waived = Object.entries(config.overrides[0].rules)
+      .filter(([, setting]) => setting === "off")
+      .map(([rule]) => rule)
+      .toSorted(compareStrings);
+    assert.deepStrictEqual(waived, [
+      "no-shadow",
+      "no-unused-vars",
+      "typescript/await-thenable",
+      "typescript/no-base-to-string",
+      "typescript/no-floating-promises",
+      "typescript/no-unnecessary-type-conversion",
+      "typescript/restrict-template-expressions",
+      "typescript/no-unsafe-enum-comparison",
+      "unicorn/no-array-reverse",
+      "unicorn/no-array-sort",
+      "unicorn/no-new-array",
+      "unicorn/no-useless-fallback-in-spread",
+      "unicorn/prefer-set-has",
+      "unicorn/prefer-string-starts-ends-with",
+      "unicorn/require-array-sort-compare",
+    ]);
+  });
+
+  it("keeps exactly two documented exemptions in production, no more", () => {
+    // Two rules fight deliberate repo doctrine, so they stay off BY NAME:
+    // `no-await-in-loop` — host dials are sequential on purpose (ledger
+    // ordering, claim-then-abort, serial retries, dialog turns); parallelizing
+    // them would be a correctness bug, not a speedup. `void` is the
+    // acknowledgment operator for `no-floating-promises`: removing it would
+    // trade a marked intentional no-await for a silent floating promise. Any
+    // third exemption is scope creep and fails here until it is justified.
+    const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".oxlintrc.json"), "utf8"));
+    assert.strictEqual(config.rules["no-await-in-loop"], "off", "serial host dials stay legal");
+    assert.strictEqual(
+      config.rules["typescript/no-meaningless-void-operator"],
+      "off",
+      "the void marker stays legal",
+    );
+    const off = Object.entries(config.rules)
+      .filter(([, setting]) => setting === "off")
+      .map(([rule]) => rule)
+      .toSorted();
+    assert.deepStrictEqual(off, ["no-await-in-loop", "typescript/no-meaningless-void-operator"]);
+  });
+
   it(`keeps every source and gate script within ${MAX_LINES} lines`, () => {
     const files = listSourceFiles();
     assert.ok(files.length > 0, "the corpus resolved to nothing — a stale path");
     const over = files
       .map((f) => ({ file: path.relative(REPO_ROOT, f), lines: lineCount(readFileSync(f, "utf8")) }))
       .filter(({ lines }) => lines > MAX_LINES)
-      .sort((a, b) => b.lines - a.lines)
+      .toSorted((a, b) => b.lines - a.lines)
       .map(({ file, lines }) => `${file} (${lines} lines)`);
     assert.deepStrictEqual(
       over,

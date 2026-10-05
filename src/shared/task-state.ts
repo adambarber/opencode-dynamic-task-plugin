@@ -65,6 +65,11 @@ export enum TaskState {
 // this list, so a state cannot be added to the machine and forgotten by the
 // reader that has to understand it.
 export const TASK_STATES: readonly TaskState[] = Object.values(TaskState);
+// A set lookup never narrows its key; the predicate below does the naming.
+const TASK_STATE_LIST: readonly unknown[] = Object.values(TaskState);
+export function isTaskState(value: unknown): value is TaskState {
+  return TASK_STATE_LIST.includes(value);
+}
 
 /**
  * A settlement, named — and the names are the machine's OWN terminal states, so
@@ -150,26 +155,16 @@ export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
  * would not have covered the fifth at all.
  */
 export const ADVISORY_FIELDS = ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt"] as const;
-
-/** A compile-time proof that ADVISORY_FIELDS is the whole advisory set. Add a fifth
- *  advisory to the record and this stops being `never`, so the build fails until the
- *  list names it — which is the point of declaring the list in one place. */
-type UnlistedAdvisory = Exclude<
-  keyof ActiveTaskState,
-  "state" | keyof TaskRecordBase | (typeof ADVISORY_FIELDS)[number]
->;
+// The tuple above is the whole advisory set: a fifth advisory stops being
+// `never` here, so the build fails until the list names it.
+type UnlistedAdvisory = Exclude<keyof ActiveTaskState, "state" | keyof TaskRecordBase | (typeof ADVISORY_FIELDS)[number]>;
 const everyAdvisoryIsListed: UnlistedAdvisory extends never ? true : never = true;
 void everyAdvisoryIsListed;
-
-/** The object minus the named keys, typed — the one way this repo drops a field. */
-function omit<T extends object, K extends keyof T>(record: T, keys: readonly K[]): Omit<T, K> {
-  const copy = { ...record } as Record<PropertyKey, unknown>;
-  for (const key of keys) delete copy[key];
-  return copy as Omit<T, K>;
-}
-
 export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
-  return omit(record, ADVISORY_FIELDS);
+  // The advisory half, dropped by name: a fifth advisory field fails the
+  // return type below, so the drop set cannot silently go stale.
+  const { lastNotice, lastActivityAt, turnLiveAt, replacedAt, ...base } = record;
+  return base;
 }
 
 export interface ActiveTaskState extends TaskRecordBase {
@@ -533,7 +528,7 @@ export function recordSettledOutcome(
   store: TaskStore,
   childSessionId: string,
   outcome: Exclude<TaskState, TaskState.Active>,
-  failureClass?: FailureClass | undefined,
+  failureClass?: FailureClass,
 ): boolean {
   return amendRetained(store, childSessionId, (retained) => {
     const corrected = retained.state !== outcome;
@@ -561,7 +556,7 @@ export function reviveRetainedTask(
   store: TaskStore,
   childSessionId: string,
   config?: AgentCapSource,
-  model?: ModelOverride | undefined,
+  model?: ModelOverride,
 ): ActiveTaskState {
   const retained = retainedFor(store, childSessionId);
   if (!retained) {

@@ -1,4 +1,5 @@
 import type { Agent } from "@opencode/schema/agent";
+import { includesWord, isEventRecord } from "./host-shape.js";
 
 /**
  * An agent, as the ONE shape this plugin is allowed to hold.
@@ -33,7 +34,10 @@ export interface AgentRecord {
 }
 
 /** The words v2 declares for an agent's dispatch role. */
-const AGENT_MODES: ReadonlySet<unknown> = new Set<Agent.Info["mode"]>(["subagent", "primary", "all"]);
+const AGENT_MODE_LIST = ["subagent", "primary", "all"] as const;
+function isAgentMode(value: unknown): value is Agent.Info["mode"] {
+  return includesWord(AGENT_MODE_LIST, value);
+}
 
 /**
  * The mode an unannotated agent gets.
@@ -55,11 +59,11 @@ export const DEFAULT_AGENT_MODE: Agent.Info["mode"] = "all";
  * places for a field to be forgotten, and the second one was anonymous.
  */
 export function toAgentRecord(raw: unknown): AgentRecord | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const item = raw as Record<string, unknown>;
+  if (!isEventRecord(raw)) return null;
+  const item = raw;
   const name = item["name"];
   if (typeof name !== "string" || name === "") return null;
-  const mode = AGENT_MODES.has(item["mode"]) ? (item["mode"] as Agent.Info["mode"]) : DEFAULT_AGENT_MODE;
+  const mode = isAgentMode(item["mode"]) ? item["mode"] : DEFAULT_AGENT_MODE;
   const id = item["id"];
   return {
     id: typeof id === "string" && id !== "" ? id : name,
@@ -81,9 +85,7 @@ export function toAgentRecords(raw: unknown): AgentRecord[] {
 // because both are shapes the plugin actually receives; anything else is nothing.
 function listEntries(raw: unknown): unknown {
   if (Array.isArray(raw)) return raw;
-  if (raw && typeof raw === "object" && Array.isArray((raw as Record<string, unknown>)["data"])) {
-    return (raw as Record<string, unknown>)["data"];
-  }
+  if (isEventRecord(raw) && Array.isArray(raw["data"])) return raw["data"];
   return [];
 }
 
@@ -110,26 +112,20 @@ function permissionRules(raw: unknown): AgentRecord["permissions"] {
   if (!Array.isArray(raw)) return [{ action: "*", resource: "*", effect: "deny" }];
   const rules: Agent.Info["permissions"][number][] = [];
   for (const entry of raw) {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const rule = entry as Record<string, unknown>;
+    if (!isEventRecord(entry)) continue;
+    const rule = entry;
     if (typeof rule["action"] !== "string") continue;
     if (typeof rule["resource"] !== "string") continue;
-    if (!PERMISSION_EFFECTS.has(rule["effect"])) continue;
-    rules.push({
-      action: rule["action"],
-      resource: rule["resource"],
-      effect: rule["effect"] as Agent.Info["permissions"][number]["effect"],
-    });
+    if (!isPermissionEffect(rule["effect"])) continue;
+    rules.push({ action: rule["action"], resource: rule["resource"], effect: rule["effect"] });
   }
   return rules;
 }
 
-const PERMISSION_EFFECTS: ReadonlySet<unknown> = new Set<Agent.Info["permissions"][number]["effect"]>([
-  "allow",
-  "deny",
-  "ask",
-]);
-
+const PERMISSION_EFFECT_LIST = ["allow", "deny", "ask"] as const;
+function isPermissionEffect(value: unknown): value is Agent.Info["permissions"][number]["effect"] {
+  return includesWord(PERMISSION_EFFECT_LIST, value);
+}
 /**
  * May a child of this agent use this tool?
  *

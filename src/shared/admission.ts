@@ -409,7 +409,7 @@ async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, ca
         // safeLog, not a raw app.log: the client itself may be unusable
         // (host probes entry exports outside the plugin lifecycle) and a
         // throw here fails the entire plugin boot.
-        await safeLog("warn", `Failed to fetch agents: ${errorMessage(error)}`);
+        void safeLog("warn", `Failed to fetch agents: ${errorMessage(error)}`);
       }
     }
   }

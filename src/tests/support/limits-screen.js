@@ -23,7 +23,6 @@ import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../.
 import { withTempDir } from "./fixtures.js";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
-import { namedCell, plainSummary, terseCell } from "../../../dist/tui/theme.js";
 import tuiModule, { BACK_LABEL, DIALOG_WIDTH, dialogRowText, fitsItsDialog, limitsListProps } from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
@@ -120,9 +119,6 @@ export function listOver(directory, agentNames = REGISTERED) {
 
 export { dialogRowText };
 
-/** The row for one agent, by its host spelling. */
-
-/** The row for one agent, by its host spelling. */
 /**
  * The row for a thing, by the spelling the OPERATOR gives it — not by the spelling on
  * screen.
@@ -188,7 +184,7 @@ export const titlesOf = (dialog) => dialog.options.map((option) => option.title)
  */
 export async function booted(directory, opts) {
   const host = hostApi(directory, opts);
-  await tuiModule.setup(host.api);
+  tuiModule.setup(host.api);
   const app = host.seen.slots.find((slot) => slot.append === "app");
   assert.ok(app, "the palette command is mounted where the host draws every screen");
   app.render({});
@@ -508,5 +504,5 @@ export const everyRowClaims = (options, about, why) => assertRows(options, about
 
 /** The one loop both screen-level claims are written on. */
 function assertRows(rows, about, why) {
-  for (const row of rows) assert.ok(about(row), why(row));
+  for (const entry of rows) assert.ok(about(entry), why(entry));
 }

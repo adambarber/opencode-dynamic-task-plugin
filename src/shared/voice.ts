@@ -184,7 +184,7 @@ export function steerAutoRevived(sessionId: string, agentName: string, state: st
   return `The task had settled as ${state} mid-steer, so it was revived and the message sent as a fresh turn. Follow-up sent to ${sessionId} (@${agentName}). The reply arrives as a dynamic-task-notify message.`;
 }
 
-export function steerSettledMidway(state: string): string {
+export function steerSettledMidway(state: TaskState | "unknown"): string {
   const remedy = state === TaskState.Interrupted
     ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"
     : "use task_continue to revive it for another turn";
@@ -389,6 +389,7 @@ export function interruptReport(sessionId: string, outcome: InterruptOutcome): s
     case "abort-failed-active": return interruptAbortFailedActive(outcome.message);
     case "abort-failed-retained": return interruptAbortFailedRetained(outcome.message);
     case "abort-failed-settled": return interruptAbortFailedSettled(outcome.message, outcome.state);
+    default: throw new Error(`unhandled interrupt outcome: ${JSON.stringify(outcome satisfies never)}`);
   }
 }
 

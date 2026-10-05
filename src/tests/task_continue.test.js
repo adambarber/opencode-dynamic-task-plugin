@@ -10,9 +10,9 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, dialCount, promptsSaying, promptsTo, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
+import { bounded, dialCount, promptsSaying, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
 import { deferred, events, promptText } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, noticeSays, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
 import { retainedEntry } from "./support/records.js";
 import { ENV } from "../../dist/shared/config.js";
@@ -230,7 +230,7 @@ describe("task_continue branches", () => {
     ["the replaced turn's prompt delivery failing", async ({ release }) => { release(); }],
   ];
   for (const [name, settle] of midSteerSettlers) {
-    it(`a steer racing ${name} auto-revives, and the revived turn still notifies`, async () => {
+    it(`a steer racing ${String(name)} auto-revives, and the revived turn still notifies`, async () => {
       const h = await setupHarness();
       const { release } = h.client.gateChildPrompt();
       const { c } = await h.spawn({ prompt: "turn one" });
@@ -335,7 +335,7 @@ describe("task_continue branches", () => {
     answerSays(out, "Follow-up sent");
     // v2 routes via `switchModel`, not a model key on the prompt body — the prompt
     // itself carries only text, and the route is the host's own record of it.
-    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore", providerID: "other", modelID: "thing-1" });
+    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", providerID: "other", modelID: "thing-1" });
     await statusSays(c, "Model: other/thing-1", "persists on the record");
     });
 

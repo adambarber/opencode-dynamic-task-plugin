@@ -48,7 +48,7 @@ import {
   type AgentOverlay,
 } from "../shared/caps.js";
 import { dispatchableAgentNamesOrNull, type AgentCaller } from "../shared/admission.js";
-import { asOpaqueHost } from "../shared/client.js";
+import { asOpaqueHost, type OpaqueHost } from "../shared/client.js";
 import {
   CAP_CHOICES,
   CAP_LABEL,
@@ -126,7 +126,7 @@ enum ChoiceKind {
 // The palette entry. `keymap.layer` reads Solid context, so it runs in a slot
 // render the host owns — never in module scope, never in `setup`, where there is
 // no owner and the hooks throw. The render draws nothing; registering is its job.
-function registerLimitsCommand(ctx: Host): null {
+function registerLimitsCommand(ctx: Host, agentHost: OpaqueHost<AgentCaller>): null {
   ctx.keymap.layer(() => ({
     mode: "global",
     commands: [
@@ -145,7 +145,7 @@ function registerLimitsCommand(ctx: Host): null {
         // to, and would omit every agent nobody had capped yet — which is all of
         // them, on a fresh project.
         run: () => {
-          void openLimits(ctx);
+          void openLimits(ctx, agentHost);
         },
       },
     ],
@@ -182,7 +182,10 @@ function selectLimitsRow<T>(ctx: Host, dialog: DialogSelectOptions<T>): Promise<
  */
 const plugin = {
   id: PLUGIN_ID,
-  setup: (ctx: Host) => ctx.ui.slot({ append: "app", render: () => registerLimitsCommand(ctx) }),
+  setup: (ctx: Host) => {
+    const agentHost = asOpaqueHost(tuiAgentCaller(ctx));
+    return ctx.ui.slot({ append: "app", render: () => registerLimitsCommand(ctx, agentHost) });
+  },
 };
 
 export default plugin;
@@ -591,11 +594,11 @@ type LimitsView = {
   agents: readonly string[] | null;
 };
 
-async function openLimits(ctx: Host): Promise<void> {
+async function openLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promise<void> {
   // The agent set is the host's own, so the screen has one row per agent this project
   // can actually dispatch to. A failed read is a WARNING over the capped agents, not
   // an empty list — see `agentDialogFrom`.
-  let view = await readLimits(ctx);
+  let view = await readLimits(ctx, agentHost);
   if (view === undefined) return;
   if (view.dialog.problem) {
     // Said BEFORE the dialog opens rather than instead of it: showing nothing because
@@ -610,8 +613,8 @@ async function openLimits(ctx: Host): Promise<void> {
   for (;;) {
     const choice = await selectLimitsRow(ctx, limitsListProps(view.dialog));
     if (choice === undefined) return;
-    if (choice.kind === ChoiceKind.Ceiling) view = await openCeiling(ctx, view);
-    else view = await openAgentCaps(ctx, view, choice.agent);
+    if (choice.kind === ChoiceKind.Ceiling) view = await openCeiling(ctx, view, agentHost);
+    else view = await openAgentCaps(ctx, view, choice.agent, agentHost);
   }
 }
 
@@ -621,11 +624,11 @@ async function openLimits(ctx: Host): Promise<void> {
  * edit to it is the one that shows what it now bounds — and the view in hand when
  * the operator leaves without writing.
  */
-async function openCeiling(ctx: Host, view: LimitsView): Promise<LimitsView> {
+async function openCeiling(ctx: Host, view: LimitsView, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   for (;;) {
     const choice = await selectLimitsRow(ctx, ceilingPickerProps(view.dialog.ceiling));
     if (choice === undefined || choice.kind === ChoiceKind.Back) return view;
-    return applyEdit(ctx, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, { value: choice.value } satisfies CeilingChoice));
+    return applyEdit(ctx, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, { value: choice.value } satisfies CeilingChoice), agentHost);
   }
 }
 
@@ -634,15 +637,15 @@ async function openCeiling(ctx: Host, view: LimitsView): Promise<LimitsView> {
  * leaves the whole drill-down, so without that row the only way back up is to reopen
  * the palette.
  */
-async function openAgentCaps(ctx: Host, view: LimitsView, agent: string): Promise<LimitsView> {
+async function openAgentCaps(ctx: Host, view: LimitsView, agent: string, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   for (;;) {
     const choice = await selectLimitsRow(ctx, agentCapsProps(agent, rowOf(view, agent)));
-    if (choice === undefined || choice.kind === ChoiceKind.Back) return readLimitsOr(ctx, view);
-    return openCapPicker(ctx, view, choice.agent, choice.cap);
+    if (choice === undefined || choice.kind === ChoiceKind.Back) return readLimitsOr(ctx, view, agentHost);
+    return openCapPicker(ctx, view, choice.agent, choice.cap, agentHost);
   }
 }
 
-async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: AgentCapName): Promise<LimitsView> {
+async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: AgentCapName, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   const row = rowOf(view, agent);
   for (;;) {
     const choice = await selectLimitsRow(ctx, capPickerProps(agent, cap, row));
@@ -650,16 +653,16 @@ async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: Ag
     // stack had no push, so "back" was always a re-mount; the loop just says which
     // screen is re-mounted, and from the picker that is the caps screen.
     if (choice === undefined) return view;
-    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent);
+    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent, agentHost);
     // Lands back on THIS agent's caps, re-read: the other cap of the same pair has to
     // be one choice away, and the row just written is stale the moment the file moves.
-    return openAgentCaps(ctx, await applyEdit(ctx, view, agent, () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice)), agent);
+    return openAgentCaps(ctx, await applyEdit(ctx, view, agent, () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice), agentHost), agent, agentHost);
   }
 }
 
 /** The list re-read, or the view in hand when the host cannot be reached. */
-async function readLimitsOr(ctx: Host, view: LimitsView): Promise<LimitsView> {
-  return (await readLimits(ctx)) ?? view;
+async function readLimitsOr(ctx: Host, view: LimitsView, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
+  return (await readLimits(ctx, agentHost)) ?? view;
 }
 
 /**
@@ -691,7 +694,7 @@ function tuiAgentCaller(ctx: Host): AgentCaller {
     },
   };
 }
-async function readLimits(ctx: Host): Promise<LimitsView | undefined> {
+async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView | undefined> {
   const directory = ctx.location?.directory;
   if (!directory) {
     ctx.ui.toast.show({ variant: "error", title: "Task limits", message: "no project directory" });
@@ -705,7 +708,7 @@ async function readLimits(ctx: Host): Promise<LimitsView | undefined> {
   // `null` here is the FAILED read, not an empty project: it makes the screen show the
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
-  const agents = await dispatchableAgentNamesOrNull({ host: asOpaqueHost(tuiAgentCaller(ctx)) }, base);
+  const agents = await dispatchableAgentNamesOrNull({ host: agentHost }, base);
   return {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree
@@ -767,7 +770,7 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
  * answered from that row would then be written from caps the file no longer has. The
  * write, the read-back, and the screen the operator is left looking at are one thing.
  */
-async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () => EditOutcome): Promise<LimitsView> {
+async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () => EditOutcome, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   const outcome = edit();
   if (outcome.kind === "unchanged") return view;
   if (outcome.kind === "invalid") {
@@ -785,5 +788,5 @@ async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () =>
     return view;
   }
   ctx.ui.toast.show({ variant: "success", title: "Task limits", message: `${outcome.summary} — in force on the next dispatch` });
-  return (await readLimits(ctx)) ?? view;
+  return (await readLimits(ctx, agentHost)) ?? view;
 }

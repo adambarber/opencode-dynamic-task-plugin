@@ -17,7 +17,7 @@ import type { TaskStore } from "./store.js";
 // the store's own vocabulary and a dozen modules import them by name; importing
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
-import type { ActiveTaskState, TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
+import type { TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
 import type { FailureClass } from "./failure-class.js";
 
 export interface RetainedTaskState extends TaskRecordBase {
@@ -144,12 +144,12 @@ export function decideRetained(
  */
 export const motionClocksOf = (task: TaskRecord | null | undefined): { lastActivityAt?: number | undefined; lastNoticeAt?: number | undefined } =>
   task !== null && task !== undefined && "lastActivityAt" in task
-    ? { lastActivityAt: (task as ActiveTaskState).lastActivityAt, lastNoticeAt: (task as ActiveTaskState).lastNotice?.at }
+    ? { lastActivityAt: task.lastActivityAt, lastNoticeAt: task.lastNotice?.at }
     : {};
 
 export const failureClassOf = (task: TaskRecord | null | undefined): FailureClass | undefined =>
   task !== null && task !== undefined && "failureClass" in task
-    ? (task as RetainedTaskState).failureClass
+    ? task.failureClass
     : undefined;
 
 /**

@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // ES2023 for `toSorted` (the lint bans in-place `sort`): the host runs
+    // Node 26, so no emit change is needed — this only types the library.
+    "lib": ["ES2023"],
     "module": "ESNext",
     "moduleResolution": "bundler",
     "outDir": "./dist",

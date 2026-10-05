@@ -192,8 +192,8 @@ function cap(value: unknown): number | undefined {
  * mentions cannot be a type error against it.
  */
 export function readAgentCapBody(raw: unknown): AgentCaps {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const body = raw as Record<string, unknown>;
+  if (!isPlainRecord(raw)) return {};
+  const body = raw;
   const out: AgentCaps = {};
   for (const name of AGENT_CAP_NAMES) {
     const value = cap(body[name]);
@@ -215,8 +215,8 @@ export function readAgentCapBody(raw: unknown): AgentCaps {
  * the entry to say, so it says nothing.
  */
 export function parseAgentCaps(raw: unknown): AgentCaps | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const body = raw as Record<string, unknown>;
+  if (!isPlainRecord(raw)) return null;
+  const body = raw;
   const maxConcurrent = cap(body.maxConcurrent);
   const maxDepth = cap(body.maxDepth);
   if (maxConcurrent === undefined && maxDepth === undefined) return null;
@@ -325,7 +325,7 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
 
   const agents: Record<string, AgentCaps> = {};
   const dropped: Record<string, string[]> = {};
-  for (const [name, entry] of Object.entries(rawAgents as Record<string, unknown>)) {
+  for (const [name, entry] of Object.entries(rawAgents)) {
     const key = agentKey(name);
     if (!key) continue;
     const caps = readAgentCapBody(entry);
@@ -333,9 +333,9 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
     // and keeping it would make "the overlay is present" and "the overlay constrains
     // something" two different questions — so a file of empty bodies would answer the
     // first and not the second, and every agent in it would be listed as capped.
-    if (AGENT_CAP_NAMES.every((name) => caps[name] === undefined)) continue;
+    if (AGENT_CAP_NAMES.every((field) => caps[field] === undefined)) continue;
     agents[key] = caps;
-    const ignored = AGENT_CAP_NAMES.filter((name) => isPlainRecord(entry) && entry[name] !== undefined && cap(entry[name]) === undefined);
+    const ignored = AGENT_CAP_NAMES.filter((field) => isPlainRecord(entry) && entry[field] !== undefined && cap(entry[field]) === undefined);
     if (ignored.length > 0) dropped[key] = ignored;
   }
   return { agents, dropped, usable: true };

@@ -24,24 +24,24 @@
  */
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../dist/shared/caps.js";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { capCellOf } from "../../dist/tui/agent-editor.js";
-import { bothCaps, withTempDir } from "./support/fixtures.js";
+import { bothCaps } from "./support/fixtures.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL, agentDialogFrom } from "../../dist/tui/agent-editor.js";
+import { CAP_CHOICES, CAP_LABEL, CEILING_LABEL } from "../../dist/tui/agent-editor.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { BETWEEN, FROM_CONFIG, boundClause, namedCell, plainSummary } from "../../dist/tui/theme.js";
 import { displayName } from "../../dist/tui/agent-editor.js";
-import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, agentCapsProps, capPickerProps, ceilingPickerProps, fitsItsDialog, limitsListProps } from "../../dist/tui/index.js";
+import tuiModule, { ALL_AGENTS_LABEL, BACK_LABEL, DIALOG_WIDTH, capPickerProps, fitsItsDialog } from "../../dist/tui/index.js";
 
 import {
   BASE, BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, backRow, backToCaps, capRow, capText, choose, clearRow, chooseValue, dialogRowText, rowsText,
-  everyRowClaims, given, havingWritten, hostApi, listOver, openList, pressRowOn, readOverlay,
-  row, rowOn, rowText, rowsOn, settle, titlesOf, top, valueRow, withBooted,
-  withCapsOpen, withConfigScreen, withExploreOpen, withList, withOpen, withPickerClaimed, withPickerOpen,
+  everyRowClaims, havingWritten, openList, readOverlay,
+  row, rowText, rowsOn, titlesOf, top, valueRow, withBooted,
+  withCapsOpen, withConfigScreen, withList, withOpen, withPickerClaimed, withPickerOpen,
   withProject, booted,
 } from "./support/limits-screen.js";
 

@@ -18,30 +18,24 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
   TESTS_DIR,
   REPO_ROOT,
   SRC_DIR,
   listProdFiles,
-  listSourceFiles,
   listTestFiles,
   listTestSupportFiles,
-  isTypeScript,
-  isProductionOrSuite,
-  walkSource,
-  SOURCE_EXTENSIONS,
 } from "./support/corpus.js";
 import { buildToolMap } from "../../dist/tools/index.js";
-import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { TaskState } from "../../dist/shared/task-state.js";
 import { NoticeClaim } from "../../dist/shared/notice-claim.js";
 
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { InterruptScope } from "../../dist/tools/interrupt.js";
-import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath } from "../../scripts/cross-boundary.mjs";
+
 
 // Non-global regexes per line (avoids lastIndex statefulness). A line that
 // matches any pattern is a hit unless a skip pattern claims it first.
@@ -72,11 +66,11 @@ const TIMER_PRIMITIVE = /\b(setTimeout|setInterval|setImmediate|queueMicrotask)\
 // spans remain.
 const PROMPT_CALL = /client\.session\.prompt\s*\(/;
 
-function formatViolations(rule, hits) {
+function formatViolations(finding, hits) {
   return (
-    `${rule.why}\n` +
-    `Owning doc: ${rule.doc}\n` +
-    `Expected ${rule.expect ?? 0} hit(s), found ${hits.length}.\n` +
+    `${finding.why}\n` +
+    `Owning doc: ${finding.doc}\n` +
+    `Expected ${finding.expect ?? 0} hit(s), found ${hits.length}.\n` +
     (hits.length ? `Sites (${hits.length}):\n` + hits.map((h) => `  - ${h}`).join("\n") : "")
   );
 }
@@ -127,7 +121,6 @@ const DOC_PERSISTENCE = "docs/tasks/06-persistence-and-observability.md";
 const DOC_ADMISSION = "docs/tasks/07-admission-gate.md";
 const DOC_TYPES = "docs/tasks/08-strong-types.md";
 const DOC_FIDELITY = "docs/tasks/00-fidelity-ground-truth.md (Tenet 12)";
-const DOC_BOUND = "docs/tasks/02-execution-bound.md";
 
 /**
  * A banned spelling, with the doctrine note and the claim it enforces. The three
@@ -830,7 +823,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     const bareExport = byForm((name) => name === "ASSISTANT_ROLE");
     const bareLocal = byForm((name) => name === "DEBUG_DIR");
     const tableRow = byForm((name) => name.endsWith(".tag"));
-    assert.ok(bareExport && bareLocal && tableRow, `expected all three binding forms in production, got ${[bareExport, bareLocal, tableRow]}`);
+    assert.ok(bareExport && bareLocal && tableRow, `expected all three binding forms in production, got ${[bareExport, bareLocal, tableRow].map(String).join(", ")}`);
     // (1) exported const, (2) non-exported const, (3) a const table row value.
     assert.ok(reported(`const part = { info: { role: ${JSON.stringify(bareExport)} } };`).length > 0,
       "an exported const is reported");

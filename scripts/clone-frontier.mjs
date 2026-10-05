@@ -113,7 +113,7 @@ for (const c of all) {
   byPair.set(k, (byPair.get(k) ?? 0) + 1);
 }
 console.log("\n=== file pairs (widest lens, 2/8) ===");
-for (const [k, n] of [...byPair].sort((a, b) => b[1] - a[1])) console.log(`  ${n}\t${k}`);
+for (const [k, n] of [...byPair].toSorted((a, b) => b[1] - a[1])) console.log(`  ${n}\t${k}`);
 
 if (anomalies.length) {
   console.log(`\n=== anomalies: ${anomalies.length} clone/floor reports above the clone's own token count ===`);

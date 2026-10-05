@@ -19,7 +19,7 @@ import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.j
 // envelope is an implementation detail of the host, and restating it per case
 // is how two cases end up asserting different things under the same name.
 const textPart = (text) => ({ type: "text", text });
-const said = (role, text) => ({ role, parts: [textPart(text)] });
+const turn = (role, text) => ({ role, parts: [textPart(text)] });
 
 // The host's assistant turn as it actually arrives when the turn was ABORTED:
 // an error envelope, and no `parts` key at all. Transcribed from the host's own
@@ -226,9 +226,9 @@ describe("prompt dance: parseModelOverride", () => {
  * couple of these by hand, which is how "handles non-Error values" came to be
  * split from "handles odd shapes".
  */
-function assertClassifiedAs(thrown, said) {
+function assertClassifiedAs(thrown, wording) {
   const classified = classifyPromptError(thrown);
-  assert.strictEqual(classified.message, said, `reported value. got: ${JSON.stringify(classified)}`);
+  assert.strictEqual(classified.message, wording, `reported value. got: ${JSON.stringify(classified)}`);
   assert.strictEqual(classified.retryable, false, "a value that is not a transient host error is not retryable");
 }
 
@@ -287,14 +287,14 @@ describe("message/part family guards (Task 08)", () => {
   // whose outcome needed reading — was the one record the reader rejected.
   it("isMessage accepts the host's aborted turn, which carries no parts", () => {
     assert.ok(isMessage(abortedTurn()));
-    assert.ok(isMessage({ ...said(ASSISTANT_ROLE, "x"), ...abortedTurn("APIError", "429 Too Many Requests") }));
+    assert.ok(isMessage({ ...turn(ASSISTANT_ROLE, "x"), ...abortedTurn("APIError", "429 Too Many Requests") }));
   });
 
   // Both readers walk newest-first. One of them must be able to see a turn
   // with no parts, or the walk steps over the newest record and reports an
   // older turn's outcome as the child's.
   it("the newest message decides even when it carries no parts", () => {
-    const stream = [said(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
+    const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
     assert.strictEqual(messageErrorDetail(stream[1]), "Aborted");
     assert.strictEqual(messageErrorDetail(stream[0]), "");
     assert.strictEqual(getLatestAssistantText(stream), "the child's real last words");
@@ -321,14 +321,14 @@ describe("message/part family guards (Task 08)", () => {
 describe("prompt dance: getLatestAssistantText", () => {
   it("returns the newest assistant text", () => {
     assert.strictEqual(
-      getLatestAssistantText([said(ASSISTANT_ROLE, "first"), said("user", "q"), said(ASSISTANT_ROLE, "second")]),
+      getLatestAssistantText([turn(ASSISTANT_ROLE, "first"), turn("user", "q"), turn(ASSISTANT_ROLE, "second")]),
       "second"
     );
   });
 
   it("reads the latest assistant text, skipping empties", () => {
-    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, "old"), said(ASSISTANT_ROLE, "new")]), "new");
-    assert.strictEqual(getLatestAssistantText([said(ASSISTANT_ROLE, ""), said("user", "q")]), "");
+    assert.strictEqual(getLatestAssistantText([turn(ASSISTANT_ROLE, "old"), turn(ASSISTANT_ROLE, "new")]), "new");
+    assert.strictEqual(getLatestAssistantText([turn(ASSISTANT_ROLE, ""), turn("user", "q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
     assertEmpty(getLatestAssistantText(null), "no message at all");
   });
@@ -350,7 +350,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   );
 
   it("reads the latest assistant text from the session", async () => {
-    await assertHydrated(() => [said(ASSISTANT_ROLE, "CHILD_SAYS")], { text: "CHILD_SAYS" });
+    await assertHydrated(() => [turn(ASSISTANT_ROLE, "CHILD_SAYS")], { text: "CHILD_SAYS" });
   });
 
   it("surfaces the message-level error detail from the same read", async () => {
@@ -367,7 +367,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // still make good context beside the error — the text is not the bug, the
   // lost error is — so the outcome keeps both and the kind becomes `error`.
   it("reports an aborted turn as the failure it is, not the turn before it", async () => {
-    const stream = [said(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
+    const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
     await assertHydrated(() => stream, { text: "the child's real last words", errorDetail: "Aborted" });
   });
 

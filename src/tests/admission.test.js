@@ -13,7 +13,7 @@ import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, parseAgentLi
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
-import { agentCanNotify, toAgentRecords, toAgentRecord, DEFAULT_AGENT_MODE } from "../../dist/shared/agent-record.js";
+import { agentCanNotify, toAgentRecords, DEFAULT_AGENT_MODE } from "../../dist/shared/agent-record.js";
 import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
@@ -92,7 +92,7 @@ describe("fetchAgents", () => {
     ]);
 
     assert.deepStrictEqual(
-      (await agentNames(mockClient)).sort(),
+      (await agentNames(mockClient)).toSorted(),
       ["architect", "explore", "unannotated"]
     );
   });
@@ -148,7 +148,7 @@ describe("fetchAgents", () => {
     ["a single record instead of a list", { name: "solo", mode: "subagent", permissions: [] }],
   ];
   for (const [name, respond] of notLists) {
-    it(`yields nothing for ${name}`, async () => {
+    it(`yields nothing for ${JSON.stringify(name)}`, async () => {
       assert.deepStrictEqual(await agentNames(clientWith(respond)), [],
         "an answer that is not a list of agents must not become a list of agents");
     });
@@ -411,7 +411,7 @@ describe("admission gate: there is no second key to ask for", () => {
     // dispatched elsewhere is what that looks like.
     const result = resolveAdmission(agents, "explore", [], defaultConfig);
     assert.strictEqual(result.ok, true);
-    assert.deepStrictEqual(Object.keys(result).sort(), ["agent", "newLineage", "ok"]);
+    assert.deepStrictEqual(Object.keys(result).toSorted(), ["agent", "newLineage", "ok"]);
   });
 });
 

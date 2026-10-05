@@ -135,15 +135,13 @@ async function readLivenessSafely(...args: Parameters<typeof readLiveness>): Pro
   }
 }
 
-export async function executeTaskList(deps: ToolDeps): Promise<string> {
-  const { host, store, config } = deps;
-  const pruned = pruneRetainedTasks(store, config);
-  const { retained } = listTasks(store);
-  // The store record in, FleetRow out: the renderer's contract is named rather
-  // than re-spelled, because an inline signature here is a second declaration of
-  // it and the two could disagree about which fields a row carries. Typed by the
-  // record it reads, which is also what lets it carry the settled-only class.
-  const toRow = (t: TaskRecord): FleetRow => ({
+// The store record in, FleetRow out: the renderer's contract is named rather
+// than re-spelled, because an inline signature here is a second declaration of
+// it and the two could disagree about which fields a row carries. Typed by the
+// record it reads, which is also what lets it carry the settled-only class.
+// Module scope because it captures nothing from the call.
+function toRow(t: TaskRecord): FleetRow {
+  return {
     childSessionId: t.childSessionId,
     agentName: agentDisplayName(t),
     description: t.description,
@@ -153,7 +151,22 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     // roll-up counts. Reading it through the store's own accessor rather than
     // off the record keeps the "settled-only" knowledge in one place.
     failureClass: failureClassOf(t),
-  });
+  };
+}
+
+// A running task is kept with everything below it — a running grandchild does
+// not make its parent disappear — and a settled task is kept only if a
+// running descendant needs it to hold its place. Module scope: it captures
+// nothing from the call, only recursing through itself.
+function liveBranch(node: DispatchNode): DispatchNode[] {
+  const below = node.children.flatMap(liveBranch);
+  return node.task.state === TaskState.Active || below.length > 0 ? [node, ...below] : [];
+}
+
+export async function executeTaskList(deps: ToolDeps): Promise<string> {
+  const { host, store, config } = deps;
+  const pruned = pruneRetainedTasks(store, config);
+  const { retained } = listTasks(store);
   // The running fleet as the tree it is: every active task, in dispatch order,
   // indented under whatever spawned it. Settled tasks that still have a running
   // descendant are kept — they are what places it — and settled leaves are
@@ -161,13 +174,6 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
   // section already lists them. The store holds every edge, so the shape costs
   // no host read: a view that spent one status call per row would turn a single
   // question into a burst of transport.
-  // A running task is kept with everything below it — a running grandchild does
-  // not make its parent disappear — and a settled task is kept only if a
-  // running descendant needs it to hold its place.
-  const liveBranch = (node: DispatchNode): DispatchNode[] => {
-    const below = node.children.flatMap(liveBranch);
-    return node.task.state === TaskState.Active || below.length > 0 ? [node, ...below] : [];
-  };
   const branch = dispatchForest(store).flatMap(liveBranch);
   // The agents line, from the store and the config. The ONE thing it cannot know
   // without asking the host is which agents are dispatchable — the agent set is

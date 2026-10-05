@@ -8,8 +8,7 @@
 
 import { describe, it, assert } from "./support/runner.js";
 import { writeFileSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 /** The repository root, for the source-count pin that cannot retype the path. */
 
@@ -193,18 +192,18 @@ describe("readDynamicTaskPolicy: the one reader of what is in force", () => {
       const configPath = join(root, DYNAMIC_TASK_FILE);
       mkdirSync(dirname(configPath), { recursive: true });
       writeFileSync(configPath, body);
-      return run(root);
+      return Promise.resolve(run(root));
     });
 
-  it("reads PER-AGENT caps out of the hand-authored file, which the defaults-only call could not", () => {
-    withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9, maxDepth: 7 } } }), (root) => {
+  it("reads PER-AGENT caps out of the hand-authored file, which the defaults-only call could not", async () => {
+    await withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9, maxDepth: 7 } } }), (root) => {
       const policy = readDynamicTaskPolicy(root, null);
       assert.deepEqual(policy.agents.explore, { maxConcurrent: 9, maxDepth: 7 }, "the file's own per-agent caps survive to the policy");
     });
   });
 
-  it("resolves the same numbers for the screen and the dispatch path, because it is the same function", () => {
-    withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9 } }, maxDepth: 5 }), (root) => {
+  it("resolves the same numbers for the screen and the dispatch path, because it is the same function", async () => {
+    await withPolicy(JSON.stringify({ agents: { explore: { maxConcurrent: 9 } }, maxDepth: 5 }), (root) => {
       const fileConfig = parseDynamicTaskJsonc(join(root, DYNAMIC_TASK_FILE));
       const fromScreen = readDynamicTaskPolicy(root, null);
       const fromDispatch = normalizeDynamicTaskConfig(null, fileConfig);
@@ -316,14 +315,14 @@ describe("agents: which policy an agent name resolves to", () => {
   it("knownCappedAgents lists the configured agents, and nothing when none are", () => {
     assert.deepStrictEqual(knownCappedAgents(normalizeDynamicTaskConfig(null)), []);
     assert.deepStrictEqual(
-      knownCappedAgents(normalizeDynamicTaskConfig({ agents: { deep: { maxDepth: 3 }, quick: { maxConcurrent: 2 } } })).sort(),
+      knownCappedAgents(normalizeDynamicTaskConfig({ agents: { deep: { maxDepth: 3 }, quick: { maxConcurrent: 2 } } })).toSorted(),
       ["deep", "quick"],
     );
   });
 
   it("every normalized config is its own object — declaring an agent in one cannot leak into another", () => {
     const before = knownCappedAgents(shared);
-    assert.deepStrictEqual(before.sort(), ["deep", "quick"]);
+    assert.deepStrictEqual(before.toSorted(), ["deep", "quick"]);
     assert.deepStrictEqual(knownCappedAgents(normalizeDynamicTaskConfig({})), [], "a config normalized after the agent config must not see it");
     assert.deepStrictEqual(knownCappedAgents(DEFAULT_CONFIG), [], "and the process-wide default must still be the default");
     assert.deepStrictEqual(knownCappedAgents(shared), before, "and reading the caps cannot have changed it either");

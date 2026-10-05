@@ -28,7 +28,7 @@ export const HOST_CALL = ANY_CALL;
 
 /** The namespaces the fake answers — the enumeration is driven by these, and only these. */
 export function hostCallSites(fake) {
-  const namespaces = Object.keys(fake).filter((ns) => fake[ns] && typeof fake[ns] === "object");
+  const namespaces = new Set(Object.keys(fake).filter((ns) => fake[ns] && typeof fake[ns] === "object"));
   const sites = [];
   for (const file of listProdFiles()) {
     const { text } = readSource(file);

@@ -196,12 +196,16 @@ function retainedRollup(rows: FleetRow[]): string {
   if (rows.length === 0) return "";
   const counts = new Map<string, number>();
   for (const row of rows) counts.set(row.state, (counts.get(row.state) ?? 0) + 1);
-  const lifecycle: string[] = [TaskState.Completed, TaskState.Error, TaskState.Blocked, TaskState.Interrupted];
+  const lifecycle = [TaskState.Completed, TaskState.Error, TaskState.Blocked, TaskState.Interrupted];
+  // The same words as strings: the unfamiliar filter compares map keys, which
+  // are strings, so it reads the string side of the one vocabulary.
+  const knownWords: readonly string[] = lifecycle;
   const known = lifecycle.filter((state) => counts.has(state));
-  const unfamiliar = [...counts.keys()].filter((state) => !lifecycle.includes(state)).sort();
-  const parts = [...known, ...unfamiliar].map(
-    (state) => `${counts.get(state)} ${state}${networkCount(rows, state)}`,
-  );
+  const unfamiliar = [...counts.keys()].filter((state) => !knownWords.includes(state)).toSorted((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const parts = [
+    ...known.map((state) => `${counts.get(state)} ${state}${errorBlips(rows, state)}`),
+    ...unfamiliar.map((state) => `${counts.get(state)} ${state}`),
+  ];
   return ` — ${parts.join(" · ")}`;
 }
 
@@ -211,9 +215,12 @@ function retainedRollup(rows: FleetRow[]): string {
  * Only for `error`, and only when there is something to say: a fleet with no
  * network failures reads "4 error", which is already true and needs no gloss.
  */
-function networkCount(rows: FleetRow[], state: string): string {
+// The error word as a string: rows carry `state` as a string, so the filter
+// reads the string side of the one vocabulary (the gate above reads the enum).
+const ERROR_WORD: string = TaskState.Error;
+function errorBlips(rows: FleetRow[], state: TaskState): string {
   if (state !== TaskState.Error) return "";
-  const blips = rows.filter((row) => row.state === state && row.failureClass === FailureClass.Transient).length;
+  const blips = rows.filter((row) => row.state === ERROR_WORD && row.failureClass === FailureClass.Transient).length;
   return blips > 0 ? ` (${blips} transient)` : "";
 }
 

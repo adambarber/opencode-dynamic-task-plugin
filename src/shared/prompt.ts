@@ -194,7 +194,7 @@ export function isMessage(value: unknown): value is Message {
   return (
     Array.isArray(value.parts) ||
     Array.isArray(value.content) ||
-    messageRoleOf(value as Message) !== ""
+    messageRoleOf(value) !== ""
   );
 }
 
@@ -407,9 +407,12 @@ export function extractMessages(result: unknown): unknown[] {
  * first, and a disagreement there is a stale error reported as the current one.
  * Total on a non-array — callers hand it whatever shape the host answered with.
  */
-function* newestFirst(messages: unknown): Generator<unknown> {
-  if (!Array.isArray(messages)) return;
-  for (let i = messages.length - 1; i >= 0; i--) yield messages[i];
+function* newestFirst(messages: unknown) {
+  // Unknown in, unknown out: Array.isArray narrows to any[], so the elements
+  // are re-read through unknown[] before yielding — otherwise the `any` leaks
+  // to every transcript consumer through inference.
+  const list: unknown[] = Array.isArray(messages) ? messages : [];
+  for (let i = list.length - 1; i >= 0; i--) yield list[i];
 }
 
 export function getLatestAssistantText(messages: unknown): string {

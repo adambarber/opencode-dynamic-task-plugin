@@ -14,6 +14,7 @@
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
 import { abortSession, stopPlan } from "../shared/session-lifecycle.js";
+import { isEventRecord } from "../shared/host-shape.js";
 import { safeLog } from "../shared/notify.js";
 import {
   TaskState,
@@ -56,10 +57,12 @@ function isInterruptScope(value: unknown): value is InterruptScope {
 // did not name, and silently narrowing one leaves a descendant running behind a
 // report that reads as success.
 export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
-  const raw = (args as { scope?: unknown } | null | undefined)?.scope;
+  const raw = isEventRecord(args) ? args["scope"] : undefined;
   if (raw === undefined) return { ok: true, scope: InterruptScope.Subtree };
   if (isInterruptScope(raw)) return { ok: true, scope: raw };
-  return { ok: false, error: interruptScopeRefused(String(raw)) };
+  // A string renders as itself; anything else as JSON, so the refusal names
+  // what was actually received instead of `[object Object]`.
+  return { ok: false, error: interruptScopeRefused(typeof raw === "string" ? raw : JSON.stringify(raw) ?? "unprintable") };
 }
 
 interface InterruptClaim {

@@ -29,6 +29,41 @@ export interface PluginState {
   config: DynamicTaskConfig;
 }
 
+/**
+ * Answer every wait this settlement decided, from the store's own change sink.
+ *
+ * Module scope because it captures nothing: it takes the host and the store
+ * as arguments, so nesting it inside the boot only shadowed both names. The
+ * hook is the store's, and that is the entire argument for it. A settlement
+ * is the fact that answers a wait, and the store already publishes every fact
+ * about itself — so the sink is the one place where "a task ended" is
+ * observable BY CONSTRUCTION rather than by remembering to say so. The five ways
+ * a task can end (a host lifecycle event, a post-create failure, a lost server, a
+ * refused turn, an operator interrupt) each settle through their own call site,
+ * and one of them was the only one that also told the waiting parents; the other
+ * four held `depends_on` waits until the wait registry evicted them, which is
+ * silent, bounded by a cap, and indistinguishable from a child that is merely
+ * slow. Calling the release from each site would have been the same four
+ * omissions waiting for the fifth.
+ *
+ * After `persistLedger` on purpose: the durable record should exist before
+ * anyone is told the edge is gone, so a process that dies mid-release re-reads a
+ * ledger that already knows.
+ *
+ * Only `Settled`, and the exclusion is deliberate rather than an oversight.
+ * `Forgotten` is a task being evicted from a bounded history — by then it
+ * settled, which is when its waits were answered; releasing again would be a
+ * second readiness rule for the same edge. A wait naming a task settled in
+ * ANOTHER process is a different hole, and it is the shared-ledger adoption gap
+ * recorded in docs/tasks/11-durability.md rather than something a hook on this
+ * process's own changes could see.
+ */
+function releaseWaitsForSettled(host: OpaqueHost, store: TaskStore, changes: readonly LedgerChange[]): void {
+  for (const change of changes) {
+    if (change.kind === LedgerChangeKind.Settled) releaseWaitingDispatches(host, store, change.id);
+  }
+}
+
 export function initPluginState(directory: string, options: PluginOptions | undefined, host: OpaqueHost): PluginState {
   // The file's own caps, over the defaults, over env — by the ONE reader the TUI also
   // calls, so the screen an operator reads and the policy a dispatch is judged against
@@ -66,39 +101,6 @@ export function initPluginState(directory: string, options: PluginOptions | unde
     }
     return applyAgentOverlay(config, raw);
   });
-
-  /**
- * Answer every wait this settlement decided, from the store's own change sink.
- *
- * The hook is the store's, and that is the entire argument for it. A settlement
- * is the fact that answers a wait, and the store already publishes every fact
- * about itself — so the sink is the one place where "a task ended" is
- * observable BY CONSTRUCTION rather than by remembering to say so. The five ways
- * a task can end (a host lifecycle event, a post-create failure, a lost server, a
- * refused turn, an operator interrupt) each settle through their own call site,
- * and one of them was the only one that also told the waiting parents; the other
- * four held `depends_on` waits until the wait registry evicted them, which is
- * silent, bounded by a cap, and indistinguishable from a child that is merely
- * slow. Calling the release from each site would have been the same four
- * omissions waiting for the fifth.
- *
- * After `persistLedger` on purpose: the durable record should exist before
- * anyone is told the edge is gone, so a process that dies mid-release re-reads a
- * ledger that already knows.
- *
- * Only `Settled`, and the exclusion is deliberate rather than an oversight.
- * `Forgotten` is a task being evicted from a bounded history — by then it
- * settled, which is when its waits were answered; releasing again would be a
- * second readiness rule for the same edge. A wait naming a task settled in
- * ANOTHER process is a different hole, and it is the shared-ledger adoption gap
- * recorded in docs/tasks/11-durability.md rather than something a hook on this
- * process's own changes could see.
- */
-function releaseWaitsForSettled(host: OpaqueHost, store: TaskStore, changes: readonly LedgerChange[]): void {
-  for (const change of changes) {
-    if (change.kind === LedgerChangeKind.Settled) releaseWaitingDispatches(host, store, change.id);
-  }
-}
 
 const ledger = loadTaskLedger(ledgerPath);
   // A discarded ledger is a LOST one, and the loss is only actionable if the
@@ -264,7 +266,7 @@ const ledger = loadTaskLedger(ledgerPath);
 // boot that returns early has already recorded what it decided.
 async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<void> {
   const restored = [...store.activeTasks.keys()];
-  await safeLog("info", `Reconciling ${restored.length} task(s) restored across restart`);
+  void safeLog("info", `Reconciling ${restored.length} task(s) restored across restart`);
   for (const childSessionId of restored) {
     // Per child, not per pass: a read that fails (the status channel itself is
     // down) must not decide the fate of every task listed after it. Not knowing
@@ -277,11 +279,11 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // alone too: its silence is not evidence, and settling off it would invent the
       // very errors this pass exists to avoid.
       if (!reading.statusAnswered) {
-        await safeLog("info", `Restored task ${childSessionId}: status channel unanswered; left active`);
+        void safeLog("info", `Restored task ${childSessionId}: status channel unanswered; left active`);
         continue;
       }
       if (hostTurnRunning(reading)) {
-        await safeLog("info", `Restored task ${childSessionId} is still running (host says "${reading.hostTurn}"); left active`);
+        void safeLog("info", `Restored task ${childSessionId} is still running (host says "${reading.hostTurn}"); left active`);
         continue;
       }
       // No running turn, so the session's fate is the transcript's to say — which is
@@ -302,7 +304,7 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
         cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
       });
     } catch (error: unknown) {
-      await containFailure(`Could not reconcile restored task ${childSessionId}`, error, "left active");
+      void containFailure(`Could not reconcile restored task ${childSessionId}`, error, "left active");
     }
   }
 }

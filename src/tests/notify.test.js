@@ -252,7 +252,7 @@ describe("notify gate: notifyParent", () => {
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
     parked.resolve();
-    assert.deepStrictEqual((await Promise.all([first, second])).sort(), [false, true]);
+    assert.deepStrictEqual((await Promise.all([first, second])).toSorted(), [false, true]);
   });
 
   it("settles deliver exactly once per kind", async () => {
@@ -314,7 +314,7 @@ describe("notify gate: notifyParent", () => {
   it("delivery chains are FIFO-bounded like the dedup gate", async () => {
     const transportGate = deferred();
     const { client } = recordingClient(async () => {
-      await transportGate;
+      await transportGate.promise;
       return { ok: true };
     });
     const pending = [];
@@ -705,8 +705,8 @@ describe("notify: the redelivery budget", () => {
   // because re-offering in this process would be SUPPRESSED by the claim the
   // first offer still holds, and would prove nothing.
   for (const [label, world] of [["mid-turn", BUSY], ["wedged", WEDGED]]) {
-    it(`a parent that is ${label} at EVERY boot still reaches the bound and retires`, async () => {
-      const { held, record } = await aDebtWalkedToItsBound(world, `a ${label} refusal spends an attempt`);
+    it(`a parent that is ${String(label)} at EVERY boot still reaches the bound and retires`, async () => {
+      const { held, record } = await aDebtWalkedToItsBound(world, `a ${JSON.stringify(label)} refusal spends an attempt`);
 
       assert.deepStrictEqual(queuedFor(CHILD), [], "the boot that crosses the bound retires the debt");
       assert.strictEqual(record.expired, true, "honestly, as EXPIRED — not delivered, not failed");

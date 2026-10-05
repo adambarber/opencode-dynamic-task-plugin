@@ -17,6 +17,11 @@
 export function isEventRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
+// One member test for every closed vocabulary: a lookup never narrows its
+// key, so each vocabulary names its members once and tests through here.
+export function includesWord<T extends string>(members: readonly T[], value: unknown): value is T {
+  return members.some((member) => member === value);
+}
 
 /**
  * A plain object — an event record that is NOT an array.

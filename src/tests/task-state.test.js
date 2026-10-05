@@ -12,6 +12,7 @@ import { describe, it, beforeEach, assert } from "./support/runner.js";
 import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, recordSettledOutcome, oldestRetainedId, pruneRetainedTasks, recordAbortError, registerActiveTask, restoreActive, restoreRetained, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { annotateNotice, markTurnReplacement } from "../../dist/shared/notice-claim.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { activeEntry, retainedEntry } from "./support/records.js";
 import { assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 import { childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
@@ -484,7 +485,7 @@ describe("task-state: restoreRetained", () => {
     const store = createTaskStore();
     const forgotten = [];
     store.onRetainedChange = (changes) => {
-      changes.filter((change) => change.kind === "forgotten").forEach((change) => forgotten.push(change.id));
+      changes.filter((change) => change.kind === LedgerChangeKind.Forgotten).forEach((change) => forgotten.push(change.id));
     };
     restoreRetained(store, twoAges(order), 1);
     return { standing: [...store.retainedTasks.keys()], forgotten };

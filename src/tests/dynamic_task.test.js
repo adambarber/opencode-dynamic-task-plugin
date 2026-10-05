@@ -283,7 +283,7 @@ describe("prompt routing contract", () => {
     assert.ok(created && !("agent" in created) && !("model" in created), `create shape. got: ${JSON.stringify(created)}`);
     const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1, "child prompt recorded");
-    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore", providerID: "prov", modelID: "model-x" });
+    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", providerID: "prov", modelID: "model-x" });
     });
 
   it("prompts without override route the agent and no model", async () => {
@@ -292,7 +292,7 @@ describe("prompt routing contract", () => {
     await sleep(0);
     const bodies = promptsTo(h.client, id);
     assert.ok(bodies.length >= 1);
-    assert.deepStrictEqual(h.client._state.routed.get(id), { agent: "explore" });
+    assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore" });
     });
 
   it("child prompts carry the background-task wrapper instructions", async () => {

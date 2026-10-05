@@ -78,9 +78,9 @@ describe("a host that accepts every call and answers none", () => {
     // by arming a fault boot never touches, which the engagement rule would rightly
     // refuse. Whether each tool then ANSWERS is the sweep's claim, not this one's.
     const h = await bounded(IMPATIENT_MS, () => setupHarness());
-    const state = h.client._state;
+    const state = h.client.testState;
 
-    const tools = Object.keys(h.tool ?? {}).sort();
+    const tools = Object.keys(h.tool ?? {}).toSorted();
     assert.ok(
       tools.includes("dynamic_task"),
       `a silent host at boot must not stop the plugin loading; tools seen: ${JSON.stringify(tools)}`,
@@ -124,7 +124,7 @@ describe("a host that accepts every call and answers none", () => {
       it(name, async () => {
         const answer = await underSilence(name, call);
 
-        assert.match(answer, /\S/, `${name} answered with nothing at all`);
+        assert.match(answer, /\S/, `${String(name)} answered with nothing at all`);
       });
     }
   });

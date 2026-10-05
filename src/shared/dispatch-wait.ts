@@ -103,7 +103,7 @@ export function releaseWaitsFor(
   stillRunning: (childSessionId: string) => boolean,
 ): WaitRelease {
   const release: WaitRelease = { ready: [], dead: [] };
-  for (const [key, wait] of [...store.waits]) {
+  for (const [key, wait] of store.waits) {
     const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
       edges.includes(settledChildSessionId),
     );

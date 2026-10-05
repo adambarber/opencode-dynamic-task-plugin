@@ -37,7 +37,7 @@ export function validateAgent(agentName: unknown, config: Pick<DynamicTaskConfig
     if (normalizedBlocked && normalizedBlocked === name) {
       return {
         ok: false,
-        error: `Agent "${agentName}" is blocked by this plugin's configuration. ` +
+        error: `Agent "${name}" is blocked by this plugin's configuration. ` +
           `Blocked agents: ${config.blockedAgents.join(", ")}. ` +
           "Use a different subagent or update the blockedAgents config.",
       };

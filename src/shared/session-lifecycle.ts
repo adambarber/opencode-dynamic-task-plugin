@@ -16,7 +16,7 @@ import { isFailureClass } from './failure-class.js';
 import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { TaskState, findTask, isRunning } from "./task-state.js";
 import type { RetainedTaskState, ActiveTaskState, LineagePath, TaskIdentity, TaskRecordBase } from "./task-state.js";
-import { TASK_STATES, withoutAdvisory } from "./task-state.js";
+import { isTaskState, withoutAdvisory } from "./task-state.js";
 import { isSessionMissing } from "./liveness.js";
 import { NOTIFY_KINDS, owedIdentity, type PendingDelivery } from "./notify.js";
 import { eventField, eventString, eventWord, isEventRecord, errorMessage } from "./host-shape.js";
@@ -60,7 +60,7 @@ export function hostPayload(result: unknown): unknown {
  * reader that rolls its own loop is a reader that can disagree with the next one
  * about what the shells are.
  */
-function* envelopeShells(record: Record<string, unknown>): Generator<unknown> {
+function* envelopeShells(record: Record<string, unknown>) {
   for (const key of PAYLOAD_KEYS) {
     const inner = record[key];
     if (inner !== undefined) yield inner;
@@ -268,7 +268,7 @@ export function endedBadly(status: string): boolean {
   return (ENDED_BADLY as readonly string[]).includes(status);
 }
 
-const TERMINAL_EVENT_STATUSES = ["idle", "completed", "error", "deleted"];
+const TERMINAL_EVENT_STATUSES = new Set(["idle", "completed", "error", "deleted"]);
 
 // The turn-ending events are named in host-events.ts against the SDK's own union
 // — no `includes("delet")` substring guess, which is what a belief that
@@ -279,7 +279,7 @@ export function isTerminalSessionEvent(event: unknown): boolean {
   const type = eventWord(event, "type");
   if (isTurnEnding(type)) return true;
   if (type === SESSION_DELETED) return true;
-  return TERMINAL_EVENT_STATUSES.includes(getEventLifecycleStatus(event));
+  return TERMINAL_EVENT_STATUSES.has(getEventLifecycleStatus(event));
 }
 
 // A task's durable record must be complete or absent: any field the render
@@ -318,7 +318,7 @@ function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
     && typeof description === "string"
     && Array.isArray(lineage)
     && lineage.every((s): s is string => typeof s === "string")
-    && TASK_STATES.includes(state as TaskState)
+    && isTaskState(state)
     && typeof startedAt === "number" && Number.isFinite(startedAt)
   );
 }
@@ -406,7 +406,7 @@ function isPendingDelivery(value: unknown): value is PendingDelivery {
   return (
     typeof parentSessionId === "string" && parentSessionId.length > 0
     && typeof childSessionId === "string" && childSessionId.startsWith("ses_")
-    && typeof kind === "string" && NOTIFY_KINDS.some((known) => known === kind)
+    && typeof kind === "string" && NOTIFY_KINDS.some((known: string) => known === kind)
     && typeof text === "string" && text.length > 0
     && typeof attempts === "number" && Number.isFinite(attempts)
   );
@@ -489,7 +489,8 @@ export function loadTaskLedger(filePath: string): LoadedTaskLedger {
             }
           }
         }
-        for (const [key, entry] of Object.entries(parsed["tasks"] as Record<string, unknown>)) {
+        const taskEntries = isEventRecord(parsed["tasks"]) ? Object.entries(parsed["tasks"]) : [];
+        for (const [key, entry] of taskEntries) {
           // The map key is canonical identity: an entry disagreeing with its key
           // is corrupt, not merely mislabeled.
           if (isValidRetainedEntry(entry) && key.startsWith("ses_") && entry.childSessionId === key) {
@@ -556,7 +557,9 @@ function dropSettledShadows(
   active: Map<string, ActiveTaskState>,
 ): number {
   let dropped = 0;
-  for (const key of [...retained.keys()]) {
+  // Deleting during iteration is safe on a Map: the iterator visits entries
+  // live, and a deleted entry is simply never visited — no snapshot needed.
+  for (const key of retained.keys()) {
     if (!active.has(key)) continue;
     retained.delete(key);
     dropped++;
@@ -734,7 +737,7 @@ export function isParentless(parentSessionId: string | null | undefined): boolea
 
 export function resolveParentSessionId(ctx: SessionContext): string | null {
   if (!isEventRecord(ctx)) return null;
-  const record = ctx as Record<string, unknown>;
+  const record = ctx;
   const session = isEventRecord(record["session"]) ? record["session"] : undefined;
   const candidates: unknown[] = [
     record["sessionID"],
@@ -754,7 +757,7 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
 // never blindly.
 export function validateSessionResult(result: unknown): string | null {
   if (!isEventRecord(result)) return null;
-  const record = result as Record<string, unknown>;
+  const record = result;
   if (typeof record.id === "string" && record.id) return record.id;
   for (const inner of envelopeShells(record)) {
     const found = validateSessionResult(inner);

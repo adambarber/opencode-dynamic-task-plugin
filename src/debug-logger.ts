@@ -38,9 +38,9 @@ export function getPluginLogPath(): string {
   return path.join(debugRoot, "plugin.log");
 }
 
+// Sanitize to prevent path traversal via malicious session IDs
+const sanitize = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_");
 export function getDebugLogPath(parentSessionId: string, childSessionId: string): string {
-  // Sanitize to prevent path traversal via malicious session IDs
-  const sanitize = (id: string) => id.replace(/[^a-zA-Z0-9_-]/g, "_");
   return path.join(debugRoot, `parent-${sanitize(parentSessionId)}__child-${sanitize(childSessionId)}.log`);
 }
 

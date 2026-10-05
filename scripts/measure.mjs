@@ -122,9 +122,9 @@ export const tokensInRange = (tokens, from, to) =>
  */
 export const longestSharedRun = (a, b) => {
   let best = 0;
-  let previous = new Array(b.length + 1).fill(0);
+  let previous = Array.from({ length: b.length + 1 }, () => 0);
   for (let i = 1; i <= a.length; i++) {
-    const row = new Array(b.length + 1).fill(0);
+    const row = Array.from({ length: b.length + 1 }, () => 0);
     for (let j = 1; j <= b.length; j++) {
       row[j] = a[i - 1] === b[j - 1] ? previous[j - 1] + 1 : 0;
       if (row[j] > best) best = row[j];

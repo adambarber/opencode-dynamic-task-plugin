@@ -11,7 +11,7 @@ import { describe, it, assert } from "./support/runner.js";
 import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { noticeRecord } from "../../dist/shared/notice-claim.js";
 import { notifiedAs } from "./support/records.js";
-import { SessionExistence, UNANSWERED_LIVENESS } from "../../dist/shared/liveness.js";
+import { SessionExistence } from "../../dist/shared/liveness.js";
 
 /**
  * A liveness reading in the shape `readLiveness` returns.
@@ -29,12 +29,6 @@ const reading = (hostTurn, lastMessageAt) => ({
   lastMessageAt,
   messageCount: 1,
 });
-
-/** A host that did not answer: no verdict, and not evidence of one. */
-const unread = () => ({ ...UNANSWERED_LIVENESS, lastMessageAt: 1, messageCount: 1 });
-
-/** A session the host says it does not have — a verdict it cannot record. */
-const absent = () => ({ ...UNANSWERED_LIVENESS, existence: SessionExistence.Missing, statusAnswered: true });
 
 // The record the view formatters read. Production owns the shape
 // (taskResultRecord) and the boring truth that goes with it; what is left here is

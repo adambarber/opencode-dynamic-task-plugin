@@ -6,6 +6,7 @@
 import type { Tool } from "@opencode/schema/tool";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { executeDynamicTask } from "./spawn.js";
+import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "./args.js";
 import { executeTaskContinue } from "./continue.js";
 import { executeTaskNotify } from "./notice.js";
 import { executeTaskResult, executeTaskStatus, executeTaskList } from "./read.js";
@@ -36,78 +37,87 @@ const optionalString = (description: string) => ({ type: "string", description }
 const optionalStringList = (description: string) =>
   ({ type: "array", items: { type: "string" }, description }) as const;
 
-export function buildToolMap(deps: ToolDeps) {
-  // The ONLY door into any registered tool, and the ONLY decision about what an
-  // executor runs against. Bound to its resolver, so a tool declares the input it
-  // runs against in one place and the executor that goes with it — the session-id
-  // guard is structurally present for every session tool rather than repeated
-  // (and driftable) inside four executors.
-  //
-  // The four executors that read their raw arguments declare them under their own real
-  // types (SpawnArgs, ContinueArgs, NotifyArgs); a JSON-Schema input decodes to
-  // `unknown`, which is the honest type for something the host validated for us and
-  // which every one of those executors already took.
-  const registeredTool = <T>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<T>) =>
-    (input: InputSchema, description: string, execute: (resolved: T, args: never, ctx: ToolContext) => Promise<string>) => ({
-      input,
-      description,
-      // Direct tools, not Code-Mode-catalog tools. Without this the host files
-      // every one of the seven under `execute`, and a model that calls one
-      // directly hears `No tool named "task_notify" is currently available` —
-      // observed live in a child that then stayed silent. The child's voice is
-      // the one call this plugin cannot afford to route through an indirection
-      // a small model may not take.
-      options: { codemode: false },
-      async execute(raw: unknown, ctx: ToolContext) {
-        // ctx goes to the resolver because the resolved scope is how a
-        // session-scoped tool learns who is calling it — a fact the arguments
-        // cannot carry, and the fact that lets a stop tell a caller from its
-        // own session. Passing it here rather than threading it past the resolver
-        // is what keeps that decision at the one door.
-        const verdict = resolve(raw, ctx);
-        if (!verdict.ok) return { content: verdict.error };
-        return { content: await execute(verdict.input, raw as never, ctx) };
-      },
-    });
+// The ONLY door into any registered tool, and the ONLY decision about what an
+// executor runs against. Bound to its resolver, so a tool declares the input it
+// runs against in one place and the executor that goes with it — the session-id
+// guard is structurally present for every session tool rather than repeated
+// (and driftable) inside four executors.
+//
+// The four executors that read their raw arguments declare them under their own real
+// types (SpawnArgs, ContinueArgs, NotifyArgs); a JSON-Schema input decodes to
+// `unknown`, which is the honest type for something the host validated for us and
+// which every one of those executors already took.
+// Resolvers return the scope AND the narrowed arguments; executors run only
+// against those, so host JSON reaches an executor exclusively through a reader.
+const registeredTool = <S, A>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<{ scope: S; args: A }>) =>
+  (input: InputSchema, description: string, execute: (scope: S, args: A, ctx: ToolContext) => Promise<string>) => ({
+    input,
+    description,
+    // Direct tools, not Code-Mode-catalog tools. Without this the host files
+    // every one of the seven under `execute`, and a model that calls one
+    // directly hears `No tool named "task_notify" is currently available` —
+    // observed live in a child that then stayed silent. The child's voice is
+    // the one call this plugin cannot afford to route through an indirection
+    // a small model may not take.
+    options: { codemode: false },
+    async execute(raw: unknown, ctx: ToolContext) {
+      // ctx goes to the resolver because the resolved scope is how a
+      // session-scoped tool learns who is calling it — a fact the arguments
+      // cannot carry, and the fact that lets a stop tell a caller from its
+      // own session. Passing it here rather than threading it past the resolver
+      // is what keeps that decision at the one door.
+      const verdict = resolve(raw, ctx);
+      if (!verdict.ok) return { content: verdict.error };
+      return { content: await execute(verdict.input.scope, verdict.input.args, ctx) };
+    },
+  });
 
+// One schema for the one argument every child-scoped tool takes. Four tools
+// spelled it: two borrowed this, task_continue said "Child session ID from
+// dynamic_task", and task_interrupt said nothing at all — so the same argument
+// had three descriptions and one absence. The word "background" was also wrong
+// for three of the four: a settled FOREGROUND task is continued, read and
+// stopped through this argument too.
+const SESSION_ID = string("Child session ID from dynamic_task (ses_...)");
+// One builder for the two dependency arguments. They are the same schema with the
+// same meaning — a list of child session ids — and differ only in what
+// waiting for them MEANS, which is the sentence, not the type.
+const SESSION_ID_LIST = (description: string) => optionalStringList(description);
+// Likewise the prompt and the model override: the two arguments every
+// prompt-bearing tool takes, each with its own sentence but the same shape. The
+// model's base contract is MODEL_ARG_DESCRIPTION (providerID/modelID as spelled
+// in the host's own config, bare ids refused) — a tool that restates that
+// sentence restates it wrong sooner or later, so a tool adds a clause instead.
+const PROMPT = (description: string) => string(description);
+// One wrapper for the object schema every session-scoped tool shares: the same
+// session_id plus whatever else that tool takes. Spelled twice it drifts.
+const SESSION_SCHEMA = (properties: Record<string, unknown>, required: string[]) => ({
+  type: "object",
+  properties: { session_id: SESSION_ID, ...properties },
+  required,
+});
+const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
+// The identity reader for tools that take no arguments: the resolver contract
+// still returns scope AND args, so a no-arg tool reads its input as itself.
+const passThrough = (raw: unknown): unknown => raw;
+
+export function buildToolMap(deps: ToolDeps) {
   // A tool that acts on a named child resolves the session id here, once per
   // call. The two tools that run against the PLUGIN rather than a session scope
   // have no session id to resolve, and the whole dependency set is the input.
-  const sessionInput = (raw: unknown, ctx: ToolContext): Verdict<ResolvedSessionScope> => {
-    const opened = openSessionScope(deps, raw, ctx);
-    return opened.ok ? { ok: true, input: opened.scope } : opened;
-  };
-  const pluginInput = (): Verdict<ToolDeps> => ({ ok: true, input: deps });
-  const scopedTool = registeredTool(sessionInput);
-  const pluginTool = registeredTool(pluginInput);
-  // One schema for the one argument every child-scoped tool takes. Four tools
-  // spelled it: two borrowed this, task_continue said "Child session ID from
-  // dynamic_task", and task_interrupt said nothing at all — so the same argument
-  // had three descriptions and one absence. The word "background" was also wrong
-  // for three of the four: a settled FOREGROUND task is continued, read and
-  // stopped through this argument too.
-  const SESSION_ID = string("Child session ID from dynamic_task (ses_...)");
-  // One builder for the two dependency arguments. They are the same schema with the
-  // same meaning — a list of child session ids — and differ only in what
-  // waiting for them MEANS, which is the sentence, not the type.
-  const SESSION_ID_LIST = (description: string) => optionalStringList(description);
-  // Likewise the prompt and the model override: the two arguments every
-  // prompt-bearing tool takes, each with its own sentence but the same shape. The
-  // model's base contract is MODEL_ARG_DESCRIPTION (providerID/modelID as spelled
-  // in the host's own config, bare ids refused) — a tool that restates that
-  // sentence restates it wrong sooner or later, so a tool adds a clause instead.
-  const PROMPT = (description: string) => string(description);
-  // One wrapper for the object schema every session-scoped tool shares: the same
-  // session_id plus whatever else that tool takes. Spelled twice it drifts.
-  const SESSION_SCHEMA = (properties: Record<string, unknown>, required: string[]) => ({
-    type: "object",
-    properties: { session_id: SESSION_ID, ...properties },
-    required,
-  });
-  const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
+  const sessionInput = <A>(readArgs: (raw: unknown) => A) =>
+    (raw: unknown, ctx: ToolContext): Verdict<{ scope: ResolvedSessionScope; args: A }> => {
+      const opened = openSessionScope(deps, raw, ctx);
+      if (!opened.ok) return opened;
+      return { ok: true, input: { scope: opened.scope, args: readArgs(raw) } };
+    };
+  const pluginInput = <A>(readArgs: (raw: unknown) => A) =>
+    (raw: unknown): Verdict<{ scope: ToolDeps; args: A }> => ({ ok: true, input: { scope: deps, args: readArgs(raw) } });
+  const scopedTool = <A>(readArgs: (raw: unknown) => A) => registeredTool(sessionInput(readArgs));
+  const pluginTool = <A>(readArgs: (raw: unknown) => A) => registeredTool(pluginInput(readArgs));
 
   return {
-    dynamic_task: pluginTool(
+    dynamic_task: pluginTool(readSpawnArgs)(
       {
         type: "object",
         properties: {
@@ -128,7 +138,7 @@ export function buildToolMap(deps: ToolDeps) {
       executeDynamicTask,
     ),
 
-    task_continue: scopedTool(
+    task_continue: scopedTool(readContinueArgs)(
       SESSION_SCHEMA(
         {
           prompt: PROMPT("Follow-up instructions"),
@@ -140,7 +150,7 @@ export function buildToolMap(deps: ToolDeps) {
       executeTaskContinue,
     ),
 
-    [NOTIFY_TOOL]: pluginTool(
+    [NOTIFY_TOOL]: pluginTool(readNotifyArgs)(
       {
         type: "object",
         properties: {
@@ -158,13 +168,13 @@ export function buildToolMap(deps: ToolDeps) {
       executeTaskNotify,
     ),
 
-    task_result: scopedTool(
+    task_result: scopedTool(passThrough)(
       { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
       TASK_RESULT_DESCRIPTION,
       executeTaskResult,
     ),
 
-    task_interrupt: scopedTool(
+    task_interrupt: scopedTool(passThrough)(
       SESSION_SCHEMA(
         {
           scope: {
@@ -185,11 +195,11 @@ export function buildToolMap(deps: ToolDeps) {
     // a closure over `deps` — so the comment on `registeredTool` above ("the ONLY
     // door into any registered tool") was false. It runs against the PLUGIN, not a
     // session scope, so it is a pluginTool like dynamic_task and task_notify.
-    task_list: pluginTool({ type: "object", properties: {} }, TASK_LIST_DESCRIPTION, (input) =>
+    task_list: pluginTool(passThrough)({ type: "object", properties: {} }, TASK_LIST_DESCRIPTION, (input) =>
       executeTaskList(input),
     ),
 
-    task_status: scopedTool(
+    task_status: scopedTool(passThrough)(
       { type: "object", properties: { session_id: SESSION_ID }, required: ["session_id"] },
       TASK_STATUS_DESCRIPTION,
       executeTaskStatus,

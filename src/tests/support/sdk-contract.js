@@ -30,7 +30,7 @@ function read(path_) {
   return readOnce.get(path_);
 }
 
-function file(name) {
+function declared(name) {
   return read(path.join(SCHEMA_ROOT, name));
 }
 
@@ -40,7 +40,7 @@ function clientFile(name) {
 }
 
 function source() {
-  return file("session.d.ts");
+  return declared("session.d.ts");
 }
 
 /**
@@ -54,10 +54,10 @@ function source() {
 // Two parse idioms the readers below share: distinct capture-group words out of a
 // body, and every quoted word out of one. One spelling each, so a reader cannot
 // quietly change what "declared" means for its own word list.
-const requiredDistinct = (what, matches) => require_(what, [...new Set([...matches].map((m) => m[1]))]);
-const requiredQuoted = (what, text) => require_(what, [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
+const requiredDistinct = (what, matches) => requireFound(what, [...new Set([...matches].map((m) => m[1]))]);
+const requiredQuoted = (what, text) => requireFound(what, [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
 
-function require_(what, found) {
+function requireFound(what, found) {
   if (found.length === 0) {
     throw new Error(`sdk-contract could not read ${what} out of ${TYPES} — the declaration moved`);
   }
@@ -81,17 +81,6 @@ export function realDomainNames() {
   return requiredDistinct("Context", body.matchAll(/readonly (\w+):/g));
 }
 
-/** The members of a declared union, by its `type` discriminant. */
-function unionWords(typeName, endMarker) {
-  const text = source();
-  const start = text.indexOf(`export type ${typeName} =`);
-  if (start < 0) return require_(typeName, []);
-  const rest = text.slice(start);
-  const end = rest.indexOf(endMarker);
-  const body = end < 0 ? rest : rest.slice(0, end);
-  return requiredDistinct(typeName, body.matchAll(/type:\s*"([a-z]+)"/g));
-}
-
 /**
  * Every verdict the host declares for a COMPLETED execution, parsed out of
  * `Session.Info.outcome`.
@@ -104,7 +93,7 @@ function unionWords(typeName, endMarker) {
  */
 export function hostOutcomeWords() {
   const at = source().indexOf("readonly outcome:");
-  if (at < 0) return require_("Session.Info.outcome", []);
+  if (at < 0) return requireFound("Session.Info.outcome", []);
   const entry = source().slice(at).match(/Schema\.Literals<readonly \[([^\]]+)\]>/);
   if (!entry) throw new Error(`sdk-contract: Session.Info.outcome declares no Literals list in ${TYPES}`);
   return requiredQuoted("Session.Info.outcome", entry[1]);
@@ -134,7 +123,7 @@ export function turnStateWords() {
 export function clientErrorReasons() {
   const text = clientFile("promise/generated/client-error.d.ts");
   const at = text.indexOf("ClientErrorReason =");
-  if (at < 0) return require_("ClientErrorReason", []);
+  if (at < 0) return requireFound("ClientErrorReason", []);
   const entry = text.slice(at).match(/=([^;]+);/);
   if (!entry) throw new Error("sdk-contract: ClientErrorReason declares no union");
   return requiredQuoted("ClientErrorReason", entry[1]);

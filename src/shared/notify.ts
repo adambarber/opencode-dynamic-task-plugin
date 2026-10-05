@@ -12,7 +12,8 @@ import { LedgerChangeKind, type LedgerChange } from "./ledger-change.js";
 import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { evictOldest } from "./bounded-map.js";
-import { NotifyKind } from "./notification-text.js";
+import { NOTIFY_KINDS, NotifyKind } from "./notification-text.js";
+export { NOTIFY_KINDS };
 import { errorMessage } from "./host-shape.js";
 import { TaskState, type SettlementVerdict } from "./task-state.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
@@ -175,10 +176,6 @@ export interface PendingDelivery extends DeliveryTarget {
   attempts: number;
 }
 
-// The kinds, as data: the ledger reader validates a restored entry against this
-// list, so the two can never disagree about what a kind is.
-export const NOTIFY_KINDS: readonly NotifyKind[] = Object.values(NotifyKind);
-
 /**
  * The one place a settlement's verdict and its notification kind meet.
  *
@@ -197,6 +194,9 @@ export function settlementKind(verdict: SettlementVerdict): NotifyKind {
       return NotifyKind.Error;
     case TaskState.Blocked:
       return NotifyKind.Blocked;
+    // The union is closed, so this arm is unreachable — and that is the point:
+    // a fourth verdict must fail loudly here, not fall through as undefined.
+    default: throw new Error(`unhandled settlement verdict: ${JSON.stringify(verdict satisfies never)}`);
   }
 }
 
@@ -425,6 +425,19 @@ function currentGeneration(generations: Map<string, number>, childSessionId: str
   return generations.get(childSessionId) ?? 0;
 }
 
+const drop = (map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): void => {
+  const keys = map.get(childSessionId);
+  if (!keys) return;
+  keys.delete(dedupKey);
+  if (keys.size === 0) map.delete(childSessionId);
+};
+
+const announceDropped = (dropped: PendingDelivery | null): void => {
+  if (dropped === null) return;
+  void safeLog("warn", `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
+    `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`);
+};
+
 function createGateLedger(): GateLedger {
   const delivered = new Map<string, Set<string>>();
   const inFlight = new Map<string, Set<string>>();
@@ -444,12 +457,6 @@ function createGateLedger(): GateLedger {
   // which is what bounds the map; correctness does not depend on that, the
   // comparison does.
   const retired = new Map<string, Map<string, number>>();
-  const drop = (map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): void => {
-    const keys = map.get(childSessionId);
-    if (!keys) return;
-    keys.delete(dedupKey);
-    if (keys.size === 0) map.delete(childSessionId);
-  };
   return {
     record({ childSessionId, dedupKey, generation }) {
       if (currentGeneration(generations, childSessionId) !== generation) return false;
@@ -696,11 +703,6 @@ export async function notifyParent(
   // A dropped debt is a notice the operator will never be told exists, so it is
   // said out loud here rather than only in the queue's shape: the one channel an
   // operator has without setting an environment variable first is the host log.
-  const announceDropped = (dropped: PendingDelivery | null): void => {
-    if (dropped === null) return;
-    void safeLog("warn", `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
-      `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`);
-  };
   const dial = (attempts: number): Promise<Attempt> => {
     announceDropped(queuePending({ ...owed, attempts: carried + attempts }));
     return attempt();

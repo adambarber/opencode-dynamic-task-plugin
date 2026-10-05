@@ -64,7 +64,7 @@ describe("a parent owed the same notice twice", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     const heard = h.notices().filter((n) => n.message.includes("can go now"));
-    const parents = heard.map((n) => n.to).sort();
+    const parents = heard.map((n) => n.to).toSorted();
     assert.deepStrictEqual(
       parents,
       ["p1", "p2"],

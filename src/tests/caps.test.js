@@ -411,7 +411,7 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     ["an overlay that is not valid JSON", () => live(projectWith("{ truncated"))],
     ["a reader that throws", () => installLiveAgentCaps(() => { throw new Error("the overlay reader is broken"); })],
   ]) {
-    it(`${name} degrades to the boot config rather than refusing work`, () => {
+    it(`${String(name)} degrades to the boot config rather than refusing work`, () => {
       breakIt();
       assert.strictEqual(liveAgentCaps(defaultConfig), defaultConfig, "the boot config is the answer");
       const store = createTaskStore();

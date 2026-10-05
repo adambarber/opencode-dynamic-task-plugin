@@ -49,7 +49,7 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
     const made = await client.session.create({ title: "probe" });
     await client.session.context({ sessionID: made.id });
 
-    assert.deepStrictEqual(Object.fromEntries(client._state.faults), {});
+    assert.deepStrictEqual(Object.fromEntries(client.testState.faults), {});
   });
 
   it("counts a fault once per application, so a witness cannot be satisfied by one call for many", async () => {
@@ -59,20 +59,20 @@ describe("invariant: the fake host engages the fault it was asked for", () => {
     client.session.create({ title: "probe" }).then(() => swallowed.push("b"));
     await sleep(20);
 
-    assert.strictEqual(client._state.faults.get("silentHost"), 2, "one count per swallowed call");
+    assert.strictEqual(client.testState.faults.get("silentHost"), 2, "one count per swallowed call");
     assert.deepStrictEqual(swallowed, [], "a silent host answers nothing");
   });
 
   it("reports an armed fault that never fired, which is what a passing case about nothing looks like", async () => {
     const client = createMockClient({ presenceHang: true });
 
-    assert.deepStrictEqual(unengagedFaults(client._state), ["presenceHang"], "armed, never engaged");
+    assert.deepStrictEqual(unengagedFaults(client.testState), ["presenceHang"], "armed, never engaged");
 
     client.silenceHost();
     client.agent.list();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    assert.deepStrictEqual(unengagedFaults(client._state), ["presenceHang"], "the silent host engaged");
+    assert.deepStrictEqual(unengagedFaults(client.testState), ["presenceHang"], "the silent host engaged");
   });
 });
 

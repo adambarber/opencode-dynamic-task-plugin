@@ -18,7 +18,7 @@
 import assert from "node:assert";
 
 import { readFileSync } from "node:fs";
-import { FAULTS, armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
+import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
 // The host's status vocabulary and not-found spelling, parsed out of the SDK
 // declaration the production code compiles against — so the fake is held to the
 // host's own words rather than to a hand-kept list that drifts in the one
@@ -145,7 +145,7 @@ export function recordingClient(respond) {
         get: async ({ sessionID }) => {
           if (!turns.has(sessionID)) throw missingSessionError();
           const messages = turns.get(sessionID) ?? [];
-          const lastAssistant = [...messages].reverse().find((m) => m?.type === "assistant");
+          const lastAssistant = messages.findLast((m) => m?.type === "assistant");
           if (!lastAssistant || lastAssistant.time?.completed === undefined) {
             return { id: sessionID, outcome: undefined, time: { created: Date.now() } };
           }
@@ -470,7 +470,7 @@ const captureNotice = (state, record) => state.notifications.push(record);
  * condition is only the story that produces it. Spelled three times, the message
  * was three chances to drift away from the server's own wording.
  */
-const sessionNotFound = (id) => missingSessionError();
+const sessionNotFound = () => missingSessionError();
 
 /**
  * The production-shaped mock host.
@@ -622,7 +622,7 @@ export function createMockClient(hooks = {}) {
   armHookFaults(state, hooks);
 
   const endpoints = {
-    _state: state,
+    testState: state,
     // v2 names this domain `agent` and its reader `list`, and the answer is a bare
     // array: there is no envelope to unwrap, so a reader reaching for `.data` now
     // fails on an array rather than quietly finding nothing.
@@ -821,11 +821,11 @@ export function createMockClient(hooks = {}) {
           err.name = "Session.AgentNotFoundError";
           throw err;
         }
-        state.routed.set(sessionID, { ...(state.routed.get(sessionID) ?? {}), agent });
+        state.routed.set(sessionID, { ...state.routed.get(sessionID), agent });
         return { ok: true };
       },
       switchModel: async ({ sessionID, model }) => {
-        state.routed.set(sessionID, { ...(state.routed.get(sessionID) ?? {}), providerID: model?.providerID, modelID: model?.id });
+        state.routed.set(sessionID, { ...state.routed.get(sessionID), providerID: model?.providerID, modelID: model?.id });
         return { ok: true };
       },
       interrupt: async ({ sessionID }) => {

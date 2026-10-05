@@ -120,7 +120,7 @@ describe("the cross-boundary import filter", () => {
    * against the numbers it is asserting.
    */
   const claimsOnly = (expected, why, ...lines) =>
-    assert.deepStrictEqual([...importLines(lines.join("\n"))].sort((x, y) => x - y), expected, why);
+    assert.deepStrictEqual([...importLines(lines.join("\n"))].toSorted((x, y) => x - y), expected, why);
 
   it("claims the import's own lines and nothing before them", () => {
     claimsOnly([5], "an import is one line of names; the four lines above it are not",

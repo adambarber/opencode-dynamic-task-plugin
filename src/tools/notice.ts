@@ -6,6 +6,7 @@ import { isParentless } from "../shared/session-lifecycle.js";
 import { notifyParent, noticeDedupKey, getLatestNotification } from "../shared/notify.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import { pruneRetainedTasks, findTask, TaskState } from "../shared/task-state.js";
+import type { NotifyArgs } from "./args.js";
 import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
 import { callerSessionId, type ToolDeps } from "./context.js";
 import {
@@ -21,11 +22,6 @@ import {
   parentUndelivered,
   noticeClaimRefused,
 } from "../shared/voice.js";
-
-export interface NotifyArgs {
-  message?: unknown;
-  kind?: unknown;
-}
 
 export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: ToolContext): Promise<string> {
   const { host, store, config } = deps;

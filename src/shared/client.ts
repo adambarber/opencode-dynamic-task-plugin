@@ -12,6 +12,7 @@
 
 import type { Context } from "@opencode/plugin/promise/plugin";
 import { expired, withBound, type BoundArgs, type Bounded } from "./execution-bound.js";
+import { isEventRecord } from "./host-shape.js";
 
 /** The host, as v2 defines it: a set of typed domains and no client. */
 export type OpenCodeClient = Context;
@@ -95,13 +96,15 @@ export function hasPermissionReply(host: OpenCodeClient): boolean {
  * asking whether a key exists is the question — not asserting an answer.
  */
 export function hasCoreApis(host: OpenCodeClient): boolean {
-  const seen = host as unknown as {
-    agent?: Record<string, unknown>;
-    session?: Record<string, unknown>;
-  };
+  // The runtime truth can be a PARTIAL context, so each level is narrowed
+  // before the next is read; a missing level answers false, never throws.
+  if (!isEventRecord(host)) return false;
+  const agent = host["agent"];
+  const session = host["session"];
+  if (!isEventRecord(agent) || !isEventRecord(session)) return false;
   return (
-    typeof seen?.agent?.list === "function" &&
-    typeof seen?.session?.create === "function" &&
-    typeof seen?.session?.prompt === "function"
+    typeof agent["list"] === "function" &&
+    typeof session["create"] === "function" &&
+    typeof session["prompt"] === "function"
   );
 }

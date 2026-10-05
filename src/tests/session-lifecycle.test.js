@@ -8,6 +8,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
+import { compareStrings } from "./support/assertions.js";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, loadTaskLedger, mergeLedgerChange, normalizeStatus, resolveParentSessionId, saveTaskLedger, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
@@ -179,7 +180,7 @@ describe("getEventLifecycleStatus", () => {
     ["a failure event carrying only a session id", { type: SESSION_ERROR, data: { sessionID: "s1" } }, "error"],
     ["a non-error event still reads its own status", { type: SESSION_IDLE, data: { sessionID: "s1", status: "idle" } }, "idle"],
   ]) {
-    it(`${why} reads as ${expected || "(nothing)"}`, () => {
+    it(`${JSON.stringify(why)} reads as ${JSON.stringify(expected) || "(nothing)"}`, () => {
       assertIs(getEventLifecycleStatus(event), expected, why);
     });
   }
@@ -346,13 +347,15 @@ describe("task ledger persistence", () => {
   // cannot be redelivered (no parent, no text, or an unknown kind), and half of
   // one is worse than none — the boot would dial a message nobody can account for.
   it("drops a queue entry missing any field, never half of it", async () => {
-    const loaded = await loadRaw({ tasks: {}, ...{ pending: [
+    const loaded = await loadRaw({ tasks: {}, pending: [
       owedEntry({ childSessionId: "ses_noparent", parentSessionId: undefined }),
       owedEntry({ childSessionId: "ses_notext", text: "" }),
       owedEntry({ childSessionId: "ses_badkind", kind: "shout" }),
-      owedEntry({ childSessionId: "ses_noid", childSessionId: 42 }),
+      // Intentionally corrupt: two spellings of the id (last wins at runtime).
+      // Built with fromEntries so the suite does not itself carry a dupe key.
+      owedEntry(Object.fromEntries([["childSessionId", "ses_noid"], ["childSessionId", 42]])),
       owedEntry(),
-    ] } });
+    ] });
     assert.deepStrictEqual(loaded.pending, [owedEntry()], "only the whole entry returns");
   });
 
@@ -485,7 +488,7 @@ describe("a ledger change never touches an entry it does not name", () => {
     startedAt: 1000,
   });
   const ledgerWith = (over = {}) => ({ retained: new Map(), active: new Map(), pending: [], ...over });
-  const keys = (map) => [...map.keys()].sort();
+  const keys = (map) => [...map.keys()].toSorted(compareStrings);
 
   it("a running task joins whatever else the file holds", () => {
     // Seeded in ALL THREE halves, because a write that rebuilt any one of them

@@ -19,6 +19,7 @@
  */
 
 import { describe, it, assert } from "./support/runner.js";
+import { compareStrings } from "./support/assertions.js";
 import {
   hostTurnInFlight,
   hostTurnRunning,
@@ -51,8 +52,8 @@ describe("liveness vocabulary", () => {
 
   it("reads every verdict the host declares, so a new one cannot go untested", () => {
     assert.deepStrictEqual(
-      [...declared].sort(),
-      Object.keys(READING_OF).sort(),
+      [...declared].toSorted(compareStrings),
+      Object.keys(READING_OF).toSorted(compareStrings),
       "the host declares a verdict this suite has no reading for — decide what it means here first",
     );
   });
@@ -262,7 +263,7 @@ describe("isSessionMissing names every not-found the host sends", () => {
     ["empty failure", {}, false],
   ];
   for (const [name, error, want] of cases) {
-    it(`${want ? "reads" : "refuses"}: ${name}`, () => {
+    it(`${want ? "reads" : "refuses"}: ${JSON.stringify(name)}`, () => {
       assert.strictEqual(isSessionMissing(error), want);
     });
   }

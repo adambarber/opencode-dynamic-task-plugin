@@ -32,12 +32,8 @@ import {
   describe,
   interruptAs,
   it,
-  PARENT,
-  sessionIds,
-  setupHarness,
   sleep,
   withChild,
-  withDispatchTree,
   withLostAbort,
   withOrphan,
   withRefusedStop,
@@ -57,7 +53,7 @@ describe("abort ownership", () => {
   it("a caller that names its own session does not kill its own turn", async () => {
     // The reported symptom: a turn comes back `interrupted` before the model was
     // ever dispatched. Seeded live, so the host WOULD have obeyed.
-    const { h, answer } = await withSelfStop({ note: "a caller is never a target of its own turn" });
+    const { h } = await withSelfStop({ note: "a caller is never a target of its own turn" });
 
 
     assert.deepStrictEqual(

@@ -2,6 +2,7 @@
 // schema the host validates is built from these names in tools/index.ts; this
 // module is the TypeScript side of the same three arguments, so a tool cannot
 // declare an argument the executor does not read or read one it never declared.
+import { isEventRecord } from "../shared/host-shape.js";
 
 /**
  * What every prompt-bearing tool takes. A session to act on (absent only for the
@@ -30,3 +31,48 @@ export interface SpawnArgs extends PromptToolArgs {
 
 /** Following up on a task takes the shared three and nothing more. */
 export type ContinueArgs = PromptToolArgs;
+// The boundary readers: host-validated JSON arrives as `unknown`, and each
+// tool's executor declares its arguments above. The reader is the one place
+// that turns the former into the latter, so no executor casts its input.
+// A field the host validated: present means correctly typed. Anything else
+// is absent, and absence already has its own refusal voice downstream.
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+function optionalStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.every((entry): entry is string => typeof entry === "string") ? value : undefined;
+}
+// A non-object carries no fields; the all-absent shape lets the executor's
+// own voice name the first missing one instead of throwing on the read.
+function readPromptFields(raw: Record<string, unknown>): PromptToolArgs {
+  return {
+    session_id: optionalString(raw["session_id"]),
+    prompt: optionalString(raw["prompt"]),
+    model: optionalString(raw["model"]),
+  };
+}
+export function readSpawnArgs(raw: unknown): SpawnArgs {
+  if (!isEventRecord(raw)) return {};
+  return {
+    ...readPromptFields(raw),
+    description: optionalString(raw["description"]),
+    subagent_type: optionalString(raw["subagent_type"]),
+    depends_on: optionalStringList(raw["depends_on"]),
+    depends_on_settled: optionalStringList(raw["depends_on_settled"]),
+  };
+}
+export function readContinueArgs(raw: unknown): ContinueArgs {
+  if (!isEventRecord(raw)) return {};
+  return readPromptFields(raw);
+}
+// Unknown fields because the executor narrows them itself: the message has
+// its own required-voice and the kind its own refusal, both downstream.
+export interface NotifyArgs {
+  message?: unknown;
+  kind?: unknown;
+}
+export function readNotifyArgs(raw: unknown): NotifyArgs {
+  if (!isEventRecord(raw)) return {};
+  return { message: raw["message"], kind: raw["kind"] };
+}

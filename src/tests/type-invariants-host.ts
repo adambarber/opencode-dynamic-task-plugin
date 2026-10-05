@@ -55,6 +55,7 @@ export type _HostPins = [typeof refusedWord, typeof ended, typeof invented, type
 // So boundedness moves into the type: production holds `OpaqueHost`, which has no
 // namespaces, so naming one is a BUILD FAILURE.
 import type { OpaqueHost, OpenCodeClient } from "../shared/client.js";
+import { asOpaqueHost } from "../shared/client.js";
 
 declare const host: OpaqueHost;
 
@@ -69,6 +70,9 @@ const escapesTheChokepoint = await host.session.interrupt({ sessionID: "ses_x" }
 // brand compiles clean against a fixture that never looked like a host.
 declare const realContext: OpenCodeClient;
 declare const spellsTheBrand: { __host: OpenCodeClient };
+// The mint ACCEPTS a real host — otherwise opacity would be satisfied by refusing
+// the host entirely, which compiles as cleanly as a real brand does.
+const mintedFromReal: OpaqueHost = asOpaqueHost(realContext);
 // @ts-expect-error  A literal cannot carry a `unique symbol` key, so no object can
 // stand in for a minted host. This compiles clean if the brand becomes a string.
 const forgedHost: OpaqueHost = spellsTheBrand;
@@ -82,6 +86,7 @@ const v1IsNotAContext: OpenCodeClient = v1Client;
 
 export type _OpaqueHostPins = [
   typeof escapesTheChokepoint,
+  typeof mintedFromReal,
   typeof forgedHost,
   typeof v1IsNotAContext,
 ];

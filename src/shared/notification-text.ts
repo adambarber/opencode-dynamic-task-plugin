@@ -90,8 +90,16 @@ export function notificationTag(kind: NotifyKind): string {
  */
 const KIND_FIELD = (kind: NotifyKind) => `Kind: ${kind}`;
 
+// The kinds TEXT can answer, named once: iterating the enum's keys would
+// need a cast, and a second spelling of the set would drift from TEXT.
+export const NOTIFY_KINDS: readonly NotifyKind[] = [
+  NotifyKind.Completed,
+  NotifyKind.Error,
+  NotifyKind.Blocked,
+  NotifyKind.Notice,
+];
 export function notificationKindOf(text: string): NotifyKind | undefined {
-  for (const kind of Object.keys(TEXT) as NotifyKind[]) {
+  for (const kind of NOTIFY_KINDS) {
     if (text.includes(KIND_FIELD(kind))) return kind;
   }
   return undefined;

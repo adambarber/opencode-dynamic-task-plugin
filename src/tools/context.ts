@@ -66,7 +66,9 @@ export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext
   return {
     ok: true,
     scope: {
-      sessionId: String((args as { session_id: string }).session_id),
+      // `missingSessionId` above already refused absent ids, so the fallback
+      // is unreachable on that path; it types the read, not a second check.
+      sessionId: String(isEventRecord(args) ? args["session_id"] : undefined),
       callerSessionId: callerSessionId(ctx),
       host: deps.host,
       store: deps.store,

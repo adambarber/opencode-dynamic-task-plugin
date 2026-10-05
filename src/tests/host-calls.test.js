@@ -1,7 +1,6 @@
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { REPO_ROOT, readSource } from './support/corpus.js';
 import { hostCallSites } from './support/host-calls.js';
 import { createMockClient } from './support/mock-host.js';
 import { describe, it } from './support/runner.js';

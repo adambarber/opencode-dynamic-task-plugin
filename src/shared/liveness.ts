@@ -9,7 +9,7 @@
 import { callHost, type OpaqueHost } from "./client.js";
 import { isMessage, readSessionMessages } from "./prompt.js";
 import { READ_BOUNDS } from "./execution-bound.js";
-import { isPlainRecord } from "./host-shape.js";
+import { includesWord, isPlainRecord } from "./host-shape.js";
 import type { Session } from "@opencode/schema/session";
 
 /** The host's own session object, by its declared type — never a local copy of it. */
@@ -262,11 +262,14 @@ export async function readSessionState(host: OpaqueHost, sessionId: string): Pro
 /** The host's own outcome word, or undefined when no execution has completed. */
 function readHostOutcome(info: Record<string, unknown>): HostTurnWord | undefined {
   const outcome = info["outcome"];
-  return HOST_TURN_WORDS.has(outcome as HostTurnWord) ? (outcome as HostTurnWord) : undefined;
+  return isHostTurnWord(outcome) ? outcome : undefined;
 }
 
-/** Every word the SDK declares, so an undeclared one cannot pass as a verdict. */
-const HOST_TURN_WORDS: ReadonlySet<unknown> = new Set<HostTurnWord>(["succeeded", "failed", "interrupted"]);
+// Every word the SDK declares, so an undeclared one cannot pass as a verdict.
+const HOST_TURN_WORD_LIST = ["succeeded", "failed", "interrupted"] as const;
+function isHostTurnWord(value: unknown): value is HostTurnWord {
+  return includesWord(HOST_TURN_WORD_LIST, value);
+}
 
 /**
  * Presence, for the callers that only ask that. Existence and turn state come from

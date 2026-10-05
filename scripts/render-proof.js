@@ -37,6 +37,7 @@ if (process.argv.includes("--screen")) {
   const actions = { confirm: () => {}, back: () => {} };
   const screens = [
     ["the list - the total above every agent", limitsListProps(dialog, () => {})],
+    ["the per-agent cap picker, two agents deep", agentCapsProps("explore", explore)],
     ["the depth picker, where the agent set binds it at 3", capPickerProps("explore", "maxDepth", explore, actions)],
     ["the concurrency picker, where nothing binds it", capPickerProps("explore", "maxConcurrent", explore, actions)],
     ["the total's picker", ceilingPickerProps(dialog.ceiling, actions)],
@@ -116,7 +117,7 @@ if (process.argv.includes("--screen")) {
       { width: 80, height: 40 },
     );
     await shot.renderOnce();
-    console.log(`\n--- ${heading}`);
+    console.log(`\n--- ${JSON.stringify(heading)}`);
     console.log(shot.captureSpans().lines
       .map((line) => line.spans.map((s) => s.text).join("").replace(/\s+$/, ""))
       .filter((line) => line !== "")

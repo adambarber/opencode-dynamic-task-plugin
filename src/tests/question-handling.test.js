@@ -16,7 +16,7 @@ import { opaqueHost } from "./support/opaque-host.js";
 import { PERMISSION_ASKED, readHostAsk } from "../../dist/shared/host-events.js";
 import { truncateText } from "../../dist/shared/notify.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { assertAnswer, assertIs, assertNothing } from "./support/assertions.js";
+import { assertIs, assertNothing } from "./support/assertions.js";
 
 // One verb survives the v2 rename: the gate DENIES. `permission.reply` takes a
 // decision ("once" | "always" | "reject"), so there is no answer to send and no

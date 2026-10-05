@@ -25,6 +25,15 @@ import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 export const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found)}`;
 
 /**
+ * The ordering every sorted claim shares, once.
+ *
+ * Paths, session ids and agent names all sort as plain strings, and a bare
+ * `toSorted()` hides that from the next reader — so the comparator is named here
+ * rather than spelled five ways.
+ */
+export const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
  * The two comparisons every claim here shares, once each.
  *
  * A claim helper is a NAME for a claim, not a comparison: "nothing", "empty" and

@@ -75,7 +75,7 @@ const ALREADY_CLOSED: ReadonlyArray<{ status: number; says: RegExp }> = [
 ];
 
 function classifyDenialFailure(requestId: string, error: unknown): QuestionResult {
-  const status = isEventRecord(error) ? (error as Record<string, unknown>).status : undefined;
+  const status = isEventRecord(error) ? error.status : undefined;
   const message = errorMessage(error);
   if (ALREADY_CLOSED.some(({ status: code, says }) => status === code || says.test(message))) {
     return { succeeded: true, reason: "already_resolved" };

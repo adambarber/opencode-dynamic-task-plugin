@@ -153,7 +153,7 @@ export function agentCanNotify(agent: AgentRecord, tool: string): boolean {
   for (let i = agent.permissions.length - 1; i >= 0; i -= 1) {
     const rule = agent.permissions[i];
     if (!rule) continue;
-    if (wildcardMatches(tool, rule.action) && wildcardMatches("*", rule.resource)) {
+    if (wildcardMatches(process.platform, tool, rule.action) && wildcardMatches(process.platform, "*", rule.resource)) {
       return rule.effect !== "deny";
     }
   }
@@ -165,7 +165,21 @@ export function agentCanNotify(agent: AgentRecord, tool: string): boolean {
 // `?` is one char, anchored both ends, backslashes normalised. Ported whole —
 // including the trailing-" .*" carve-out — because a narrower grammar answers a
 // different question than the host on partial-glob rules like `task_*`.
-function wildcardMatches(value: string, pattern: string): boolean {
+
+/**
+ * The host's matcher, with its one platform dependence made explicit.
+ *
+ * `packages/core/src/util/wildcard.ts:13` builds the regex with
+ * `process.platform === "win32" ? "si" : "s"`. Pinning `"s"` unconditionally made a
+ * case-differing rule — `TASK_NOTIFY` against `task_notify` — deny here and match
+ * there, so the answer came to depend on the machine rather than on the rule.
+ *
+ * `platform` is a parameter rather than a hidden read because the case-insensitive
+ * branch is unreachable from a test running anywhere but Windows: on darwin every
+ * flag choice yields the same answers, so a broken wiring is invisible at runtime.
+ * Passing it makes both branches reachable, and a source pin holds the caller to it.
+ */
+export function wildcardMatches(platform: string, value: string, pattern: string): boolean {
   const normalized = value.replaceAll("\\", "/");
   let escaped = pattern
     .replaceAll("\\", "/")
@@ -173,5 +187,5 @@ function wildcardMatches(value: string, pattern: string): boolean {
     .replace(/\*/g, ".*")
     .replace(/\?/g, ".");
   if (escaped.endsWith(" .*")) escaped = `${escaped.slice(0, -3)  }( .*)?`;
-  return new RegExp(`^${escaped}$`, "s").test(normalized);
+  return new RegExp(`^${escaped}$`, platform === "win32" ? "si" : "s").test(normalized);
 }

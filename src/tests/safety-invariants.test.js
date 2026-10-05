@@ -982,3 +982,18 @@ describe("invariant: the TUI reads agents from the host data store, never client
       "The double carries `data.location.agent` because that is what production reads.",
   });
 });
+
+
+// A BANNED shape, so the pin holds on every platform. The behavioural pins cannot:
+// off Windows every flag choice gives the same answers, which is how a hardcoded
+// "s" survived a green suite on darwin.
+describe("invariant: the permission matcher is handed the host's platform", () => {
+  it("reads process.platform at the call site instead of pinning the flags", () => {
+    const source = readFileSync(path.join(SRC_DIR, "shared", "agent-record.ts"), "utf8");
+    const arg = /(?<!function )wildcardMatches\((?<platform>[^,)]+),/g;
+    const args = [...source.matchAll(arg)].map((m) => (m.groups?.platform ?? "").trim());
+    assert.ok(args.length > 0, "could not find a wildcardMatches call in agent-record.ts");
+    const pinned = args.filter((a) => !a.includes("process.platform"));
+    assert.deepEqual(pinned, [], `hardcoded flags make a rule match by machine, not by rule: ${pinned.join(", ")}`);
+  });
+});

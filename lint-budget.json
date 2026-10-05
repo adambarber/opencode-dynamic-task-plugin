@@ -1,0 +1,32 @@
+{
+  "$comment": "711 findings. Regenerate with: npm run lint:budget",
+  "rules": {
+    "eslint/default-param-last": 3,
+    "eslint/init-declarations": 17,
+    "eslint/max-params": 47,
+    "eslint/max-statements": 81,
+    "eslint/new-cap": 13,
+    "eslint/no-continue": 34,
+    "eslint/no-duplicate-imports": 25,
+    "eslint/no-nested-ternary": 7,
+    "eslint/no-shadow": 1,
+    "eslint/no-template-curly-in-string": 1,
+    "eslint/no-underscore-dangle": 2,
+    "eslint/prefer-destructuring": 9,
+    "eslint/prefer-named-capture-group": 36,
+    "eslint/sort-imports": 252,
+    "eslint/sort-keys": 38,
+    "oxc/no-map-spread": 1,
+    "typescript/method-signature-style": 7,
+    "unicorn/consistent-function-scoping": 74,
+    "unicorn/error-message": 1,
+    "unicorn/filename-case": 4,
+    "unicorn/max-nested-calls": 25,
+    "unicorn/no-await-expression-member": 26,
+    "unicorn/no-nested-ternary": 1,
+    "unicorn/prefer-export-from": 3,
+    "unicorn/prefer-spread": 2,
+    "unicorn/prefer-ternary": 1
+  },
+  "total": 711
+}

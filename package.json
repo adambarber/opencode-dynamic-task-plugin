@@ -7,11 +7,13 @@
   "scripts": {
     "build": "tsc",
     "test": "npm run build && npm run lint && npm run test:duplication && node --test src/tests/*.test.js",
-    "test:coverage": "npm run build && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
+    "test:coverage": "npm run build && npm run lint && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
     "test:duplication": "node scripts/duplicate-gate.mjs",
     "test:cross-boundary": "node scripts/cross-boundary-clones.mjs",
-    "lint": "oxlint --type-aware",
-    "watch": "tsc --watch"
+    "lint": "node scripts/lint-budget.mjs",
+    "watch": "tsc --watch",
+    "lint:report": "oxlint --type-aware",
+    "lint:budget": "node scripts/lint-budget.mjs --write"
   },
   "keywords": [
     "opencode",

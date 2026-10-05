@@ -40,14 +40,10 @@ coverage/
 report/
 
 # Local opencode config (machine-local agent policy, plugin file-config).
-# The CONTENTS are ignored rather than the directory: git will not descend into an
-# excluded directory, so a `!.opencode/tui.json` below it would never match.
+# Contents are ignored rather than the directory: git will not descend into an
+# excluded directory, so a negation below it would never match. The plugin is
+# registered globally instead, as a link in ~/.config/opencode/plugins/.
 .opencode/*
-# ...except tui.json, which is not machine-local: it is this repo's own TUI plugin
-# registration, it resolves by a relative path, and the suite pins it. A module the
-# host cannot find is not degraded, it is never loaded — silently — so this file
-# is the difference between a working command palette and an empty one.
-!.opencode/tui.json
 
 # Host source checkout used for v2 contract verification
 tmp/

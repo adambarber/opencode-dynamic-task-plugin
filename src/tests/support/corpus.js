@@ -43,6 +43,17 @@ export function readSource(file) {
 }
 
 /**
+ * A production source named the way `SHAPE_HOMES` names it — `shared/task-state.ts`.
+ *
+ * A rule that reaches for production by its repo-relative path wants the file text and
+ * a short name for it, which is `readSource` with the `SRC_DIR` join already done. Rules
+ * were importing `node:fs`, `node:path` and `REPO_ROOT` to spell that join themselves.
+ */
+export function readProductionSource(relative) {
+  return readSource(path.join(SRC_DIR, relative));
+}
+
+/**
  * Every file under `dir` that `accept` claims, sorted. The ONE walk.
  *
  * A rule's corpus is a question about WHICH files, and each rule was answering it

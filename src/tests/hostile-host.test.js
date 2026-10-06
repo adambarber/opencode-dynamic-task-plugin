@@ -24,7 +24,7 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./support/runner.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 
 import {

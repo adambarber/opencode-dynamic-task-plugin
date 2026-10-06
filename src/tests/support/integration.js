@@ -12,7 +12,7 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./runner.js";
 import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
 import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";

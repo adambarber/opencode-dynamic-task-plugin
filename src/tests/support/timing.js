@@ -1,5 +1,5 @@
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./runner.js";
 
 //jscpd:ignore-end
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

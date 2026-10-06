@@ -9,11 +9,10 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
 import { agentDeclaring, allowAction, denyAction, events } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
 import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
-import { describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { bootOn } from "./support/integration.js";
 

@@ -241,8 +241,9 @@ export function isSessionMissing(error: unknown): error is HostSessionMissing {
  * reads that can disagree, and that disagreement is a false settlement.
  *
  * Bounded, because this sits on the reconcile path and an unbounded host call there
- * is a boot that never finishes. v2 has no `throwOnError`: the client rejects on a
- * 404 by itself, so existence is answered by the catch below.
+ * is a boot that never finishes. v2 offers `throwOnError`, but the host's bindings
+ * here reject on a 404 rather than returning an envelope payload, so existence is
+ * answered by the catch below.
  */
 export async function readSessionState(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
   try {

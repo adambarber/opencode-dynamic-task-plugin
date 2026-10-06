@@ -15,7 +15,7 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
+import { afterEach, assert } from "./runner.js";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
 import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
@@ -28,7 +28,6 @@ import {
 import { textTools, v2Context } from "./v2-context.js";
 import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
 import { DEBUG_DIR } from "../../../dist/debug-logger.js";
-import { afterEach } from "node:test";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
 import nodePath, { join } from "node:path";

@@ -9,12 +9,11 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
 import { bounded, dialCount, promptTextsTo, promptsSaying, promptsToCarrying, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
 import { deferred, events, promptText } from "./support/mock-host.js";
-import { describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/runner.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { ENV } from "../../dist/shared/config.js";
 import { retainedEntry } from "./support/records.js";

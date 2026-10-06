@@ -11,7 +11,7 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./runner.js";
 
 import {
   PARENT,

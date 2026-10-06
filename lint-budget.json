@@ -1,5 +1,5 @@
 {
-  "$comment": "526 findings. Regenerate with: npm run lint:budget",
+  "$comment": "524 findings. Regenerate with: npm run lint:budget",
   "rules": {
     "eslint/default-param-last": 3,
     "eslint/init-declarations": 14,
@@ -12,8 +12,8 @@
     "eslint/no-template-curly-in-string": 1,
     "eslint/no-underscore-dangle": 2,
     "eslint/prefer-destructuring": 9,
-    "eslint/prefer-named-capture-group": 34,
-    "eslint/sort-imports": 113,
+    "eslint/prefer-named-capture-group": 35,
+    "eslint/sort-imports": 110,
     "eslint/sort-keys": 33,
     "oxc/no-map-spread": 1,
     "typescript/method-signature-style": 7,
@@ -27,5 +27,5 @@
     "unicorn/prefer-spread": 1,
     "unicorn/prefer-ternary": 1
   },
-  "total": 526
+  "total": 524
 }

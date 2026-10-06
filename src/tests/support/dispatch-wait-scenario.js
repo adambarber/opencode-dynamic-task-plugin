@@ -9,7 +9,7 @@
  * prevent, one level up.
  */
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./runner.js";
 
 import { events } from "./mock-host.js";
 import { setupHarness } from "./harness.js";

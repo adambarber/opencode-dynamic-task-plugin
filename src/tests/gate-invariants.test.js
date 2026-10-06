@@ -10,7 +10,7 @@
 
 //jscpd:ignore-start
 import path from "node:path";
-import { REPO_ROOT, lineCount, listSourceFiles, siteOf } from "./support/corpus.js";
+import { REPO_ROOT, lineCount, listSourceFiles, listTestFiles, listTestSupportFiles, readSource, siteOf } from "./support/corpus.js";
 import { assert, describe, it } from "./support/runner.js";
 import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -524,3 +524,50 @@ describe("invariant: no file outgrows the point where a reader stops finding thi
   });
 });
 
+
+/**
+ * The runner seam is the suite's only door into node:test and node:assert. It
+ * exists because every file opened with the same two imports, which is a shape
+ * restated at every site — and it deliberately re-exports `node:assert/strict`,
+ * so a suite written through it cannot pass `assert.equal(4, "4")`.
+ *
+ * Eighteen files reached around it for the loose `node:assert` anyway, which left
+ * one suite running on two assertion semantics with nothing recording which. So
+ * the door is now the only door, and this row is what makes it stay that way.
+ */
+describe("invariant: the runner seam is the suite's only door into node:test and node:assert", () => {
+  it("reserves node:assert and node:test to the seam itself", () => {
+    // The whole suite tree, not just `*.test.js`: eight of the bypasses were support
+    // modules, which a suites-only scan reports clean while the same seam is being
+    // walked around one directory over.
+    const seam = "src/tests/support/runner.js";
+    const bypasses = [...listTestFiles(), ...listTestSupportFiles()]
+      .filter((file) => siteOf(file) !== seam)
+      .map(readSource)
+      .filter((source) => /from "node:(assert|test)"/.test(source.text))
+      .map((source) => siteOf(source.file));
+
+    assert.deepStrictEqual(
+      bypasses,
+      [],
+      `these files import node:assert or node:test directly instead of through\n` +
+        `./support/runner.js. The loose default coerces "4" to 4, so an assertion\n` +
+        `that should fail passes instead — and the seam is the reason the rest of the\n` +
+        `suite cannot do that.`,
+    );
+  });
+
+  it("keeps the seam strict, which is the whole reason it names node:assert", () => {
+    const seam = readSource(path.join(REPO_ROOT, "src/tests/support/runner.js"));
+    assert.match(
+      seam.text,
+      /from "node:assert\/strict"/,
+      "the seam re-exports the loose node:assert, so every suite written through it\n" +
+        "is loose too and the import this pin enforces no longer buys anything.",
+    );
+    assert.ok(
+      !/\.equal\(|\.deepEqual\(/.test(seam.text),
+      "the seam itself uses loose comparison",
+    );
+  });
+});

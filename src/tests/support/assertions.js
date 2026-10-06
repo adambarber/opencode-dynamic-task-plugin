@@ -16,7 +16,7 @@
  */
 
 //jscpd:ignore-start
-import assert from "node:assert";
+import { assert } from "./runner.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 
 //jscpd:ignore-end

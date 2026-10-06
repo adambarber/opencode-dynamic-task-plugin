@@ -9,8 +9,7 @@
 // shared key would let one project's caps bound another project's dispatch, which is
 // the kind of bug that only appears when two repos are open at once.
 
-import type { AgentOverlay } from "./caps.js";
-import { sameOverlay } from "./caps.js";
+import { sameOverlay, type AgentOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 import { type One, type StateFacade, recordKey } from "./state-facade.js";
 

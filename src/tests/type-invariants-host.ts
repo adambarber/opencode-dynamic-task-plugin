@@ -54,8 +54,7 @@ export type _HostPins = [typeof refusedWord, typeof ended, typeof invented, type
 //
 // So boundedness moves into the type: production holds `OpaqueHost`, which has no
 // namespaces, so naming one is a BUILD FAILURE.
-import type { OpaqueHost, OpenCodeClient } from "../shared/client.js";
-import { asOpaqueHost } from "../shared/client.js";
+import { asOpaqueHost, type OpaqueHost, type OpenCodeClient } from "../shared/client.js";
 
 declare const host: OpaqueHost;
 

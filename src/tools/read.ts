@@ -1,8 +1,7 @@
 // Session read executors (result/status/list): store-authoritative views with
 // the server's own liveness read beside them. Pure readers — they mutate
 // nothing except read-path TTL pruning.
-import { errorMessage } from "../shared/host-shape.js";
-import { eventField } from "../shared/host-shape.js";
+import { errorMessage, eventField } from "../shared/host-shape.js";
 import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
 import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
 import {
@@ -24,9 +23,8 @@ import {
   formatTaskStatusDetail,
   taskResultRecord,
 } from "../shared/task-formatting.js";
-import { type TaskRecord, TaskState, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
+import { activeByAgent, type TaskRecord, TaskState, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
 import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
-import { activeByAgent } from "../shared/task-state.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { agentOccupancy } from "../shared/caps.js";
 import { type ResolvedSessionScope, type ToolDeps, unknownSessionResult } from "./context.js";

@@ -59,7 +59,7 @@ import { readFileSync } from "node:fs";
 // that was read out of the store.
 const LIFECYCLE_MUTATION = gate(
   [
-    /\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
+    /\.\s*completed\s*=(?!=)|\.\s*timeoutNotified\s*=(?!=)|\.(?<field>state|abortError|lastAbortAt|lastNotice|lastActivityAt|replacedAt|turnLiveAt)\s*=(?!=)/,
   ],
   DOC_LIFECYCLE,
   "Direct task-state mutation bypasses transitionState's matrix.",
@@ -150,7 +150,7 @@ const RAW_FILE_WRITE = gate(
   { sanctioned: SANCTIONED_DANCES },
 );
 const STATE_PATH_LITERAL = gate(
-  [/"\.dynamic-task-(ledger|logs)/],
+  [/"\.dynamic-task-(?<artifact>ledger|logs)/],
   DOC_PERSISTENCE,
   "State-path literal outside the dances (resolve via the host directory instead).",
   { sanctioned: SANCTIONED_DANCES },
@@ -162,13 +162,13 @@ const ADMISSION_BYPASS = gate(
   { skip: [/function\s+(registerActiveTask|validateAgent|validateLineage)\s*\(/] },
 );
 const HARNESS_EVENT_NAME = gate(
-  [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
+  [/\btype:\s*"(?<hostType>session|question|message|permission|file|storage|project|install)\./],
   DOC_FIDELITY,
   "A fixture that invents a host event name certifies a gate that listens for it.",
   { corpus: () => [path.join(TESTS_DIR, "support", "harness.js")], skip: [PROSE] },
 );
 const PRODUCTION_EVENT_NAME = gate(
-  [/\btype:\s*"(session|question|message|permission|file|storage|project|install)\./],
+  [/\btype:\s*"(?<hostType>session|question|message|permission|file|storage|project|install)\./],
   DOC_FIDELITY,
   "A host event name spelled in production bypasses the chokepoint that makes it checkable.",
   { skip: [PROSE] },
@@ -184,7 +184,7 @@ const QUESTION_LINKAGE_OWNER = gate(
   { sanctioned: QUESTION_GATE_OWNER },
 );
 const QUESTION_ENDPOINT_FUNNEL = gate(
-  [/client\.question\s*\.\s*(reply|reject)\s*\(/],
+  [/client\.question\s*\.\s*(?<verdict>reply|reject)\s*\(/],
   DOC_QUESTIONS,
   "Direct question reply/reject bypasses the resolve-then-validate gate.",
   { sanctioned: QUESTION_GATE_OWNER },
@@ -240,7 +240,7 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
   // hit is: a whitelist alone would filter a reader's own ladder out of the
   // corpus and report green.
   it("the host response envelope is unwrapped in exactly one place", () => {
-    const hits = listProdFiles().flatMap((f) => scanLines(f, [/\[\s*"(data|body|agents)"\s*,\s*"(data|body|agents)"/], [PROSE]));
+    const hits = listProdFiles().flatMap((f) => scanLines(f, [/\[\s*"(?<first>data|body|agents)"\s*,\s*"(?<second>data|body|agents)"/], [PROSE]));
     assert.strictEqual(hits.length, 1, `Expected 1 envelope ladder, found ${hits.length}.\n${hits.join("\n")}`);
     assert.ok(hits[0].startsWith("src/shared/host-events.ts:"), `hostPayload owns the envelope: ${hits[0]}`);
   });

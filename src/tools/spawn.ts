@@ -1,11 +1,7 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 import type { ToolContext } from "@opencode/plugin/promise/tool";
-import type { CreateIntent } from "../shared/create-intent.js";
-import {
-  issueCreateIntent,
-  resolveCreateIntent,
-} from "../shared/create-intent.js";
+import { issueCreateIntent, resolveCreateIntent, type CreateIntent } from "../shared/create-intent.js";
 import {
   admitToolPrompt,
   fetchAgents,
@@ -14,7 +10,7 @@ import {
   resolveDependencies,
 } from "../shared/admission.js";
 import { agentCanNotify } from "../shared/agent-record.js";
-import { NOTIFY_TOOL } from "../shared/notification-text.js";
+import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
 import { abortSession } from "../shared/session-abort.js";
 import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
@@ -31,7 +27,6 @@ import {
   transitionState,
 } from "../shared/task-state.js";
 import { notifyRunning } from "../shared/change-sinks.js";
-import { NotifyKind } from "../shared/notification-text.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";

@@ -18,8 +18,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isPlainRecord } from "./host-shape.js";
-import type { DepthBound} from "./task-policy.js";
-import { depthLimits } from "./task-policy.js";
+import { depthLimits, type DepthBound } from "./task-policy.js";
 
 // ─── the vocabulary ──────────────────────────────────────────────────────────
 

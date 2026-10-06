@@ -2,6 +2,7 @@
 // One home for the transport scripts and the clean-slate hook every notify
 // suite shares, so three files can hold three subjects instead of one
 // big preamble. Each importer inherits the before/after clean state.
+//jscpd:ignore-start
 import { afterEach, assert, beforeEach } from "./runner.js";
 import { bounded, drain } from "./harness.js";
 import { deferred, recordingClient } from "./mock-host.js";
@@ -9,6 +10,7 @@ import { gateLedger, getPendingDeliveries, notifyChainCount, redeliverOwedNotifi
 import { cleanNotifyState } from "./gate-world.js";
 import { opaqueHost } from "./opaque-host.js";
 
+//jscpd:ignore-end
 export const NO_SLEEP = async () => {};
 
 /** The answer a host gives a write it accepted — one answer, so "accepted" is a name and not a shape. */

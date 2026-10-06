@@ -11,10 +11,12 @@
  * And the count, the sanction list and the failure text come from one shape, so no
  * rule can quietly assert a different thing than it documents.
  */
+//jscpd:ignore-start
 import { assert, it } from "./runner.js";
 import { listProdFiles, siteOf } from "./corpus.js";
 import { readFileSync } from "node:fs";
 
+//jscpd:ignore-end
 /** The skip marker for comment/prose lines, for rules about code rather than text. */
 export const PROSE = Symbol("prose");
 

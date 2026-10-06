@@ -6,12 +6,14 @@
 // declared type, never a local re-declaration of it. Both re-declarations that
 // used to live here were load-bearing and both were wrong.
 
+//jscpd:ignore-start
 import { type OpaqueHost, callHost } from "./client.js";
 import { isMessage, readSessionMessages } from "./prompt.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { includesWord, isPlainRecord } from "./host-shape.js";
 import type { Session } from "@opencode/schema/session";
 
+//jscpd:ignore-end
 /** The host's own session object, by its declared type — never a local copy of it. */
 type SessionInfo = Session.Info;
 

@@ -8,11 +8,13 @@
  * slightly different trees — the same defect the shape-first harness exists to
  * prevent, one level up.
  */
+//jscpd:ignore-start
 import assert from "node:assert";
 
 import { events } from "./mock-host.js";
 import { setupHarness } from "./harness.js";
 
+//jscpd:ignore-end
 /**
  * A dispatch the dependency gate refuses, which is what leaves a wait held.
  * The refusal is asserted here because every caller depends on it: a fixture

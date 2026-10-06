@@ -11,6 +11,7 @@
  * is faked — the host's key-value table — which is the same single boundary the ledger's
  * own suites fake, and for the same reason.
  */
+//jscpd:ignore-start
 import assert from "node:assert/strict";
 import { OverlayRpc } from "../../../dist/shared/overlay-rpc.js";
 import { armFault } from "./faults.js";
@@ -20,6 +21,7 @@ import { createRpc } from "./mock-rpc.js";
 import { facadeOver } from "./durable-world.js";
 import { overlayHandlers } from "../../../dist/entry/state.js";
 
+//jscpd:ignore-end
 /**
  * The host table behind one project, and the hooks object that made it.
  *

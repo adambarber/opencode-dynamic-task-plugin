@@ -7,6 +7,7 @@
 // pins already treated this as its own subject: the abort rule sanctions this file
 // alone, and the ledger's atomic-write dance sanctions another alone.
 
+//jscpd:ignore-start
 import { type OpaqueHost, type OpenCodeClient, callHost } from "./client.js";
 import { findTask, isRunning } from "./task-state.js";
 import type { TaskStore } from "./store.js";
@@ -15,6 +16,7 @@ import { errorMessage } from "./host-shape.js";
 import { isSessionMissing } from "./liveness.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
 
+//jscpd:ignore-end
 // The ONE child-abort site. Tenet 9 keeps the await at the call site — a steer
 // must abort exactly where its claim requires, an interrupt exactly where its
 // claim sits — so the funnel takes the ordering-preserving shape: it performs

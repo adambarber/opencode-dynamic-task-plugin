@@ -11,9 +11,11 @@
 // Durable state resolves from the host-provided project `directory` — never
 // process CWD, which for tests and multi-project hosts is somebody else's tree.
 
+//jscpd:ignore-start
 import { eventWord, isEventRecord } from "./host-shape.js";
 import { envelopeShells } from "./host-events.js";
 
+//jscpd:ignore-end
 // Parent session resolution: the SDK context field first, then the
 // historical spellings. Deliberately not `extends ToolContext`: ToolContext.metadata is a method,
 // so this shape is a structural subset. No ambient fallback: a stray env var

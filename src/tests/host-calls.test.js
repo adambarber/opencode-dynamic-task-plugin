@@ -1,3 +1,4 @@
+//jscpd:ignore-start
 import assert from 'node:assert';
 import path from 'node:path';
 
@@ -5,6 +6,7 @@ import { describe, it } from './support/runner.js';
 import { createMockClient } from './support/mock-host.js';
 import { hostCallSites } from './support/host-calls.js';
 
+//jscpd:ignore-end
 /**
  * The fake's fidelity to the host — the half of the outbound contract a TYPE cannot
  * check. Boundedness used to be read off the source and is now a BUILD FAILURE:

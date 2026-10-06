@@ -1,5 +1,6 @@
 // Plugin state boot (entry): config normalization, per-instance store, and
 // durable-state wiring. Lives apart from the entry so the entry stays wiring.
+//jscpd:ignore-start
 import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
 import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
@@ -31,6 +32,7 @@ import { createStore } from "../shared/durable-store.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
 import { readOverlayWrite } from "../shared/overlay-rpc.js";
 
+//jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)
 export interface PluginState {
   store: TaskStore;

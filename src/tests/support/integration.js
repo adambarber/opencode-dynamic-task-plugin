@@ -11,6 +11,7 @@
  * document the boot will quietly ignore.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
 import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
@@ -18,6 +19,7 @@ import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { events } from "./mock-host.js";
 import { owedIdentity } from "../../../dist/shared/notify-queue.js";
 
+//jscpd:ignore-end
 /**
  * A harness whose children fail every turn with `detail`, and one such child.
  *

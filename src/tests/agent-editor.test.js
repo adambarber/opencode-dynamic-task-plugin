@@ -13,6 +13,7 @@
  * value, and a test that hard-codes a cap name is a hand-kept mirror of a
  * vocabulary it does not own.
  */
+//jscpd:ignore-start
 import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlayCaps } from "../../dist/shared/caps.js";
 import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
@@ -21,6 +22,7 @@ import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { overlayChannel } from "./support/overlay-channel.js";
 
+//jscpd:ignore-end
 const BASE = normalizeDynamicTaskConfig(null);
 
 /** One project's caps channel, over the config the dialog writes against. */

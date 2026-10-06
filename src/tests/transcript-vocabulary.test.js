@@ -1,3 +1,4 @@
+//jscpd:ignore-start
 import {
   ASSISTANT_ROLE,
   getLatestAssistantText,
@@ -12,6 +13,7 @@ import { TESTS_DIR } from "./support/corpus.js";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
 
+//jscpd:ignore-end
 const gold = JSON.parse(readFileSync(join(TESTS_DIR, "support", "v2-transcript.json"), "utf8"));
 
 describe("transcript readers speak the v2 host vocabulary", () => {

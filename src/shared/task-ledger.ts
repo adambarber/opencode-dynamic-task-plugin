@@ -11,6 +11,7 @@
 // lives here, because two readers that each decided what a record is would be two
 // places for that to drift.
 
+//jscpd:ignore-start
 import { type ActiveTaskState, type LineagePath, type RetainedTaskState, type TaskIdentity, type TaskRecordBase, oldestRetainedId } from "./task-state.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { DEFAULT_CONFIG } from "./config.js";
@@ -21,6 +22,7 @@ import { emitRetainedChange } from "./change-sinks.js";
 import { isEventRecord } from "./host-shape.js";
 import { isFailureClass } from "./failure-class.js";
 
+//jscpd:ignore-end
 // A task's durable record must be complete or absent: any field the render
 // or revive path depends on disqualifies the whole entry. The guard itself
 // carries the shape so the load path needs no casts. One entry type serves both

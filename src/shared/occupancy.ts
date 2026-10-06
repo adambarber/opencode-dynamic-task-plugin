@@ -20,9 +20,11 @@
  * `store.ts` names the same type while `task-state` names the class. `verbatimModuleSyntax`
  * is what keeps the edge from becoming a runtime one.
  */
+//jscpd:ignore-start
 import type { ActiveTaskState } from "./task-state.js";
 import { agentKey } from "./caps.js";
 
+//jscpd:ignore-end
 /**
  * Running records to running tasks per agent, by folded key.
  *

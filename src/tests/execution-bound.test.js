@@ -6,12 +6,14 @@
  * that shrinks them is the same one the integration suite uses.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { READ_BOUNDS, WRITE_BOUNDS, shrinkBoundsForTesting, withBound } from "../../dist/shared/execution-bound.js";
 import { bounded, sleep } from "./support/harness.js";
 import { describe, it } from "node:test";
 import { deferred } from "./support/mock-host.js";
 
+//jscpd:ignore-end
 const NO_VALUE = Symbol("degradation");
 
 /**

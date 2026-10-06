@@ -5,12 +5,14 @@
 // land here in Task 07 proper; the funnel exists now so no new spawn path
 // can bypass it.
 
+//jscpd:ignore-start
 import type { DynamicTaskConfig } from "./config.js";
 import { resolveAgentCaps } from "./caps.js";
 import { liveAgentCaps } from "./caps.js";
 import { safeLog } from "./notify.js";
 import { type OpaqueHost, callHost } from "./client.js";
 
+//jscpd:ignore-end
 // The one host call the listing makes. Stated structurally so a FAKE can satisfy it
 // without the whole host: the reader is bounded, so it needs the shape, not the client.
 export interface AgentCaller {

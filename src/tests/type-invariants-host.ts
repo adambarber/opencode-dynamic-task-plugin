@@ -20,8 +20,10 @@
  * `npx tsc --noEmit` — the authoritative gate — fails as an UNUSED directive. That
  * is the opposite of `any`, which fails silently in the same situation.
  */
+//jscpd:ignore-start
 import type { HostTurnWord } from "../shared/liveness.js";
 
+//jscpd:ignore-end
 // ── the turn verdict is the host's, so an invented one cannot be read as it ──
 declare const quiesced: { type: "quiesced" };
 // @ts-expect-error  v2 declares exactly three verdicts for a completed execution

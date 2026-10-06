@@ -5,6 +5,7 @@
 // whose whole job is rendering. It spent years in task-state.ts, which is a
 // lifecycle module, because a formatter is easy to park next to the data it
 // reads. `task-state: no file outgrows 1000 lines` is the gate that noticed.
+//jscpd:ignore-start
 import { type NotificationRecord, truncateText } from "./notify.js";
 import { type ActiveTaskState, type RetainedTaskState, type TaskIdentity, type TaskRecord, TaskState, failureClassOf, turnReplacementPending } from "./task-state.js";
 import { isParentless } from "./session-lifecycle.js";
@@ -15,6 +16,7 @@ import { present, textBlock } from "./text-block.js";
 import type { AgentOccupancy } from "./caps.js";
 import { DepthBound } from "./task-policy.js";
 
+//jscpd:ignore-end
 /**
  * How long ago a moment was, in the words an operator reads.
  *

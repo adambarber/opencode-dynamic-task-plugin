@@ -17,9 +17,13 @@ export function createRpc() {
   const handlers = new Map();
   const calls = [];
   return {
-    calls,
     /** Every call's name and input, so a suite can assert the conversation itself. */
-    register: async (definition, given) => {
+    calls,
+    /**
+     * Registration is synchronous — the map is filled before this returns. Only the
+     * disposable it hands back is async, because that IS the host's shape.
+     */
+    register: (definition, given) => {
       handlers.set(definition.id, { definition, handlers: given });
       return {
         dispose: async () => {

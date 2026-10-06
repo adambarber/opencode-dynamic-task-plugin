@@ -6,8 +6,10 @@
  * primary `h` are all equally valid subjects. Extracted from harness.js so
  * the question vocabulary lives in one module.
  */
+//jscpd:ignore-start
 import { promptText } from "./mock-host.js";
 
+//jscpd:ignore-end
 /** Every prompt the host was asked to send, oldest first. */
 export const sentPrompts = (client) => client.testState.promptBodies;
 

@@ -3,6 +3,7 @@
  * what the operator is told. The design thesis and harness rationale are in
  * `tui-limits-command.test.js`.
  */
+//jscpd:ignore-start
 import {
   BASE, assertCapsDrawn, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
 } from "./support/limits-screen.js";
@@ -11,6 +12,7 @@ import { FROM_CONFIG } from "../../dist/tui/theme.js";
 import { assert, describe, it } from "./support/runner.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 
+//jscpd:ignore-end
 describe("the flow, end to end on disk", () => {
   it("a chosen cap lands in the overlay the dispatch path reads", () =>
     withPickerOpen(havingWritten((host) => chooseValue(host, 4))(async (host, directory) => {

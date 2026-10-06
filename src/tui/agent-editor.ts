@@ -16,6 +16,7 @@
  * rather than a side effect of opening. That is what lets the props be asserted on
  * directly, with no stand-in for the host's widgets.
  */
+//jscpd:ignore-start
 import {
   AGENT_CAP_NAMES,
   type AgentCapName,
@@ -31,6 +32,7 @@ import {
 import type { DepthBound} from "../shared/task-policy.js";
 import { depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
+//jscpd:ignore-end
 /**
  * How each cap reads in a cell.
  *

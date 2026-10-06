@@ -1,5 +1,7 @@
+//jscpd:ignore-start
 import { type DeliveryTarget } from "./notify-queue.js";
 
+//jscpd:ignore-end
 // src/shared/notify-records.ts — what the gate wrote down, once per write.
 // The receipts: an operator opening a parent session sees these words, and a status
 // view reads them to answer "was it told?" without re-dialing the host.

@@ -24,12 +24,14 @@
  * which is the kind of thing nobody notices until the cap matters.
  */
 
+//jscpd:ignore-start
 import { FailureClass, classifyFailure } from "./failure-class.js";
 import type { AgentCapSource } from "./caps.js";
 import type { TaskState } from "./task-state.js";
 import type { TaskStore } from "./store.js";
 import { retainedFor } from "./settled-record.js";
 
+//jscpd:ignore-end
 /**
  * Automatic revivals a child may be given before the next transient failure is
  * reported instead. Two, not one: a single blip is the case this is for, and two

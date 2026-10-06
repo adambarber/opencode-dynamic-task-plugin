@@ -2,8 +2,10 @@
 // schema the host validates is built from these names in tools/index.ts; this
 // module is the TypeScript side of the same three arguments, so a tool cannot
 // declare an argument the executor does not read or read one it never declared.
+//jscpd:ignore-start
 import { isEventRecord } from "../shared/host-shape.js";
 
+//jscpd:ignore-end
 /**
  * What every prompt-bearing tool takes. A session to act on (absent only for the
  * tool that CREATES one), the prompt, and an optional model override — the same

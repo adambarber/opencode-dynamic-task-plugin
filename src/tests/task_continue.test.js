@@ -8,6 +8,7 @@
  * that never happened, and revives rather than strands.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
@@ -18,6 +19,7 @@ import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { ENV } from "../../dist/shared/config.js";
 import { retainedEntry } from "./support/records.js";
 
+//jscpd:ignore-end
 /**
  * A steer that will lose a race to an interrupt, and the report it hands back.
  * The steps are always the same — boot a child, park the steer's abort at the

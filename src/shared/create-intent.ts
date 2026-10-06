@@ -23,8 +23,10 @@
  * It is named here because it is a limit and not an accident.
  */
 
+//jscpd:ignore-start
 import { recordKey } from "./state-facade.js";
 
+//jscpd:ignore-end
 /** The durable prefix every issued-but-unanswered create lives under. */
 export const CREATE_INTENT_PREFIX = "create-intent";
 

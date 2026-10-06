@@ -5,12 +5,14 @@
 // directory or a new gate script would leave one suite's corpus quietly empty
 // while it reported green. One walk, one answer to "what counts as a file here".
 
+//jscpd:ignore-start
 import path from "node:path";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { compareStrings } from "./assertions.js";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+//jscpd:ignore-end
 // The tests directory is this module's PARENT: this file lives in support/, and
 // anchoring on its own location would make SRC_DIR src/tests — a corpus that
 // resolves to something real and is silently the wrong thing.

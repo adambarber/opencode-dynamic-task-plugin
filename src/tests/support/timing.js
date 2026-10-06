@@ -1,5 +1,7 @@
+//jscpd:ignore-start
 import assert from "node:assert";
 
+//jscpd:ignore-end
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**

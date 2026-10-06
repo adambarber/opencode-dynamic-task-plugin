@@ -2,6 +2,7 @@
  * Choosing a cap: the picker the host draws, and the claims its title and its rows make.
  * The design thesis and the harness rationale are in `tui-limits-command.test.js`.
  */
+//jscpd:ignore-start
 import { ALL_AGENTS_LABEL, BACK_LABEL, capPickerProps } from "../../dist/tui/props.js";
 import {
   BOUND_DEPTH, agentEntry, assertCapsDrawn, assertEveryRowFits, backRow, backToCaps, choose, clearRow, everyRowClaims, readOverlay, row, rowsOn, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen,
@@ -11,6 +12,7 @@ import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { FROM_CONFIG, boundClause } from "../../dist/tui/theme.js";
 import { assert, describe, it } from "./support/runner.js";
 
+//jscpd:ignore-end
 describe("a bound is a note, not a removal", () => {
   it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>
     // The cap is what the operator SET; the depth they can reach is bounded by the

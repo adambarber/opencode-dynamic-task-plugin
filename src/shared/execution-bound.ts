@@ -69,9 +69,15 @@ const NOT_STARTED: Promise<never> = new Promise<never>(() => {});
 export class ExpiryError extends Error {
   override readonly name = "ExpiryError";
   readonly phase: ExpiryPhase;
-  constructor(readonly ms: number, phase: ExpiryPhase, readonly subject: string) {
+  /** How long the caller was willing to wait before this became an expiry. */
+  readonly ms: number;
+  /** What was being waited on, named so the message and the log agree. */
+  readonly subject: string;
+  constructor(ms: number, phase: ExpiryPhase, subject: string) {
     super(`${subject} ${phase === ExpiryPhase.Sent ? "unanswered" : "never sent"} after ${ms}ms`);
+    this.ms = ms;
     this.phase = phase;
+    this.subject = subject;
   }
 }
 

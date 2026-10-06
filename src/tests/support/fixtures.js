@@ -1,6 +1,8 @@
+//jscpd:ignore-start
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { dirname, join } from "node:path";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+//jscpd:ignore-end
 /**
  * The fixtures every module's suite needs: a config, and a registration literal.
  *

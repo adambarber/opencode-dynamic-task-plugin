@@ -19,12 +19,14 @@
  * that quietly added `parts: []` would be testing a turn the host never sends.
  */
 
+//jscpd:ignore-start
 import { answerMatches, assertNoticeCount } from "./support/assertions.js";
 import { assert, describe, it } from "./support/runner.js";
 import { promptsTo, sleep } from "./support/harness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { childFailingWith } from "./support/integration.js";
 
+//jscpd:ignore-end
 /** The prompts sent TO a child, as text. The spawn prompt is always the first. */
 const childPrompts = (h, id) => promptsTo(h.client, id).map((p) => p.text ?? "");
 

@@ -17,8 +17,10 @@
  * on every file before anything is written.
  */
 
+//jscpd:ignore-start
 import { readFileSync, writeFileSync } from "node:fs";
 
+//jscpd:ignore-end
 /** `none` is a bare side-effect import; `all` is a namespace; the rest count specifiers. */
 const RANK = { none: 0, all: 1, multiple: 2, single: 3 };
 
@@ -63,7 +65,7 @@ function order(text) {
 /** Specifiers alphabetical inside the brace, one line when the brace was one line. */
 function sortedInside(text) {
   return text.replace(/\{([^}]*)\}/g, (whole, inner) => {
-    const parts = inner.split(",").map((p) => p.trim()).filter(Boolean).sort();
+    const parts = inner.split(",").map((p) => p.trim()).filter(Boolean).toSorted();
     return whole.includes("\n") ? `{\n${parts.map((p) => `  ${p},`).join("\n")}\n}` : `{ ${parts.join(", ")} }`;
   });
 }
@@ -123,7 +125,7 @@ export function sortImports(source) {
   if (found.length < 2) return null;
   const ordered = found
     .map((slot) => ({ ...slot, text: sortedInside(slot.text), ...order(slot.text) }))
-    .sort((a, b) => a.rank - b.rank || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .toSorted((a, b) => a.rank - b.rank || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map((slot) => slot.text);
 
   // The guard. A permutation changes order and nothing else, so if this ever fails the

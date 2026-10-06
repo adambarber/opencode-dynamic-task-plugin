@@ -15,6 +15,7 @@
  * claim is about — and never a field list. Overrides go last, so a case still
  * states the one fact it is about.
  */
+//jscpd:ignore-start
 import {
   activeRecord,
   createTaskStore,
@@ -31,6 +32,7 @@ import {
 import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
 import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
 
+//jscpd:ignore-end
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({
   agentName: "explore",

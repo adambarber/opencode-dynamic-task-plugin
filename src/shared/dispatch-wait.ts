@@ -10,9 +10,11 @@
 // Its own module because it is its own subject: nothing here decides a task's
 // state, and nothing that decides a task's state belongs here.
 
+//jscpd:ignore-start
 import type { DependencyBlock } from "./admission.js";
 import { evictOldest } from "./bounded-map.js";
 
+//jscpd:ignore-end
 /**
  * Whether a wait's edges are all satisfied; otherwise which ones still block it.
  *

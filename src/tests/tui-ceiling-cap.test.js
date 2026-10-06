@@ -14,6 +14,7 @@
  * invisible as a bug until there was a way to set it, and then setting an agent's cap
  * silently deleted it under a success toast.
  */
+//jscpd:ignore-start
 import { describe, it } from "./support/runner.js";
 import { CAP_CHOICES, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/props.js";
@@ -26,6 +27,7 @@ import {
   rowText, titlesOf, top, withList, withOpen,
 } from "./support/limits-screen.js";
 
+//jscpd:ignore-end
 /**
  * …with the cross-agent total's picker open.
  *

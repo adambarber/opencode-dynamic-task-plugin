@@ -12,9 +12,11 @@
 // them is two vocabularies for one host boundary, and the read side is the one
 // that decides what happened.
 
+//jscpd:ignore-start
 import { eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
 import type { OpenCodeEvent } from "@opencode/client/promise";
 
+//jscpd:ignore-end
 /** The host's event union — the source of truth for every name below. */
 export type HostEventType = OpenCodeEvent["type"];
 

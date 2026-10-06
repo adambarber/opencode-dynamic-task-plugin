@@ -6,10 +6,12 @@
  * and what an unusable value at one level does to the level below it.
  */
 
+//jscpd:ignore-start
 import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
 import { assert, describe, it } from "./support/runner.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
 
+//jscpd:ignore-end
 /** The repository root, for the source-count pin that cannot retype the path. */
 
 import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";

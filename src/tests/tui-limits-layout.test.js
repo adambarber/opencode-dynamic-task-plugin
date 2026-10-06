@@ -2,6 +2,7 @@
  * The row against the host's own geometry: how many columns a dialog really offers, and
  * what a row does when its name and its caps cannot both fit. Measured, not modelled.
  */
+//jscpd:ignore-start
 import {
   BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, dialogRowText, row, rowText, withList,
 } from "./support/limits-screen.js";
@@ -11,6 +12,7 @@ import { assert, describe, it } from "./support/runner.js";
 import { bothCaps } from "./support/fixtures.js";
 import { displayName } from "../../dist/tui/agent-editor.js";
 
+//jscpd:ignore-end
 describe("the host's own layout, as measured rather than modelled", () => {
   // Every DERIVED version of these numbers has been wrong, and each was confident. The
   // first counted six columns of indent and missed a one-pixel gap; the second missed the

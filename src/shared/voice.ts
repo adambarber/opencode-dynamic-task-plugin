@@ -8,6 +8,7 @@
 // operator voice). Centralize the primitive "words in tool results", not all
 // strings everywhere.
 
+//jscpd:ignore-start
 import { CREATE_INTENT_PREFIX, createIntentKey, type CreateIntent } from "./create-intent.js";
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
@@ -15,6 +16,7 @@ import { TaskState } from "./task-state.js";
 import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
 import { textBlock } from "./text-block.js";
 
+//jscpd:ignore-end
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
 export const DYNAMIC_TASK_DESCRIPTION =

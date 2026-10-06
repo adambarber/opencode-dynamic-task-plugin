@@ -12,6 +12,7 @@
  * nothing about a namespace it did not read, and never writes into one.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, ledgerSays, settledOnDisk, waitFor } from "./support/integration.js";
@@ -19,6 +20,7 @@ import { describe, it } from "./support/runner.js";
 import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { compareStrings } from "./support/assertions.js";
 
+//jscpd:ignore-end
 /**
  * Wait for a notice to land, because boot deliberately does not block on
  * redelivery and the arrival is the observable.

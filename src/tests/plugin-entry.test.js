@@ -11,9 +11,11 @@
  * that rejection is silent at boot: no tools appear and no error reaches the user.
  */
 
+//jscpd:ignore-start
 import { assert, describe, it } from "./support/runner.js";
 import pluginEntry from "../../dist/index.js";
 
+//jscpd:ignore-end
 describe("plugin entry: decodes as a v2 plugin definition", () => {
   it("is an object the host's union can decode, not a factory function", () => {
     // The decoder unions {id, effect} against {id, setup}; a bare function

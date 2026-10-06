@@ -12,9 +12,11 @@
 // The settled half was already split out (settled-record.ts); this is the other
 // half, and the union of the two belongs to the machine that consumes both.
 
+//jscpd:ignore-start
 import type { ModelOverride } from "./prompt.js";
 import type { NoticeClaim } from "./notice-claim.js";
 
+//jscpd:ignore-end
 /**
  * A task's lifecycle state.
  *

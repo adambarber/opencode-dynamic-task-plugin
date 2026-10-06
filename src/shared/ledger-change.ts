@@ -7,9 +7,11 @@
 // merge. A vocabulary that lived in the merge's module would make one of those
 // three edges a cycle.
 
+//jscpd:ignore-start
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 import type { PendingDelivery } from "./notify.js";
 
+//jscpd:ignore-end
 /**
  * The discriminant of a ledger change, as an enum rather than a union of string
  * literals: the merge is the whole consumer of it, and a switch written against

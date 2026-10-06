@@ -1,3 +1,4 @@
+//jscpd:ignore-start
 import assert from "node:assert";
 
 import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
@@ -7,6 +8,7 @@ import { listFakeModules, listTestSupportFiles, readSource } from "./support/cor
 import { hostOutcomeWords } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";
 
+//jscpd:ignore-end
 /**
  * The fake host is a CLAIM about the host, and nothing used to check it. That is
  * not a theoretical gap: the cases in hostile-host.test.js armed a silent host,

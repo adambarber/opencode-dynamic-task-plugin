@@ -8,6 +8,7 @@
  * "a descendant was not acted on" rather than silence.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
@@ -19,6 +20,7 @@ import { eventHarness } from "./support/integration.js";
 import { isSessionMissing } from "../../dist/shared/liveness.js";
 import { withSettledMiddleChild } from "./support/stop-scenarios.js";
 
+//jscpd:ignore-end
 /**
  * A child whose abort transport is down, settled — the arrangement behind both
  * "the gap is recorded" and "success is not annotated by a failed abort".

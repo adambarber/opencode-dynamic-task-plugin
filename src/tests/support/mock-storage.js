@@ -5,8 +5,10 @@
 // ordering, late landings, partial reads — and none of them belong to the seam
 // that answers sessions and events.
 
+//jscpd:ignore-start
 import { armedFlag, fault } from "./faults.js";
 
+//jscpd:ignore-end
 /** A promise nobody resolves, and the resolver that says so: the shape of "not yet". */
 const NOOP = () => {};
 

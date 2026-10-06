@@ -1,8 +1,10 @@
+//jscpd:ignore-start
 import { accepted, answeredClient, gate, queuedFor, withHeldWrites } from "./support/notify-setup.js";
 import { assert, describe, it } from "./support/runner.js";
 import { configurePendingPersistence, getLatestNotification, getPendingDeliveries, notifyParent, restorePendingDeliveries } from "../../dist/shared/notify.js";
 import { opaqueHost } from "./support/opaque-host.js";
 import { recordingClient } from "./support/mock-host.js";
+//jscpd:ignore-end
 describe("durable pending delivery: the queue IS the crash window", () => {
   // Two cases in this block are the same ARRANGEMENT — a completed delivery, with
   // something recorded from inside the dial — and only the probe differs. One

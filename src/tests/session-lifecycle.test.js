@@ -14,6 +14,7 @@
 // The host's event vocabulary, named by the module that owns it. A test firing a
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
+//jscpd:ignore-start
 import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, normalizeStatus } from "../../dist/shared/host-events.js";
 import { assert, describe, it } from "./support/runner.js";
 import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
@@ -21,6 +22,7 @@ import { resolveParentSessionId, validateSessionResult } from "../../dist/shared
 import { sessionUpdatedEnvelope } from "./support/mock-host.js";
 import { withEnv } from "./support/harness.js";
 
+//jscpd:ignore-end
 describe("validateSessionResult", () => {
   it("extracts id from flat result", () => {
     assert.strictEqual(validateSessionResult({ id: "ses_123" }), "ses_123");

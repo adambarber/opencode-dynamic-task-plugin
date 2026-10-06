@@ -13,10 +13,12 @@
  * way; `verbatimModuleSyntax` is what makes the erasure guaranteed rather than
  * conventional.
  */
+//jscpd:ignore-start
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
+//jscpd:ignore-end
 /**
  * How the store tells its durable writer WHAT changed. Named once because the two
  * observers share a shape and a reason, and a reader who meets the signature

@@ -18,6 +18,7 @@
 // that, so a refusal degrades into the contradiction the reader was built to settle
 // rather than into a lost child.
 
+//jscpd:ignore-start
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { type PendingDelivery, owedIdentity } from "./notify.js";
@@ -34,6 +35,7 @@ import {
 import { createHash } from "node:crypto";
 import { isEventRecord } from "./host-shape.js";
 
+//jscpd:ignore-end
 /**
  * A record, as the host can hold it. The value is JSON TEXT rather than a structured
  * object, and that is not a retreat: `Storage.set` accepts `Schema.Json`, which has

@@ -2,6 +2,7 @@
  * The four screens as the host's own prop types — what a row says, and which row means
  * what. The flow that acts on a choice lives in `index.ts`.
  */
+//jscpd:ignore-start
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { AGENT_CAP_NAMES, type AgentCapName } from "../shared/caps.js";
 import {
@@ -19,6 +20,7 @@ import {
 import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 import { DIALOG_WIDTH, fitsItsDialog } from "./geometry.js";
 
+//jscpd:ignore-end
 /**
  * What a row in the list stands for, and what a row in a cap picker stands for.
  *

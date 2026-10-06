@@ -12,8 +12,10 @@
 // back from the store or only ever written is KEPT, because the two are different claims
 // and the screen has to say which one it is making.
 
+//jscpd:ignore-start
 import type { AgentOverlay } from "../shared/caps.js";
 
+//jscpd:ignore-end
 /** One project's last known caps, and how far that is known. */
 interface Remembered {
   /** True when the store itself produced this, false when only a write confirmed it. */

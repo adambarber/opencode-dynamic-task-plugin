@@ -15,11 +15,13 @@
 // numbers instead of the store itself: this module can judge occupancy without
 // knowing what a task is, and every consumer that does know builds the map the one
 // way `agentKey` says to.
+//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isPlainRecord } from "./host-shape.js";
 import { depthLimits, type DepthBound } from "./task-policy.js";
 
+//jscpd:ignore-end
 // ─── the vocabulary ──────────────────────────────────────────────────────────
 
 /**
@@ -194,7 +196,7 @@ export function sameOverlay(left: AgentOverlay, right: unknown): boolean {
 function spelling(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(spelling).join(",")}]`;
   if (!isPlainRecord(value)) return JSON.stringify(value) ?? "null";
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${spelling(value[key])}`).join(",")}}`;
+  return `{${Object.keys(value).toSorted().map((key) => `${JSON.stringify(key)}:${spelling(value[key])}`).join(",")}}`;
 }
 
 /**

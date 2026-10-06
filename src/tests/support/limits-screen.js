@@ -16,6 +16,7 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
+//jscpd:ignore-start
 import assert from "node:assert/strict";
 import tuiModule from "../../../dist/tui/index.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
@@ -26,6 +27,7 @@ import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { overlayChannel } from "./overlay-channel.js";
 
+//jscpd:ignore-end
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
 

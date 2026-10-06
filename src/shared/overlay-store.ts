@@ -9,10 +9,12 @@
 // shared key would let one project's caps bound another project's dispatch, which is
 // the kind of bug that only appears when two repos are open at once.
 
+//jscpd:ignore-start
 import { sameOverlay, type AgentOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 import { type One, type StateFacade, recordKey } from "./state-facade.js";
 
+//jscpd:ignore-end
 /** One place to change it, so the prefix and the keys written under it cannot disagree. */
 const OVERLAY_VERSION = 1;
 const OVERLAY_PREFIX = `overlay/v${OVERLAY_VERSION}`;

@@ -3,6 +3,7 @@
  * palette, and the list the operator came with. The design thesis — no invented host API,
  * every case running on the real prop builders — and the harness rationale are here.
  */
+//jscpd:ignore-start
 import {
   BASE, REGISTERED, assertEveryRowFits, booted, capText, openList, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
 } from "./support/limits-screen.js";
@@ -17,6 +18,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import tuiModule from "../../dist/tui/index.js";
 
+//jscpd:ignore-end
 /**
  * Every row the list draws, in order, as the SCREEN prints it.
  *

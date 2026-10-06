@@ -1,6 +1,8 @@
+//jscpd:ignore-start
 import { assert, describe, it } from "./support/runner.js";
 import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "../../dist/tools/args.js";
 
+//jscpd:ignore-end
 /** A well-formed spawn shape, written once: a field that is dropped or invented shows here. */
 const SPAWN_SHAPE = {
   depends_on: ["ses_2"],

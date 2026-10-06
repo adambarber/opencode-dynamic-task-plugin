@@ -10,6 +10,7 @@
  * so it cannot be retyped loosely.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 
 import {
@@ -24,6 +25,7 @@ import {
 } from "./harness.js";
 import { withSingleSlot } from "./integration.js";
 
+//jscpd:ignore-end
 /**
  * Boot, spawn one child, stop it as `caller`, and require the request to exist.
  * A case that only wants to observe the tool's wording gets the answer back.

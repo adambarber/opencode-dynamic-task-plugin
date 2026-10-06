@@ -1,8 +1,10 @@
+//jscpd:ignore-start
 import assert from "node:assert";
 
 import { createRpc } from "./mock-rpc.js";
 import { sleep } from "./timing.js";
 
+//jscpd:ignore-end
 /**
  * The v2 plugin's own context, built over the fake host's namespaces.
  *

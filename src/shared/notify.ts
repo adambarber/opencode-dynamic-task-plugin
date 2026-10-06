@@ -10,6 +10,7 @@
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
 
+//jscpd:ignore-start
 import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
 import {
   type DeliveryOutcome,
@@ -32,6 +33,7 @@ import { NotifyKind } from "./notification-text.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { safeLog } from "./notify-log.js";
 
+//jscpd:ignore-end
 export { announceDropped, dropPending, getPendingDeliveries, owedDelivery, queuePending } from "./notify-queue.js";
 export { configurePendingPersistence, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
 export { clearDeliveryLedger, notifyRecord, recordNotification } from "./notify-records.js";

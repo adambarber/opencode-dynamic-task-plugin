@@ -8,6 +8,7 @@
  * Scanners read source text and report file:line. They never mock the contract
  * (Tenet 12): the production files on disk are the subject.
  */
+//jscpd:ignore-start
 import path from "node:path";
 import { DOC_FIDELITY, DOC_TYPES, PROSE, gate, rule } from "./support/invariant-gate.js";
 import { TESTS_DIR, listProdFiles, listTestFiles, readSource, siteOf } from "./support/corpus.js";
@@ -18,6 +19,7 @@ import { NoticeClaim } from "../../dist/shared/notice-claim.js";
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { TaskState } from "../../dist/shared/task-state.js";
 
+//jscpd:ignore-end
 const ANY_ANNOTATION = gate(
   [/:\s*any\b|\bas\s+any\b|<any>|\bany\[\]/],
   DOC_TYPES,

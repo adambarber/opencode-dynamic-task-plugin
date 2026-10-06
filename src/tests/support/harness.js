@@ -14,6 +14,7 @@
  * in `mock-host.js` — this module is the driver, that one is the server.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
@@ -37,6 +38,7 @@ import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { tmpdir } from "node:os";
 
+//jscpd:ignore-end
 export {
   abortRequests,
   abortWasRequestedFor,

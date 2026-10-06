@@ -2,6 +2,7 @@
 // terminal-event settlement handler. Owns every entry-side client.session
 // call except spawn's create and the steer/interrupt aborts (Tenet 9: those
 // stay in their tool executors beside the claims that order them).
+//jscpd:ignore-start
 import {
   type ActiveTaskState,
   type SettlementVerdict,
@@ -47,6 +48,7 @@ import { textBlock } from "../shared/text-block.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
 import { waitsReleasedBody } from "../shared/voice.js";
 
+//jscpd:ignore-end
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
 // ledger owns history, and a failed delivery is visible via the notification

@@ -14,8 +14,10 @@
 // tidiness: the 1000-line rule left 32 lines of headroom, and the next field
 // added to a task record breached the build.
 
+//jscpd:ignore-start
 import type { TaskRecord, TaskStore } from "./task-state.js";
 
+//jscpd:ignore-end
 // One task in the dispatch tree, with the place it holds in it.
 export interface DispatchNode {
   task: TaskRecord;

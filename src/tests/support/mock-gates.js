@@ -8,10 +8,12 @@
  * visibly not asserting anything about the host's contract.
  */
 
+//jscpd:ignore-start
 import { hostSaid, hostSaying } from "./mock-transcript.js";
 import { armFault } from "./faults.js";
 import { missingSessionError } from "./sdk-contract.js";
 
+//jscpd:ignore-end
 /**
  * A client whose only method is the parent write, plus the list of writes that
  * actually reached it. Every test in this file needs the same two things — a

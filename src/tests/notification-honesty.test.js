@@ -6,6 +6,7 @@
  * the JOB, and the gap between the two is where the hours went.
  */
 
+//jscpd:ignore-start
 import {
   NOTIFICATION_MAX_CHARS,
   NotifyKind,
@@ -14,6 +15,7 @@ import {
 } from "../../dist/shared/notification-text.js";
 import { assert, describe, it } from "./support/index.js";
 
+//jscpd:ignore-end
 const CHILD = "ses_child0123456789";
 const state = { childSessionId: CHILD, description: "Fix all 4 P0 issues" };
 const say = (kind, resultText) => formatParentNotification(state, kind, resultText);

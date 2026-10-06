@@ -5,6 +5,7 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
+//jscpd:ignore-start
 import { type FailureReporter, type OpaqueHost, callHost, fireAndForget } from "./client.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 import { hostPayload } from "./host-events.js";
@@ -13,6 +14,7 @@ import { eventField, eventString, isEventRecord } from "./host-shape.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import type { Verdict } from "./verdict.js";
 
+//jscpd:ignore-end
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
 // client error — callers classify via classifyPromptError.

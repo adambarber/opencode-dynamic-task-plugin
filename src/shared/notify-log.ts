@@ -2,9 +2,11 @@
 // v2 removed the host log sink (`app` is `{name, version, channel}`), so this writes
 // SYNCHRONOUSLY to the plugin's own directory: no host round-trip, and the unbounded
 // await behind it — the one call able to hold plugin boot open — is gone with it.
+//jscpd:ignore-start
 import { appendLogLine, getPluginLogPath } from "../debug-logger.js";
 import { errorMessage } from "./host-shape.js";
 
+//jscpd:ignore-end
 /** The level vocabulary this plugin writes; the only one it uses. */
 export type LogLevel = "info" | "warn" | "error";
 

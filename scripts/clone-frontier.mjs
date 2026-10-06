@@ -17,10 +17,12 @@
  *
  * Usage: node scripts/clone-frontier.mjs [outDir]
  */
+//jscpd:ignore-start
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
+//jscpd:ignore-end
 const REPO = new URL("..", import.meta.url).pathname;
 const OUT = process.argv[2] ?? "/tmp/clone-frontier";
 

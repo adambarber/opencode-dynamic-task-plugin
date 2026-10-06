@@ -8,6 +8,7 @@
  * only reads what the channel recorded.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { agentDeclaring, allowAction, denyAction, events } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
@@ -16,6 +17,7 @@ import { describe, it } from "./support/runner.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { bootOn } from "./support/integration.js";
 
+//jscpd:ignore-end
 describe("task_notify: the child-to-parent channel", () => {
 
   it("delivers a mid-flight notice and leaves the task active", async () => {

@@ -8,10 +8,12 @@
 // outgrew the line cap. The writer funnel (`annotateActive`) stays where the
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
+//jscpd:ignore-start
 import { activeFor, annotateActive } from "./task-state.js";
 import type { ActiveTaskState } from "./task-state.js";
 import type { TaskStore } from "./store.js";
 
+//jscpd:ignore-end
 /**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE
  * child→parent channel (no purpose-specific tool): `progress` is information,

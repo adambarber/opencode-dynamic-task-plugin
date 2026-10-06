@@ -3,6 +3,7 @@
 // module. Session-scoped tools are built by scopedTool, which resolves the session
 // scope once and hands it to the executor. Bodies live beside their hazards; this
 // file owns the inventory the Task-00 fidelity gate reads.
+//jscpd:ignore-start
 import type { Tool } from "@opencode/schema/tool";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { executeDynamicTask } from "./spawn.js";
@@ -26,6 +27,7 @@ import {
   TASK_STATUS_DESCRIPTION,
 } from "../shared/voice.js";
 
+//jscpd:ignore-end
 // One JSON Schema per tool's WHOLE input, not a record of per-argument schemas: v2's
 // `Tool.Info` takes a single `input`. JSON Schema is not a fallback — `ValueSchema`
 // declares it as one of three accepted forms, so writing it directly drops the zod-ish

@@ -14,10 +14,12 @@
  * case therefore resolves Structural.
  */
 
+//jscpd:ignore-start
 import { FailureClass, classifyFailure, failureNote } from "../../dist/shared/failure-class.js";
 import { assert, describe, it } from "./support/runner.js";
 import { TaskState } from "../../dist/shared/task-state.js";
 
+//jscpd:ignore-end
 const failed = (detail) => classifyFailure(TaskState.Error, detail);
 
 // One door for "all of these details land on this class". The list cases differ

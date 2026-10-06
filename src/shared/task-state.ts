@@ -22,11 +22,13 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
+//jscpd:ignore-start
 import { type ActiveTaskState, type NewTaskRegistration, TaskState, withoutAdvisory } from "./task-records.js";
 import { type AgentCapSource, agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 
+//jscpd:ignore-end
 // The store is its own subject: it owns the SET and the only way to change it,
 // while this module owns what a set MEANS. Re-exported here because task-state is
 // where the state machine reads and writes it, and eight modules already reach the

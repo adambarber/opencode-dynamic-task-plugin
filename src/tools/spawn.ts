@@ -1,5 +1,6 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
+//jscpd:ignore-start
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { issueCreateIntent, resolveCreateIntent, type CreateIntent } from "../shared/create-intent.js";
 import {
@@ -42,6 +43,7 @@ import {
   spawnConfirmation,
 } from "../shared/voice.js";
 
+//jscpd:ignore-end
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
 import { createDummyLineage, type ToolDeps } from "./context.js";

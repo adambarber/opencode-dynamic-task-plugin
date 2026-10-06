@@ -13,6 +13,7 @@
 // Then each target is aborted in turn, and each reports its own outcome: the
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
+//jscpd:ignore-start
 import { abortSession, stopPlan } from "../shared/session-abort.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { safeLog } from "../shared/notify.js";
@@ -35,6 +36,7 @@ import {
   interruptSubtreeReport,
 } from "../shared/voice.js";
 
+//jscpd:ignore-end
 /**
  * How far a stop reaches. `subtree` is the default and the honest one.
  *

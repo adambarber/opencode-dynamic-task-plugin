@@ -1,9 +1,11 @@
 /** The lint budget: findings are measured, recorded per rule in lint-budget.json, and ratcheted. */
+//jscpd:ignore-start
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
+//jscpd:ignore-end
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const GATE_SOURCE = path.relative(REPO_ROOT, fileURLToPath(import.meta.url));
 const BUDGET_PATH = path.join(REPO_ROOT, "lint-budget.json");

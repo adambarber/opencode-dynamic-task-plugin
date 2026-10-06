@@ -1,6 +1,7 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
+//jscpd:ignore-start
 import {
   PROMPT_REQUIRED,
   followupSent,
@@ -33,6 +34,7 @@ import { textBlock } from "../shared/text-block.js";
 
 import { type ResolvedSessionScope } from "./context.js";
 
+//jscpd:ignore-end
 export type { ContinueArgs } from "./args.js";
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {

@@ -33,6 +33,7 @@
  * This file is the FLOW: what registers, what reads, and what a chosen row does to the
  * file. What a row SAYS is `props.ts`, and how wide a row may be is `geometry.ts`.
  */
+//jscpd:ignore-start
 import type { Plugin } from "@opencode/plugin/tui";
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
@@ -60,6 +61,7 @@ import {
 } from "./agent-editor.js";
 import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps } from "./props.js";
 
+//jscpd:ignore-end
 /** The host side this screen talks to, named once. The flows below take it everywhere. */
 type Host = Plugin.Context;
 

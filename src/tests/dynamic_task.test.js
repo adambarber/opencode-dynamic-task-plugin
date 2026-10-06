@@ -6,6 +6,7 @@
  * return immediately, create nothing it cannot keep, and leave no orphan behind.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
 import { PARENT, abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
@@ -22,6 +23,7 @@ import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { events } from "./support/mock-host.js";
 import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 
+//jscpd:ignore-end
 /**
  * A create that made a session and then refused to say so, by either door.
  *

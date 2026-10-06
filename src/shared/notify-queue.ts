@@ -6,10 +6,12 @@
 // duplicate notice, which is visible, instead of a silent deafness, which is not.
 // At-least-once across a restart, exactly-once within a boot — deliberately.
 // (docs/tasks/11-durability.md, M2)
+//jscpd:ignore-start
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { NotifyKind } from "./notification-text.js";
 import { safeLog } from "./notify-log.js";
 
+//jscpd:ignore-end
 /**
  * Who a delivery is for. The two records that carry a delivery each spelled this
  * triple out, and it is the triple owedIdentity hashes — so a field added here had

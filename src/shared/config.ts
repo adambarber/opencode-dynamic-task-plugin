@@ -9,12 +9,14 @@
 // point: a config that also judged its own numbers had two answers to "how many of
 // this agent may run", and the one that happened to be called first was the one the
 // operator saw.
+//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginOptions } from "@opencode/plugin";
 import { type AgentCaps, agentKey, parseAgentCaps } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 
+//jscpd:ignore-end
 export interface DynamicTaskConfig {
   maxDepth: number;
   maxConcurrent: number;

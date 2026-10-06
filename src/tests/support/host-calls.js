@@ -19,10 +19,12 @@
 // Trim) in the list. A namespace nobody answers cannot produce a false positive, because
 // There is no list to be wrong about.
 
+//jscpd:ignore-start
 import path from "node:path";
 
 import { listProdFiles, readSource } from "./corpus.js";
 
+//jscpd:ignore-end
 const ANY_CALL = /([a-zA-Z_$][\w$]*)\.([a-zA-Z]+)\.([a-zA-Z]+)\s*\(/g;
 export const HOST_CALL = ANY_CALL;
 

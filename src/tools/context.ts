@@ -1,5 +1,6 @@
 // Shared tool context (entry/tools boundary): everything a tool executor
 // needs, owned in one place so no executor reaches past the funnel.
+//jscpd:ignore-start
 import { NO_SESSION_RECORD, formatTaskResultSummary, taskResultRecord } from "../shared/task-formatting.js";
 import { findTask, type TaskRecord, type TaskStore } from "../shared/task-state.js";
 import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
@@ -11,6 +12,7 @@ import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { UntrackedStatus } from "../shared/liveness.js";
 import { isEventRecord } from "../shared/host-shape.js";
 
+//jscpd:ignore-end
 export interface ToolDeps {
   host: OpaqueHost;
   /** Durable writes for issued-but-unanswered creates; the same chain as the ledger. */

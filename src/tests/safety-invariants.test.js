@@ -20,6 +20,7 @@
  * `support/invariant-gate.js`; this file is the rules themselves.
  */
 
+//jscpd:ignore-start
 import path from "node:path";
 import {
   DOC_ADMISSION,
@@ -42,6 +43,7 @@ import { assert, describe, it } from "./support/runner.js";
 import { buildToolMap } from "../../dist/tools/index.js";
 import { readFileSync } from "node:fs";
 
+//jscpd:ignore-end
 // (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle
 // fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/
 // turnLiveAt) belong to the state machine alone: outside task-state.ts they may

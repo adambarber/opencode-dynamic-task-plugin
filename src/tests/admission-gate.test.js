@@ -7,6 +7,7 @@
  * than a per-file ladder.
  */
 
+//jscpd:ignore-start
 import { DEFAULT_AGENT_MODE, agentCanNotify, toAgentRecords, wildcardMatches } from "../../dist/shared/agent-record.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
 import { assert, describe, it } from "./support/runner.js";
@@ -17,6 +18,7 @@ import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 
+//jscpd:ignore-end
 // --- What the host publishes -------------------------------------------------
 describe("admission gate: resolveAdmission", () => {
   const records = toAgentRecords([

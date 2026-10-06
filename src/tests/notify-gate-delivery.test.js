@@ -1,8 +1,10 @@
+//jscpd:ignore-start
 import { accepted, answeredClient, assertDelivered, gate, gatedClient, withHeldWrites } from "./support/notify-setup.js";
 import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { clearNotifyLedger, gateLedger, getLatestNotification, notifyChainCount, notifyParent } from "../../dist/shared/notify.js";
 import { deferred, promptText, recordingClient } from "./support/mock-host.js";
 import { opaqueHost } from "./support/opaque-host.js";
+//jscpd:ignore-end
 describe("notify gate: notifyParent", () => {
   beforeEach(clearNotifyLedger);
 
@@ -54,8 +56,11 @@ describe("notify gate: notifyParent", () => {
       assert.strictEqual(waiting.delivered, false);
       await release();
       const settled = getLatestNotification("ses_held1");
-      assert.strictEqual(settled.pending, undefined, "the record is corrected when the host answers");
-      assert.strictEqual(settled.delivered, true);
+      assert.deepStrictEqual(
+        { delivered: settled.delivered, pending: settled.pending },
+        { delivered: true, pending: undefined },
+        "the record is corrected when the host answers",
+      );
       assert.strictEqual(calls.length, 1, "still exactly one copy");
     });
   });
@@ -68,6 +73,11 @@ describe("notify gate: notifyParent", () => {
       assert.strictEqual(getLatestNotification("ses_held2").suppressed, true, "and says why");
     });
   });
+
+});
+
+describe("notify gate: what the gate refuses to deliver twice", () => {
+  beforeEach(clearNotifyLedger);
 
   // A held write outlives the world that issued it. When the gate is reset the
   // same child id may belong to a completely different child, and a stale

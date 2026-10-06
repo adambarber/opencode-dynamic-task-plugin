@@ -10,11 +10,13 @@
  * the world it hands back is a live view, so a case cannot capture a stale one.
  */
 
+//jscpd:ignore-start
 import { afterEach, beforeEach } from "./runner.js";
 import { clearNotifyLedger, configurePendingPersistence, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { PARENT } from "./harness.js";
 import { recordingClient } from "./mock-host.js";
 
+//jscpd:ignore-end
 /**
  * The notify ledger, the pending queue, and the persistence hook — all three are
  * PROCESS-GLOBAL, and a case that leaves any of them behind decides the next case's

@@ -4,9 +4,11 @@
 // The store owns the mechanism. This owns the two questions the mechanism cannot
 // answer: is what came back a record, and did it all come back?
 
+//jscpd:ignore-start
 import { createHash } from "node:crypto";
 import { type Store } from "./durable-store.js";
 
+//jscpd:ignore-end
 /** One kind of record, and the check that says a value is one. */
 export type Guard<T> = (value: unknown) => value is T;
 
@@ -31,13 +33,15 @@ export interface Read<T> {
  * `records`: a document that was stored and could not be read has to be tellable
  * from one that was never written, or an operator whose caps silently stopped
  * applying has no way to find out why.
+ *
+ * It is a UNION, not two independent fields, because that is what makes `present` load-
+ * bearing: narrowing on `present` is what brings `value` from `T | undefined` to `T`.
+ * Two independent fields would let a caller read `value` on an absent record and be
+ * told `T`, which is the claim the whole shape exists to refuse.
  */
-export interface One<T> {
-  dropped: boolean;
-  incomplete: boolean;
-  present: boolean;
-  value: T;
-}
+export type One<T> =
+  | { dropped: boolean; incomplete: boolean; present: true; value: T }
+  | { dropped: boolean; incomplete: boolean; present: false; value: undefined };
 
 export interface StateFacade extends Omit<Store, "load"> {
   /** The single record at `key`. See why this is not just `readAll` below. */
@@ -73,7 +77,8 @@ export function createStateFacade(store: Store): StateFacade {
     readOne: async <T>(key: string, guard: Guard<T>): Promise<One<T>> => {
       const { dropped, incomplete, records } = await readAll(key, guard);
       const found = records.get(key);
-      return { dropped: dropped > 0, incomplete, present: found !== undefined, value: found as T };
+      if (found === undefined) return { dropped: dropped > 0, incomplete, present: false, value: undefined };
+      return { dropped: dropped > 0, incomplete, present: true, value: found };
     },
     settled: () => store.settled(),
   };

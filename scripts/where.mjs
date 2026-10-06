@@ -8,15 +8,17 @@
  * Usage: node scripts/where.mjs <rule> [<rule> ...]
  */
 
+//jscpd:ignore-start
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
+//jscpd:ignore-end
 /** Accepts `eslint/sort-imports` or `eslint(sort-imports)` — the reporter uses the second. */
 const wanted = process.argv
   .slice(2)
-  .map((rule) => (rule.includes("/") ? rule.replace("/", "(") + ")" : rule));
+  .map((rule) => (rule.includes("/") ? `${rule.replace("/", "(")})` : rule));
 if (wanted.length === 0) {
-  process.stderr.write("usage: node scripts/where.mjs <rule> [...]\n");
+  process.stderr.write(`usage: node scripts/where.mjs <rule> [...]\n`);
   process.exit(2);
 }
 

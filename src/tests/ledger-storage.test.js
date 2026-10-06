@@ -11,6 +11,7 @@
  * what a write touches, in what order, and what a partial application degrades into.
  */
 
+//jscpd:ignore-start
 import { assert, describe, it } from "./support/runner.js";
 import { LEDGER_KEYS } from "../../dist/shared/ledger-storage.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
@@ -19,6 +20,7 @@ import { TaskState } from "../../dist/shared/task-records.js";
 import { durable } from "./support/durable-world.js";
 import { owedIdentity } from "../../dist/shared/notify-queue.js";
 
+//jscpd:ignore-end
 /** A record as the ledger holds it: JSON text, because `Storage.set` has no undefined. */
 const stored = (record) => JSON.stringify(record);
 

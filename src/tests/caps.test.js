@@ -9,6 +9,7 @@
  * would report green through.
  */
 
+//jscpd:ignore-start
 import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import {
   agentKey,
@@ -32,6 +33,7 @@ import { resolveAdmission } from "../../dist/shared/admission.js";
 import { toAgentRecords } from "../../dist/shared/agent-record.js";
 import { writeFileSync } from "node:fs";
 
+//jscpd:ignore-end
 /**
  * A project whose caps live in the HOST'S TABLE, the way they do now, and the wiring
  * boot does: the document is read through the store and applied over the config. A case

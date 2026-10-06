@@ -15,9 +15,11 @@
  * it asserts with nothing.
  */
 
+//jscpd:ignore-start
 import assert from "node:assert";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 
+//jscpd:ignore-end
 /**
  * The failure line every claim helper here shares: the case's own claim, then
  * what the reader actually answered.

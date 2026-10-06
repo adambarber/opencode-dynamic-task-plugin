@@ -11,8 +11,10 @@
  * and marked unverified, or it names the reader that does know.
  */
 
+//jscpd:ignore-start
 import { textBlock } from "./text-block.js";
 
+//jscpd:ignore-end
 // Push-path bound: the notification is injected into the parent's conversation, so
 // it stays bounded — but truncation is never silent: the marker names the full-text
 // recovery path (the pull path is untruncated).

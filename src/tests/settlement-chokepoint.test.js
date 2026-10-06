@@ -18,9 +18,11 @@
 // So this suite is a sweep. The control case is the funnel's own path, and the
 // rest name the ways a child can end without passing through it. Each one states
 // only how its edge dies; the assertion is identical, because the obligation is.
+//jscpd:ignore-start
 import { announcementAfterKill, assert, describe, failEdge, it } from "./support/index.js";
 
 
+//jscpd:ignore-end
 // ── the control: the funnel's own path already kept the promise ───────────
 
 /**

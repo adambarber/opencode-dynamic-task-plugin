@@ -368,18 +368,20 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
   const dropped: Record<string, string[]> = {};
   for (const [name, entry] of Object.entries(rawAgents)) {
     const key = agentKey(name);
-    if (!key) continue;
-    const caps = readAgentCapBody(entry);
-    const ignored = unusableCapNames(entry);
-    // A named agent with nothing left to honour is dropped LOUDLY: it said something
-    // the reader cannot use, and vanishing quietly leaves a screen where the operator's
-    // agent is simply not capped.
-    if (AGENT_CAP_NAMES.every((field) => caps[field] === undefined)) {
-      dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
-      continue;
+    if (key) {
+      const caps = readAgentCapBody(entry);
+      const ignored = unusableCapNames(entry);
+      const honoured = AGENT_CAP_NAMES.some((field) => caps[field] !== undefined);
+      // A named agent with nothing left to honour is dropped LOUDLY: it said something
+      // the reader cannot use, and vanishing quietly leaves a screen where the operator's
+      // agent is simply not capped.
+      if (honoured) {
+        agents[key] = caps;
+        if (ignored.length > 0) dropped[key] = ignored;
+      } else {
+        dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
+      }
     }
-    agents[key] = caps;
-    if (ignored.length > 0) dropped[key] = ignored;
   }
   return { agents, dropped, usable: true };
 }

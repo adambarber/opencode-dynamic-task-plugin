@@ -117,10 +117,11 @@ export function statusFromHostTurn(reading: SessionTurn): UntrackedStatus {
 function lastMessageAt(messages: unknown[]): number | null {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
-    if (!isMessage(message)) continue;
-    const time = messageTime(message);
-    if (typeof time?.completed === "number") return time.completed;
-    if (typeof time?.created === "number") return time.created;
+    if (isMessage(message)) {
+      const time = messageTime(message);
+      if (typeof time?.completed === "number") return time.completed;
+      if (typeof time?.created === "number") return time.created;
+    }
   }
   return null;
 }

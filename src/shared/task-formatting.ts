@@ -201,7 +201,7 @@ function retainedRollup(rows: FleetRow[]): string {
   // are strings, so it reads the string side of the one vocabulary.
   const knownWords: readonly string[] = lifecycle;
   const known = lifecycle.filter((state) => counts.has(state));
-  const unfamiliar = [...counts.keys()].filter((state) => !knownWords.includes(state)).toSorted((a, b) => (a < b ? -1 : (a > b ? 1 : 0)));
+  const unfamiliar = [...counts.keys()].filter((state) => !knownWords.includes(state)).toSorted((a, b) => a.localeCompare(b));
   const parts = [
     ...known.map((state) => `${counts.get(state)} ${state}${errorBlips(rows, state)}`),
     ...unfamiliar.map((state) => `${counts.get(state)} ${state}`),
@@ -367,20 +367,41 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
   // own action — so they read as distinct, and none of them reads as
   // patience. Without a server reading only the silence is knowable, and
   // silence alone must not be dressed up as a diagnosis.
-  const diagnosis =
-    answered && turnReplacementPending(task)
-      ? (hostTurnRunning(answered)
-        ? undefined
-        : "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not.")
-      : answered && !hostTurnRunning(answered)
-        ? "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt."
-        : Date.now() - observed > STALE_TURN_AFTER_MS
-          ? `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`
-          : undefined;
+  const diagnosis = activeDiagnosis(task, answered, observed);
   return [
     `Last plugin event: ${formatAge(observed)} ago`,
     ...present(diagnosis),
   ];
+}
+
+/**
+ * The one sentence an active task's clocks and the server's own reading earn, if any.
+ *
+ * Four states reach here and only one of them has something to say, so each is asked
+ * and answered in turn rather than selected between. Read as a chain of nested
+ * ternaries, the order of the questions became part of the text, and the common case —
+ * everything fine, say nothing — was the deepest arm on the page.
+ */
+function activeDiagnosis(
+  task: ActiveTaskState,
+  answered: LivenessReading | null,
+  observed: number,
+): string | undefined {
+  if (answered && turnReplacementPending(task)) {
+    // The store is holding the task for a replacement turn. If the server shows that
+    // turn running, the silence is expected and there is nothing to report.
+    if (!hostTurnRunning(answered)) {
+      return "The replacement turn has not started yet: the store holds this task active until the server shows it working again. This resolves on its own — re-check if it does not.";
+    }
+    return undefined;
+  }
+  if (answered && !hostTurnRunning(answered)) {
+    return "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt.";
+  }
+  if (Date.now() - observed > STALE_TURN_AFTER_MS) {
+    return `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`;
+  }
+  return undefined;
 }
 
 export function formatLivenessLines(

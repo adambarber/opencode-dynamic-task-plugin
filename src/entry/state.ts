@@ -74,9 +74,12 @@ function installOverlayPolicy(config: DynamicTaskConfig, directory: string, read
  *
  * The write is the one place a new policy is installed, and it installs it HERE
  * rather than leaving the next boot to find it — the caller's process is the only one
- * that can be sure the value it just stored is the value it will judge against. Then
- * the event, so a second window in this project stops showing caps that are no longer
- * in force.
+ * that can be sure the value it just stored is the value it will judge against.
+ *
+ * There is no event yet. `OverlayRpc.events` is declared and empty, and this comment used
+ * to describe a second window stopping here when caps changed. That is not wired, so a
+ * second window reads the overlay when it opens and not again — the slot is there, and the
+ * claim is not.
  */
 export function overlayHandlers(
   store: OverlayStore,

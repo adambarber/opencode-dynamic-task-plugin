@@ -109,22 +109,25 @@ export const announceDropped = (dropped: PendingDelivery | null): void => {
 
 export function queuePending(entry: PendingDelivery): PendingDelivery | null {
   const at = indexOfOwedEntry(entry);
-  if (at === -1) {
-    // Evicted BEFORE the push, so the ledger hears about the loss in the same change
-    // list as the debt that took the room — a queue and a ledger that disagree here
-    // resurrect the dropped debt on the next boot.
-    const dropped = evictDebtRoomFor(entry);
-    pendingDeliveries.push(entry);
-    const changes: LedgerChange[] = [{ kind: LedgerChangeKind.Owed, record: entry }];
-    if (dropped !== null) changes.unshift({ kind: LedgerChangeKind.Delivered, record: dropped });
-    persistPending?.(changes);
-    return dropped;
-  }
+  if (at === -1) return queueNewDelivery(entry);
   pendingDeliveries[at] = entry;
   // The notice itself is the change, so the shared ledger is told which one was owed
   // rather than being handed this process's whole queue to re-serialize.
   persistPending?.([{ kind: LedgerChangeKind.Owed, record: entry }]);
   return null;
+}
+
+/** A delivery nothing was already owed for: it has to find room, possibly taking some. */
+function queueNewDelivery(entry: PendingDelivery): PendingDelivery | null {
+  // Evicted BEFORE the push, so the ledger hears about the loss in the same change
+  // list as the debt that took the room — a queue and a ledger that disagree here
+  // resurrect the dropped debt on the next boot.
+  const dropped = evictDebtRoomFor(entry);
+  pendingDeliveries.push(entry);
+  const changes: LedgerChange[] = [{ kind: LedgerChangeKind.Owed, record: entry }];
+  if (dropped !== null) changes.unshift({ kind: LedgerChangeKind.Delivered, record: dropped });
+  persistPending?.(changes);
+  return dropped;
 }
 
 export function dropPending(entry: PendingDelivery): void {

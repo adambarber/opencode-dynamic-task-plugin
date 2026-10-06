@@ -115,13 +115,13 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // dispatch, and spelling the record twice is how an orphan would end up
   // described differently from the task it was.
   const registration = {
-    parentSessionId: parentSessionId || UNKNOWN_PARENT,
+    agentLabel: agent.name,
     // The registry id, not the display label: this field is the routing key the host
     // resolves, and sending the label is how live dispatch died with `Agent not found`.
     agentName: agent.id,
-    agentLabel: agent.name,
     description: args.description || `Task: ${agent.name}`,
     lineage: admission.newLineage,
+    parentSessionId: parentSessionId || UNKNOWN_PARENT,
     ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
     ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
     ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),

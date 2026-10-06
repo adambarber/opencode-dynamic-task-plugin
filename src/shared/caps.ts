@@ -402,12 +402,12 @@ export function applyAgentOverlay(base: AgentCapSource, raw: unknown): AgentCapS
   const caps = readTopLevelCaps(body);
   if (Object.keys(caps).length === 0 && Object.keys(agents).length === 0) return null;
   return {
-    maxConcurrent: caps.maxConcurrent ?? base.maxConcurrent,
-    maxDepth: caps.maxDepth ?? base.maxDepth,
     // An agent the overlay does not mention keeps the base file's numbers: the
     // overlay is an EDIT, not a replacement, so an operator who capped one agent does
     // not silently reset the rest to the top-level defaults.
     agents: { ...base.agents, ...agents },
+    maxConcurrent: caps.maxConcurrent ?? base.maxConcurrent,
+    maxDepth: caps.maxDepth ?? base.maxDepth,
   };
 }
 

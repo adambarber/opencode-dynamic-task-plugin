@@ -57,7 +57,6 @@ describe("fetchAgents", () => {
    */
   function clientWith(respond) {
     const client = {
-      agentCalls: 0,
       // V2 spells this `agent.list` and answers its `{ location, data }` envelope —
       // Or a bare array from the TUI store. Both are shapes the reader takes.
       agent: {
@@ -66,6 +65,7 @@ describe("fetchAgents", () => {
           return typeof respond === "function" ? respond(client.agentCalls) : respond;
         },
       },
+      agentCalls: 0,
     };
     return client;
   }

@@ -51,8 +51,8 @@ const optionalStringList = (description: string) =>
 // against those, so host JSON reaches an executor exclusively through a reader.
 const registeredTool = <S, A>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<{ scope: S; args: A }>) =>
   (input: InputSchema, description: string, execute: (scope: S, args: A, ctx: ToolContext) => Promise<string>) => ({
-    input,
     description,
+    input,
     // Direct tools, not Code-Mode-catalog tools. Without this the host files
     // every one of the seven under `execute`, and a model that calls one
     // directly hears `No tool named "task_notify" is currently available` —
@@ -168,12 +168,6 @@ export function buildToolMap(deps: ToolDeps) {
       executeTaskNotify,
     ),
 
-    task_result: scopedTool(passThrough)(
-      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
-      TASK_RESULT_DESCRIPTION,
-      executeTaskResult,
-    ),
-
     task_interrupt: scopedTool(passThrough)(
       SESSION_SCHEMA(
         {
@@ -197,6 +191,12 @@ export function buildToolMap(deps: ToolDeps) {
     // session scope, so it is a pluginTool like dynamic_task and task_notify.
     task_list: pluginTool(passThrough)({ properties: {}, type: "object" }, TASK_LIST_DESCRIPTION, (input) =>
       executeTaskList(input),
+    ),
+
+    task_result: scopedTool(passThrough)(
+      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
+      TASK_RESULT_DESCRIPTION,
+      executeTaskResult,
     ),
 
     task_status: scopedTool(passThrough)(

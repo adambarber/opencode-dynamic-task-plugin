@@ -19,7 +19,7 @@
  * `mock-events.js` owns the event vocabulary and what is read back out of it, and
  * this module re-exports both so a suite has one import to name the host through.
  */
-import assert from "node:assert";
+//jscpd:ignore-start
 import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
 import { captureNotice, noticeRecord } from "./mock-events.js";
 import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
@@ -27,7 +27,9 @@ import { armGate } from "./mock-gates.js";
 import { createMockStorage } from "./mock-storage.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { missingSessionError } from "./sdk-contract.js";
+import { permissionEndpoint } from "./mock-permission.js";
 
+//jscpd:ignore-end
 // A suite names the host through ONE import, whichever of these subjects it needs.
 // `export *` rather than a named list: these bindings are also used below, and a
 // barrel that both uses and re-exports a name cannot satisfy `prefer-export-from` any
@@ -35,6 +37,7 @@ import { missingSessionError } from "./sdk-contract.js";
 export * from "./mock-transcript.js";
 export * from "./mock-gates.js";
 export * from "./mock-events.js";
+export * from "./mock-permission.js";
 
 /**
  * The host's sync session.updated envelope. `status` is the word it reports, or
@@ -47,42 +50,6 @@ export const sessionUpdatedEnvelope = (status) => ({
   name: "session.updated.1",
   type: "sync",
 });
-
-/**
- * Refuse a question settlement the host would not accept. Derived from the SDK's
- * QuestionReplyData/QuestionRejectData: the path key is `requestID` (verified
- * against opencode 1.18.30, which serves /question/{requestID}/reply and no
- * {id} route), a reply body is `answers` — one entry per asked question, each a
- * list of chosen labels — and the reject body is `never`. Asserting the contract
- * HERE is what makes the harness a check on the plugin's host calls, not just a
- * record of them.
- */
-function assertPermissionReply({ sessionID, requestID, decision }) {
-  assert.ok(typeof sessionID === "string", `permission.reply must name the session it answers in (got ${JSON.stringify(sessionID)})`);
-  assert.ok(typeof requestID === "string", `permission.reply must address the request by requestID (got ${JSON.stringify(requestID)})`);
-  assert.ok(
-    PERMISSION_DECISIONS.includes(decision),
-    `decision must be one of ${PERMISSION_DECISIONS.join(" | ")} — the host answers a whole request, not one question of it (got ${JSON.stringify(decision)})`,
-  );
-}
-
-/** v2 answers a permission with one word; literals here mean a typo cannot pass. */
-const PERMISSION_DECISIONS = ["once", "always", "reject"];
-
-/**
- * `permission.reply` as v2's contract makes it: flat `{sessionID, requestID,
- * decision}`, and the decision answers the whole request rather than one question
- * of it. A mock that accepts any shape is what let four wrong field names pass as
- * a green suite, so this one refuses them and records the call actually made.
- */
-const permissionEndpoint = (state, hooks) =>
-  async (args) => {
-    const { sessionID, requestID, decision } = args;
-    if (hooks.permissionReplyThrows) throw new Error("permission.reply failed");
-    assertPermissionReply(args);
-    state.permissionCalls.push({ decision, requestID, sessionID });
-    return { ok: true };
-  };
 
 /**
  * The host's `session.get` answer: the fields the SDK's `Session` declares

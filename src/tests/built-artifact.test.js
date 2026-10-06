@@ -8,8 +8,8 @@
  * not in any of the four hundred tests.
  */
 import { DIST_DIR, REPO_ROOT, exists, listProdFiles, readSource, siteOf, walkSource } from "./support/corpus.js";
-import { join } from "node:path";
 import { assert, describe, it } from "./support/runner.js";
+import { join } from "node:path";
 
 /** Every `.js` the build emitted, which is every file the host can import. */
 const builtFiles = () => walkSource(DIST_DIR, (file) => file.endsWith(".js"));

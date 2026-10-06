@@ -7,16 +7,16 @@
  * invented to match the code certifies the code, not the host.
  */
 
+import { PERMISSION_ASKED, readHostAsk } from "../../dist/shared/host-events.js";
 import { assert, describe, it } from "./support/runner.js";
+import { assertIs, assertNothing } from "./support/assertions.js";
 import {
   decideAsk,
   denyAsk,
 } from "../../dist/shared/question-handling.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { PERMISSION_ASKED, readHostAsk } from "../../dist/shared/host-events.js";
-import { truncateText } from "../../dist/shared/notify.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { assertIs, assertNothing } from "./support/assertions.js";
+import { opaqueHost } from "./support/opaque-host.js";
+import { truncateText } from "../../dist/shared/notify.js";
 
 // One verb survives the v2 rename: the gate DENIES. `permission.reply` takes a
 // decision ("once" | "always" | "reject"), so there is no answer to send and no

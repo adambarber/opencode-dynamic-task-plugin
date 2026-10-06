@@ -4,8 +4,8 @@
 // deliberately ignorant of settled versus running, which is what makes it possible
 // to read and check it on its own.
 
-import type { TaskStore } from "./store.js";
 import type { LedgerChange } from "./ledger-change.js";
+import type { TaskStore } from "./store.js";
 
 /**
  * The one retained-write funnel: it states WHAT moved, not the resulting map.

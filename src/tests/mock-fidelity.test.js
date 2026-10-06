@@ -1,11 +1,11 @@
 import assert from "node:assert";
 
+import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
 import { createMockClient, setHostTurn } from "./support/mock-host.js";
+import { describe, it } from "./support/runner.js";
 import { listFakeModules, listTestSupportFiles, readSource } from "./support/corpus.js";
 import { hostOutcomeWords } from "./support/sdk-contract.js";
 import { sleep } from "./support/harness.js";
-import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
-import { describe, it } from "./support/runner.js";
 
 /**
  * The fake host is a CLAIM about the host, and nothing used to check it. That is

@@ -12,10 +12,10 @@
  */
 import { assert, describe, it } from "./support/runner.js";
 import { liveAgentCaps, resetLiveAgentCaps } from "../../dist/shared/caps.js";
-import { overlayChannel } from "./support/overlay-channel.js";
-import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
 import { createMockClient } from "./support/mock-host.js";
+import { overlayChannel } from "./support/overlay-channel.js";
+import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { withTempDir } from "./support/fixtures.js";
 
 /** The base a bare boot would have in force: defaults, with nothing stated. */

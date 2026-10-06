@@ -1,22 +1,6 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
-import { abortSession, stopPlan } from "../shared/session-abort.js";
-import { errorMessage } from "../shared/host-shape.js";
-import { admitToolPrompt } from "../shared/admission.js";
-import { debugLog } from "../debug-logger.js";
-import { NotifyKind } from "../shared/notification-text.js";
-import { textBlock } from "../shared/text-block.js";
-import {
-  TaskState,
-  activeFor,
-  isRunning,
-  retainedFor,
-  transitionState,
-} from "../shared/task-state.js";
-import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
-import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
-import { type ResolvedSessionScope } from "./context.js";
 import {
   PROMPT_REQUIRED,
   followupSent,
@@ -30,8 +14,24 @@ import {
   steerWonBySettler,
   untrackedSession,
 } from "../shared/voice.js";
-
+import {
+  TaskState,
+  activeFor,
+  isRunning,
+  retainedFor,
+  transitionState,
+} from "../shared/task-state.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
+import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
+import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import type { ContinueArgs } from "./args.js";
+import { NotifyKind } from "../shared/notification-text.js";
+import { admitToolPrompt } from "../shared/admission.js";
+import { debugLog } from "../debug-logger.js";
+import { errorMessage } from "../shared/host-shape.js";
+import { textBlock } from "../shared/text-block.js";
+
+import { type ResolvedSessionScope } from "./context.js";
 
 export type { ContinueArgs } from "./args.js";
 

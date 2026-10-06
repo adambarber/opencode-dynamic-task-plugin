@@ -16,10 +16,10 @@
  * --noEmit`, the authoritative gate, fails on the regression itself. That is the
  * opposite of `any`, which fails silently in the same situation.
  */
+import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 import type { DependencyWait } from "../shared/dispatch-wait.js";
 import type { TaskStore } from "../shared/store.js";
 import { createTaskStore } from "../shared/store.js";
-import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 
 const store = createTaskStore();
 

@@ -14,10 +14,9 @@
  * in `mock-host.js` — this module is the driver, that one is the server.
  */
 
-import { DEBUG_DIR } from "../../../dist/debug-logger.js";
+import assert from "node:assert";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
-import { afterEach } from "node:test";
 import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import {
   applyHostStatus,
@@ -25,17 +24,18 @@ import {
   events,
   setHostTurn,
 } from "./mock-host.js";
+import { textTools, v2Context } from "./v2-context.js";
+import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
+import { DEBUG_DIR } from "../../../dist/debug-logger.js";
+import { afterEach } from "node:test";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
-import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
-import { ledgerOver } from "./durable-world.js";
 import nodePath, { join } from "node:path";
+import { ledgerOver } from "./durable-world.js";
 import { opaqueHost } from "./opaque-host.js";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
-import { textTools, v2Context } from "./v2-context.js";
 import { tmpdir } from "node:os";
-import assert from "node:assert";
 
 export {
   abortRequests,

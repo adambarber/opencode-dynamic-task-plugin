@@ -7,15 +7,15 @@
  * than a per-file ladder.
  */
 
+import { DEFAULT_AGENT_MODE, agentCanNotify, toAgentRecords, wildcardMatches } from "../../dist/shared/agent-record.js";
 import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
 import { assert, describe, it } from "./support/runner.js";
 import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
-import { DEFAULT_AGENT_MODE, agentCanNotify, toAgentRecords, wildcardMatches } from "../../dist/shared/agent-record.js";
+import { registerAdmittedTask, resolveAdmission, resolveDependencies } from "../../dist/shared/admission.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { registerAdmittedTask, resolveAdmission, resolveDependencies } from "../../dist/shared/admission.js";
 
 // --- What the host publishes -------------------------------------------------
 describe("admission gate: resolveAdmission", () => {

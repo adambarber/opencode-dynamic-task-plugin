@@ -11,9 +11,9 @@
  */
 
 import { afterEach, beforeEach } from "./runner.js";
-import { recordingClient } from "./mock-host.js";
-import { PARENT } from "./harness.js";
 import { clearNotifyLedger, configurePendingPersistence, restorePendingDeliveries } from "../../../dist/shared/notify.js";
+import { PARENT } from "./harness.js";
+import { recordingClient } from "./mock-host.js";
 
 /**
  * The notify ledger, the pending queue, and the persistence hook — all three are

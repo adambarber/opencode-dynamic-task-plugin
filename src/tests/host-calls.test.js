@@ -1,9 +1,9 @@
 import assert from 'node:assert';
 import path from 'node:path';
 
-import { hostCallSites } from './support/host-calls.js';
-import { createMockClient } from './support/mock-host.js';
 import { describe, it } from './support/runner.js';
+import { createMockClient } from './support/mock-host.js';
+import { hostCallSites } from './support/host-calls.js';
 
 /**
  * The fake's fidelity to the host — the half of the outbound contract a TYPE cannot

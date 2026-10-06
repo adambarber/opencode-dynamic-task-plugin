@@ -13,13 +13,13 @@
  * value, and a test that hard-codes a cap name is a hand-kept mirror of a
  * vocabulary it does not own.
  */
-import { assert, describe, it } from "./support/runner.js";
 import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlayCaps } from "../../dist/shared/caps.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
-import { overlayChannel } from "./support/overlay-channel.js";
-import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
 import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
+import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
+import { assert, describe, it } from "./support/runner.js";
+import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
+import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { overlayChannel } from "./support/overlay-channel.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
 

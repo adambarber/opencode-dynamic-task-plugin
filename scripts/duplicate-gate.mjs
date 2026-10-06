@@ -68,11 +68,11 @@
  * the verified count, so a report that is mostly phantoms stays visible instead of
  * being silently absorbed.
  */
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { longestSharedRun, readMinTokens, stream, tokensInRange } from "./measure.mjs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";

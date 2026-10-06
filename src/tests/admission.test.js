@@ -7,9 +7,9 @@
  * than a per-file ladder.
  */
 
+import { DEFAULT_AGENT_MODE, toAgentRecords } from "../../dist/shared/agent-record.js";
 import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { buildAgentList, dispatchableAgentNamesOrNull, fetchAgents, resetAgentCache, resolveAdmission } from "../../dist/shared/admission.js";
-import { DEFAULT_AGENT_MODE, toAgentRecords } from "../../dist/shared/agent-record.js";
 import { defaultConfig } from "./support/fixtures.js";
 import { opaqueHost } from "./support/opaque-host.js";
 

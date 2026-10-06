@@ -8,15 +8,15 @@
  * that never happened, and revives rather than strands.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, dialCount, promptTextsTo, promptsSaying, promptsToCarrying, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
-import { deferred, events, promptText } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
-import { retainedEntry } from "./support/records.js";
-import { ENV } from "../../dist/shared/config.js";
+import { bounded, dialCount, promptTextsTo, promptsSaying, promptsToCarrying, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
+import { deferred, events, promptText } from "./support/mock-host.js";
+import { describe, it } from "./support/runner.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { ENV } from "../../dist/shared/config.js";
+import { retainedEntry } from "./support/records.js";
 
 /**
  * A steer that will lose a race to an interrupt, and the report it hands back.

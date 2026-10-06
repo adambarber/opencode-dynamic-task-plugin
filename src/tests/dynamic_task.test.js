@@ -6,21 +6,21 @@
  * return immediately, create nothing it cannot keep, and leave no orphan behind.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { PARENT, abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
-import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
-import { events } from "./support/mock-host.js";
-import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
-import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
+import { PARENT, abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
 import {
   announcedAbout,
   failEdge,
   refusedOnOneEdge,
   refusedOverEdges,
 } from "./support/dispatch-wait-scenario.js";
+import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
+import { describe, it } from "./support/runner.js";
+import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
+import { events } from "./support/mock-host.js";
+import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 
 /**
  * A create that made a session and then refused to say so, by either door.

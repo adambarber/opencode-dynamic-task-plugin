@@ -7,11 +7,11 @@
  * shape with no compiler over it, and it drifts silently in both directions.
  */
 
-import { assert, describe, it } from "./support/runner.js";
 import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
+import { assert, describe, it } from "./support/runner.js";
+import { SessionExistence } from "../../dist/shared/liveness.js";
 import { noticeRecord } from "../../dist/shared/notice-claim.js";
 import { notifiedAs } from "./support/records.js";
-import { SessionExistence } from "../../dist/shared/liveness.js";
 
 /**
  * A liveness reading in the shape `readLiveness` returns.

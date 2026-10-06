@@ -8,11 +8,11 @@
  * asserting against a value nothing reads.
  */
 
+import { LOG_CAP_BYTES, debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
 import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { dirname } from "node:path";
-import { LOG_CAP_BYTES, debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
 import { SESSION_IDLE } from "../../dist/shared/host-events.js";
+import { dirname } from "node:path";
 import { withEnv } from "./support/harness.js";
 
 describe("safeDebugPayload", () => {

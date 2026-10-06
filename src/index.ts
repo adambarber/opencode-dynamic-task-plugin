@@ -18,16 +18,16 @@
 
 import type { Context, Plugin } from "@opencode/plugin/promise/plugin";
 import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
-import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
-import { errorMessage, eventString } from "./shared/host-shape.js";
-import { debugLog } from "./debug-logger.js";
 import { containFailure, safeLog } from "./shared/notify.js";
+import { errorMessage, eventString } from "./shared/host-shape.js";
+import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
 import { initPluginState, overlayHandlers } from "./entry/state.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
+import { buildToolMap } from "./tools/index.js";
+import { debugLog } from "./debug-logger.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { noteActivity } from "./shared/task-state.js";
-import { buildToolMap } from "./tools/index.js";
 
 async function setup(context: Context): Promise<void> {
   const {directory} = context.location;

@@ -8,13 +8,13 @@
  * only reads what the channel recorded.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
 import { agentDeclaring, allowAction, denyAction, events } from "./support/mock-host.js";
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
-import { bootOn } from "./support/integration.js";
+import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
+import { describe, it } from "./support/runner.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
+import { bootOn } from "./support/integration.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 

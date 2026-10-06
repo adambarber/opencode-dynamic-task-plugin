@@ -6,13 +6,13 @@
  * the JOB, and the gap between the two is where the hours went.
  */
 
-import { assert, describe, it } from "./support/index.js";
 import {
   NOTIFICATION_MAX_CHARS,
   NotifyKind,
   formatParentNotification,
   notificationKindOf,
 } from "../../dist/shared/notification-text.js";
+import { assert, describe, it } from "./support/index.js";
 
 const CHILD = "ses_child0123456789";
 const state = { childSessionId: CHILD, description: "Fix all 4 P0 issues" };

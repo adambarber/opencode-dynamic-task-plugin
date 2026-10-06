@@ -5,8 +5,8 @@
  * view, which is how the floor in scripts/cross-boundary.mjs was measured rather
  * than guessed.
  */
-import { readFileSync } from "node:fs";
 import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, shortPath } from "./cross-boundary.mjs";
+import { readFileSync } from "node:fs";
 
 const minTokens = Number(process.argv[2] ?? FLOOR_TOKENS);
 const minLines = Number(process.argv[3] ?? FLOOR_LINES);

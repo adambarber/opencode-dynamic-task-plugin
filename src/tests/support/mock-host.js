@@ -19,6 +19,7 @@
  * `mock-events.js` owns the event vocabulary and what is read back out of it, and
  * this module re-exports both so a suite has one import to name the host through.
  */
+import assert from "node:assert";
 import { armFault, armHookFaults, armedFlag, armedHostFault, fault, forId, neverAnswers } from "./faults.js";
 import { captureNotice, noticeRecord } from "./mock-events.js";
 import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
@@ -26,7 +27,6 @@ import { armGate } from "./mock-gates.js";
 import { createMockStorage } from "./mock-storage.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { missingSessionError } from "./sdk-contract.js";
-import assert from "node:assert";
 
 // A suite names the host through ONE import, whichever of these subjects it needs.
 // `export *` rather than a named list: these bindings are also used below, and a

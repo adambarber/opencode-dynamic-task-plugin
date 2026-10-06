@@ -11,12 +11,12 @@
  * document the boot will quietly ignore.
  */
 
-import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
+import assert from "node:assert";
 import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
+import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
+import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { events } from "./mock-host.js";
 import { owedIdentity } from "../../../dist/shared/notify-queue.js";
-import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
-import assert from "node:assert";
 
 /**
  * A harness whose children fail every turn with `detail`, and one such child.

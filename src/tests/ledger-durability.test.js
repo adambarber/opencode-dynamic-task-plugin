@@ -15,13 +15,13 @@
  * fixture that wired it differently would be testing a join this plugin does not have.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert/strict";
+import { childParams, defaultConfig } from "./support/fixtures.js";
+import { describe, it } from "./support/runner.js";
 import { recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { FailureClass } from "../../dist/shared/failure-class.js";
-import { TaskState } from "../../dist/shared/task-records.js";
 import { LEDGER_PREFIXES } from "../../dist/shared/ledger-storage.js";
-import { childParams, defaultConfig } from "./support/fixtures.js";
+import { TaskState } from "../../dist/shared/task-records.js";
 import { durable } from "./support/durable-world.js";
 import { ledgerSays } from "./support/integration.js";
 

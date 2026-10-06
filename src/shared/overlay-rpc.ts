@@ -22,12 +22,12 @@
 // for exactly that reason. What `define` buys is one check (no declared error name may
 // start with the reserved `rpc.`), so that check is ours to keep, in a test.
 import type { PortableDefinition, PortableValueSchema } from "@opencode/schema/rpc";
-import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
 import type { AgentOverlay } from "./caps.js";
 import type { OverlayRead } from "./overlay-store.js";
+import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
 import { UNREADABLE } from "./overlay-store.js";
-import { parseAgentOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
+import { parseAgentOverlay } from "./caps.js";
 
 
 /**

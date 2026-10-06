@@ -9,8 +9,7 @@
  * would report green through.
  */
 
-import { assert, beforeEach, describe, it } from "./support/runner.js";
-import { writeFileSync } from "node:fs";
+import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import {
   agentKey,
   agentOccupancy,
@@ -24,13 +23,14 @@ import {
   retiredLaneOverlayPath,
   retiredOverlayPresent,
 } from "../../dist/shared/caps.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
+import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
+import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { overlayChannel } from "./support/overlay-channel.js";
 import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { resolveAdmission } from "../../dist/shared/admission.js";
 import { toAgentRecords } from "../../dist/shared/agent-record.js";
-import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
-import { overlayChannel } from "./support/overlay-channel.js";
+import { writeFileSync } from "node:fs";
 
 /**
  * A project whose caps live in the HOST'S TABLE, the way they do now, and the wiring

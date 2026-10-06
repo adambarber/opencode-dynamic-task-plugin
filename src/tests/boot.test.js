@@ -12,12 +12,12 @@
  * nothing about a namespace it did not read, and never writes into one.
  */
 
-import { describe, it } from "./support/runner.js";
-import { compareStrings } from "./support/assertions.js";
 import assert from "node:assert";
-import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
 import { bootOn, ledgerSays, settledOnDisk, waitFor } from "./support/integration.js";
+import { describe, it } from "./support/runner.js";
+import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
+import { compareStrings } from "./support/assertions.js";
 
 /**
  * Wait for a notice to land, because boot deliberately does not block on

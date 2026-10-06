@@ -1,6 +1,3 @@
-import { assert, describe, it } from "./support/runner.js";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import {
   ASSISTANT_ROLE,
   getLatestAssistantText,
@@ -10,7 +7,10 @@ import {
   toolCallOf,
   touchedFiles,
 } from "../../dist/shared/prompt.js";
+import { assert, describe, it } from "./support/runner.js";
 import { TESTS_DIR } from "./support/corpus.js";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 const gold = JSON.parse(readFileSync(join(TESTS_DIR, "support", "v2-transcript.json"), "utf8"));
 

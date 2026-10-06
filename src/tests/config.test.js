@@ -6,17 +6,17 @@
  * and what an unusable value at one level does to the level below it.
  */
 
+import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
 import { assert, describe, it } from "./support/runner.js";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { assertAnswer, assertNothing } from "./support/assertions.js";
 
 /** The repository root, for the source-count pin that cannot retype the path. */
 
-import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
 import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
+import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 import { REPO_ROOT } from "./support/corpus.js";
-import { assertAnswer, assertNothing } from "./support/assertions.js";
 import { bothCaps } from "./support/fixtures.js";
 
 /**

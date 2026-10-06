@@ -18,8 +18,6 @@
  * the previous version of this module read as a finished turn.
  */
 
-import { assert, describe, it } from "./support/runner.js";
-import { compareStrings } from "./support/assertions.js";
 import {
   NOT_FOUND_REASON,
   PROTOCOL_NOT_FOUND_TAG,
@@ -34,9 +32,11 @@ import {
   readSessionPresence,
   statusFromHostTurn,
 } from "../../dist/shared/liveness.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { assert, describe, it } from "./support/runner.js";
 import { clientErrorReasons, hostOutcomeWords } from "./support/sdk-contract.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { compareStrings } from "./support/assertions.js";
+import { opaqueHost } from "./support/opaque-host.js";
 
 // What each verdict the host DECLARES means here. The expectation is the claim; the
 // word list is the SDK's, so a host that adds or renames one lands in this table's

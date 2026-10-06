@@ -10,9 +10,9 @@
 
 import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { events } from "./support/mock-host.js";
 import { textDeclaresKind } from "./support/assertions.js";
-import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 
 describe("Background Task Settlement", () => {
   let harness;

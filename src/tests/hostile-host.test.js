@@ -24,7 +24,7 @@
  */
 
 import assert from "node:assert";
-import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
+import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 
 import {
   answerMatches,
@@ -36,7 +36,7 @@ import {
   sleep,
   withChild,
 } from "./support/index.js";
-import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 
 /**
  * The plugin's own deadlines, shortened so a case can outwait them. The bound is

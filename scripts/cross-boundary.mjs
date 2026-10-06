@@ -41,10 +41,10 @@
  * floor is a measurement of THAT tokenizer and is not automatically still true of a
  * different one.
  */
+import { join, relative } from "node:path";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
 
 const REPO = new URL("..", import.meta.url).pathname;
 const SRC = join(REPO, "src");

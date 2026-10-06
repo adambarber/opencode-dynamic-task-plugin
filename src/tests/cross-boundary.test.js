@@ -7,9 +7,9 @@
  * existed was the subject, not the line count.
  */
 
+import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
 import { assert, describe, it } from "./support/runner.js";
 import { readFileSync } from "node:fs";
-import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
 
 /**
  * The gate jscpd structurally cannot be: duplication ACROSS the test/production

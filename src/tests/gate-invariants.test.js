@@ -8,13 +8,13 @@
 // Rules except the corpus walk, which is why that walk is the one thing imported
 // From support/corpus.js rather than repeated.
 
-import { assert, describe, it } from "./support/runner.js";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { REPO_ROOT, lineCount, listSourceFiles, siteOf } from "./support/corpus.js";
+import { assert, describe, it } from "./support/runner.js";
 import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 
 // --- the duplicate-detection gate ------------------------------------------------
 // The thresholds are not taste. 3 lines / 16 tokens is the strictest level this

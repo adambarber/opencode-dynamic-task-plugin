@@ -20,8 +20,8 @@
  * `store.ts` names the same type while `task-state` names the class. `verbatimModuleSyntax`
  * is what keeps the edge from becoming a runtime one.
  */
-import { agentKey } from "./caps.js";
 import type { ActiveTaskState } from "./task-state.js";
+import { agentKey } from "./caps.js";
 
 /**
  * Running records to running tasks per agent, by folded key.

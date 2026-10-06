@@ -14,11 +14,11 @@
  * `permission.reply({decision: "once" | "always" | "reject"})`, and DENY is it.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
+import { answerMatches, answerOmits, answerSays, assertNoticeCount, assertPermissionDenied, stateOf } from "./support/assertions.js";
+import { describe, it } from "./support/runner.js";
 import { setupHarness, withAskedChild, withChild, withLoggedChild } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
-import { answerMatches, answerOmits, answerSays, assertNoticeCount, assertPermissionDenied, stateOf } from "./support/assertions.js";
 
 describe("permission gate: child asks settle", () => {
   it("a live child's ask is denied, at the host's own route and shape", async () => {

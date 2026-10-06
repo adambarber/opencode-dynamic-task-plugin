@@ -9,8 +9,8 @@
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
 import { activeFor, annotateActive } from "./task-state.js";
-import type { TaskStore } from "./store.js";
 import type { ActiveTaskState } from "./task-state.js";
+import type { TaskStore } from "./store.js";
 
 /**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE

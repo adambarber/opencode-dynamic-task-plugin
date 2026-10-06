@@ -1,16 +1,16 @@
 // Shared tool context (entry/tools boundary): everything a tool executor
 // needs, owned in one place so no executor reaches past the funnel.
-import type { ToolContext } from "@opencode/plugin/promise/tool";
-import type { OpaqueHost } from "../shared/client.js";
+import { NO_SESSION_RECORD, formatTaskResultSummary, taskResultRecord } from "../shared/task-formatting.js";
+import type { TaskRecord, TaskStore } from "../shared/task-state.js";
+import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import type { IntentStore } from "../shared/create-intent.js";
-import type { TaskRecord, TaskStore } from "../shared/task-state.js";
-import { findTask } from "../shared/task-state.js";
-import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
-import { isEventRecord } from "../shared/host-shape.js";
-import { NO_SESSION_RECORD, formatTaskResultSummary, taskResultRecord } from "../shared/task-formatting.js";
-import { UntrackedStatus } from "../shared/liveness.js";
+import type { OpaqueHost } from "../shared/client.js";
 import type { Refusal } from "../shared/verdict.js";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
+import { UntrackedStatus } from "../shared/liveness.js";
+import { findTask } from "../shared/task-state.js";
+import { isEventRecord } from "../shared/host-shape.js";
 
 export interface ToolDeps {
   host: OpaqueHost;

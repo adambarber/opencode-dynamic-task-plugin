@@ -20,6 +20,7 @@
  * `support/invariant-gate.js`; this file is the rules themselves.
  */
 
+import path from "node:path";
 import {
   DOC_ADMISSION,
   DOC_FIDELITY,
@@ -40,7 +41,6 @@ import { REPO_ROOT, SRC_DIR, TESTS_DIR, listProdFiles, listTestSupportFiles } fr
 import { assert, describe, it } from "./support/runner.js";
 import { buildToolMap } from "../../dist/tools/index.js";
 import { readFileSync } from "node:fs";
-import path from "node:path";
 
 // (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle
 // fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/

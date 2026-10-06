@@ -1,5 +1,5 @@
-import type { Agent } from "@opencode/schema/agent";
 import { includesWord, isEventRecord } from "./host-shape.js";
+import type { Agent } from "@opencode/schema/agent";
 
 /**
  * An agent, as the ONE shape this plugin is allowed to hold.

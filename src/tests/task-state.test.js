@@ -8,15 +8,15 @@
  * together rather than being spread across whichever suite happened to touch them.
  */
 
-import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
-import { restoreActive, restoreRetained } from "../../dist/shared/task-ledger.js";
-import { annotateNotice, markTurnReplacement } from "../../dist/shared/notice-claim.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { activeEntry, retainedEntry } from "./support/records.js";
+import { annotateNotice, markTurnReplacement } from "../../dist/shared/notice-claim.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 import { childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
+import { restoreActive, restoreRetained } from "../../dist/shared/task-ledger.js";
+import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
+import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 
 /** A store holding one running child named ses_active — where most state cases start. */
 function storeWithActive(cfg = defaultConfig) {

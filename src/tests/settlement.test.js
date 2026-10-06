@@ -7,11 +7,11 @@
  * still owed — rather than about any one tool.
  */
 
-import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
-import { deferred, events } from "./support/mock-host.js";
 import { answerMatches, answerSays, assertNoticeCount, textDeclaresKind } from "./support/assertions.js";
+import { deferred, events } from "./support/mock-host.js";
+import { describe, it } from "./support/runner.js";
 import { dispatchArgs, eventHarness, harnessRejectingPrompt, withSingleSlot } from "./support/integration.js";
 
 describe("settlement: the notification layer owns outcomes", () => {

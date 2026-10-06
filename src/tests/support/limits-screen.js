@@ -16,15 +16,15 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
-import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
+import assert from "node:assert/strict";
+import tuiModule from "../../../dist/tui/index.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
-import { overlayChannel } from "./overlay-channel.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
-import assert from "node:assert/strict";
+import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
-import tuiModule from "../../../dist/tui/index.js";
+import { overlayChannel } from "./overlay-channel.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);

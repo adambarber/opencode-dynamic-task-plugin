@@ -10,8 +10,8 @@
 // Its own module because it is its own subject: nothing here decides a task's
 // state, and nothing that decides a task's state belongs here.
 
-import { evictOldest } from "./bounded-map.js";
 import type { DependencyBlock } from "./admission.js";
+import { evictOldest } from "./bounded-map.js";
 
 /**
  * A dispatch the admission gate refused because its dependencies were not

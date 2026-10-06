@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { dirname, join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 /**
  * The fixtures every module's suite needs: a config, and a registration literal.
  *
@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
  * not about. Named for the refusals they carry so a case says which one it means.
  */
 
-import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { tmpdir } from "node:os";
 
 /**
  * The config a case means when it does not care: the machine's own defaults,

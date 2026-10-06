@@ -8,11 +8,11 @@ import {
 } from "./support/limits-screen.js";
 import { CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { assert, describe, it } from "./support/runner.js";
-import { existsSync, writeFileSync } from "node:fs";
-import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { BETWEEN } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { bothCaps } from "./support/fixtures.js";
+import { overlayKey } from "../../dist/shared/overlay-store.js";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import tuiModule from "../../dist/tui/index.js";
@@ -252,12 +252,15 @@ describe("and the list offers nothing the host does not own", () => {
     }));
 
   it("an overlay it cannot read is said out loud AND the list still opens, because repair is why it was opened", () =>
-    withProject(async (directory) => {
-      writeFileSync(join(directory, AGENT_OVERLAY_FILE), "{ not json");
-      const host = await booted(directory);
+    withProject(async (directory, channel) => {
+      // Written straight into the host's table, because no writer of ours would produce
+      // it: this is the document a hand-edited store or a stale one holds, and the
+      // claim is about what the screen does when it finds one.
+      channel.kv.set(overlayKey(directory), "{ not json");
+      const host = await booted(directory, { channel });
       await openList(host);
-      assert.ok(host.seen.toasts.some((toast) => toast.variant === "warning" && /not valid JSON/.test(toast.message)),
-        "the operator is told the file is odd");
+      assert.ok(host.seen.toasts.some((toast) => toast.variant === "warning" && /could not be read/.test(toast.message)),
+        "the operator is told the stored caps are odd");
       assert.equal(host.seen.selects.length, 1, "and the list is not empty — there has to be a way to fix it");
       assert.deepEqual(titlesOf(top(host.seen)), WHOLE_SCREEN, "and it still draws the total and the host's agents, not nothing");
     }));

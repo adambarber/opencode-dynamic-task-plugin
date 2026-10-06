@@ -36,16 +36,13 @@
 import type { Plugin } from "@opencode/plugin/tui";
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
-import { errorMessage } from "../shared/host-shape.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
   type AgentCapName,
   type AgentOverlay,
-  agentOverlayPath,
-  readAgentOverlay,
   resolveAgentCaps,
-  writeAgentOverlay,
 } from "../shared/caps.js";
+import { overlayChannel } from "./overlay-client.js";
 import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { type OpaqueHost, asOpaqueHost } from "../shared/client.js";
 import {
@@ -274,7 +271,10 @@ async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
     ctx.ui.toast.show({ message: "no project directory", title: "Task limits", variant: "error" });
     return undefined;
   }
-  const read = readAgentOverlay(directory);
+  // Through the channel, not off the disk: the caps the dispatch path will judge
+  // against are the ones this call returns, and reading anything else here would be a
+  // second answer to the same question.
+  const read = await overlayChannel(ctx).read();
   // The dispatch path's own reader, not a second derivation of it. The one source the
   // TUI still cannot see is the registration tuple, which `readDynamicTaskPolicy`
   // states rather than leaves to be discovered.
@@ -287,10 +287,10 @@ async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree
     // the moment the row set is built by something else.
-    dialog: agentDialogFrom(read.raw, base, agents, base.allowSameAgentRecursion, read.problem),
+    dialog: agentDialogFrom(read.caps, base, agents, base.allowSameAgentRecursion, read.problem),
     // Read with the one reader rather than cast, so an edit can never launder a value
     // the dispatch path already refuses.
-    overlay: overlayFrom(read.raw),
+    overlay: overlayFrom(read.caps),
     directory,
     base,
     agents,
@@ -352,14 +352,12 @@ async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () =>
     ctx.ui.toast.show({ message: outcome.problem, title, variant: "error" });
     return view;
   }
-  try {
-    writeAgentOverlay(view.directory, outcome.overlay);
-  } catch (error) {
-    ctx.ui.toast.show({
-      message: `could not write ${agentOverlayPath(view.directory)}: ${errorMessage(error)}`,
-      title,
-      variant: "error",
-    });
+  // A refusal is an ANSWER here, not an exception: the dialog's whole promise is that a
+  // number it showed stays true, and an unstored edit must not be reported as an
+  // applied one. The server's declared error is why this is a message and not a crash.
+  const written = await overlayChannel(ctx).write(outcome.overlay);
+  if (!("written" in written)) {
+    ctx.ui.toast.show({ message: written.problem, title, variant: "error" });
     return view;
   }
   ctx.ui.toast.show({ message: `${outcome.summary} — in force on the next dispatch`, title: "Task limits", variant: "success" });

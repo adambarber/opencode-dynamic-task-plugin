@@ -1,5 +1,6 @@
 import assert from "node:assert";
 
+import { createRpc } from "./mock-rpc.js";
 import { sleep } from "./timing.js";
 
 /**
@@ -13,6 +14,7 @@ import { sleep } from "./timing.js";
 export function v2Context(client, directory, options = {}) {
   const tools = new Map();
   const queue = [];
+  const rpc = createRpc();
   // FIFO waiter lists, not single slots: deliveries may overlap (`Promise.all` over
   // a burst of terminal events is the real case), and one slot hands a promise to
   // the wrong delivery — the burst hung forever. `parked` is woken by a delivery,
@@ -38,6 +40,10 @@ export function v2Context(client, directory, options = {}) {
     },
     location: { directory },
     options,
+    // Registered on the CONTEXT, reached through the client's subclient: the two are
+    // the same host route, so a fake that gave the plugin one and not the other would
+    // let a channel exist that no caller could ever reach.
+    rpc: { register: rpc.register },
     tool: {
       // Async across a MACROTASK like the real registration: the editor writes land
       // after `reload` has already published unless setup awaits `transform` first. A
@@ -57,6 +63,8 @@ export function v2Context(client, directory, options = {}) {
 
   return {
     context,
+    /** The same registry the context registered into, so a caller can reach it. */
+    rpc,
     deliverEvent: async (event) => {
       // Two SEPARATE wait lists, because the generator and the deliverer park at
       // different moments. Sharing one slot lost the wake-up: the generator parked

@@ -22,7 +22,8 @@ import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-eve
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { debugLog } from "./debug-logger.js";
 import { containFailure, safeLog } from "./shared/notify.js";
-import { initPluginState } from "./entry/state.js";
+import { initPluginState, overlayHandlers } from "./entry/state.js";
+import { OverlayRpc } from "./shared/overlay-rpc.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { noteActivity } from "./shared/task-state.js";
@@ -47,9 +48,17 @@ async function setup(context: Context): Promise<void> {
   // instance's events into another project's store. Debug root and
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
-  const { config, store } = await initPluginState(directory, options, host);
+  const { config, overlay, store } = await initPluginState(directory, options, host);
   const deps = { config, directory, host, store };
   const tools = buildToolMap(deps);
+
+  // The caps channel, on the host's own route between two plugins. It exists because
+  // the TUI is a plugin too: the operator's caps live in a store the TUI has no access
+  // to, so a dialog writes them through this method.
+  //
+  // The location travels with the call, so neither method takes a directory: that
+  // guarantee is the host's, and it is why a dialog cannot reach another project's caps.
+  await context.rpc.register(OverlayRpc, overlayHandlers(overlay, config, directory));
 
   safeLog("info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
 

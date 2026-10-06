@@ -314,7 +314,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   // editor transform, events by an async iterable. The fake drives those two
   // surfaces for real rather than reaching past them, so a plugin that
   // registered wrongly would fail here instead of in production.
-  const { context, rawTools, deliverEvent } = v2Context(client, directory, options);
+  const { context, rawTools, deliverEvent, rpc } = v2Context(client, directory, options);
   // Options ride on the context itself (`context.options`) — the loader calls
   // `setup(context)` with one argument, so a harness passing them positionally
   // would exercise defaults while believing otherwise.
@@ -328,6 +328,12 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
 
   const harness = {
     client,
+    /**
+     * The host's RPC, as both ends. A case that speaks to the channel goes through the
+     * subclient — the way the TUI does — so a method the server never registered fails
+     * here instead of passing against a client built from the definition alone.
+     */
+    rpc,
     /** The host's own durable table, so a case can see what the plugin persisted. */
     kv: state.kv,
     /**

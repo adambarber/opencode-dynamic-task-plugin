@@ -16,15 +16,14 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
-import { AGENT_CAP_NAMES, AGENT_OVERLAY_FILE, readAgentOverlay, writeAgentOverlay } from "../../../dist/shared/caps.js";
+import { AGENT_CAP_NAMES, readAgentOverlayCaps } from "../../../dist/shared/caps.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
+import { overlayChannel } from "./overlay-channel.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import assert from "node:assert/strict";
-import { join } from "node:path";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
-import { readFileSync } from "node:fs";
 import tuiModule from "../../../dist/tui/index.js";
 
 /** The base config the TUI can see: defaults only, no plugin options. */
@@ -58,11 +57,14 @@ export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
  * the TUI runtime client has no `agent` namespace, and a double that answers
  * `client.agent.list()` proves a reader the host cannot run.
  */
-export function hostApi(directory, { agents = REGISTERED } = {}) {
+export function hostApi(directory, { agents = REGISTERED, channel } = {}) {
   const seen = { layers: [], selects: [], slots: [], toasts: [] };
   const pending = [];
   return {
     api: {
+      // The caps channel, with the server's half really behind it. Absent by default so
+      // a case that does not care pays nothing for it.
+      client: channel?.client ?? { rpc: () => ({}) },
       location: { directory },
       // The row set is the HOST's registered agents, read the way its own agent
       // screens read them: the data store's per-location collection, synchronously.
@@ -101,9 +103,14 @@ export function hostApi(directory, { agents = REGISTERED } = {}) {
   };
 }
 
-/** The overlay as it sits on disk, which is what the dispatch path will read. */
-export function readOverlay(directory) {
-  return JSON.parse(readFileSync(join(directory, AGENT_OVERLAY_FILE), "utf8"));
+/** The caps in force for this project, read the way the dialog reads them. */
+export const readOverlay = async (directory) => (await overlayChannel(directory, BASE).read()).caps;
+
+/** The overlay as the operator stated it, through the channel rather than the table. */
+export async function withCaps(directory, overlay, hostHooks) {
+  const channel = overlayChannel(directory, BASE, { host: hostHooks });
+  if (overlay !== undefined) await channel.seed(overlay);
+  return channel;
 }
 
 /**
@@ -113,9 +120,9 @@ export function readOverlay(directory) {
  * below use, and it is why they need no double: the props ARE the value, and nothing
  * between the disk and the assertion is a stand-in.
  */
-export function listOver(directory, agentNames = REGISTERED) {
-  const read = readAgentOverlay(directory);
-  const dialog = agentDialogFrom(read.raw, BASE, agentNames, false, read.problem);
+export async function listOver(directory, agentNames = REGISTERED) {
+  const read = await overlayChannel(directory, BASE).read();
+  const dialog = agentDialogFrom(read.caps, BASE, agentNames, false, read.problem);
   return limitsListProps(dialog);
 }
 
@@ -200,22 +207,23 @@ export async function booted(directory, opts) {
 }
 
 /** A project directory holding the given overlay, with nothing booted and nothing pressed. */
-export const withProject = (fn, { overlay } = {}) =>
-  withTempDir((directory) => {
-    if (overlay !== undefined) writeAgentOverlay(directory, overlay);
-    return fn(directory);
+export const withProject = (fn, { overlay, ...rest } = {}) =>
+  withTempDir(async (directory) => {
+    const channel = await withCaps(directory, overlay, rest.host);
+    return fn(directory, channel);
   });
 
 /** …with the limits list, built from a real overlay and no host in sight. */
 export const withList = (overlay, fn, opts) =>
-  withProject((directory) => fn(listOver(directory, opts?.agentNames), directory), { overlay, ...opts });
+  withProject(async (directory) => fn(await listOver(directory, opts?.agentNames), directory), { overlay, ...opts });
 
 /**
  * …with the module booted and NOTHING pressed, which is the only state in which a
  * gate can be read at all: press the command and every layer this plugin owns is
  * live, so a test that wants to watch one wake up has to start before that.
  */
-export const withBooted = (fn, opts) => withProject(async (directory) => fn(await booted(directory), directory), opts);
+export const withBooted = (fn, opts) =>
+  withProject(async (directory, channel) => fn(await booted(directory, { ...opts, channel }), directory, channel), opts);
 
 /**
  * The screen the operator actually sees, with a hand-authored config file in the tree.
@@ -227,9 +235,9 @@ export const withBooted = (fn, opts) => withProject(async (directory) => fn(awai
  * "does the screen show what the dispatch path enforces" is asked of the screen.
  */
 export const withConfigScreen = (configBody, fn) =>
-  withProject(async (directory) => {
+  withProject(async (directory, channel) => {
     writeProjectConfig(directory, configBody);
-    const host = await booted(directory);
+    const host = await booted(directory, { channel });
     await host.command.run();
     await settle();
     return fn(host.seen.selects[host.seen.selects.length - 1], directory, host);
@@ -247,18 +255,25 @@ export const withConfigScreen = (configBody, fn) =>
  */
 export const settle = () => new Promise((done) => setImmediate(done));
 
-/** …after the command has been pressed and the agent list has resolved. */
+/** How long a case waits for a screen the host has not drawn yet. A bound, not a claim. */
+const SCREEN_TICKS = 50;
+
+/** …after the command has been pressed and the caps screen has landed. */
 export async function openList(host) {
   host.command.run();
-  await settle();
+  // Waiting for the DIALOG rather than for a yield: the caps it draws come back over
+  // the channel, so a fixed tick passed once by luck and failed the next time one await
+  // was added upstream.
+  for (let left = SCREEN_TICKS; left > 0 && host.seen.selects.length === 0; left -= 1) await settle();
+  assert.ok(host.seen.selects.length > 0, "the command mounted no dialog — the caps read never answered");
 }
 
 /** …with the command pressed, which is the only state in which a dialog exists at all. */
 export const withOpen = (fn, opts) =>
-  withBooted(async (host, directory) => {
+  withBooted(async (host, directory, channel) => {
     await openList(host);
     assert.equal(host.seen.selects.length, 1, "pressing the command opens the limits list");
-    return fn(host, directory);
+    return fn(host, directory, channel);
   }, opts);
 
 /** …over an overlay capping `explore`, which is what most of the sequences below are about. */
@@ -281,9 +296,9 @@ export const withExploreOpen = (fn) => withOpen(fn, { overlay: { agents: { explo
  * A currying helper whose unapplied form is itself a plausible case function is a
  * trap with no type to catch it, and the guard below is what closes it.
  */
-export const given = (step, fn) => async (host, directory) => {
+export const given = (step, fn) => async (host, directory, channel) => {
   await step(host, directory);
-  return fn(host, directory);
+  return fn(host, directory, channel);
 };
 
 /** …with one agent's two caps on screen. */

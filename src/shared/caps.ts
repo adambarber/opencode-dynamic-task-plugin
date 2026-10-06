@@ -15,9 +15,9 @@
 // numbers instead of the store itself: this module can judge occupancy without
 // knowing what a task is, and every consumer that does know builds the map the one
 // way `agentKey` says to.
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { errorMessage, isPlainRecord } from "./host-shape.js";
+import { isPlainRecord } from "./host-shape.js";
 import type { DepthBound} from "./task-policy.js";
 import { depthLimits } from "./task-policy.js";
 
@@ -179,6 +179,39 @@ export function isAgentCap(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
+/**
+ * Whether two overlays state the SAME caps.
+ *
+ * Key order is not a statement: two spellings of one overlay compare equal, because the
+ * question asked here is whether the caps the operator chose are the caps now in force.
+ * The alternative — asking only whether a document is present — is not a weaker version
+ * of this question, it is a different one, and a refused write answers it yes.
+ */
+export function sameOverlay(left: AgentOverlay, right: unknown): boolean {
+  return spelling(left) === spelling(right);
+}
+
+/** One document's spelling, keys in order, so two documents can be compared as text. */
+function spelling(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(spelling).join(",")}]`;
+  if (!isPlainRecord(value)) return JSON.stringify(value) ?? "null";
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${spelling(value[key])}`).join(",")}}`;
+}
+
+/**
+ * The cap names a body STATED that are not caps, so a caller can tell the operator
+ * which of their own numbers were ignored rather than leaving "unset" to be read as
+ * "inherited".
+ *
+ * Named because the same question is asked twice — once to fold them out of the body,
+ * once to name them — and two inline answers to one question drift the first time a
+ * cap is added.
+ */
+export function unusableCapNames(raw: unknown): AgentCapName[] {
+  if (!isPlainRecord(raw)) return [];
+  return AGENT_CAP_NAMES.filter((name) => raw[name] !== undefined && cap(raw[name]) === undefined);
+}
+
 function cap(value: unknown): number | undefined {
   return isAgentCap(value) ? value : undefined;
 }
@@ -231,15 +264,13 @@ export function parseAgentCaps(raw: unknown): AgentCaps | null {
   return Object.keys(caps).length === 0 ? null : caps;
 }
 
-// ─── the overlay: the operator's edit, in a file beside the ledger ───────────
+// ─── the overlay: the operator's edit, as a document ─────────────────────────
+//
+// It USED to be a file beside the ledger, and the reason it is not is the TUI: a
+// dialog that could not reach the same store the dispatch path reads was a dialog
+// whose "saved" meant nothing to the next dispatch. The document's shape is
+// unchanged — only where it lives, and who is allowed to write it.
 
-/** Beside the ledger, in the project directory the host hands us. */
-export const AGENT_OVERLAY_FILE = ".dynamic-task-agents.json";
-
-/** The overlay of the feature this one replaced. Named only so it can be reported. */
-export const RETIRED_LANE_FILE = ".dynamic-task-lanes.json";
-
-/** What the overlay may say, as data. Both halves are optional and partial. */
 /**
  * The agents of an untrusted overlay, and what it had to throw away to get them.
  *
@@ -272,21 +303,6 @@ export interface AgentOverlay {
   agents?: Record<string, AgentCaps>;
 }
 
-/** The overlay's path for a project directory. Never process CWD. */
-export function agentOverlayPath(directory: string | undefined): string {
-  return join(directory || "", AGENT_OVERLAY_FILE);
-}
-
-/** The retired overlay's path, so a stale file can be named rather than ignored. */
-export function retiredLaneOverlayPath(directory: string | undefined): string {
-  return join(directory || "", RETIRED_LANE_FILE);
-}
-
-/** Read the overlay for a project directory. Best-effort: never throws. */
-export function readAgentOverlay(directory: string | undefined): { raw: unknown; problem: string | null } {
-  return readJsonFile(agentOverlayPath(directory));
-}
-
 /**
  * The agents of an untrusted overlay, and what it had to throw away to get them.
  *
@@ -304,6 +320,27 @@ export function readAgentOverlayCaps(raw: unknown): OverlayAgents {
   // dialog's `!== undefined` check would be answering a question about presence that
   // the object no longer describes.
   return stated === undefined ? { agents, dropped } : { agents, dropped, maxConcurrent: stated };
+}
+
+/**
+ * An overlay document that may be STORED, or null when it may not.
+ *
+ * Stricter than a read on purpose, and it is the same rules: a read folds an unusable
+ * body out and says which one it dropped, because a screen would rather show a cap
+ * without its neighbour than refuse the whole screen. A write has no such luxury — a
+ * document stored half-understood is caps the operator never wrote — so the ONE place
+ * those rules live answers this question too, and a caller that wants to write holds a
+ * second opinion by construction.
+ */
+export function parseAgentOverlay(raw: unknown): AgentOverlay | null {
+  if (!isPlainRecord(raw)) return null;
+  const { agents, dropped, usable } = readOverlayAgents(raw);
+  if (!usable || Object.keys(dropped).length > 0) return null;
+  const stated = readTopLevelCaps(raw);
+  // Absent keys stay absent: `exactOptionalPropertyTypes` is on, so spreading would
+  // store an `undefined` and the reader on the other side would be answering a
+  // question about presence that the document no longer describes.
+  return { ...stated, agents };
 }
 
 /**
@@ -334,13 +371,15 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
     const key = agentKey(name);
     if (!key) continue;
     const caps = readAgentCapBody(entry);
-    // A key is not a cap. An entry whose every knob was dropped constrains nothing,
-    // and keeping it would make "the overlay is present" and "the overlay constrains
-    // something" two different questions — so a file of empty bodies would answer the
-    // first and not the second, and every agent in it would be listed as capped.
-    if (AGENT_CAP_NAMES.every((field) => caps[field] === undefined)) continue;
+    const ignored = unusableCapNames(entry);
+    // A named agent with nothing left to honour is dropped LOUDLY: it said something
+    // the reader cannot use, and vanishing quietly leaves a screen where the operator's
+    // agent is simply not capped.
+    if (AGENT_CAP_NAMES.every((field) => caps[field] === undefined)) {
+      dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
+      continue;
+    }
     agents[key] = caps;
-    const ignored = AGENT_CAP_NAMES.filter((field) => isPlainRecord(entry) && entry[field] !== undefined && cap(entry[field]) === undefined);
     if (ignored.length > 0) dropped[key] = ignored;
   }
   return { agents, dropped, usable: true };
@@ -376,21 +415,19 @@ function overlayBody(raw: unknown): Record<string, unknown> | null {
   return isPlainRecord(raw) ? raw : null;
 }
 
-/** One JSON file, read without ever throwing. Absent is normal; malformed is a problem. */
-function readJsonFile(path: string): { raw: unknown; problem: string | null } {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    return { problem: null, raw: null };
-  }
-  try {
-    return { problem: null, raw: JSON.parse(text) as unknown };
-  } catch (error) {
-    return { problem: `the overlay is not valid JSON: ${errorMessage(error)}`, raw: null };
-  }
-}
+/**
+ * The overlay of the feature this one replaced. Named only so it can be reported.
+ *
+ * Nothing reads this file and nothing ever will — it is here to be named in a warning
+ * at boot, because an operator who had caps working last week and finds them silently
+ * not applying deserves to be told which file stopped being read.
+ */
+export const RETIRED_LANE_FILE = ".dynamic-task-lanes.json";
 
+/** The retired overlay's path, so a stale file can be named rather than ignored. */
+export function retiredLaneOverlayPath(directory: string | undefined): string {
+  return join(directory || "", RETIRED_LANE_FILE);
+}
 /** Whether a project still carries the retired lane overlay, so it can be named. */
 export function retiredOverlayPresent(directory: string | undefined): boolean {
   try {
@@ -401,64 +438,44 @@ export function retiredOverlayPresent(directory: string | undefined): boolean {
   }
 }
 
-/**
- * Replace the overlay, atomically.
- *
- * Atomic because the reader is a DISPATCH PATH: it reads this file while work is in
- * flight, and a half-written file is a parse failure that silently reverts every cap
- * to the boot config — an operator's edit vanishing because a write was interrupted.
- * Write to a pid-qualified temp file in the same directory and rename over the
- * target, which is atomic within a filesystem; a plain write is not, and a
- * same-directory temp file is not either if the name is shared between two processes.
- *
- * `applyAgentOverlay` is deliberately NOT called on the way out. The caller has
- * already validated, and re-validating here would drop a key the operator's own
- * dialog drew — which is how a screen row silently disappears on the next open.
- */
-export function writeAgentOverlay(directory: string | undefined, overlay: AgentOverlay): void {
-  const target = agentOverlayPath(directory);
-  const temp = `${target}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(overlay, null, 2)}\n`, "utf8");
-  renameSync(temp, target);
-}
-
-// ─── the live read ───────────────────────────────────────────────────────────
+// ─── the live policy ──────────────────────────────────────────────────────────
 //
 // One installer, one getter, no arguments to thread: the chokepoint has to sit where
 // a cap decision is actually made, and cap decisions are made deep in the store by
-// callers (a spawn, a revival) that know nothing about a project directory. Tenet
-// 9's process-global shape is the same one the notification ledger and the
-// pending-queue writer already use, for the same reason: the thing being held is
-// per-process policy, and a boot installs it exactly once.
-let readLive: (() => AgentCapSource | null) | null = null;
-
-/** Boot installs the reader. There is no uninstall: the overlay lives as long as the process. */
-export function installLiveAgentCaps(read: () => AgentCapSource | null): void {
-  readLive = read;
-}
-
-/** Test seam: forget the installed reader and return to boot-only policy. */
-export function resetLiveAgentCaps(): void {
-  readLive = null;
-}
+// callers (a spawn, a revival) that know nothing about a project directory. Tenet9's
+// process-global shape is the same one the notification ledger and the pending-queue
+// writer already use, for the same reason: the thing being held is per-process policy,
+// and a boot installs it exactly once.
 
 /**
- * The policy a cap decision must be made against RIGHT NOW.
+ * The policy a cap decision is made against RIGHT NOW, in force for the process.
  *
- * A function rather than a value because a value would be a snapshot, and the whole
- * feature is that the number changes without a restart. Falls back to the base config
- * when nothing is installed or the overlay is unusable, so a missing or mangled
+ * A VALUE and not a reader, and that is the change that made the dispatch path
+ * synchronous again: the reader used to re-read a file on every cap decision so an
+ * operator's edit applied without a restart. The store cannot be read on that path —
+ * it is a bounded host call, and a cap decision has no way to represent "the host did
+ * not answer" without either refusing a dispatch or judging it against the wrong
+ * numbers. So the change is PUSHED instead: the boot reads the store, and the write
+ * path installs the new policy in the process that accepted it. A cap decision is
+ * then a field read, and "the number changes without a restart" is still true.
+ *
+ * Falls back to the boot config when nothing is installed, so a project with no
  * overlay degrades to exactly the frozen behaviour that shipped before per-agent caps.
  */
+let inForce: AgentCapSource | null = null;
+
+/** Boot installs the policy; a write installs the operator's new one. */
+export function installLiveAgentCaps(caps: AgentCapSource | null): void {
+  inForce = caps;
+}
+
+/** Test seam: forget the installed policy and return to boot-only policy. */
+export function resetLiveAgentCaps(): void {
+  inForce = null;
+}
+
 export function liveAgentCaps(base: AgentCapSource): AgentCapSource {
-  if (!readLive) return base;
-  try {
-    return readLive() ?? base;
-  } catch {
-    // A reader that throws is a bug in the reader, not a reason to refuse a dispatch:
-    // policy falls back to the boot config and the work proceeds.
-    return base;
-  }
+  return inForce ?? base;
 }
 
 // ─── the view: what the operator sees ─────────────────────────────────────────

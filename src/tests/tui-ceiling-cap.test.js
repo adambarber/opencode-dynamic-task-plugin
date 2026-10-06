@@ -15,15 +15,11 @@
  * silently deleted it under a success toast.
  */
 import { describe, it } from "./support/runner.js";
-import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { CAP_CHOICES, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
-import { FROM_CONFIG } from "../../dist/tui/theme.js";
-import { AGENT_OVERLAY_FILE } from "../../dist/shared/caps.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/props.js";
-import { readAgentOverlay } from "../../dist/shared/caps.js";
-import { capRow } from "./support/limits-screen.js";
+import { FROM_CONFIG } from "../../dist/tui/theme.js";
+import { assert } from "./support/runner.js";
+import { capRow, readOverlay } from "./support/limits-screen.js";
 
 import {
   BASE, backRow, choose, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn,
@@ -106,13 +102,13 @@ describe("the cross-agent total is a cap the operator can set", () => {
       await pressRow(CEILING_LABEL, "the total is a row, so it is reachable at all")(host);
       await choose(host, backRow(host));
       assert.equal(top(host.seen).title, "Task limits", "the list, whose FIRST row is the total it bounds");
-      assert.equal(existsSync(join(directory, AGENT_OVERLAY_FILE)), false,
-        "no overlay was written, so abandoning the picker wrote nothing at all");
+      assert.equal(await readOverlay(directory), null,
+        "no caps were stored, so abandoning the picker wrote nothing at all");
     }));
 
   it("writes the total where the dispatch path reads it", () =>
-    withCeilingWritten((host, directory) => {
-      assert.equal(readAgentOverlay(directory).raw.maxConcurrent, 12,
+    withCeilingWritten(async (host, directory) => {
+      assert.equal((await readOverlay(directory)).maxConcurrent, 12,
         "the overlay states the total, so the next dispatch is judged against it");
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "success" && /total ceiling set to 12/.test(toast.message)),
         "and the operator is told what changed, in the total's own words");
@@ -124,7 +120,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
       // clear it — the same two round trips any cap takes.
       await pressRowOn(host, CEILING_LABEL);
       await choose(host, clearRow(host));
-      assert.equal(readAgentOverlay(directory).raw.maxConcurrent, undefined,
+      assert.equal((await readOverlay(directory)).maxConcurrent, undefined,
         "the key is gone rather than null, so the reader stops treating it as stated");
     }));
 
@@ -139,7 +135,7 @@ describe("the cross-agent total is a cap the operator can set", () => {
       // figure in the title now (`at once 2`), so the whole title is not what to press.
       await pressRowOn(host, capRow(host, "maxConcurrent").title);
       await chooseValue(host, 2);
-      const written = readAgentOverlay(directory).raw;
+      const written = await readOverlay(directory);
       assert.equal(written.maxConcurrent, 12, "the total survives an edit to an agent");
       assert.equal(written.agents.explore.maxConcurrent, 2, "and the agent's own cap is what the edit was for");
     }));

@@ -7,6 +7,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { compareStrings } from "./assertions.js";
 
@@ -50,6 +51,12 @@ export function readSource(file) {
  * nobody can paste into an editor.
  */
 export const siteOf = (file) => path.relative(REPO_ROOT, file);
+
+/** The build output the host imports. Read by tests, never scanned by the lint gate. */
+export const DIST_DIR = path.join(REPO_ROOT, "dist");
+
+/** Whether a path is there. Used to say "the build must have run" rather than throw. */
+export const exists = (file) => existsSync(file);
 
 /**
  * A production source named the way `SHAPE_HOMES` names it — `shared/task-state.ts`.

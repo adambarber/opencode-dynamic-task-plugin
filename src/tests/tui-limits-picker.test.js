@@ -123,7 +123,7 @@ describe("the picker is the host's own list of values, and a way to leave it", (
       assert.equal(rows.at(-1), BACK_LABEL,
         "the way out is the LAST row, below the values: a navigation row sitting above ten numbers reads as a value, and the host replaces the screen under a press");
       await backToCaps(host, "explore", "and it lands on the agent's own two caps, one level up");
-      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 2 } } },
+      assert.deepEqual(await readOverlay(directory), { agents: { explore: { maxConcurrent: 2 } } },
         "the overlay is untouched — abandoning a picker is not an edit");
       assert.equal(host.seen.toasts.length, 0, "and nothing is announced about a change that did not happen");
     }));

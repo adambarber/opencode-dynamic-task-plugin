@@ -13,40 +13,62 @@ import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import {
-  AGENT_OVERLAY_FILE,
   agentKey,
   agentOccupancy,
   applyAgentOverlay,
   checkAgentCapacity,
   installLiveAgentCaps,
   liveAgentCaps,
-  readAgentOverlay,
   readAgentOverlayCaps,
   resetLiveAgentCaps,
   resolveAgentCaps,
   retiredLaneOverlayPath,
   retiredOverlayPresent,
 } from "../../dist/shared/caps.js";
+import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { resolveAdmission } from "../../dist/shared/admission.js";
 import { toAgentRecords } from "../../dist/shared/agent-record.js";
 import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
+import { overlayChannel } from "./support/overlay-channel.js";
 
-// A project directory with an overlay in it, and the wiring production's boot
-// does — so a case cannot pass by reading policy from somewhere the plugin never
-// reads it.
-function projectWith(overlay) {
+/**
+ * A project whose caps live in the HOST'S TABLE, the way they do now, and the wiring
+ * boot does: the document is read through the store and applied over the config. A case
+ * cannot pass by seeding policy somewhere the plugin never reads it from.
+ */
+async function projectWith(overlay) {
   const dir = tempProject();
-  if (overlay !== undefined) {
-    writeFileSync(path.join(dir, AGENT_OVERLAY_FILE), typeof overlay === "string" ? overlay : JSON.stringify(overlay));
-  }
+  if (overlay !== undefined) await channel(dir).seed(overlay);
   return dir;
 }
 
-/** What initPluginState installs, minus the logging: same composition, no client. */
-function live(dir) {
-  installLiveAgentCaps(() => applyAgentOverlay(defaultConfig, readAgentOverlay(dir).raw));
+const channel = (dir) => overlayChannel(dir, defaultConfig);
+
+/**
+ * A document the channel would refuse to write, put in the table anyway.
+ *
+ * The refusal belongs to the payload reader, so the only way to hold a document the
+ * reader rejected is to write the host's table underneath it — which is exactly the
+ * situation a later hand-edited or corrupted row describes.
+ */
+async function storedButRefused(text) {
+  const dir = tempProject();
+  channel(dir).kv.set(overlayKey(dir), text);
+  return live(dir);
+}
+
+/**
+ * Boot's composition, minus the logging: read the store ONCE and install the answer.
+ *
+ * Resolved before installing, because that is what `state.ts:97` does — the policy the
+ * dispatch path reads is a value, not a reader that would have to be a host call on a
+ * path that cannot express one.
+ */
+async function live(dir) {
+  const stored = await channel(dir).read();
+  installLiveAgentCaps(applyAgentOverlay(defaultConfig, stored.caps));
 }
 
 /** A registration for one agent, so a case can say which budget it is spending. */
@@ -77,25 +99,31 @@ function storeRunning(agent, ...ids) {
   return store;
 }
 
-describe("agent overlay: the file", () => {
+describe("agent overlay: what the store holds", () => {
   beforeEach(resetLiveAgentCaps);
 
-  it("lives beside the ledger, in the directory the host provides", () => {
-    assert.strictEqual(
-      path.join("/repo", AGENT_OVERLAY_FILE),
-      path.join("/repo", AGENT_OVERLAY_FILE),
-      "the overlay is resolved from the host's project directory, never the process CWD",
-    );
+  it("is keyed by the directory the host reports, never the process CWD", () => {
+    const one = tempProject();
+    const two = tempProject();
+    assert.notEqual(overlayKey(one), overlayKey(two), "two projects are two documents");
+    assert.equal(overlayKey(one), overlayKey(one), "one project is one document");
   });
 
-  it("an absent file is not a problem — it is the normal case", () => {
-    assert.deepStrictEqual(readAgentOverlay(tempProject()), { problem: null, raw: null });
+  it("an absent document is not a problem — it is the normal case", async () => {
+    assert.deepStrictEqual(await channel(tempProject()).read(), { caps: null, present: false, problem: null });
   });
 
-  it("reports WHY a file was unusable rather than failing silently", () => {
-    assert.match(readAgentOverlay(projectWith("{ not json")).problem, /not valid JSON/);
+  it("reports WHY a stored document was unusable rather than failing silently", async () => {
     assert.strictEqual(applyAgentOverlay(defaultConfig, [1, 2]), null, "an array is not an overlay");
     assert.strictEqual(applyAgentOverlay(defaultConfig, { agents: 7 }), null, "`agents` must be an object");
+    // Written into the table directly, because the refusal has to happen BELOW the
+    // payload reader: a document the table holds that no longer parses is the case, and
+    // only the table can produce one.
+    const dir = tempProject();
+    channel(dir).kv.set(overlayKey(dir), "{ truncated");
+    const read = await channel(dir).read();
+    assert.equal(read.caps, null, "an unreadable document states no caps");
+    assert.ok(read.problem, "and it SAYS so, rather than reading as a project with no caps");
   });
 
   it("an overlay that names no cap is the same as no overlay", () => {
@@ -103,18 +131,18 @@ describe("agent overlay: the file", () => {
     assert.strictEqual(applyAgentOverlay(defaultConfig, { agents: {} }), null);
   });
 
-  it("a RETIRED lane file is reported, never read", () => {
+  it("a RETIRED lane file is reported, never read", async () => {
     // The file this feature replaced. Reporting rather than reading is the point:
     // its keys were operator-invented lane names, and a map from lane to agent is
     // exactly what was deleted, so any mapping would be a guess the plugin cannot
     // justify. Silence would leave an operator whose cap worked yesterday watching it
     // not apply, with no way to tell that from a mis-set number.
-    const dir = projectWith(undefined);
+    const dir = await projectWith(undefined);
     assert.strictEqual(retiredOverlayPresent(dir), false, "a project that never had lanes is clean");
     writeFileSync(retiredLaneOverlayPath(dir), JSON.stringify({ lanes: { build: bothCaps(3, 2) } }));
     assert.strictEqual(retiredOverlayPresent(dir), true, "the leftover is detectable");
     // And it changes nothing: the live policy is the base config, untouched.
-    live(dir);
+    await live(dir);
     assert.strictEqual(liveAgentCaps(defaultConfig), defaultConfig, "a retired file is not policy");
   });
 });
@@ -345,7 +373,7 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     assert.strictEqual(liveAgentCaps(defaultConfig), defaultConfig);
   });
 
-  it("a raised cap admits a dispatch the boot cap refused", () => {
+  it("a raised cap admits a dispatch the boot cap refused", async () => {
     // Both directions matter and only one of them is safe by accident: a cap that
     // is RAISED looks like it worked if the boot cap simply had room. So the boot
     // cap here is one, the slot is taken, and the overlay is the only thing that
@@ -354,16 +382,16 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     assert.throws(() => registerActiveTask(store, registration("ses_refused"), bootCap),
       /cannot run more than 1 active task/, "the boot cap refuses this before the overlay exists");
 
-    live(projectWith({ maxConcurrent: 5 }));
+    await live(await projectWith({ agents: { general: { maxConcurrent: 5 } } }));
     registerActiveTask(store, registration("ses_c"), bootCap);
     assert.ok(store.activeTasks.has("ses_c"), "a raised cap is a raised cap");
   });
 
-  it("a PER-AGENT cap refuses only that agent, and the refusal names it", () => {
+  it("a PER-AGENT cap refuses only that agent, and the refusal names it", async () => {
     // The whole point of keying by agent: a cap on `explore` must not spend `general`'s
     // budget, which is what a single shared pool made impossible to express.
     const store = createTaskStore();
-    live(projectWith({ agents: { explore: { maxConcurrent: 1 } } }));
+    await live(await projectWith({ agents: { explore: { maxConcurrent: 1 } } }));
     registerActiveTask(store, registration("ses_a", "explore"), defaultConfig);
     assert.throws(
       () => registerActiveTask(store, registration("ses_b", "explore"), defaultConfig),
@@ -373,14 +401,14 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     assert.ok(store.activeTasks.has("ses_c"), "another agent's cap is not this one's ceiling");
   });
 
-  it("depth is judged against the DISPATCHING agent's cap, live", () => {
+  it("depth is judged against the DISPATCHING agent's cap, live", async () => {
     // The per-agent depth cap is a PLACEMENT limit, and the reason it is only
     // meaningful is that it is scoped: read against a global number, every row would
     // claim to apply to every row and the screen would be a lie in six places.
     // `maxDepth: 1` counts TOTAL generations, so it admits a direct child and refuses
     // a grandchild — which is the whole meaning of a per-agent depth as a placement
     // limit: `explore` may be sent work, and may not be sent work that itself has work.
-    live(projectWith({ agents: { explore: { maxDepth: 1 } } }));
+    await live(await projectWith({ agents: { explore: { maxDepth: 1 } } }));
     assert.strictEqual(resolveAdmission(toAgentRecords([{ name: "explore" }]), "explore", [], defaultConfig).ok, true,
       "a depth of 1 admits a direct child");
     const refusal = resolveAdmission(toAgentRecords([{ name: "explore" }]), "explore", ["general"], defaultConfig);
@@ -391,7 +419,7 @@ describe("agent overlay: a cap takes effect without a restart", () => {
       "a depth cap on one agent does not spend another's");
   });
 
-  it("a revived task re-claims against the LIVE cap, not the one frozen at boot", () => {
+  it("a revived task re-claims against the LIVE cap, not the one frozen at boot", async () => {
     // The inconsistency this pins: a revival is a claim on a slot, and judging it
     // against the boot cap means raising a cap in the UI does nothing for the one
     // action an operator reaches for when a fleet is full.
@@ -399,20 +427,20 @@ describe("agent overlay: a cap takes effect without a restart", () => {
     assert.throws(() => reviveRetainedTask(store, "ses_settled", bootCap), /cannot run more than 1 active task/,
       "the boot cap is what refuses this before the overlay exists");
 
-    live(projectWith({ maxConcurrent: 4 }));
+    await live(await projectWith({ agents: { general: { maxConcurrent: 4 } } }));
     const revived = reviveRetainedTask(store, "ses_settled", bootCap);
     assert.strictEqual(revived.childSessionId, "ses_settled", "the live cap freed the slot the boot cap held shut");
   });
 
-  // One claim, two ways to break the reader. A policy source that cannot be read
-  // must not become a dispatch refusal: the boot config answers, and the work
+  // One claim, two ways the stored document can be unusable. A policy that cannot be
+  // read must not become a dispatch refusal: the boot config answers, and the work
   // proceeds under caps the operator can see in their own config file.
   for (const [name, breakIt] of [
-    ["an overlay that is not valid JSON", () => live(projectWith("{ truncated"))],
-    ["a reader that throws", () => installLiveAgentCaps(() => { throw new Error("the overlay reader is broken"); })],
+    ["a document that is not valid JSON", () => storedButRefused("{ truncated")],
+    ["a document that is not an overlay at all", () => storedButRefused("[1, 2]")],
   ]) {
-    it(`${String(name)} degrades to the boot config rather than refusing work`, () => {
-      breakIt();
+    it(`${String(name)} degrades to the boot config rather than refusing work`, async () => {
+      await breakIt();
       assert.strictEqual(liveAgentCaps(defaultConfig), defaultConfig, "the boot config is the answer");
       const store = createTaskStore();
       registerActiveTask(store, registration("ses_a"), defaultConfig);

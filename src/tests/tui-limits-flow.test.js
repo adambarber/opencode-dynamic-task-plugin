@@ -10,12 +10,11 @@ import { CAP_LABEL } from "../../dist/tui/agent-editor.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
 import { assert, describe, it } from "./support/runner.js";
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
-import { chmodSync } from "node:fs";
 
 describe("the flow, end to end on disk", () => {
   it("a chosen cap lands in the overlay the dispatch path reads", () =>
-    withPickerOpen(havingWritten((host) => chooseValue(host, 4))((host, directory) => {
-      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4 } } },
+    withPickerOpen(havingWritten((host) => chooseValue(host, 4))(async (host, directory) => {
+      assert.deepEqual(await readOverlay(directory), { agents: { explore: { maxConcurrent: 4 } } },
         "the value the row promised is the value on disk");
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "success" && /next dispatch/.test(toast.message)),
         "and the operator is told it takes effect on the next dispatch, which is all it claims");
@@ -50,7 +49,7 @@ describe("the flow, end to end on disk", () => {
       await choose(host, capRow(host, "maxDepth"));
       assert.equal(top(host.seen).title, `explore — ${CAP_LABEL.maxDepth} (${FROM_CONFIG})`, "the OTHER cap of the same agent, and the file still holding its number");
       await choose(host, valueRow(host, 3));
-      assert.deepEqual(readOverlay(directory), { agents: { explore: { maxConcurrent: 4, maxDepth: 3 } } },
+      assert.deepEqual(await readOverlay(directory), { agents: { explore: { maxConcurrent: 4, maxDepth: 3 } } },
         "the cap set first survives the second, which is the whole claim");
     })));
 
@@ -77,23 +76,23 @@ describe("the flow, end to end on disk", () => {
     // experiment — the two ways an overlay rots.
     withPickerOpen(async (host, directory) => {
       await choose(host, clearRow(host));
-      assert.deepEqual(readOverlay(directory), { agents: {} },
+      assert.deepEqual(await readOverlay(directory), { agents: {} },
         "an absent key and a zero are different statements, and only one of them means 'no cap'");
     }));
 
   it("a write that fails says so and confirms nothing, rather than reporting a cap that was not applied", () =>
-    withPickerOpen(async (host, directory) => {
-      // A read-only directory: the overlay's temp-then-rename has nowhere to land.
-      chmodSync(directory, 0o500);
-      try {
-        await choose(host, valueRow(host, 4));
-        assert.ok(!host.seen.toasts.some((toast) => toast.variant === "success"),
-          "a refused write must not be confirmed as a cap in force");
-        assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
-          "and the operator is told the file could not be written");
-      } finally {
-        chmodSync(directory, 0o700);
-      }
+    // The host's table refuses the write and answers every read, which is the shape an
+    // operator meets when the store is full — and the shape a read-only directory used
+    // to fake, before the overlay stopped being a file.
+    withPickerOpen(async (host, _directory, channel) => {
+      // Armed here, not at boot: the seed is a write too, and a refused seed would open
+      // a screen that never had caps on it.
+      channel.arm("storageWriteThrows");
+      await choose(host, valueRow(host, 4));
+      assert.ok(!host.seen.toasts.some((toast) => toast.variant === "success"),
+        "a refused write must not be confirmed as a cap in force");
+      assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
+        "and the operator is told the caps could not be written");
     }));
 
   it("the figure on a row is the operator's number", () =>

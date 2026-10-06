@@ -11,7 +11,11 @@ import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
 import { createLedgerStore } from "../shared/ledger-storage.js";
 import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
-import { agentOverlayPath, applyAgentOverlay, installLiveAgentCaps, readAgentOverlay, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
+import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
+import { createOverlayStore } from "../shared/overlay-store.js";
+import type { OverlayHandlers } from "../shared/overlay-rpc.js";
+import { readOverlayWrite } from "../shared/overlay-rpc.js";
+import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
 import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 import {
@@ -29,6 +33,71 @@ import { configureDebugRoot, debugLog } from "../debug-logger.js";
 export interface PluginState {
   store: TaskStore;
   config: DynamicTaskConfig;
+  /** The operator's caps, as the TUI reaches them. See `overlayHandlers`. */
+  overlay: OverlayStore;
+}
+
+/**
+ * The caps an operator stated, installed for this process — and the two things that
+ * could have gone wrong with them, said out loud.
+ *
+ * Reported here and not per decision: a cap decision happens deep in the store, on
+ * every spawn, so a warning there would be noise nobody could read. This is the one
+ * moment a store exists, which makes it the only moment the problem can be said once
+ * and be seen.
+ */
+function installOverlayPolicy(config: DynamicTaskConfig, directory: string, read: OverlayRead): void {
+  if (read.problem !== null) {
+    void safeLog("warn", `Dynamic task plugin: ${read.problem}. The config file's caps are in force.`);
+    debugLog("plugin", "agents", "agent-overlay-ignored", { reason: read.problem });
+  }
+  // The overlay this one replaced, named rather than ignored. Deleting a thing the
+  // plugin used to read is the kind of change that looks like a bug from the outside:
+  // an operator who had a cap working last week finds it silently not applying, and
+  // the only way to tell that from a mis-set number is to be told. Silently reading it
+  // is the alternative, and it is wrong in a way that cannot be undone — a lane file's
+  // entries are agent names, so they would re-apply caps under keys nobody wrote.
+  if (retiredOverlayPresent(directory)) {
+    void safeLog("warn", `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
+      "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.");
+    debugLog("plugin", "agents", "retired-lane-overlay", { path: retiredLaneOverlayPath(directory) });
+  }
+  installLiveAgentCaps(applyAgentOverlay(config, read.caps));
+}
+
+/**
+ * The overlay's RPC, as handlers.
+ *
+ * The write is the one place a new policy is installed, and it installs it HERE
+ * rather than leaving the next boot to find it — the caller's process is the only one
+ * that can be sure the value it just stored is the value it will judge against. Then
+ * the event, so a second window in this project stops showing caps that are no longer
+ * in force.
+ */
+export function overlayHandlers(
+  store: OverlayStore,
+  config: DynamicTaskConfig,
+  directory: string,
+): OverlayHandlers {
+  return {
+    read: async () => store.read(),
+    write: async (input, context) => {
+      // Validated HERE, where the host's `unknown` arrives, and never stored on the
+      // strength of the caller's own copy: a document half-understood would be caps the
+      // operator never wrote, and the next read would show them something else.
+      const overlay = readOverlayWrite(input);
+      if (overlay === null) {
+        return context.error("not_writable", "that is not a set of caps, so nothing was changed", { reason: "not an overlay" });
+      }
+      if (!(await store.write(overlay))) {
+        return context.error("not_writable", "the caps could not be stored, so nothing was changed", { reason: "not stored" });
+      }
+      // Re-read rather than applying what was sent: what was STORED is what the
+      // dispatch path will read, and the caps reader is what says what it means.
+      installOverlayPolicy(config, directory, await store.read());
+      return { confirmed: true };
+    },
+  };
 }
 
 /**
@@ -77,9 +146,9 @@ function releaseWaitsForSettled(host: OpaqueHost, store: TaskStore, changes: rea
 }
 
 export async function initPluginState(directory: string, options: PluginOptions | undefined, host: OpaqueHost): Promise<PluginState> {
-  // The file's own caps, over the defaults, over env — by the ONE reader the TUI also
-  // calls, so the screen an operator reads and the policy a dispatch is judged against
-  // cannot be derived from two different files.
+  // The config file's own caps, over the defaults, over env — read ONCE and applied
+  // through the ONE overlay reader, so the screen an operator reads and the policy a
+  // dispatch is judged against cannot come from two different places.
   const config = readDynamicTaskPolicy(directory, options ?? null);
   const store = createTaskStore();
 
@@ -87,37 +156,21 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // root as the config file above) — never the process CWD, which for
   // tests and multi-project hosts is somebody else's tree.
   configureDebugRoot(directory);
-  installLiveAgentCaps(() => {
-    const { raw, problem } = readAgentOverlay(directory);
-    // Reported once, at the one moment a client exists. The per-dispatch read is
-    // silent by design (a log line on every refusal would be noise), so without
-    // this a mangled overlay would simply never apply and the operator would see
-    // the old cap with no explanation anywhere.
-    if (problem !== null) {
-      void safeLog("warn", `Dynamic task plugin: ignoring the agent overlay at ${agentOverlayPath(directory)} — ${problem}. The config file's caps are in force.`);
-      debugLog("plugin", "agents", "agent-overlay-ignored", { path: agentOverlayPath(directory), reason: problem });
-    }
-    // The overlay this one replaced, named rather than ignored. Deleting a file the
-    // plugin used to read is the kind of change that looks like a bug from the
-    // outside: an operator who had a cap working last week finds it silently not
-    // applying, and the only way to tell that from a mis-set number is to be told.
-    // Silently reading it is the alternative, and it is wrong in a way that cannot
-    // be undone — a lane file whose entries are agent names would re-apply caps
-    // under a key the operator never wrote, and the map from lane to agent is
-    // exactly the thing that was deleted.
-    if (retiredOverlayPresent(directory)) {
-      void safeLog("warn", `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
-        "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.");
-      debugLog("plugin", "agents", "retired-lane-overlay", { path: retiredLaneOverlayPath(directory) });
-    }
-    return applyAgentOverlay(config, raw);
-  });
 
   // Durable state is the host's own per-key storage, so the boot is a READ rather
   // than a file open — and `initPluginState` is async because of it. Nothing below
   // this line may still be waiting on a filesystem.
-  const ledger = createLedgerStore(createStateFacade(createStore(host, reportRefusal)));
+  const facade = createStateFacade(createStore(host, reportRefusal));
+  const ledger = createLedgerStore(facade);
   const read = await ledger.load();
+
+  // The operator's caps come out of the same store, and are installed as a VALUE: a
+  // cap decision is made on the dispatch path, where a bounded host read has no way
+  // to say "the host did not answer" without either refusing the dispatch or judging
+  // it against the wrong numbers. So the read happens here, once, and a later edit
+  // arrives because the RPC write path installs the new policy in this process.
+  const overlay = createOverlayStore(facade, directory);
+  installOverlayPolicy(config, directory, await overlay.read());
 
   // Records the host held that were not records, and a read the host never answered.
   // Both are reported, and neither is allowed to sound like the ordinary case: a
@@ -180,7 +233,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // turn, so a queue is paid in batches rather than all at once.
   redeliverOwedNotifications(host, config.pendingMaxAttempts, config.maxConcurrent);
 
-  return { config, store };
+  return { config, overlay, store };
 }
 
 // One pass, at boot, over the tasks the last process left running — the

@@ -13,16 +13,18 @@
  * value, and a test that hard-codes a cap name is a hand-kept mirror of a
  * vocabulary it does not own.
  */
-import { describe, it } from "./support/runner.js";
-import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
-import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlay, readAgentOverlayCaps, writeAgentOverlay } from "../../dist/shared/caps.js";
+import { assert, describe, it } from "./support/runner.js";
+import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlayCaps } from "../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
+import { overlayChannel } from "./support/overlay-channel.js";
 import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
 import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
 
 const BASE = normalizeDynamicTaskConfig(null);
+
+/** One project's caps channel, over the config the dialog writes against. */
+const channel = (directory) => overlayChannel(directory, BASE);
 
 /** The dialog's current state, the way the renderer sees it. */
 function view(raw, agentNames) {
@@ -75,10 +77,10 @@ function survivesRoundTrip(cap, value) {
   assert.equal(read.agents.explore[cap], value, "and the value is the value that was chosen");
 }
 
-/** The caps the dispatch path would actually run with, from what was written. */
-function inForce(directory) {
-  const applied = applyAgentOverlay(BASE, readAgentOverlay(directory).raw);
-  assert.ok(applied !== null, "what was written is something the dispatch path can use");
+/** The caps the dispatch path would actually run with, from what was stored. */
+function inForce(caps) {
+  const applied = applyAgentOverlay(BASE, caps);
+  assert.ok(applied !== null, "what was stored is something the dispatch path can use");
   return applied;
 }
 
@@ -347,7 +349,7 @@ describe("an answer that cannot be used changes nothing", () => {
 
 describe("what the dialog writes is what the dispatch path runs with", () => {
   it("round-trips: the caps shown are the caps in force after a write", async () => {
-    await withTempDir((directory) => {
+    await withTempDir(async (directory) => {
       // Two edits, because there are two caps — which is the point of one row carrying
       // both. The overlay is re-read between them, because that is what the renderer
       // does: it re-opens the list after a write so the row shows what was WRITTEN.
@@ -357,20 +359,22 @@ describe("what the dialog writes is what the dispatch path runs with", () => {
       assert.equal(first.kind, "written");
       const second = applyCapEdit(first.overlay, "explore", { cap: "maxDepth", value: 3 });
       assert.equal(second.kind, "written");
-      writeAgentOverlay(directory, second.overlay);
-      assert.deepEqual(inForce(directory).agents.explore, bothCaps(2, 3),
+      await channel(directory).seed(second.overlay);
+      assert.deepEqual(inForce((await channel(directory).read()).caps).agents.explore, bothCaps(2, 3),
         "the same numbers the dialog displayed, arrived at by the server's own reader");
     });
   });
 
-  it("a write is whole: a reader that arrives mid-write sees the old file or the new one, never half of one", async () => {
-    // The atomicity is a property of rename, so the observable claim is that the
-    // temp file never shares the target's name — two live opencode instances in
-    // one repo would otherwise truncate each other's in-progress write.
-    await withTempDir((directory) => {
-      writeAgentOverlay(directory, { agents: { explore: { maxConcurrent: 2 } } });
-      const leftovers = readdirSync(directory).filter((name) => name.endsWith(".tmp"));
-      assert.deepEqual(leftovers, [], "a completed write leaves no temp file behind");
+  it("a write is whole: the second write REPLACES the document, so one cap is never half of another", async () => {
+    // Whole-write is what the dialog's own loop depends on: it re-opens the list after
+    // writing, so what it renders is what it read back. A merging write would let a
+    // second cap land against a first one the reader never returned.
+    await withTempDir(async (directory) => {
+      const store = channel(directory);
+      await store.seed({ agents: { explore: bothCaps(2, 3) } });
+      await store.seed({ agents: { explore: { maxDepth: 3 } } });
+      assert.deepEqual(inForce((await store.read()).caps).agents.explore, { maxDepth: 3 },
+        "the document now holds the second write alone");
     });
   });
 });
@@ -432,11 +436,11 @@ describe("an overlay whose shapes are wrong in ways the reader must survive", ()
       "a body that is not an object states no cap, so the config's own applies");
   });
 
-  it("an absent file states no problem, so the list is the host's agents and says nothing about the file", () => {
+  it("an absent document states no problem, so the list is the host's agents and mentions nothing else", async () => {
     // The row set is the FIRST case in this file, and this is the same claim from the
-    // reader's side: a file that is not there is the normal case, and a reader that
-    // reported it as one would have every operator chasing a file they never made.
-    assert.equal(readAgentOverlay(tempProject()).problem, null, "absent is not a problem");
+    // reader's side: a document that is not there is the normal case, and a reader that
+    // reported it as one would have every operator chasing caps they never set.
+    assert.equal((await channel(tempProject()).read()).problem, null, "absent is not a problem");
   });
 });
 

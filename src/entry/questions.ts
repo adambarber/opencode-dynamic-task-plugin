@@ -60,28 +60,36 @@ export async function handleAskEvent(
   const task = findTask(store, sessionId);
 
   if (task?.state === TaskState.Active) {
-    const active = task;
-    const reason = decideAsk("active");
-    // The gate just refused the child — nobody can answer, and the child knows it.
-    // The plugin knows it too, so the refusal IS the needs_input declaration, routed
-    // through the one claim funnel the child's own task_notify would have used.
-    // Without this the block was visible only in text the child never receives: a
-    // child that ended its turn without re-declaring settled as a success.
-    //
-    // The claim IS the reason, with no wrapper: a preamble saying what the reason
-    // already says only pushes the parent's remedy further out.
-    annotateNotice(store, sessionId, reason, NoticeClaim.NeedsInput);
-    await reportRefusal(host, ask, active, "ask-auto", reason);
-    return true;
-  }
-
-  if (task !== null) {
+    await annotateActiveRefusal(host, store, ask, task);
+  } else if (task !== null) {
     // A settled child cannot answer its own ask, and its answer would be worthless
     // anyway — so the ask is closed rather than left open.
     await reportRefusal(host, ask, task, "ask-retained", decideAsk("retained"));
-    return true;
+  } else {
+    debugLog("unknown", "unknown", "ask-unmatched", { askId, type: eventType });
   }
-
-  debugLog("unknown", "unknown", "ask-unmatched", { askId, type: eventType });
+  // Every disposition ends here: the ask was ours, and all three have consumed it.
   return true;
+}
+
+/**
+ * The gate just refused the child, so nobody can answer and the child knows it.
+ *
+ * The plugin knows it too, so the refusal IS the needs_input declaration, routed
+ * through the one claim funnel the child's own task_notify would have used. Without
+ * this the block was visible only in text the child never receives: a child that
+ * ended its turn without re-declaring settled as a success.
+ *
+ * The claim IS the reason, with no wrapper: a preamble saying what the reason
+ * already says only pushes the parent's remedy further out.
+ */
+async function annotateActiveRefusal(
+  host: OpaqueHost,
+  store: TaskStore,
+  ask: { askId: string; sessionId: string },
+  active: Pick<TaskIdentity, "parentSessionId">,
+): Promise<void> {
+  const reason = decideAsk("active");
+  annotateNotice(store, ask.sessionId, reason, NoticeClaim.NeedsInput);
+  await reportRefusal(host, ask, active, "ask-auto", reason);
 }

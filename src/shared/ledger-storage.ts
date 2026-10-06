@@ -117,6 +117,18 @@ export interface LedgerStore {
 }
 
 /**
+ * The child a key names, or null when the record disagrees with its own key. The
+ * key is canonical identity here exactly as it was on disk: a record filed under
+ * someone else's name is corrupt, not merely mislabelled, and admitting it would
+ * restore one child under another's id.
+ */
+function childOf(prefix: string, key: string, childSessionId: string): string | null {
+  return key.startsWith(`${prefix}/`) && key.slice(prefix.length + 1) === childSessionId
+    ? childSessionId
+    : null;
+}
+
+/**
  * The ledger, over a validated facade. Refusals are NOT reported here: the store
  * underneath already reports every read and every write it refuses, and a second
  * reporter would put the same loss on two channels with two different wordings.
@@ -127,18 +139,6 @@ export function createLedgerStore(facade: StateFacade): LedgerStore {
   let clock = Date.now();
 
   const readAll = async <T>(prefix: string, guard: (value: unknown) => value is T): Promise<Read<T>> => facade.readAll(prefix, guard);
-
-  /**
-   * The child a key names, or null when the record disagrees with its own key. The
-   * key is canonical identity here exactly as it was on disk: a record filed under
-   * someone else's name is corrupt, not merely mislabelled, and admitting it would
-   * restore one child under another's id.
-   */
-  function childOf(prefix: string, key: string, childSessionId: string): string | null {
-    return key.startsWith(`${prefix}/`) && key.slice(prefix.length + 1) === childSessionId
-      ? childSessionId
-      : null;
-  }
 
   return {
     load: async () => {

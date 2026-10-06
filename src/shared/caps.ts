@@ -364,26 +364,35 @@ function readOverlayAgents(raw: unknown): OverlayAgents & { usable: boolean } {
   if (rawAgents === undefined) return empty;
   if (!isPlainRecord(rawAgents)) return { ...empty, usable: false };
 
-  const agents: Record<string, AgentCaps> = {};
-  const dropped: Record<string, string[]> = {};
+  const filed: { agents: Record<string, AgentCaps>; dropped: Record<string, string[]> } = { agents: {}, dropped: {} };
   for (const [name, entry] of Object.entries(rawAgents)) {
     const key = agentKey(name);
-    if (key) {
-      const caps = readAgentCapBody(entry);
-      const ignored = unusableCapNames(entry);
-      const honoured = AGENT_CAP_NAMES.some((field) => caps[field] !== undefined);
-      // A named agent with nothing left to honour is dropped LOUDLY: it said something
-      // the reader cannot use, and vanishing quietly leaves a screen where the operator's
-      // agent is simply not capped.
-      if (honoured) {
-        agents[key] = caps;
-        if (ignored.length > 0) dropped[key] = ignored;
-      } else {
-        dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
-      }
-    }
+    if (key) fileOneAgent(key, entry, filed);
   }
-  return { agents, dropped, usable: true };
+  return { agents: filed.agents, dropped: filed.dropped, usable: true };
+}
+
+/**
+ * One named agent from the overlay, placed into the honoured map or the dropped one.
+ *
+ * A named agent with nothing left to honour is dropped LOUDLY: it said something the
+ * reader cannot use, and vanishing quietly leaves a screen where the operator's agent
+ * is simply not capped.
+ */
+function fileOneAgent(
+  key: string,
+  entry: unknown,
+  filed: { agents: Record<string, AgentCaps>; dropped: Record<string, string[]> },
+): void {
+  const caps = readAgentCapBody(entry);
+  const ignored = unusableCapNames(entry);
+  const honoured = AGENT_CAP_NAMES.some((field) => caps[field] !== undefined);
+  if (!honoured) {
+    filed.dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
+    return;
+  }
+  filed.agents[key] = caps;
+  if (ignored.length > 0) filed.dropped[key] = ignored;
 }
 
 /**

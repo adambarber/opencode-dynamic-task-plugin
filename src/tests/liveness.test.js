@@ -104,8 +104,11 @@ describe("liveness vocabulary", () => {
 // So every case states its refusal ALONGSIDE the reading it must not collapse
 // into, and the contrast is the test. An assertion that only ever expected the
 // refusal would be satisfied by a function that returned false unconditionally.
+const answering = (value) => opaqueHost({ session: { get: async () => value } });
+const refusing = (error) => opaqueHost({ session: { get: async () => { throw error; } } });
+const notFound = () => Object.assign(new Error("nope"), { cause: { status: 404 }, reason: NOT_FOUND_REASON });
+
 describe("liveness: what the host did not say is not a reading", () => {
-  const answering = (value) => opaqueHost({ session: { get: async () => value } });
 
   it("reports the channel's silence as silence, not as an open turn", async () => {
     // The channel is DOWN. A parent-write gate that read this as "busy" would defer
@@ -131,9 +134,6 @@ describe("liveness: what the host did not say is not a reading", () => {
     // server refused and whose cause carries the status. The v1 spelling — a named
     // error, or a status at the top level — is what the previous reader looked for,
     // and a v2 host produces neither, so every lost child read as merely unread.
-    const refusing = (error) => opaqueHost({ session: { get: async () => { throw error; } } });
-    const notFound = () => Object.assign(new Error("nope"), { cause: { status: 404 }, reason: NOT_FOUND_REASON });
-
     const missing = await readSessionPresence(refusing(notFound()), "ses_x");
     assert.strictEqual(missing.existence, SessionExistence.Missing, "a 404 on the cause is a missing session");
     assert.strictEqual(missing.statusAnswered, true, "the host answered — it answered 'no such session'");

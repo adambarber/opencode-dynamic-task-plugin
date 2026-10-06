@@ -57,11 +57,14 @@ export interface OverlayRead {
   problem: string | null;
 }
 
+/**
+ * The guard sees the PARSED value, not the stored text: the facade parses a string
+ * record before it is offered to a guard, so a guard written for the raw text would
+ * reject every document the plugin itself wrote.
+ */
+const isDocument = (value: unknown): value is Record<string, unknown> => isPlainRecord(value);
+
 export function createOverlayStore(facade: StateFacade, directory: string): OverlayStore {
-  // The guard sees the PARSED value, not the stored text: the facade parses a string
-  // record before it is offered to a guard, so a guard written for the raw text would
-  // reject every document the plugin itself wrote.
-  const isDocument = (value: unknown): value is Record<string, unknown> => isPlainRecord(value);
   return {
     read: async () => {
       const found: One<Record<string, unknown>> = await facade.readOne(overlayKey(directory), isDocument);

@@ -39,26 +39,29 @@ export interface OverlayChannel {
 /**
  * The channel, built from the TUI host's own client.
  *
- * `context.client` is the same client the server plugin's RPC is reached through, so
- * the call carries this window's location — which is why no method takes a directory
- * and why a dialog cannot reach another project's caps.
+ * `context.client` is the same client the server plugin's RPC is reached through. The
+ * window's location travels explicitly in the options on every call: the TUI client does
+ * not attach one, and a bare call resolves to the server's default project instead of
+ * this window's.
  */
 export function overlayChannel(ctx: Plugin.Context): OverlayChannel {
   const client = ctx.client.rpc(OverlayRpc);
+  const directory = ctx.location?.directory;
+  const options = directory === undefined ? {} : { location: { directory } };
   return {
     // Same shape as the write below, for the same reason: the caller cannot tell a
     // refusal from a crash unless both arrive as values, and one of the two used to
     // arrive as a rejection with nowhere to go.
     read: async () => {
       try {
-        return { read: readOverlayPayload(await client.read({})) };
+        return { read: readOverlayPayload(await client.read({}, options)) };
       } catch (error: unknown) {
         return { problem: readRefusal(error) };
       }
     },
     write: async (caps) => {
       try {
-        await client.write({ caps });
+        await client.write({ caps }, options);
         return { written: true };
       } catch (error: unknown) {
         // `unknown` because the route failing and the server refusing are different

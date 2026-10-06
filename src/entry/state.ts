@@ -16,6 +16,7 @@ import {
 } from "../shared/notify.js";
 import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
+import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
@@ -30,7 +31,6 @@ import { createOverlayStore } from "../shared/overlay-store.js";
 import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
-import { readOverlayWrite } from "../shared/overlay-rpc.js";
 
 //jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)
@@ -89,7 +89,7 @@ export function overlayHandlers(
   directory: string,
 ): OverlayHandlers {
   return {
-    read: async () => store.read(),
+    read: async () => readWirePayload(await store.read()),
     write: async (input, context) => {
       // Validated HERE, where the host's `unknown` arrives, and never stored on the
       // strength of the caller's own copy: a document half-understood would be caps the

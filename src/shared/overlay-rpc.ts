@@ -88,6 +88,23 @@ export const OverlayRpc = {
 } satisfies PortableDefinition;
 
 /**
+ * The read payload as the host will ACCEPT it.
+ *
+ * The store's `OverlayRead` spells "absent" and "unreadable" with explicit nulls, but
+ * the declared output schema names `caps` as an object and `problem` as a string — and
+ * the host rejects a payload that breaks the schema rather than passing it on. So the
+ * wire shape states only what is there: a null field would fail validation and lose
+ * the whole answer, including the `present` that says a project has caps at all.
+ */
+export function readWirePayload(read: OverlayRead): Record<string, unknown> {
+  return {
+    ...(read.caps === null ? {} : { caps: read.caps }),
+    present: read.present,
+    ...(read.problem === null ? {} : { problem: read.problem }),
+  };
+}
+
+/**
  * The read payload, narrowed into the ONE shape "the overlay, as found" has.
  *
  * `unknown` is what the host's JSON Schema gives us, so every caller of `read` gets

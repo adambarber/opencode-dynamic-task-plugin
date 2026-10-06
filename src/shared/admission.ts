@@ -290,7 +290,8 @@ export function buildAgentList(agents: AgentRecord[]): string {
 }
 
 export async function fetchAgents<C extends AgentCaller>(host: AgentLister<C>, cacheTtlMs: number = CACHE_TTL): Promise<AgentRecord[]> {
-  return (await fetchAgentListing(host, cacheTtlMs)).agents;
+  const listing = await fetchAgentListing(host, cacheTtlMs);
+  return listing.agents;
 }
 
 /**

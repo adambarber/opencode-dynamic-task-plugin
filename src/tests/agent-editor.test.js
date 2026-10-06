@@ -360,7 +360,8 @@ describe("what the dialog writes is what the dispatch path runs with", () => {
       const second = applyCapEdit(first.overlay, "explore", { cap: "maxDepth", value: 3 });
       assert.equal(second.kind, "written");
       await channel(directory).seed(second.overlay);
-      assert.deepEqual(inForce((await channel(directory).read()).caps).agents.explore, bothCaps(2, 3),
+      const reread = await channel(directory).read();
+      assert.deepEqual(inForce(reread.caps).agents.explore, bothCaps(2, 3),
         "the same numbers the dialog displayed, arrived at by the server's own reader");
     });
   });
@@ -373,7 +374,8 @@ describe("what the dialog writes is what the dispatch path runs with", () => {
       const store = channel(directory);
       await store.seed({ agents: { explore: bothCaps(2, 3) } });
       await store.seed({ agents: { explore: { maxDepth: 3 } } });
-      assert.deepEqual(inForce((await store.read()).caps).agents.explore, { maxDepth: 3 },
+      const stored = await store.read();
+      assert.deepEqual(inForce(stored.caps).agents.explore, { maxDepth: 3 },
         "the document now holds the second write alone");
     });
   });
@@ -440,7 +442,8 @@ describe("an overlay whose shapes are wrong in ways the reader must survive", ()
     // The row set is the FIRST case in this file, and this is the same claim from the
     // reader's side: a document that is not there is the normal case, and a reader that
     // reported it as one would have every operator chasing caps they never set.
-    assert.equal((await channel(tempProject()).read()).problem, null, "absent is not a problem");
+    const absent = await channel(tempProject()).read();
+    assert.equal(absent.problem, null, "absent is not a problem");
   });
 });
 

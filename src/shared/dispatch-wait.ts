@@ -14,6 +14,31 @@ import type { DependencyBlock } from "./admission.js";
 import { evictOldest } from "./bounded-map.js";
 
 /**
+ * Whether a wait's edges are all satisfied; otherwise which ones still block it.
+ *
+ * The two answers to one question, kept together so a caller cannot answer "admissible"
+ * and "still blocked" inconsistently.
+ */
+export type Admissibility = { ok: true } | { ok: false; pending: DependencyBlock[] };
+
+/** Whether a child session is still running, asked fresh at the moment of the answer. */
+export type StillRunning = (childSessionId: string) => boolean;
+
+/** Everything needed to close out one wait: the wait, where it lives, and where it goes. */
+interface Settling {
+  store: WaitRegistry;
+  release: WaitRelease;
+  key: string;
+  wait: DependencyWait;
+}
+
+/** The two questions a wait is asked before it is allowed to leave the registry. */
+export interface Judges {
+  isAdmissible: (wait: DependencyWait) => Admissibility;
+  stillRunning: StillRunning;
+}
+
+/**
  * A dispatch the admission gate refused because its dependencies were not
  * ready, held so the plugin can say when the refusal is over.
  *
@@ -99,31 +124,37 @@ export interface WaitRelease {
 export function releaseWaitsFor(
   store: WaitRegistry,
   settledChildSessionId: string,
-  isAdmissible: (wait: DependencyWait) => { ok: true } | { ok: false; pending: DependencyBlock[] },
-  stillRunning: (childSessionId: string) => boolean,
+  judges: Judges,
 ): WaitRelease {
   const release: WaitRelease = { dead: [], ready: [] };
   for (const [key, wait] of store.waits) {
     const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
       edges.includes(settledChildSessionId),
     );
-    if (!watching) continue;
-    const admitted = isAdmissible(wait);
-    // Both endings are the same act — this wait is finished waiting, so it
-    // leaves the map and lands in one of the two buckets. Only the question it
-    // answers differs, and only the question belongs in the arms.
-    const doneWaiting = (bucket: DependencyWait[]): void => {
-      bucket.push(wait);
-      store.waits.delete(key);
-    };
-    if (admitted.ok) {
-      doneWaiting(release.ready);
-      continue;
-    }
-    // Still refused: is any edge able to change that, or is this wait finished?
-    const canStillClear = admitted.pending.some((edge) => stillRunning(edge.id));
-    if (canStillClear) continue;
-    doneWaiting(release.dead);
+    if (watching) settleWait({ store, release, key, wait }, judges);
   }
   return release;
+}
+
+/**
+ * One wait that was watching the settled child, taken as far as it can go.
+ *
+ * Both endings are the same act — this wait is finished waiting, so it leaves the map
+ * and lands in one of the two buckets. Only the question it answers differs, and only the
+ * question belongs in the arms.
+ *
+ * Split out of the walk above because a `continue` per arm made the walk read as a
+ * ladder, when what it does is call this on the waits that care and skip the rest.
+ */
+function settleWait(settling: Settling, judges: Judges): void {
+  const { store, release, key, wait } = settling;
+  const admitted = judges.isAdmissible(wait);
+  const doneWaiting = (bucket: DependencyWait[]): void => {
+    bucket.push(wait);
+    store.waits.delete(key);
+  };
+  if (admitted.ok) return doneWaiting(release.ready);
+  // Still refused: is any edge able to change that, or is this wait finished?
+  const canStillClear = admitted.pending.some((edge) => judges.stillRunning(edge.id));
+  if (!canStillClear) doneWaiting(release.dead);
 }

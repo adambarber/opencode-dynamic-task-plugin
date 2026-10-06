@@ -153,7 +153,8 @@ describe("liveness: what the host did not say is not a reading", () => {
 
     // And the positive, or the checks above prove nothing: a session the host HAS
     // reads present whatever else is true of it.
-    assert.strictEqual((await readSessionPresence(answering({ id: "ses_x" }), "ses_x")).existence, SessionExistence.Present);
+    const presence = await readSessionPresence(answering({ id: "ses_x" }), "ses_x");
+    assert.strictEqual(presence.existence, SessionExistence.Present);
   });
 
   it("reads an un-terminated message by its START, not as no clock at all", async () => {

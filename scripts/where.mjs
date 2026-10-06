@@ -34,16 +34,21 @@ try {
 
 const lines = new Map();
 for (const finding of findings) {
-  if (!wanted.includes(finding.code)) continue;
-  const file = finding.filename.split("dynamic-task-plugin/").pop();
-  const label = finding.labels?.[0]?.span;
-  if (label?.line) {
-    process.stdout.write(`${file}:${label.line}  ${finding.code}  ${finding.message}\n`);
-    continue;
+  if (wanted.includes(finding.code)) {
+    const file = finding.filename.split("dynamic-task-plugin/").pop();
+    const label = finding.labels?.[0]?.span;
+    // The reporter usually carries the line itself. Fall back to counting newlines
+    // only when it does not, so the offset path stays a fact rather than a guess.
+    if (label?.line) {
+      process.stdout.write(`${file}:${label.line}  ${finding.code}  ${finding.message}\n`);
+    } else {
+      if (!lines.has(file)) lines.set(file, readFileSync(file, "utf8").split("\n"));
+      const text = lines.get(file);
+      let line = 1;
+      for (let at = 0; at < (label?.offset ?? 0) && at < text.length; at++) {
+        if (text[at] === "\n") line++;
+      }
+      process.stdout.write(`${file}:${line}  ${finding.code}  ${finding.message}\n`);
+    }
   }
-  if (!lines.has(file)) lines.set(file, readFileSync(file, "utf8").split("\n"));
-  const text = lines.get(file);
-  let line = 1;
-  for (let at = 0; at < (label?.offset ?? 0) && at < text.length; at++) if (text[at] === "\n") line++;
-  process.stdout.write(`${file}:${line}  ${finding.code}  ${finding.message}\n`);
 }

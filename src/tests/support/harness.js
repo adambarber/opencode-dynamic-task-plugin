@@ -450,7 +450,8 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * delivery is a microtask away.
      */
     async noticeAfter(event) {
-      return (await oneNotice(() => harness.fireEvent(event)))[0];
+      const seen = await oneNotice(() => harness.fireEvent(event));
+      return seen[0];
     },
     /**
      * Settle a child and hand back the single notice the parent received.
@@ -459,7 +460,8 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * same two fields whichever of the two a case reached for.
      */
     async settledNotice(id) {
-      return (await oneNotice(() => harness.settle(id)))[0];
+      const seen = await oneNotice(() => harness.settle(id));
+      return seen[0];
     },
     /**
      * Run an action and hand back every NEW notice whose message matches.

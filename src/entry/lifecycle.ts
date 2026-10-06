@@ -389,12 +389,10 @@ export function releaseWaitingDispatches(
   store: TaskStore,
   settledChildSessionId: string,
 ): void {
-  const release = releaseWaitsFor(
-    store,
-    settledChildSessionId,
-    (wait) => resolveDependencies(store, wait.dependsOn, wait.dependsOnSettled),
-    (id) => isRunning(store, id),
-  );
+  const release = releaseWaitsFor(store, settledChildSessionId, {
+    isAdmissible: (wait: DependencyWait) => resolveDependencies(store, wait.dependsOn, wait.dependsOnSettled),
+    stillRunning: (id: string) => isRunning(store, id),
+  });
   if (release.ready.length === 0 && release.dead.length === 0) return;
   const byParent = new Map<string, DependencyWait[]>();
   for (const wait of [...release.ready, ...release.dead]) {

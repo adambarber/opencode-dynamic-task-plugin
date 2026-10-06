@@ -23,8 +23,10 @@ export const promptTextsTo = (client, sessionId) => promptsTo(client, sessionId)
  * back, and a case that wants the dispatcher's side of a spawn should not have to
  * destructure the seam's whole return to get one string out of it.
  */
-export const confirmationFor = async (h, description, args = {}) =>
-  (await h.spawn({ ...args, description })).out;
+export const confirmationFor = async (h, description, args = {}) => {
+  const spawned = await h.spawn({ ...args, description });
+  return spawned.out;
+};
 
 /** "This prompt said these words" — the one predicate both prompt readers use. */
 const carries = (words) => (p) => promptText(p).includes(words);

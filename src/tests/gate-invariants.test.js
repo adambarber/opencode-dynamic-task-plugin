@@ -95,6 +95,33 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
   // The scan itself runs in the gate `npm test` performs, ahead of the suite —
   // See the test script. A threshold pinned here and never executed is a
   // Comment; the script is what makes duplication a failing run.
+
+  // Six of the reported clones were import preludes, and the only escape hatch
+  // jscpd honours is the inline pair. That is an exclusion mechanism, and an
+  // unaudited one just deletes findings: stretch a marker over a function and the
+  // gate goes blind. So the gate runs the pin first, and these rows keep that call
+  // from being deleted alongside the marks.
+  it("runs the import-region pin before it believes any clone count", () => {
+    const gate = readFileSync(path.join(REPO_ROOT, "scripts/duplicate-gate.mjs"), "utf8");
+    assert.match(
+      gate,
+      /pin-import-ignore-regions\.mjs["',\s\S]{0,40}--check/,
+      "the duplicate gate no longer verifies the marks, so a marker stretched over real logic is silent",
+    );
+    assert.match(gate, /marks\.status\s*!==\s*0/, "the gate reads the pin's verdict and carries on anyway");
+  });
+
+  it("keeps the pin able to tell imports from everything else", () => {
+    const pin = readFileSync(path.join(REPO_ROOT, "scripts/pin-import-ignore-regions.mjs"), "utf8");
+    // The first version matched "any plausible continuation" and called `describe(` an
+    // import. Brace depth is the only answer that does not accept arbitrary statements.
+    assert.match(pin, /braceDepth/, "the pin no longer decides import membership by brace depth");
+    assert.match(
+      pin,
+      /sourceFiles\(join\(ROOT, "scripts"\)\)/,
+      "the pin stopped scanning scripts/, so the checker exempts itself",
+    );
+  });
 });
 
 // --- The gate's own measurement -------------------------------------------------

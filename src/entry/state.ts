@@ -3,7 +3,7 @@
 import type { PluginOptions } from "@opencode/plugin";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
-import type { IntentStore } from "../shared/create-intent.js";
+
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
@@ -14,7 +14,7 @@ import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
 import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
 import { createOverlayStore } from "../shared/overlay-store.js";
-import { createIntentWriter } from "../shared/create-intent.js";
+import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
 import type { OverlayHandlers } from "../shared/overlay-rpc.js";
 import { readOverlayWrite } from "../shared/overlay-rpc.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";

@@ -16,7 +16,7 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
-import { AGENT_CAP_NAMES, readAgentOverlayCaps } from "../../../dist/shared/caps.js";
+import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
 import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";

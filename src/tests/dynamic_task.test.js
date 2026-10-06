@@ -8,9 +8,8 @@
 
 import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
-import { abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
+import { PARENT, abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
 import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
-import { PARENT } from "./support/harness.js";
 import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
 import { events } from "./support/mock-host.js";
 import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
@@ -137,7 +136,7 @@ describe("dynamic_task validation", () => {
   // that only says "I cannot clean this up" leaves the parent with nothing to
   // act on, and one that only names the title is a guess when there is a parent.
   it("a create response with no session id reports the orphan it cannot clean up", async () => {
-    const { h, out } = await orphanCreatedButUnnamed("unnamed child", { createReturnsIdless: true });
+    const { out } = await orphanCreatedButUnnamed("unnamed child", { createReturnsIdless: true });
     answerSays(out, "unnamed child", "the title is how the parent finds the session nobody reported");
     answerSays(out, "p1", "and the parent it was created under, which is how a session list is filtered");
     answerSays(out, "may exist", "without claiming a session the host may never have made");

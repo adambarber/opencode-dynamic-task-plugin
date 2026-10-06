@@ -11,7 +11,6 @@
 
 import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { writeFileSync } from "node:fs";
-import path from "node:path";
 import {
   agentKey,
   agentOccupancy,

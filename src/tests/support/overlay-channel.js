@@ -18,7 +18,6 @@ import { facadeOver } from "./durable-world.js";
 import { overlayHandlers } from "../../../dist/entry/state.js";
 import { createRpc } from "./mock-rpc.js";
 import { armFault } from "./faults.js";
-import { opaqueHost } from "./opaque-host.js";
 import assert from "node:assert/strict";
 
 /**

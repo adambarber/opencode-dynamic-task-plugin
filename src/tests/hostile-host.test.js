@@ -136,7 +136,12 @@ describe("a host that accepts every call and answers none", () => {
 
     // A refusal, not a timeout reported as success: the parent must be able to
     // tell that nothing was dispatched, or it will wait on a child that never ran.
-    assert.match(answer, /ERROR|unanswered|could not|timed out/i, `spawn must own its failure, got: ${answer}`);
+    //
+    // One alternative each, not an OR. `/(ERROR|unanswered|could not|timed out)/`
+    // passed on ANY of four words, so the message could say anything at all — "all
+    // good!" — and this suite stayed green, which is how a bare `Error` shipped a
+    // refusal that invited the re-dispatch it was supposed to prevent.
+    assert.match(answer, /^ERROR:/, `the refusal is an error the parent reads as one, got: ${answer}`);
     assert.doesNotMatch(
       answer,
       /\bses_[A-Za-z0-9]+\b/,

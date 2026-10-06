@@ -21,7 +21,7 @@
 // reports "Cannot find package" — every other import in `dist/` is a `node:` builtin
 // for exactly that reason. What `define` buys is one check (no declared error name may
 // start with the reserved `rpc.`), so that check is ours to keep, in a test.
-import type { PortableValueSchema, PortableDefinition } from "@opencode/schema/rpc";
+import type { PortableDefinition, PortableValueSchema } from "@opencode/schema/rpc";
 import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
 import type { AgentOverlay } from "./caps.js";
 import type { OverlayRead } from "./overlay-store.js";

@@ -14,20 +14,25 @@
 import { OverlayRpc } from "../../../dist/shared/overlay-rpc.js";
 import { createMockClient } from "./mock-host.js";
 import { createOverlayStore } from "../../../dist/shared/overlay-store.js";
-import { createStateFacade } from "../../../dist/shared/state-facade.js";
-import { createStore } from "../../../dist/shared/durable-store.js";
+import { facadeOver } from "./durable-world.js";
 import { overlayHandlers } from "../../../dist/entry/state.js";
 import { createRpc } from "./mock-rpc.js";
 import { armFault } from "./faults.js";
 import { opaqueHost } from "./opaque-host.js";
+import assert from "node:assert/strict";
 
 /**
- * The host table behind one project.
+ * The host table behind one project, and the hooks object that made it.
  *
  * MEMOIZED, because the table is the one thing that has to be the same object twice: a
  * case seeds caps through the channel and then reads them through a different store, and
  * two tables would make the second read answer about an empty project. The key is a
  * temp directory, which is unique per case, so nothing is shared that should not be.
+ *
+ * The HOOKS TRAVEL WITH IT because they are the only way to make this fake hostile, and
+ * the fake reads them out of its own closure: the ledger `armFault` writes is an
+ * accounting record, not an input. Arming through the ledger alone left the host
+ * perfectly well and the case asserting a refusal that never happened.
  */
 const tables = new Map();
 
@@ -43,9 +48,13 @@ export function overlayChannel(directory, config, { host = {}, table } = {}) {
   // One table per project by default, and a SHARED one on request — because the host's
   // store really is global, so the claim that two projects cannot see each other's caps
   // can only be asked of two projects sharing one table.
-  const held = table ?? (tables.get(directory) ?? createMockClient(host));
-  tables.set(directory, held);
-  const facade = createStateFacade(createStore(opaqueHost(held), () => {}));
+  const memoized = tables.get(directory);
+  const held = table ?? memoized?.client ?? createMockClient(host);
+  // A borrowed table keeps the hooks its OWN creator armed it with, so arming through
+  // this channel would be arming a different fake than the one being read.
+  const hooks = table === undefined ? (memoized?.hooks ?? host) : null;
+  if (table === undefined) tables.set(directory, { client: held, hooks });
+  const facade = facadeOver(held);
   const store = createOverlayStore(facade, directory);
   const rpc = createRpc();
   rpc.register(OverlayRpc, overlayHandlers(store, config, directory));
@@ -63,8 +72,16 @@ export function overlayChannel(directory, config, { host = {}, table } = {}) {
      *
      * Arming it through `host` refuses the seed as well, so a case about a refused write
      * would open on a screen that never had caps in the first place.
+     *
+     * The FLAG is what makes the host hostile and `armFault` is what makes the suite
+     * insist the fault engaged; both are done, because the fake reads the flag and the
+     * teardown rule reads the ledger, and setting one is not setting the other.
      */
-    arm: (name) => armFault(held.testState, name),
+    arm: (name) => {
+      assert.ok(hooks !== null, `cannot arm ${name} on a table this channel did not build — arm it on the client that owns it`);
+      hooks[name] = true;
+      armFault(held.testState, name);
+    },
     /** The host's client, as the TUI sees it. */
     client: { rpc: rpc.subclient },
   };

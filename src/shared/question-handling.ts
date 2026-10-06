@@ -18,11 +18,19 @@
 import { errorMessage, isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 import { type OpaqueHost, type OpenCodeClient, callHost, hasPermissionReply, probeHost } from "./client.js";
-import { WRITE_BOUNDS } from "./execution-bound.js";
+import { ExpiryError, WRITE_BOUNDS } from "./execution-bound.js";
 
 export interface QuestionResult {
   succeeded: boolean;
   reason?: string;
+  /**
+   * The request was SENT and the host never confirmed it, so the outcome is not known.
+   *
+   * Distinct from `succeeded: false`, which means the host said no. This one means the
+   * host said nothing, and a caller that renders both as "failed" reports a denial that
+   * may have landed as one that did not.
+   */
+  unconfirmed?: boolean;
 }
 
 /**
@@ -57,7 +65,10 @@ async function sendDenial(
     // to decide what happens to a child's turn. A timeout travels the throw path so the
     // failure is classified as one, rather than being a second kind of answer.
     const settled = await callHost(host, WRITE_BOUNDS.question, send, undefined);
-    if (settled.timedOut) throw new Error(`ask denial unanswered after ${WRITE_BOUNDS.question}ms`);
+    // The denial WAS handed over, so this is not "the denial failed": the ask may be
+    // closed right now and the host may never say so. `unconfirmed` is what tells the
+    // classifier that apart from a refusal the host actually rejected.
+    if (settled.timedOut) throw new ExpiryError(WRITE_BOUNDS.question, settled.phase, "ask denial");
     return { succeeded: true };
   } catch (error: unknown) {
     return classifyDenialFailure(requestId, error);
@@ -75,6 +86,13 @@ const ALREADY_CLOSED: readonly { status: number; says: RegExp }[] = [
 ];
 
 function classifyDenialFailure(requestId: string, error: unknown): QuestionResult {
+  // Asked by TYPE, because this is the one failure whose phase is a fact about the
+  // request rather than a sentence about it. Matching the message text meant an
+  // expiry read as an ordinary refusal, which is how "we asked and did not hear" came
+  // to be logged as "we asked and were refused".
+  if (error instanceof ExpiryError) {
+    return { reason: `${requestId}: ${error.message}`, succeeded: false, unconfirmed: true };
+  }
   const status = isEventRecord(error) ? error.status : undefined;
   const message = errorMessage(error);
   if (ALREADY_CLOSED.some(({ status: code, says }) => status === code || says.test(message))) {

@@ -130,6 +130,7 @@ const sessionNotFound = () => missingSessionError();
  * hooks: {
  *   createThrowsOnce?: boolean,
  *   createReturnsIdless?: boolean,      // the session is real; the response names none
+ *   createHangsAfterCreate?: boolean,   // the session is real; the answer never comes
  *   promptFailIds?: Set<string>,         // async rejections
  *   promptHangIds?: Set<string>,         // never-settling prompts (non-blocking proof)
  *   promptSyncThrowIds?: Set<string>,    // synchronous throws
@@ -353,6 +354,13 @@ export function createMockClient(hooks = {}, domain = {}) {
         if (armedFlag(state, hooks, "createReturnsIdless")) {
           fault(state, "createReturnsIdless");
           return { info: { title } };
+        }
+        // Created, then nothing. The session is real and in `state.sessions`, while
+        // the caller's bound expires holding a request that will never answer: the
+        // shape `silentHost` could not express, since it goes quiet BEFORE the create.
+        if (armedFlag(state, hooks, "createHangsAfterCreate")) {
+          fault(state, "createHangsAfterCreate");
+          return new Promise(() => {});
         }
         return { id };
       },

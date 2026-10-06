@@ -59,7 +59,7 @@ if (process.argv.includes("--screen")) {
           children: [
             ...(marked ? [jsx("text", { children: "\u25cf", fg: primary, flexShrink: 0 })] : []),
             jsx("text", { children: head, flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" }),
-            ...(o.footer === undefined ? [] : [jsx("box", { children: jsx("text", { fg: context, children: o.footer }), flexShrink: 0 })]),
+            ...(o.footer === undefined ? [] : [jsx("box", { children: jsx("text", { children: o.footer, fg: context }), flexShrink: 0 })]),
           ], flexDirection: "row", gap: 1, paddingLeft: marked ? 1 : 3, paddingRight: 3,
         }),
       ],
@@ -100,8 +100,8 @@ if (process.argv.includes("--screen")) {
     jsx("box", { children: [
       jsx("box", { children:
         jsx("box", { children: [
-          jsx("text", { fg: value, attributes: TextAttributes.BOLD, children: title }),
-          jsx("text", { fg: context, children: "esc" }),
+          jsx("text", { attributes: TextAttributes.BOLD, children: title, fg: value }),
+          jsx("text", { children: "esc", fg: context }),
         ], flexDirection: "row", justifyContent: "space-between" }), paddingLeft: 4, paddingRight: 4 }),
       ...(filtered
         ? [jsx("box", { children: jsx("text", { children: "Search", fg: context }), paddingTop: 1 })]

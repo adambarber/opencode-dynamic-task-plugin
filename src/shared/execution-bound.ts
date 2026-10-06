@@ -17,25 +17,75 @@
 // timer-shaped call in src/**, so a new wait cannot enter anywhere else.
 
 /**
+ * How far a request got before the bound gave up on it.
+ *
+ * This is the fact the `Bounded` timeout arm used to throw away. `withBound` dispatches
+ * its work BEFORE it arms the deadline, so a bound that fires has already handed the
+ * request over — `Sent` is the ordinary case, not the exception. `NotSent` is
+ * `expired` alone, where no host was there to send to.
+ *
+ * The distinction decides what a caller may do next and it is not derivable from the
+ * value a site chose as its degraded answer. A MUTATION that was sent may have landed;
+ * retrying it blind double-applies it. The same mutation not sent is free to retry. Both
+ * arrive as `timedOut: true`, so a site that does not ask has to guess — and the guess
+ * that reads as failure is what invites the double execution.
+ */
+export const enum ExpiryPhase {
+  /** The work never ran. Nothing happened, and a retry is free. */
+  NotSent = "not-sent",
+  /** The work was handed over. Whether it landed is exactly what is not known. */
+  Sent = "sent",
+}
+
+/**
  * The answer, or the bound's report that there was none. DISCRIMINATED, because the
  * two are different shapes and a `timedOut: boolean` field lets a caller read
  * `value.data` after a timeout it has already handled — which is how a `() => null`
  * timeout arm once typed itself as `T` and forced a re-check of a value that could
  * not be null.
+ *
+ * The timeout arm carries `phase` because `finished` alone does not say it in types:
+ * both arms hold a promise, and only the reading of a never-settling one is evidence.
  */
 export type Bounded<T, D = T> =
   | { finished: Promise<T>; value: T; timedOut: false }
-  | { finished: Promise<T>; value: D; timedOut: true };
+  | { finished: Promise<T>; phase: ExpiryPhase; value: D; timedOut: true };
 
 /** Nothing was started, so nothing will finish: the one promise that says so. */
 const NOT_STARTED: Promise<never> = new Promise<never>(() => {});
 
 /**
+ * A deadline beat a call, as a typed failure rather than a sentence.
+ *
+ * Four sites each rolled their own `new Error("... unanswered after ${N}ms")`, which
+ * put the one fact a caller most needs — whether the request was sent — into the
+ * middle of a message. Classifying that meant matching a REGEX against English, so
+ * `classifyDenialFailure` could only ask whether the text looked like a missing ask and
+ * had no way to ask what had actually happened.
+ *
+ * The phase is a field, so it is read rather than guessed, and the message is derived
+ * from it: the two phases are different facts and now read differently.
+ */
+export class ExpiryError extends Error {
+  override readonly name = "ExpiryError";
+  readonly phase: ExpiryPhase;
+  constructor(readonly ms: number, phase: ExpiryPhase, readonly subject: string) {
+    super(`${subject} ${phase === ExpiryPhase.Sent ? "unanswered" : "never sent"} after ${ms}ms`);
+    this.phase = phase;
+  }
+}
+
+/**
  * The one construction of a bound's timeout report, so an absent host and a host that
  * did not answer in time cannot drift into two shapes for the same fact.
+ *
+ * `NotSent` is hardcoded rather than passed: an absent host is the only way to reach
+ * this, and a caller able to claim otherwise would be claiming that its own
+ * construction is not this one.
  */
 export const expired = <D>(timedOut: D): Bounded<never, D> => ({
   finished: NOT_STARTED,
+  phase: ExpiryPhase.NotSent,
   timedOut: true,
   value: timedOut,
 });
@@ -80,8 +130,12 @@ export function withBound<T, D>(
     // The operation is held here because a bound does NOT cancel it: the deadline
     // decides when to REPORT, and a caller that orders writes has to be able to
     // wait on the work itself rather than on the report it received too early.
+    //
+    // Dispatched BEFORE the timer is armed, which is what makes `Sent` the phase this
+    // arm reports: there is no arrangement in which the deadline fires and the work
+    // has not been handed over. `ExpiryPhase.NotSent` is `expired` alone.
     const finished = Promise.resolve().then(work);
-    const timer = setTimeout(() => resolve({ finished, timedOut: true, value: timedOut }), ms);
+    const timer = setTimeout(() => resolve({ finished, phase: ExpiryPhase.Sent, timedOut: true, value: timedOut }), ms);
     finished.then(
       (value) => {
         clearTimeout(timer);

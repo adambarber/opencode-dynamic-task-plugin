@@ -42,7 +42,8 @@ import {
   type AgentOverlay,
   resolveAgentCaps,
 } from "../shared/caps.js";
-import { overlayChannel } from "./overlay-client.js";
+import { overlayChannel, type ReadOutcome } from "./overlay-client.js";
+import { rememberVerified, rememberWritten, remembered } from "./local-caps.js";
 import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { type OpaqueHost, asOpaqueHost } from "../shared/client.js";
 import {
@@ -274,7 +275,8 @@ async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
   // Through the channel, not off the disk: the caps the dispatch path will judge
   // against are the ones this call returns, and reading anything else here would be a
   // second answer to the same question.
-  const read = await overlayChannel(ctx).read();
+  const answered = await overlayChannel(ctx).read();
+  const read = readOutcomeToOverlay(answered, directory);
   // The dispatch path's own reader, not a second derivation of it. The one source the
   // TUI still cannot see is the registration tuple, which `readDynamicTaskPolicy`
   // states rather than leaves to be discovered.
@@ -283,14 +285,20 @@ async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
   // agents the overlay mentions under a warning, where `[]` would draw an empty list
   // and read as a claim about the project that the plugin never made.
   const agents = await dispatchableAgentNamesOrNull({ host: agentHost }, base);
+  if ("degraded" in read) {
+    // The one case where the screen is built from something other than what the store
+    // just said, so it is announced rather than shown quietly. The operator's next action
+    // is usually whether to trust the numbers on screen.
+    toastDegraded(ctx, read.degraded);
+  }
   return {
     // Resolved HERE, once, by the reader the dialog hands over — a second derivation
     // of "what is in force" is a second answer to it, and the two are free to disagree
     // the moment the row set is built by something else.
-    dialog: agentDialogFrom(read.caps, base, agents, base.allowSameAgentRecursion, read.problem),
-    // Read with the one reader rather than cast, so an edit can never launder a value
-    // the dispatch path already refuses.
-    overlay: overlayFrom(read.caps),
+    dialog: agentDialogFrom(read.caps, base, agents, base.allowSameAgentRecursion, read.problem ?? null),
+    // Already through the one reader — `readOutcomeToOverlay` ran it on the way in, so
+    // an edit can never launder a value the dispatch path already refuses.
+    overlay: read.caps,
     directory,
     base,
     agents,
@@ -357,9 +365,70 @@ async function applyEdit(ctx: Host, view: LimitsView, title: string, edit: () =>
   // applied one. The server's declared error is why this is a message and not a crash.
   const written = await overlayChannel(ctx).write(outcome.overlay);
   if (!("written" in written)) {
+    // A write whose landing is UNKNOWN is not a refusal, and the caps are not
+    // discarded: the channel may have died after the store applied them, and a screen
+    // that snapped back to the pre-write numbers would be telling the operator the
+    // opposite of what the store holds. Kept, and reported as unconfirmed.
+    if (written.unknown) rememberWritten(view.directory, outcome.overlay);
     ctx.ui.toast.show({ message: written.problem, title, variant: "error" });
-    return view;
+    return written.unknown ? localView(view, outcome.overlay) : view;
   }
+  // The operator's own caps, held locally first. The screen then confirms from what was
+  // written instead of waiting on a channel that may be the reason nothing is showing.
+  rememberWritten(view.directory, outcome.overlay);
   ctx.ui.toast.show({ message: `${outcome.summary} — in force on the next dispatch`, title: "Task limits", variant: "success" });
-  return (await readLimits(ctx, agentHost)) ?? view;
+  // Reconciled against the store when the channel allows, and never at the cost of the
+  // screen: a channel that dies on the way back leaves the operator looking at the caps
+  // they just set, which is what those numbers are.
+  return (await readLimits(ctx, agentHost)) ?? localView(view, outcome.overlay);
+}
+
+/**
+ * The screen drawn from the TUI's own copy rather than from the store.
+ *
+ * `verified` decides whether the numbers are presented as in force or as held, and both
+ * are shown — the alternative is a screen that says the same thing about a store that
+ * confirmed it and one that did not.
+ */
+function localView(view: LimitsView, overlay: AgentOverlay): LimitsView {
+  const held = remembered(view.directory)?.verified !== true;
+  return {
+    ...view,
+    dialog: agentDialogFrom(overlay, view.base, view.agents, view.base.allowSameAgentRecursion, held ? "held locally — not confirmed by the store" : null),
+    overlay,
+  };
+}
+
+/**
+ * The store's answer, or the TUI's own — and which of the two it was.
+ *
+ * `degraded` is present only on the fallback, so every caller that touches `caps` reads
+ * the same shape and the screen cannot accidentally draw a fallback without announcing
+ * it. A TUI that has never learned the caps has nothing to fall back to, and says so
+ * through `problem` instead: an empty project and an unreachable one are different.
+ */
+interface ScreenCaps {
+  caps: AgentOverlay;
+  problem?: string | undefined;
+  /** Present ONLY on the local fallback, so a screen cannot draw one without saying so. */
+  degraded?: string;
+}
+
+function readOutcomeToOverlay(answered: ReadOutcome, directory: string): ScreenCaps {
+  if ("read" in answered) {
+    // Through the one reader, on BOTH arms: the local copy is already a validated
+    // overlay, and the store's answer is raw. Routing only the second one through the
+    // reader is how an edit starts laundering a value the dispatch path refuses.
+    const caps = overlayFrom(answered.read.caps);
+    rememberVerified(directory, caps);
+    return { caps, problem: answered.read.problem ?? undefined };
+  }
+  const held = remembered(directory);
+  const problem = `${answered.problem}; this screen is showing limits held locally and will show the store's when it answers`;
+  return held === undefined ? { caps: overlayFrom(undefined), problem } : { caps: held.overlay, degraded: problem, problem };
+}
+
+/** One toast, so degraded is said the same way wherever the screen is opened. */
+function toastDegraded(ctx: Host, problem: string): void {
+  ctx.ui.toast.show({ message: `${problem} — in degraded mode until it does`, title: "Task limits", variant: "error" });
 }

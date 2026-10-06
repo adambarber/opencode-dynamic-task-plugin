@@ -8,6 +8,7 @@
 // operator voice). Centralize the primitive "words in tool results", not all
 // strings everywhere.
 
+import { CREATE_INTENT_PREFIX, createIntentKey, type CreateIntent } from "./create-intent.js";
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import { TaskState } from "./task-state.js";
@@ -86,7 +87,29 @@ export function waitsReleasedBody(release: WaitRelease): string {
 }
 
 /**
- * The create response carried no session id.
+ * Why a create did not become a registered child. Three situations, one refusal.
+ *
+ * `idless` — the host answered, and the answer carried no session id.
+ * `unanswered` — the host was handed the create and did not answer in time. The
+ *   session MAY exist; this is the one a blind retry turns into two.
+ * `unsent` — there was no host to send it to. Nothing happened.
+ *
+ * The middle one is why this takes a reason instead of being one message: an earlier
+ * shape threw a bare Error for it, which is indistinguishable from a command failure,
+ * and a parent reading "failed" re-runs the dispatch.
+ */
+export type CreateRefusalReason = "idless" | "unanswered" | "unsent";
+
+/** What each situation is true about, in the order the parent can act on it. */
+const CREATE_REFUSALS: Record<CreateRefusalReason, string> = {
+  idless: "The host answered the create without a session id, so this session could not be registered, stopped, or reported on.",
+  unanswered:
+    "The host was handed this create and did not answer in time, so the session may exist with nothing tracking it. Re-running this dispatch can leave two.",
+  unsent: "There was no host to send this create to, so nothing happened and the dispatch is safe to run again.",
+};
+
+/**
+ * The create did not become a registered child.
  *
  * This is the one post-create failure the plugin cannot clean up. `session.abort`
  * needs an id, so a session that cannot be named cannot be aborted, registered,
@@ -102,14 +125,17 @@ export function waitsReleasedBody(release: WaitRelease): string {
  * happened": a parent told a create failed has no reason to go looking for a
  * child of its own that is running unmonitored, and silence about a possibly
  * running child is the failure this plugin's whole claim is about.
+ *
+ * And it names the DURABLE RECORD rather than only describing the search. The record
+ * is the lookup: present means issued and never answered, gone means the child is in
+ * the ledger. Telling the parent to go and search for a title it could have
+ * duplicated is the manual version of a question the store already answers.
  */
-export function createFailed(
-  response: unknown,
-  session: { title: string; parentSessionId: string | null },
-): string {
+export function createFailed(response: unknown, intent: CreateIntent, reason: CreateRefusalReason): string {
+  const at = intent.parentSessionId === null ? "" : ` under parent ${intent.parentSessionId}`;
   return textBlock(
     `ERROR: Failed to create session. Response: ${JSON.stringify(response)}`,
-    `The host answered the create without a session id, so this session could not be registered, stopped, or reported on. A session may exist that nobody is tracking: look for the title "${session.title}"${session.parentSessionId === null ? "" : ` under parent ${session.parentSessionId}`}, and stop it by hand if it is there.`,
+    `${CREATE_REFUSALS[reason]} A session may exist that nobody is tracking: look for the title "${intent.title}"${at}, and stop it by hand if it is there. The issued-but-unanswered creates are listed under ${CREATE_INTENT_PREFIX}/${createIntentKey(intent).split("/").pop()}`,
   );
 }
 

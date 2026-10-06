@@ -326,6 +326,17 @@ function shrink(ms = PATIENCE_MS) {
   return shrinkBoundsForTesting(ms);
 }
 
+/**
+ * The plugin's own durable reader over a client.
+ *
+ * Exported because three support modules were each building it by hand, and a case
+ * that constructs its own facade can disagree with the plugin's about what "durable"
+ * means without either being wrong.
+ */
+export function facadeOver(client) {
+  return createStateFacade(createStore(opaqueHost(client), () => {}));
+}
+
 export const durable = {
   assertNothingAnswered,
   besideAForeignKey,

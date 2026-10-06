@@ -3,6 +3,7 @@
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import type { OpaqueHost } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
+import type { IntentStore } from "../shared/create-intent.js";
 import type { TaskRecord, TaskStore } from "../shared/task-state.js";
 import { findTask } from "../shared/task-state.js";
 import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
@@ -13,6 +14,8 @@ import type { Refusal } from "../shared/verdict.js";
 
 export interface ToolDeps {
   host: OpaqueHost;
+  /** Durable writes for issued-but-unanswered creates; the same chain as the ledger. */
+  intent: IntentStore;
   store: TaskStore;
   config: DynamicTaskConfig;
   directory: string;
@@ -71,6 +74,7 @@ export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext
       sessionId: String(isEventRecord(args) ? args.session_id : undefined),
       callerSessionId: callerSessionId(ctx),
       host: deps.host,
+      intent: deps.intent,
       store: deps.store,
       config: deps.config,
     },

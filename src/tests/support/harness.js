@@ -27,6 +27,7 @@ import {
 } from "./mock-host.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
+import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
 import { ledgerOver } from "./durable-world.js";
 import nodePath, { join } from "node:path";
 import { opaqueHost } from "./opaque-host.js";
@@ -283,6 +284,12 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   const client = createMockClient(hooks, { kv: domain.kv });
   trace("setup:client");
   const state = client.testState;
+  /**
+   * The plugin's own durable reader. Every case that asks what was PERSISTED goes
+   * through here rather than through `kv`, because a map is the writer's opinion of
+   * itself and `load` is what a restart would read.
+   */
+  const durable = () => createStore(opaqueHost(client), () => {});
 
   // A step that must produce exactly one notice, counted against a baseline so
   // a suite that already has notices is judged only on this step. The sleep is
@@ -340,7 +347,17 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * What a RESTART would believe, read through the reader the plugin itself uses.
      * A case that reads the rows instead is reading the writer's opinion of itself.
      */
-    readLedger: () => ledgerOver(createStore(opaqueHost(client), () => {})).load(),
+    readLedger: () => ledgerOver(durable()).load(),
+    /**
+   * The outstanding create intents, through the same reader. The lookup a parent
+   * would perform after a refused dispatch: present means issued and never answered,
+   * absent means the child is in the ledger.
+   *
+   * Settled FIRST, because the store enqueues and returns — a drop that is still on the
+   * chain is not yet a fact, and a lookup that ran ahead of it would report an answered
+   * create as outstanding.
+   */
+  readIntents: () => durable().load(CREATE_INTENT_PREFIX),
     tool: textTools(rawTools),
     rawTools,
     directory,

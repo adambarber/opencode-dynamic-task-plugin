@@ -7,7 +7,7 @@
  * asks the host's machine for — which is why a dependency here broke in production and
  * not in any of the four hundred tests.
  */
-import { DIST_DIR, exists, listProdFiles, readSource, REPO_ROOT, siteOf, walkSource } from "./support/corpus.js";
+import { DIST_DIR, REPO_ROOT, exists, listProdFiles, readSource, siteOf, walkSource } from "./support/corpus.js";
 import { join } from "node:path";
 import { assert, describe, it } from "./support/runner.js";
 

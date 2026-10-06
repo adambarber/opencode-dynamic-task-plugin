@@ -3,6 +3,7 @@
 import type { PluginOptions } from "@opencode/plugin";
 import type { DynamicTaskConfig } from "../shared/config.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
+import type { IntentStore } from "../shared/create-intent.js";
 import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
 import type { LedgerChange } from "../shared/ledger-change.js";
@@ -13,6 +14,7 @@ import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
 import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
 import { createOverlayStore } from "../shared/overlay-store.js";
+import { createIntentWriter } from "../shared/create-intent.js";
 import type { OverlayHandlers } from "../shared/overlay-rpc.js";
 import { readOverlayWrite } from "../shared/overlay-rpc.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
@@ -32,6 +34,8 @@ import { configureDebugRoot, debugLog } from "../debug-logger.js";
 // Plugin-level state store (ephemeral — lost on restart)
 export interface PluginState {
   store: TaskStore;
+  /** Durable writes for issued-but-unanswered creates; the same chain as the ledger. */
+  intent: IntentStore;
   config: DynamicTaskConfig;
   /** The operator's caps, as the TUI reaches them. See `overlayHandlers`. */
   overlay: OverlayStore;
@@ -164,6 +168,12 @@ export async function initPluginState(directory: string, options: PluginOptions 
   const ledger = createLedgerStore(facade);
   const read = await ledger.load();
 
+  // The issued-but-unanswered create records ride the SAME store and therefore the
+  // SAME write chain as everything else: a second chain would let a create intent and
+  // the ledger write it precedes be applied in either order, and the whole point is
+  // that the intent is durable BEFORE the create is issued.
+  const intent = createIntentWriter(facade);
+
   // The operator's caps come out of the same store, and are installed as a VALUE: a
   // cap decision is made on the dispatch path, where a bounded host read has no way
   // to say "the host did not answer" without either refusing the dispatch or judging
@@ -233,7 +243,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // turn, so a queue is paid in batches rather than all at once.
   redeliverOwedNotifications(host, config.pendingMaxAttempts, config.maxConcurrent);
 
-  return { config, overlay, store };
+  return { config, intent, overlay, store };
 }
 
 // One pass, at boot, over the tasks the last process left running — the

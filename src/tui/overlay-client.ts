@@ -15,11 +15,22 @@ import { readOverlayPayload } from "../shared/overlay-rpc.js";
 import { errorMessage, isPlainRecord } from "../shared/host-shape.js";
 
 /** What a write achieved: the caps are in force, or here is why they are not. */
-export type WriteOutcome = { problem: string } | { written: true };
+export type WriteOutcome = { problem: string; unknown?: boolean } | { written: true };
+
+/**
+ * What a read produced: the caps the store holds, or here is why they are unknown.
+ *
+ * An outcome rather than a bare value, because a read is not guaranteed to have one and
+ * the difference has to survive to the screen. `read` promised never to throw and did not
+ * keep it — there was no `try` on it while the write below it had one — so a channel that
+ * is simply absent reached `openLimits`, which the command registration `void`s. The
+ * result was an unhandled rejection: no dialog, no toast, and nothing in the log.
+ */
+export type ReadOutcome = { problem: string; read?: never } | { read: OverlayRead };
 
 export interface OverlayChannel {
   /** The caps in force, and anything wrong with them. Never throws. */
-  read: () => Promise<OverlayRead>;
+  read: () => Promise<ReadOutcome>;
   /** Store caps, or say why not. Never throws: a refusal is an answer here. */
   write: (caps: AgentOverlay) => Promise<WriteOutcome>;
 }
@@ -34,13 +45,25 @@ export interface OverlayChannel {
 export function overlayChannel(ctx: Plugin.Context): OverlayChannel {
   const client = ctx.client.rpc(OverlayRpc);
   return {
-    read: async () => readOverlayPayload(await client.read({})),
+    // Same shape as the write below, for the same reason: the caller cannot tell a
+    // refusal from a crash unless both arrive as values, and one of the two used to
+    // arrive as a rejection with nowhere to go.
+    read: async () => {
+      try {
+        return { read: readOverlayPayload(await client.read({})) };
+      } catch (error: unknown) {
+        return { problem: readRefusal(error) };
+      }
+    },
     write: async (caps) => {
       try {
         await client.write({ caps });
         return { written: true };
       } catch (error: unknown) {
-        return { problem: writeRefusal(error) };
+        // `unknown` because the route failing and the server refusing are different
+        // facts with different consequences, and the caller needs the first to keep the
+        // caps it just wrote rather than discard them.
+        return { problem: writeRefusal(error), unknown: true };
       }
     },
   };
@@ -59,5 +82,23 @@ function writeRefusal(error: unknown): string {
   const reason = data && typeof data.reason === "string" ? data.reason : null;
   const named = isPlainRecord(error) && error.name === "not_writable";
   if (named && reason !== null) return reason === "not an overlay" ? "that is not a set of caps" : "the caps could not be stored";
-  return errorMessage(error);
+  // A channel that DIED is not a server that refused. The server answers `not_writable`
+  // by name; anything else is the route itself failing, and reporting it as "the caps
+  // could not be stored" tells the operator a false thing about a mutation the store may
+  // well have applied before the connection went away.
+  return "the caps channel is not answering, so this write is not known to have landed";
+}
+
+/**
+ * Why the caps could not be read.
+ *
+ * The mock refuses an unlistened method with `rpc.method_not_found` and its own comment
+ * calls it "the failure a TUI really hits when the server plugin is not loaded" — so this
+ * is the ordinary first-run case, not an exotic one, and it is named as what it is rather
+ * than as a store that is somehow empty.
+ */
+function readRefusal(error: unknown): string {
+  return isPlainRecord(error) && error.name === "method_not_found"
+    ? "this project has no caps yet — the server plugin is not answering"
+    : errorMessage(error);
 }

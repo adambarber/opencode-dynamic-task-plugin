@@ -91,8 +91,8 @@ describe("the flow, end to end on disk", () => {
       await choose(host, valueRow(host, 4));
       assert.ok(!host.seen.toasts.some((toast) => toast.variant === "success"),
         "a refused write must not be confirmed as a cap in force");
-      assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not write/.test(toast.message)),
-        "and the operator is told the caps could not be written");
+      assert.ok(host.seen.toasts.some((toast) => toast.variant === "error" && /could not be stored/.test(toast.message)),
+        "and the operator is told the caps could not be stored");
     }));
 
   it("the figure on a row is the operator's number", () =>

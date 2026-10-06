@@ -7,9 +7,9 @@ import {
   BOUND_DEPTH, agentEntry, assertCapsDrawn, assertEveryRowFits, backRow, backToCaps, choose, clearRow, everyRowClaims, readOverlay, row, rowsOn, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen,
 } from "./support/limits-screen.js";
 import { CAP_CHOICES, CAP_LABEL } from "../../dist/tui/agent-editor.js";
+import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { FROM_CONFIG, boundClause } from "../../dist/tui/theme.js";
 import { assert, describe, it } from "./support/runner.js";
-import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 
 describe("a bound is a note, not a removal", () => {
   it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>

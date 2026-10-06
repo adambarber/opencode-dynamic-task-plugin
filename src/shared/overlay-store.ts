@@ -12,7 +12,7 @@
 import type { AgentOverlay } from "./caps.js";
 import { sameOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
-import { recordKey, type One, type StateFacade } from "./state-facade.js";
+import { type One, type StateFacade, recordKey } from "./state-facade.js";
 
 /** One place to change it, so the prefix and the keys written under it cannot disagree. */
 const OVERLAY_VERSION = 1;

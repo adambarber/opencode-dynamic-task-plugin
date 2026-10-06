@@ -48,8 +48,8 @@ async function setup(context: Context): Promise<void> {
   // instance's events into another project's store. Debug root and
   // notification ledgers stay process-global by design (Tenet 9 — see the
   // exemption note in docs/tasks/06-persistence-and-observability.md).
-  const { config, overlay, store } = await initPluginState(directory, options, host);
-  const deps = { config, directory, host, store };
+  const { config, intent, overlay, store } = await initPluginState(directory, options, host);
+  const deps = { config, directory, host, intent, store };
   const tools = buildToolMap(deps);
 
   // The caps channel, on the host's own route between two plugins. It exists because

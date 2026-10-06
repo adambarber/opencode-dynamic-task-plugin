@@ -10,6 +10,8 @@ import { describe, it } from "./support/runner.js";
 import assert from "node:assert";
 import { abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
 import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
+import { PARENT } from "./support/harness.js";
+import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
 import { events } from "./support/mock-host.js";
 import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
@@ -20,6 +22,21 @@ import {
   refusedOnOneEdge,
   refusedOverEdges,
 } from "./support/dispatch-wait-scenario.js";
+
+/**
+ * A create that made a session and then refused to say so, by either door.
+ *
+ * Both orphans below are the same claim about the host — it DID create the session, so
+ * there is a running child nobody can name — reached through a different failure. Spelled
+ * twice it was a clone, and the copy is what drifted: the second test inherited the first
+ * test's assertions and added none of its own.
+ */
+async function orphanCreatedButUnnamed(description, hooks) {
+  const h = await setupHarness({ hooks });
+  const out = await h.trySpawn({ description, prompt: "hi", subagent_type: "explore" });
+  assert.strictEqual(sessionCount(h.client), 1, "the host DID create a session, so the orphan is real");
+  return { h, out };
+}
 
 describe("dynamic_task validation", () => {
 
@@ -120,14 +137,66 @@ describe("dynamic_task validation", () => {
   // that only says "I cannot clean this up" leaves the parent with nothing to
   // act on, and one that only names the title is a guess when there is a parent.
   it("a create response with no session id reports the orphan it cannot clean up", async () => {
-    const h = await setupHarness({ hooks: { createReturnsIdless: true } });
-    const out = await h.trySpawn({ description: "unnamed child", prompt: "hi", subagent_type: "explore" });
-
-    assert.strictEqual(sessionCount(h.client), 1, "the host DID create a session, so the orphan is real");
+    const { h, out } = await orphanCreatedButUnnamed("unnamed child", { createReturnsIdless: true });
     answerSays(out, "unnamed child", "the title is how the parent finds the session nobody reported");
     answerSays(out, "p1", "and the parent it was created under, which is how a session list is filtered");
     answerSays(out, "may exist", "without claiming a session the host may never have made");
     answerSays(out, "stop it by hand", "and saying what the parent can still do about it");
+    });
+
+  // The SAME orphan, reached by the other door. A create bound that fires has already
+  // handed the request over, so the session exists and the plugin holds no id for it —
+  // and this used to throw a bare `Error`, which the parent reads as "the command
+  // failed" and answers by dispatching again. That is a second session per retry.
+  //
+  // So the refusal has to say three things: that the host WAS sent the create, that a
+  // re-run can leave two, and where the lookup is. Asserted separately because a single
+  // OR over them would pass on any one of the three — which is exactly what the old
+  // coverage did, and why this shape shipped untested.
+  it("a create the host never answers says it may have landed, and names the record that proves it", async () => {
+    const { out } = await orphanCreatedButUnnamed("hung child", { createHangsAfterCreate: true });
+    answerSays(out, "did not answer", "the request was sent and never confirmed — not a refused command");
+    answerSays(out, "may exist", "and the session may be running with nothing tracking it");
+    answerSays(out, "can leave two", "because a parent told this failed can be trusted to try again");
+    answerSays(out, CREATE_INTENT_PREFIX, "and the record that says which creates are still outstanding");
+
+    // The refusal must not read as a clean failure, because that is what invites the
+    // retry: nothing here may claim nothing happened.
+    assert.ok(!/ERROR: Failed to create session\. Response: null/.test(out) || /did not answer/.test(out),
+      "the expiry must not be reported as a plain unanswered create with no phase");
+    });
+
+  // The record is the whole point: a lookup after the fact has to be able to answer
+  // whether a create is outstanding, or it is a log line rather than a mechanism. And
+  // the lookup goes through `createIntentKey` because the key is HASHED — so "search by
+  // title" is a computation, not a scan, and a test that grepped the raw keys would be
+  // asserting something the plugin cannot do.
+  it("an issued-but-unanswered create is addressable by the key the caller computes", async () => {
+    const h = await setupHarness({ hooks: { createHangsAfterCreate: true } });
+    await h.trySpawn({ description: "recorded child", prompt: "hi", subagent_type: "explore" });
+
+    const key = createIntentKey({ parentSessionId: PARENT, title: "recorded child" });
+    // The host's table, not a reader over a FRESH store: the plugin's write chain is
+    // sealed inside its own store, so `settled()` here would wait an empty queue and
+    // report a drop that has not left it. What a restart reads is this table.
+    await sleep(20);
+    const found = h.kv.get(key);
+    assert.ok(found !== undefined, `the outstanding create is at its computed key; saw ${JSON.stringify([...h.kv.keys()])}`);
+    assert.ok(!found?.toString().includes("undefined"), "and the key resolved from real parts, not a stringified hole");
+    assert.deepStrictEqual(JSON.parse(found), { parentSessionId: PARENT, title: "recorded child" },
+      "and the record carries the two facts that identify the session nobody is tracking");
+    });
+
+  // The other half of the binary: a create that ANSWERED leaves nothing behind. A record
+  // that outlived its window would be a second place the child lives, and the lookup
+  // would start answering "outstanding" for dispatches that are already tracked.
+  it("a create that answered leaves no record, so the lookup has a binary answer", async () => {
+    const h = await setupHarness();
+    await h.trySpawn({ description: "settled child", prompt: "hi", subagent_type: "explore" });
+
+    await sleep(20);
+    const intents = [...h.kv.keys()].filter((key) => key.startsWith(`${CREATE_INTENT_PREFIX}/`));
+    assert.deepStrictEqual(intents, [], "a tracked child is the ledger's to name, and only the ledger names it");
     });
 
   // The non-blocking promise, falsifiable: a hung child prompt must not

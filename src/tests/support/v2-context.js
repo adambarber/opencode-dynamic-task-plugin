@@ -63,8 +63,6 @@ export function v2Context(client, directory, options = {}) {
 
   return {
     context,
-    /** The same registry the context registered into, so a caller can reach it. */
-    rpc,
     deliverEvent: async (event) => {
       // Two SEPARATE wait lists, because the generator and the deliverer park at
       // different moments. Sharing one slot lost the wake-up: the generator parked
@@ -79,6 +77,8 @@ export function v2Context(client, directory, options = {}) {
       await sleep(0);
     },
     rawTools: tools,
+    /** The same registry the context registered into, so a caller can reach it. */
+    rpc,
   };
 }
 

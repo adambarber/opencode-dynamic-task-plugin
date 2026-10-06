@@ -1,6 +1,11 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 import type { ToolContext } from "@opencode/plugin/promise/tool";
+import type { CreateIntent } from "../shared/create-intent.js";
+import {
+  issueCreateIntent,
+  resolveCreateIntent,
+} from "../shared/create-intent.js";
 import {
   admitToolPrompt,
   fetchAgents,
@@ -14,7 +19,7 @@ import { abortSession } from "../shared/session-abort.js";
 import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { isSessionMissing } from "../shared/liveness.js";
-import { WRITE_BOUNDS } from "../shared/execution-bound.js";
+import { WRITE_BOUNDS, ExpiryPhase } from "../shared/execution-bound.js";
 import { callHost } from "../shared/client.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import {
@@ -137,6 +142,14 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       sessionBody.parentID = parentSessionId;
     }
 
+    // The create is about to be issued and cannot be un-issued, so the record of
+    // WHAT WAS ISSUED goes down first. A bound that fires leaves a session that may
+    // exist and an id nobody holds; this is the difference between that session being
+    // findable and it being one more untracked child, and it is the only fact worth
+    // having when the answer never comes.
+    const intent: CreateIntent = { parentSessionId, title: sessionBody.title };
+    issueCreateIntent(deps.intent, intent);
+
     // Bounded like every other outbound call: this one is awaited by the CALLER'S
     // turn, so a create the host never answers is not a slow dispatch — it is a
     // `dynamic_task` that never returns, with the parent's turn open behind it.
@@ -148,7 +161,15 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     (client) => client.session.create(sessionBody),
       null,
     );
-    if (created.timedOut) throw new Error(`session create unanswered after ${WRITE_BOUNDS.create}ms`);
+    if (created.timedOut) {
+      // Two phases, one flag: an absent host never sent this, but a bound that fired
+      // already handed it over, so the session may exist. The refusal says which, and
+      // names the record rather than asking the parent to search for a title it could
+      // have duplicated.
+      const refused = created.phase === ExpiryPhase.Sent;
+      if (refused) adoptLateAnswer(created.finished, intent);
+      return createFailed(created.value, intent, refused ? "unanswered" : "unsent");
+    }
     const sessionResult = created.value;
 
     const childSessionId = validateSessionResult(sessionResult);
@@ -157,9 +178,15 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       // are the two facts that make a session nobody can name findable, and they are
       // fixed at the point the create was asked for. A session created without a
       // title is titled after its agent here, so this is always a real string.
-      return createFailed(sessionResult, { parentSessionId, title: sessionBody.title });
+      //
+      // The record STAYS for this one: the host answered, so the late-answer hook is
+      // not there, and the session may still exist with nobody holding its id.
+      return createFailed(sessionResult, intent, "idless");
     }
     createdSessionId = childSessionId;
+    // The create answered, so the child is the ledger's to name and this record has
+    // done its only job.
+    resolveCreateIntent(deps.intent, intent);
 
     // Register in active state via the admission gate.
     const activeTask = registerAdmittedTask(store, { ...registration, childSessionId }, config);
@@ -249,4 +276,27 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     }
     return `ERROR: ${message}`;
   }
+}
+
+/**
+ * Close an intent whose create was handed over and not answered in time.
+ *
+ * The record is dropped ONLY if the late answer names a session, because a drop is a
+ * claim that the ledger now holds the child and this path never registers one — so a
+ * create that failed outright leaves the record standing, which is the answer that
+ * says "issued, and there is nothing behind it" rather than "nothing happened".
+ *
+ * Nothing here reports upward: the parent's turn already received its refusal, and a
+ * second message about a create it has been told about would be noise about a session
+ * it may never have got. The record is the channel; the log is the trace.
+ */
+function adoptLateAnswer(finished: Promise<unknown>, intent: CreateIntent): void {
+  void finished.then(
+    (late) => {
+      if (validateSessionResult(late) !== null) {
+        debugLog(intent.parentSessionId || UNKNOWN_PARENT, "", "create-landed-late", { title: intent.title });
+      }
+    },
+    () => {},
+  );
 }

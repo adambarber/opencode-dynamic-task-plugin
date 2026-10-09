@@ -30,8 +30,7 @@ import {
 } from "../shared/caps.js";
 import { agentKey } from "../shared/agent-key.js";
 import { type ModelOverride, isModelOverride, spellModel } from "../shared/model-choice.js";
-import type { DepthBound} from "../shared/task-policy.js";
-import { depthHeldBy, depthLimits } from "../shared/task-policy.js";
+import { type DepthBound, depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
 //jscpd:ignore-end
 /**
@@ -585,7 +584,7 @@ function editOutcome<V>(spec: {
     summary:
       spec.choice.value === null
         ? `${spec.label} now ${spec.fallback}`
-        : `${spec.label} set to ${spec.choice.value}`,
+        : `${spec.label} set to ${String(spec.choice.value)}`,
   };
 }
 

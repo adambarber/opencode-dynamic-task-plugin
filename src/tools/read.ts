@@ -2,17 +2,6 @@
 // the server's own liveness read beside them. Pure readers — they mutate
 // nothing except read-path TTL pruning.
 //jscpd:ignore-start
-import { errorMessage, eventField } from "../shared/host-shape.js";
-import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
-import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
-import {
-  type LivenessReading,
-  UNANSWERED_LIVENESS,
-  isSessionMissing,
-  readLiveness,
-  statusFromHostTurn,
-} from "../shared/liveness.js";
-import { debugLog } from "../debug-logger.js";
 import {
   API_UNAVAILABLE,
   type FleetRow,
@@ -24,11 +13,22 @@ import {
   formatTaskStatusDetail,
   taskResultRecord,
 } from "../shared/task-formatting.js";
-import { type TaskRecord, TaskState, activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
 import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
-import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
-import { agentOccupancy } from "../shared/caps.js";
+import {
+  type LivenessReading,
+  UNANSWERED_LIVENESS,
+  isSessionMissing,
+  readLiveness,
+  statusFromHostTurn,
+} from "../shared/liveness.js";
 import { type ResolvedSessionScope, type ToolDeps, unknownSessionResult } from "./context.js";
+import { type TaskRecord, TaskState, activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
+import { errorMessage, eventField } from "../shared/host-shape.js";
+import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
+import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
+import { agentOccupancy } from "../shared/caps.js";
+import { debugLog } from "../debug-logger.js";
+import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 
 //jscpd:ignore-end
 // The prologue both readers share: resolve the session, prune, look up. Pruning

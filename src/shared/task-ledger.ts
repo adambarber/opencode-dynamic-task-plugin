@@ -195,15 +195,12 @@ export function dropSettledShadows(
   retained: Map<SessionId, RetainedTaskState>,
   active: Map<SessionId, ActiveTaskState>,
 ): number {
-  let dropped = 0;
   // Deleting during iteration is safe on a Map: the iterator visits entries
   // live, and a deleted entry is simply never visited — no snapshot needed.
-  for (const key of retained.keys()) {
-    if (!active.has(key)) continue;
-    retained.delete(key);
-    dropped++;
-  }
-  return dropped;
+  // The keys are collected first so the loop body has nothing to skip.
+  const shadowed = [...retained.keys()].filter((key) => active.has(key));
+  for (const key of shadowed) retained.delete(key);
+  return shadowed.length;
 }
 
 // Returns the path written; throws only on fs failure (the caller owns the
@@ -382,15 +379,16 @@ function hydrate<T extends ActiveTaskState | RetainedTaskState>(
 ): number {
   let restored = 0;
   for (const [id, record] of records) {
-    if (outrankedBy.has(id)) {
+    const declined = outrankedBy.has(id);
+    if (declined) {
       // Declined, not placed — and the caller must be able to SAY so, or the
       // entry stays in the shared file forever: this process will never place
       // it, never settle it, and never claim it.
       superseded.push(id);
-      continue;
+    } else {
+      place(id, record);
+      restored++;
     }
-    place(id, record);
-    restored++;
   }
   return restored;
 }

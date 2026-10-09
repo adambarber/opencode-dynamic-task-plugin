@@ -31,6 +31,15 @@ export interface DispatchNode {
   children: DispatchNode[];
 }
 
+// Where a node sits in the tree: how deep, and whether its parent is one of ours.
+interface DispatchPlacement {
+  depth: number;
+  parentTracked: boolean;
+}
+
+// Every root's placement: no depth, and no tracked parent to belong under.
+const ROOT_PLACEMENT: DispatchPlacement = { depth: 0, parentTracked: false };
+
 // The store's dispatch tree, as a forest of nested DispatchNodes. This is the
 // ONE walk: the subtree stop and the fleet read are two different questions
 // about the same shape, so they cannot each grow their own idea of it.
@@ -53,14 +62,14 @@ export function dispatchForest(store: TaskStore): DispatchNode[] {
   }
 
   const placed = new Set<string>();
-  const grow = (task: TaskRecord, depth: number, parentTracked: boolean, path: ReadonlySet<string>): DispatchNode => {
+  const grow = (task: TaskRecord, { depth, parentTracked }: DispatchPlacement, path: ReadonlySet<string>): DispatchNode => {
     const node: DispatchNode = { children: [], depth, parentTracked, task };
     placed.add(task.childSessionId);
     const next = new Set(path).add(task.childSessionId);
     for (const childId of childrenOf.get(task.childSessionId) ?? []) {
       const child = records.get(childId);
       if (child === undefined || next.has(childId)) continue;
-      node.children.push(grow(child, depth + 1, true, next));
+      node.children.push(grow(child, { depth: depth + 1, parentTracked: true }, next));
     }
     return node;
   };
@@ -73,7 +82,7 @@ export function dispatchForest(store: TaskStore): DispatchNode[] {
   // go missing from the view; it becomes a root of its own rather than vanish.
   const pushRoots = (isRoot: (task: TaskRecord) => boolean): void => {
     for (const task of records.values()) {
-      if (isRoot(task)) forest.push(grow(task, 0, false, new Set()));
+      if (isRoot(task)) forest.push(grow(task, ROOT_PLACEMENT, new Set()));
     }
   };
   pushRoots((task) => !records.has(task.parentSessionId));

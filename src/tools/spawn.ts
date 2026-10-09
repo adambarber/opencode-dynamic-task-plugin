@@ -1,6 +1,7 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 //jscpd:ignore-start
+import { type CreateIntent, issueCreateIntent, resolveCreateIntent } from "../shared/create-intent.js";
 import {
   CreateRefusalReason,
   INVALID_PROMPT,
@@ -13,6 +14,7 @@ import {
   sessionLost,
   spawnConfirmation,
 } from "../shared/voice.js";
+import { ExpiryPhase, WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
 import {
   type NewTaskRegistration,
@@ -22,10 +24,7 @@ import {
   isRunning,
   transitionState,
 } from "../shared/task-state.js";
-import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
-import { ExpiryPhase, WRITE_BOUNDS } from "../shared/execution-bound.js";
-import { abortSession } from "../shared/session-abort.js";
 import {
   admitToolPrompt,
   fetchAgents,
@@ -33,26 +32,27 @@ import {
   resolveAdmission,
   resolveDependencies,
 } from "../shared/admission.js";
+import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
+import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
+import { abortSession } from "../shared/session-abort.js";
 import { agentCanNotify } from "../shared/agent-record.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import { callHost } from "../shared/client.js";
 import { debugLog } from "../debug-logger.js";
-import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { isSessionMissing } from "../shared/liveness.js";
-import { type CreateIntent, issueCreateIntent, resolveCreateIntent } from "../shared/create-intent.js";
 import { liveAgentCaps } from "../shared/caps.js";
 import { notifyRunning } from "../shared/change-sinks.js";
-import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 
 //jscpd:ignore-end
 
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
+import { createDummyLineage, type ToolDeps } from "./context.js";
 import type { SessionId } from "../shared/ids.js";
 import type { SpawnArgs } from "./args.js";
-import { createDummyLineage, type ToolDeps } from "./context.js";
 
 export type { SpawnArgs } from "./args.js";
 

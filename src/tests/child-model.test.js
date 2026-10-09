@@ -117,7 +117,7 @@ describe("the ladder, asked at the dispatch boundary", () => {
     const child = await h.spawn({ description: "child", prompt: "hi", subagent_type: "explore" });
     await sleep(0);
     await h.setSessionModel(child.id, { id: "child-model", providerID: "child-provider" });
-    const grandchild = await h.child(child.id, { description: "grandchild", prompt: "hi", subagent_type: "explore" });
+    const grandchild = h.child(child.id, { description: "grandchild", prompt: "hi", subagent_type: "explore" });
     await sleep(0);
     assert.deepEqual(routedModelOf(h, grandchild.id), { agent: "explore", modelID: "child-model", providerID: "child-provider" },
       "the grandchild inherits the model its parent was switched onto");

@@ -43,6 +43,7 @@ export { currentGateEpoch, gateLedger } from "./notify-gate.js";
 export { containFailure, safeLog } from "./notify-log.js";
 export { NOTIFY_KINDS } from "./notification-text.js";
 export type { DeliveryOutcome, NotificationRecord } from "./notify-records.js";
+import type { DeliverableDebt } from "./notify-queue.js";
 export type { DeliveryTarget, PendingDelivery } from "./notify-queue.js";
 export type { GateLedger } from "./notify-gate.js";
 export { LogLevel } from "./notify-log.js";
@@ -171,12 +172,16 @@ const NOTIFY_CHAIN_MAX = 1000;
 export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number, batch = 1): void {
   const owed = getPendingDeliveries();
   const offered = owed.slice(0, Math.max(1, batch));
+  // Parentless debts are retired before the batch is offered: there is nobody to
+  // dial, so they are dropped and named rather than counted as an attempt spent.
   for (const debt of offered) {
     if (isParentless(debt.parentSessionId)) {
       dropPending(debt);
       announceDropped(debt);
-      continue;
     }
+  }
+  const deliverable = offered.filter((debt): debt is DeliverableDebt => !isParentless(debt.parentSessionId));
+  for (const debt of deliverable) {
     void notifyParent(host, debt.parentSessionId, debt.text, {
       carriedAttempts: debt.attempts,
       childSessionId: debt.childSessionId,

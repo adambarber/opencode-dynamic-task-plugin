@@ -19,8 +19,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentKey } from "./agent-key.js";
-import type { ModelOverride } from "./model-choice.js";
-import { readModelSetting, readOverlayModel } from "./model-choice.js";
+
+import { type ModelOverride, readModelSetting, readOverlayModel } from "./model-choice.js";
 import { isPlainRecord } from "./host-shape.js";
 import { type DepthBound, depthLimits } from "./task-policy.js";
 

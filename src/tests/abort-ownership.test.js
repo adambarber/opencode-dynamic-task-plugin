@@ -114,7 +114,7 @@ describe("abort ownership", () => {
     await h.settle(c.id);
 
     const answer = await interruptAs(h, c.id);
-    assertStopped(h, c.id, answer, "naming a settled task is still the plugin's to answer");
+    assertStopped(h, { note: "naming a settled task is still the plugin's to answer", targets: c.id });
 
     answerSays(answer, "already settled");
   });
@@ -130,7 +130,7 @@ describe("abort ownership", () => {
 
   it("a dispatch that loses the race for a slot kills the session it created", async () => {
     const { h, orphan } = await withOrphan();
-    assertStopped(h, orphan, "", `the orphan ${orphan} is the plugin's to kill`);
+    assertStopped(h, { note: `the orphan ${orphan} is the plugin's to kill`, targets: orphan });
   });
 
   it("an orphan leaves a record, so a killed dispatch is still visible", async () => {
@@ -149,7 +149,7 @@ describe("abort ownership", () => {
 
     const answer = await c.tool("task_continue")({ prompt: "actually, do this instead" }, { sessionID: c.id });
 
-    assertRefusedWithoutReachingTheHost(h, answer, c.id, "a steer is an abort, and this one is its own");
+    assertRefusedWithoutReachingTheHost(h, { answer, note: "a steer is an abort, and this one is its own", targets: c.id });
   });
 
   it("a parent steering its child still works", async () => {
@@ -157,7 +157,7 @@ describe("abort ownership", () => {
 
     await c.steer("also check the logs");
 
-    assertStopped(h, c.id, "", "a parent steering its child aborts first");
+    assertStopped(h, { targets: c.id, note: "a parent steering its child aborts first" });
   });
 
   it("a self-steer leaves the child running rather than stranding it", async () => {

@@ -32,6 +32,17 @@ export interface PendingDelivery extends DeliveryTarget {
   attempts: number;
 }
 
+/**
+ * A debt that can be DIALED: the same record, narrowed to a parent that exists.
+ *
+ * `PendingDelivery` answers "what is owed"; this answers "what can be sent". The
+ * difference is one field — a parentless debt is retired and named rather than
+ * dialed — and narrowing it by hand at each reader is a cast each reader gets to
+ * disagree about, which is how a phantom session gets dialed. Named once, beside
+ * the type it narrows, so the guard produces it and no reader rebuilds it.
+ */
+export type DeliverableDebt = PendingDelivery & { parentSessionId: SessionId };
+
 /** Same bound as the in-memory record ledger: a bounded queue is a bounded file. */
 const NOTIFY_LEDGER_MAX = 200;
 

@@ -33,7 +33,7 @@ import { withSingleSlot } from "./integration.js";
 export async function withStoppedChild({ harness = {}, spawn = {}, caller = PARENT } = {}) {
   const { h, c } = await withChild({ ctx: { sessionID: caller }, harness, spawn });
   const answer = await interruptAs(h, c.id, caller);
-  assertStopped(h, c.id, answer, `a child of ${caller} is the plugin's to stop`);
+  assertStopped(h, { note: `a child of ${caller} is the plugin's to stop`, targets: c.id });
   return { answer, c, h };
 }
 
@@ -51,7 +51,7 @@ export async function withRefusedStop({ harness = {}, arrange, target, caller, c
   const speaking = caller ?? (callerFrom === "seeded" ? seeded.id : PARENT);
   const asked = target ?? seeded.id;
   const answer = await interruptAs(h, asked, speaking);
-  assertRefusedWithoutReachingTheHost(h, answer, asked, note);
+  assertRefusedWithoutReachingTheHost(h, { answer, note, targets: asked });
   return { answer, h, ...seeded };
 }
 
@@ -119,7 +119,7 @@ export async function withLostAbort() {
 export async function withStoppedTreeChild({ settled = false } = {}) {
   const tree = settled ? await withSettledMiddleChild() : await withDispatchTree();
   const answer = await interruptAs(tree.h, tree.child.id);
-  assertStopped(tree.h, [tree.child.id, tree.grandchild.id], answer, "a subtree stop reaches every member");
+  assertStopped(tree.h, { note: "a subtree stop reaches every member", targets: [tree.child.id, tree.grandchild.id] });
   return { ...tree, answer };
 }
 

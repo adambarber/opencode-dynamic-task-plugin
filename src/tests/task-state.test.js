@@ -259,18 +259,21 @@ describe("task-state: revival and annotations", () => {
     assert.ok(store.retainedTasks.has("ses_active"), "refused withdraw leaves the record retained");
   });
 
-  it("withdrawInterruptClaim returns a fresh speculative claim to active", () => {
+  it("withdrawInterruptClaim refuses everything that is not a live interrupted claim", () => {
     const store = createTaskStore();
     assert.strictEqual(withdrawInterruptClaim(store, "ses_nope"), false);
     seedSesActive(store, defaultConfig);
     transitionState(store, "ses_active", "completed");
     assert.strictEqual(withdrawInterruptClaim(store, "ses_active"), false, "only interrupted claims withdraw");
-    const store2 = storeWithActive(defaultConfig);
-    transitionState(store2, "ses_active", "interrupted");
-    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active", Date.now(), defaultConfig), true);
-    assert.strictEqual(store2.activeTasks.get("ses_active")?.state, "active");
-    assert.strictEqual(store2.retainedTasks.has("ses_active"), false);
-    assert.strictEqual(withdrawInterruptClaim(store2, "ses_active", Date.now(), defaultConfig), false, "second withdrawal refuses");
+  });
+
+  it("withdrawInterruptClaim returns a fresh speculative claim to active", () => {
+    const store = storeWithActive(defaultConfig);
+    transitionState(store, "ses_active", "interrupted");
+    assert.strictEqual(withdrawInterruptClaim(store, "ses_active", Date.now(), defaultConfig), true);
+    assert.strictEqual(store.activeTasks.get("ses_active")?.state, "active");
+    assert.strictEqual(store.retainedTasks.has("ses_active"), false);
+    assert.strictEqual(withdrawInterruptClaim(store, "ses_active", Date.now(), defaultConfig), false, "second withdrawal refuses");
   });
 
   it("reviveRetainedTask moves a settled task back to active", () => {

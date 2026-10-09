@@ -5,7 +5,7 @@
 //jscpd:ignore-start
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { AGENT_CAP_NAMES, type AgentCapName } from "../shared/caps.js";
-import type { ModelOverride } from "../shared/model-choice.js";
+
 import {
   type AgentDialog,
   type AgentEntry,
@@ -23,7 +23,7 @@ import {
   modelCell,
   namedModelCell,
 } from "./agent-editor.js";
-import { spellModel } from "../shared/model-choice.js";
+import { type ModelOverride, spellModel } from "../shared/model-choice.js";
 import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 import { DIALOG_WIDTH, fitsItsDialog } from "./geometry.js";
 

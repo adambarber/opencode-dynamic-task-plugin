@@ -83,8 +83,8 @@ async function sendDenial(
 // reason, so the recognizers are named side by side instead of spelled as two branches
 // returning the same verdict.
 const ALREADY_CLOSED: readonly { status: number; says: RegExp }[] = [
-  { says: /already (resolved|answered|decided)|permission not found|not found/i, status: 409 },
-  { says: /no such (ask|permission)|missing/i, status: 404 },
+  { says: /already (?:resolved|answered|decided)|permission not found|not found/i, status: 409 },
+  { says: /no such (?:ask|permission)|missing/i, status: 404 },
 ];
 
 function classifyDenialFailure(requestId: string, error: unknown): QuestionResult {

@@ -232,7 +232,7 @@ export const interruptAs = (h, sessionId, caller = PARENT) =>
  * only by its wording still passes when the request went out and the host 404'd,
  * which is the bug this funnel exists to catch.
  */
-export function assertRefusedWithoutReachingTheHost(h, answer, targets, note) {
+export function assertRefusedWithoutReachingTheHost(h, { answer, note, targets }) {
   for (const id of [targets].flat()) {
     assert.strictEqual(
       abortWasRequestedFor(h.client, id),
@@ -244,7 +244,7 @@ export function assertRefusedWithoutReachingTheHost(h, answer, targets, note) {
 }
 
 /** The complement: a stop the plugin WAS entitled to make, named per session. */
-export function assertStopped(h, targets, _answer, note) {
+export function assertStopped(h, { note, targets }) {
   for (const id of [targets].flat()) {
     assert.ok(
       abortWasRequestedFor(h.client, id),

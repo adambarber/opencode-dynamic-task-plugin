@@ -4,18 +4,6 @@
 // scope once and hands it to the executor. Bodies live beside their hazards; this
 // file owns the inventory the Task-00 fidelity gate reads.
 //jscpd:ignore-start
-import type { Tool } from "@opencode/schema/tool";
-import type { ToolContext } from "@opencode/plugin/promise/tool";
-import { executeDynamicTask } from "./spawn.js";
-import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "./args.js";
-import { executeTaskContinue } from "./continue.js";
-import { executeTaskNotify } from "./notice.js";
-import { executeTaskList, executeTaskResult, executeTaskStatus } from "./read.js";
-import { executeTaskInterrupt } from "./interrupt.js";
-import { type ResolvedSessionScope, type ToolDeps, openSessionScope } from "./context.js";
-import { NOTIFY_TOOL } from "../shared/notification-text.js";
-import type { Verdict } from "../shared/verdict.js";
-import { NOTICE_CLAIMS } from "../shared/notice-claim.js";
 import {
   DYNAMIC_TASK_DESCRIPTION,
   MODEL_ARG_DESCRIPTION,
@@ -26,6 +14,18 @@ import {
   TASK_RESULT_DESCRIPTION,
   TASK_STATUS_DESCRIPTION,
 } from "../shared/voice.js";
+import { type ResolvedSessionScope, type ToolDeps, openSessionScope } from "./context.js";
+import { executeTaskList, executeTaskResult, executeTaskStatus } from "./read.js";
+import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "./args.js";
+import { NOTICE_CLAIMS } from "../shared/notice-claim.js";
+import { NOTIFY_TOOL } from "../shared/notification-text.js";
+import type { Tool } from "@opencode/schema/tool";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
+import type { Verdict } from "../shared/verdict.js";
+import { executeDynamicTask } from "./spawn.js";
+import { executeTaskContinue } from "./continue.js";
+import { executeTaskInterrupt } from "./interrupt.js";
+import { executeTaskNotify } from "./notice.js";
 
 //jscpd:ignore-end
 // One JSON Schema per tool's WHOLE input, not a record of per-argument schemas: v2's

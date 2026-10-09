@@ -181,17 +181,17 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     // sites for something no decision can drift: a gate that cries wolf gets switched
     // off, and then nothing watches the ones that matter.
     const fieldNames = new Set();
-    for (const { file, source } of prodSources()) {
+    for (const { source } of prodSources()) {
       // Property access (`session.model`, `raw.maxConcurrent`) and quoted keys
       // (`{"model": ...}`, `input["model"]`) — the two spellings a field has in source.
-      for (const m of source.matchAll(/\.([A-Za-z_$][\w$]*)/g)) fieldNames.add(m[1]);
-      for (const m of source.matchAll(/["']([A-Za-z_$][\w$]*)["']\s*:/g)) fieldNames.add(m[1]);
-      for (const m of source.matchAll(/\[["']([A-Za-z_$][\w$]*)["']\]/g)) fieldNames.add(m[1]);
+      for (const m of source.matchAll(/\.(?<field>[A-Za-z_$][\w$]*)/g)) fieldNames.add(m.groups.field);
+      for (const m of source.matchAll(/["'](?<field>[A-Za-z_$][\w$]*)["']\s*:/g)) fieldNames.add(m.groups.field);
+      for (const m of source.matchAll(/\[["'](?<field>[A-Za-z_$][\w$]*)["']\]/g)) fieldNames.add(m.groups.field);
     }
     for (const { file, source } of prodSources()) {
       const forms = [
         // (1) and (2): a const bound to a bare string literal, exported or not.
-        /(?:export\s+)?const\s+([A-Z_0-9]+)\s*(?::[^=]+)?=\s*"((?:[^"\\\n]|\\.)+)"/g,
+        /(?:export\s+)?const\s+(?<constName>[A-Z_0-9]+)\s*(?::[^=]+)?=\s*"(?<literal>(?:[^"\\\n]|\\.)+)"/g,
       ];
       for (const pattern of forms) {
         for (const [, name, literal] of source.matchAll(pattern)) add(literal, name, file);

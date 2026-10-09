@@ -33,7 +33,10 @@ export const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found
  * `toSorted()` hides that from the next reader — so the comparator is named here
  * rather than spelled five ways.
  */
-export const compareStrings = (a, b) => (a < b ? -1 : (a > b ? 1 : 0));
+export const compareStrings = (a, b) => {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+};
 
 /**
  * The two comparisons every claim here shares, once each.

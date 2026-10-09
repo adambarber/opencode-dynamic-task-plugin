@@ -12,7 +12,8 @@
 import { CREATE_INTENT_PREFIX, createIntentKey, type CreateIntent } from "./create-intent.js";
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
-import { TaskState } from "./task-state.js";
+import { type SettledTaskState, TaskState } from "./task-records.js";
+import type { SessionId } from "./ids.js";
 import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
 import { textBlock } from "./text-block.js";
 
@@ -208,7 +209,7 @@ export function steerMissing(sessionId: string): { notify: string; report: strin
   };
 }
 
-export function steerWonBySettler(sessionId: string, state: string): string {
+export function steerWonBySettler(sessionId: SessionId, state: SettledTaskState): string {
   return `Session "${sessionId}" is gone on the server, but the task had already settled as ${state} — history preserved.`;
 }
 
@@ -216,11 +217,11 @@ export function steerStateUnknown(sessionId: string): string {
   return `ERROR: steer failed for "${sessionId}"; task state unknown — history unavailable.`;
 }
 
-export function steerAutoRevived(sessionId: string, agentName: string, state: string): string {
+export function steerAutoRevived(sessionId: SessionId, agentName: string, state: SettledTaskState): string {
   return `The task had settled as ${state} mid-steer, so it was revived and the message sent as a fresh turn. Follow-up sent to ${sessionId} (@${agentName}). The reply arrives as a dynamic-task-notify message.`;
 }
 
-export function steerSettledMidway(state: TaskState | "unknown"): string {
+export function steerSettledMidway(state: SettledTaskState | "unknown"): string {
   const remedy = state === TaskState.Interrupted
     ? "interrupted tasks are not revived — spawn a fresh dynamic_task instead"
     : "use task_continue to revive it for another turn";
@@ -282,7 +283,7 @@ export function noticeClaimRefused(value: string): string {
 export const NOT_A_TRACKED_TASK =
   "ERROR: Not a tracked task. Child-to-parent messages route through the task ledger; only sessions spawned by dynamic_task can notify.";
 
-export function alreadySettledNotice(state: string): string {
+export function alreadySettledNotice(state: SettledTaskState): string {
   return `Message not sent: the task already settled (${state}).`;
 }
 
@@ -381,7 +382,7 @@ export function interruptAbortFailedRetained(abortMessage: string): string {
   return `ERROR: abort failed (${abortMessage}) — task retained as interrupted; history preserved. Retry task_interrupt to abort again.`;
 }
 
-export function interruptAbortFailedSettled(abortMessage: string, state: string): string {
+export function interruptAbortFailedSettled(abortMessage: string, state: SettledTaskState | "unknown"): string {
   return `ERROR: abort failed (${abortMessage}) — task already settled as ${state}; history preserved.`;
 }
 
@@ -389,7 +390,7 @@ export function interruptServerGone(sessionId: string): string {
   return `ERROR: Session "${sessionId}" not found — history preserved.`;
 }
 
-export function interruptAlreadySettled(sessionId: string, state: string): string {
+export function interruptAlreadySettled(sessionId: SessionId, state: SettledTaskState): string {
   return `Session ${sessionId} already settled as ${state}; abort sent to the server, history preserved.`;
 }
 
@@ -407,15 +408,15 @@ export type InterruptOutcome =
   | { kind: "untracked" }
   | { kind: "gone" }
   | { kind: "server-gone" }
-  | { kind: "already-settled"; state: string }
+  | { kind: "already-settled"; state: SettledTaskState }
   | { kind: "abort-failed-active"; message: string }
   | { kind: "abort-failed-retained"; message: string }
-  | { kind: "abort-failed-settled"; state: string; message: string };
+  | { kind: "abort-failed-settled"; state: SettledTaskState | "unknown"; message: string };
 
 // The voice for one member of an interrupt, whether it stands alone or heads a
 // subtree report: same words, one function, so the two reports cannot drift
 // into saying different things about the same outcome.
-export function interruptReport(sessionId: string, outcome: InterruptOutcome): string {
+export function interruptReport(sessionId: SessionId, outcome: InterruptOutcome): string {
   switch (outcome.kind) {
     case "interrupted": return taskInterrupted(sessionId);
     case "untracked": return interruptAbortedUntracked(sessionId);
@@ -433,8 +434,8 @@ export function interruptReport(sessionId: string, outcome: InterruptOutcome): s
 // each with its own truth, so a partial stop can never read as a clean one. A
 // refused scope stops nothing at all and says so before the choices.
 export function interruptSubtreeReport(
-  rootSessionId: string,
-  members: readonly { sessionId: string; outcome: InterruptOutcome }[],
+  rootSessionId: SessionId,
+  members: readonly { sessionId: SessionId; outcome: InterruptOutcome }[],
 ): string {
   return textBlock(
     `Stopped ${members.length} task(s) in the subtree rooted at ${rootSessionId}:`,

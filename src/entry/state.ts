@@ -4,7 +4,6 @@
 import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
 import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
-
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
 import {
   configurePendingPersistence,
@@ -31,6 +30,7 @@ import { createOverlayStore } from "../shared/overlay-store.js";
 import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
+import { LifecycleStatus } from "../shared/host-events.js";
 
 //jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)
@@ -302,7 +302,7 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // same in there.
       const presence = await readSessionPresence(host, childSessionId);
       if (presence.existence !== SessionExistence.Missing) {
-        await settleRunningChild(host, store, childSessionId, { status: "idle" });
+        await settleRunningChild(host, store, childSessionId, { status: LifecycleStatus.Idle });
         continue;
       }
       // No cap source, and deliberately so: a boot-reconciled child is not a
@@ -310,7 +310,7 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // a prompt to a session the host has just denied having.
       await settleRunningChild(host, store, childSessionId, {
         cause: "The plugin restarted while this child was running, and the host then answered that it has no such session (404): the child vanished across the restart, so its work was never seen through — it did not fail.",
-        status: "error",
+        status: LifecycleStatus.Error,
       });
     } catch (error: unknown) {
       void containFailure(`Could not reconcile restored task ${childSessionId}`, error, "left active");

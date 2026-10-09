@@ -60,6 +60,21 @@ export function isTaskState(value: unknown): value is TaskState {
  */
 export type SettlementVerdict = Extract<TaskState, TaskState.Completed | TaskState.Blocked | TaskState.Error>;
 
+/**
+ * A state a task reports once it has stopped: the machine's own terminal states.
+ *
+ * Named once because four places spelled it as `Exclude<TaskState, TaskState.Active>`
+ * and a fifth read it as a bare `string` — which is how a settled state reached a
+ * sentence that renders it without anyone having said which states exist. A task
+ * that has stopped is never `active`, so the two vocabularies ("what a stopped task
+ * reports" and "a state, any state") are different questions, and answering the
+ * first with the second let every caller accept a value the machine cannot hold.
+ */
+export type SettledTaskState = Exclude<TaskState, TaskState.Active>;
+
+/** A settled state, or `unknown` when no record is left to read it from. */
+export type SettledState = SettledTaskState | "unknown";
+
 export type LineageStep = string;
 export type LineagePath = LineageStep[];
 

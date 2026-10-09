@@ -18,6 +18,7 @@ import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { NoticeClaim } from "../../dist/shared/notice-claim.js";
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { TaskState } from "../../dist/shared/task-state.js";
+import { LifecycleStatus } from "../../dist/shared/host-events.js";
 
 //jscpd:ignore-end
 const ANY_ANNOTATION = gate(
@@ -72,6 +73,7 @@ describe("invariant: production code has no `any` (Task 08)", () => {
 // concatenation rather than a literal evades the pattern, which is the known and
 // documented limit of a token-shape gate (the `any` rules above share it).
 const DISCRIMINANT_VALUES = [
+  ...Object.values(LifecycleStatus),
   ...Object.values(TaskState),
   ...Object.values(NotifyKind),
   ...Object.values(NoticeClaim),

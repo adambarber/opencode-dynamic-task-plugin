@@ -15,7 +15,7 @@
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
 //jscpd:ignore-start
-import { SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isTerminalSessionEvent, normalizeStatus } from "../../dist/shared/host-events.js";
+import { LifecycleStatus, SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isLifecycleStatus, isTerminalSessionEvent, normalizeStatus } from "../../dist/shared/host-events.js";
 import { assert, describe, it } from "./support/runner.js";
 import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 import { resolveParentSessionId, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
@@ -228,5 +228,65 @@ describe("hostPayload", () => {
   it("leaves a non-record alone", () => {
     assert.deepStrictEqual(hostPayload([1, 2]), [1, 2]);
     assertAbsent(hostPayload(undefined), "no envelope, no payload");
+  });
+});
+
+// The CLOSED read of the host's OPEN status word, and the two questions asked
+// of it. The host's vocabulary cannot be enumerated — a release can add a word —
+// so the boundary is where the open word becomes one of a fixed set, and every
+// comparison downstream is against a member.
+//
+// The adversarial case is the one that matters: a word nobody has interpreted
+// must not answer "the child succeeded". It classifies as `unknown`, which is
+// neither terminal nor a bad ending, and is the only member that is neither.
+describe("classifyLifecycleStatus", () => {
+  it("reads the words the host names onto their members", () => {
+    for (const [wire, member] of [
+      ["idle", LifecycleStatus.Idle],
+      ["completed", LifecycleStatus.Completed],
+      ["error", LifecycleStatus.Error],
+      ["deleted", LifecycleStatus.Deleted],
+      ["interrupted", LifecycleStatus.Interrupted],
+      ["started", LifecycleStatus.Started],
+    ]) {
+      assertIs(classifyLifecycleStatus(wire), member, `${wire} reads as its own member`);
+    }
+  });
+
+  it("reads a word outside the vocabulary as unknown, never as a member", () => {
+    for (const wire of ["failed", "cancelled", "", "IDLE", "error "]) {
+      assertIs(classifyLifecycleStatus(wire), LifecycleStatus.Unknown, `${JSON.stringify(wire)} is a word nobody interpreted`);
+    }
+  });
+
+  it("asks the vocabulary, not a restated list", () => {
+    // A member added to the enum is classified without anyone editing a table:
+    // the guard reads the enum's own values.
+    const members = Object.values(LifecycleStatus);
+    for (const member of members) {
+      assert.ok(isLifecycleStatus(member), `${member} is a wire word this plugin interprets`);
+    }
+    assert.ok(members.length >= 6, `the vocabulary resolved to ${members.length} members — an import drifted`);
+  });
+});
+
+// The two questions a caller asks of a closed status. Both must be ANSWERED by
+// the vocabulary rather than by a literal at the call site, which is the whole
+// reason the status is an enum: a raw `=== "error"` compiles clean under a
+// rename and a new member falls through to whatever the final `else` was.
+describe("endedBadly", () => {
+  it("is true for the two members that end a task badly", () => {
+    assert.ok(endedBadly(LifecycleStatus.Error), "error ends a task badly");
+    assert.ok(endedBadly(LifecycleStatus.Deleted), "deletion ends a task badly");
+  });
+
+  it("is false for every other member, unknown included", () => {
+    const notBad = Object.values(LifecycleStatus).filter(
+      (member) => member !== LifecycleStatus.Error && member !== LifecycleStatus.Deleted,
+    );
+    assert.ok(notBad.length >= 5, `the claim covers ${notBad.length} members — too few to be a claim`);
+    for (const member of notBad) {
+      assert.ok(!endedBadly(member), `${member} is not a bad ending`);
+    }
   });
 });

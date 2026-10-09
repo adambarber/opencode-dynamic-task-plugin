@@ -31,8 +31,8 @@ import { admitToolPrompt } from "../shared/admission.js";
 import { debugLog } from "../debug-logger.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { textBlock } from "../shared/text-block.js";
-
 import { type ResolvedSessionScope } from "./context.js";
+import type { SettledTaskState } from "../shared/task-records.js";
 
 //jscpd:ignore-end
 export type { ContinueArgs } from "./args.js";
@@ -51,7 +51,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // The state a revival was auto-triggered from, or undefined when the parent
   // simply followed up on a settled task. Set by the M9 arm below and read by
   // the shared revival, so the two paths cannot drift in what they do.
-  let autoRevivedFrom: string | undefined;
+  let autoRevivedFrom: SettledTaskState | undefined;
 
   const active = activeFor(store, sessionId);
   if (active) {

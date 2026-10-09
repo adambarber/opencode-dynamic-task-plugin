@@ -23,7 +23,7 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 //jscpd:ignore-start
-import { type ActiveTaskState, type NewTaskRegistration, TaskState, withoutAdvisory } from "./task-records.js";
+import { type ActiveTaskState, type NewTaskRegistration, type SettledTaskState, TaskState, withoutAdvisory } from "./task-records.js";
 import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import type { SessionId } from "./ids.js";
@@ -282,7 +282,7 @@ export function activeRecord(registration: NewTaskRegistration, startedAt: numbe
  */
 export function retainedRecord(
   active: ActiveTaskState,
-  state: Exclude<TaskState, TaskState.Active>,
+  state: SettledTaskState,
   retainedAt: number,
 ): RetainedTaskState {
   return { ...withoutAdvisory(active), retainedAt, state };
@@ -328,7 +328,7 @@ export function registerActiveTask(
 export function transitionState(
   store: TaskStore,
   childSessionId: SessionId,
-  to: Exclude<TaskState, TaskState.Active>,
+  to: SettledTaskState,
 ): { state: TaskState; completed: boolean; task?: ActiveTaskState | RetainedTaskState } {
   const active = store.activeTasks.get(childSessionId);
   if (active) {
@@ -389,7 +389,7 @@ export function transitionState(
 export function recordSettledOutcome(
   store: TaskStore,
   childSessionId: SessionId,
-  outcome: Exclude<TaskState, TaskState.Active>,
+  outcome: SettledTaskState,
   failureClass?: FailureClass,
 ): boolean {
   return amendRetained(store, childSessionId, (retained) => {

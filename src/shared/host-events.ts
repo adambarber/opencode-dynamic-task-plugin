@@ -189,23 +189,73 @@ export function getEventLifecycleStatus(event: unknown): string {
 }
 
 /**
- * The two lifecycle words that end a task BADLY rather than successfully.
+ * The lifecycle words this plugin interprets, as a closed enum.
  *
- * The lifecycle status itself is an OPEN vocabulary — it is whatever the host
- * said, lowercased — so it cannot be an enum, and that means a comparison against
- * these two words is a raw literal in a place that has to know them. So they are
- * named here, once, and every caller asks the question instead of restating the
- * answer. A caller that spells its own copy of this pair is a caller whose idea
- * of "the child died" can drift from everyone else's.
+ * The host's own vocabulary is OPEN — `getEventLifecycleStatus` answers with
+ * whatever the host said, lowercased, and a release can add a word — so the raw
+ * word cannot be this type, and pretending otherwise would be a lie the compiler
+ * enforces in the wrong direction (every caller forced to handle a value that
+ * cannot occur, while a value that CAN occur is spelled `string` and accepted).
+ *
+ * So the boundary stays open and the READING is closed: `classifyLifecycleStatus`
+ * maps the host's word onto one of these once, and everything downstream compares
+ * members. An enum rather than a string union for the reason the rest of this
+ * plugin uses one: a member compared as a raw literal compiles clean under a
+ * rename, and a newly added member falls through to whatever the final `else`
+ * was. `unknown` is that fallback made a member, so a word nobody has interpreted
+ * is not silently the success answer — which is the failure that settled a failed
+ * child as COMPLETED and told the parent its work had succeeded.
  */
-const ENDED_BADLY = ["error", "deleted"] as const;
-
-/** Did this lifecycle status end the task in failure rather than in success? */
-export function endedBadly(status: string): boolean {
-  return (ENDED_BADLY as readonly string[]).includes(status);
+export enum LifecycleStatus {
+  Idle = "idle",
+  Completed = "completed",
+  Error = "error",
+  Deleted = "deleted",
+  Interrupted = "interrupted",
+  Started = "started",
+  Unknown = "unknown",
 }
 
-const TERMINAL_EVENT_STATUSES = new Set(["idle", "completed", "error", "deleted"]);
+/** The statuses that end a task at all, as the members the reader checks. */
+const TERMINAL_EVENT_STATUSES: ReadonlySet<LifecycleStatus> = new Set([
+  LifecycleStatus.Idle,
+  LifecycleStatus.Completed,
+  LifecycleStatus.Error,
+  LifecycleStatus.Deleted,
+]);
+
+/** The wire words, as values: what a stored status can be, before it is read. */
+const LIFECYCLE_WORDS: readonly string[] = Object.values(LifecycleStatus);
+
+/**
+ * Is this string one of the lifecycle words this plugin interprets?
+ *
+ * A predicate, not a cast, mirroring `isTaskState`: the enum is the vocabulary,
+ * and `Object.values` is how the vocabulary is read rather than restated, so a
+ * member added to the machine is classified without anyone editing a list.
+ */
+export function isLifecycleStatus(value: string): value is LifecycleStatus {
+  return LIFECYCLE_WORDS.includes(value);
+}
+
+/**
+ * Read the host's lifecycle word as one of this plugin's closed vocabulary.
+ *
+ * The ONE place an open host word becomes a closed status, and the only place a
+ * wire word is turned into a member: the failure that produced this was a
+ * `getEventLifecycleStatus` fallback yielding "failed" — a word `endedBadly` did
+ * not contain, so a failed turn settled as completed and the parent was told the
+ * work succeeded. A word outside the vocabulary is `unknown`, which is neither
+ * terminal nor a bad ending: the safe answer for a status nobody has read yet.
+ */
+export function classifyLifecycleStatus(raw: string): LifecycleStatus {
+  return isLifecycleStatus(raw) ? raw : LifecycleStatus.Unknown;
+}
+
+/** Did this lifecycle status end the task in failure rather than in success? */
+export function endedBadly(status: LifecycleStatus): boolean {
+  return status === LifecycleStatus.Error || status === LifecycleStatus.Deleted;
+}
 
 // The turn-ending events are named in host-events.ts against the SDK's own union
 // — no `includes("delet")` substring guess, which is what a belief that
@@ -216,5 +266,5 @@ export function isTerminalSessionEvent(event: unknown): boolean {
   const type = eventWord(event, "type");
   if (isTurnEnding(type)) return true;
   if (type === SESSION_DELETED) return true;
-  return TERMINAL_EVENT_STATUSES.has(getEventLifecycleStatus(event));
+  return TERMINAL_EVENT_STATUSES.has(classifyLifecycleStatus(getEventLifecycleStatus(event)));
 }

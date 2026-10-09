@@ -34,7 +34,7 @@ import { type ParentSession, UNKNOWN_PARENT, eventLooksDeleted, isParentless } f
 import type { SessionId } from "../shared/ids.js";
 import { debugLog } from "../debug-logger.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
-import { endedBadly, getEventLifecycleStatus, getSessionIdFromEvent } from "../shared/host-events.js";
+import { type LifecycleStatus, classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent } from "../shared/host-events.js";
 import { errorMessage } from "../shared/host-shape.js";
 import {
   gateLedger,
@@ -205,8 +205,8 @@ function resumeAfterBlip(
 // one funnel — a second settlement path is how a record ends up `completed`
 // with no notice.
 export interface SettlementSignal {
-  /** The host's own word: idle, error, deleted. */
-  status: string;
+  /** The host's word, read as this plugin's closed vocabulary. */
+  status: LifecycleStatus;
   /** The event that carried it, when there was one. */
   event?: unknown;
   /** Why we are settling without an event. */
@@ -227,7 +227,7 @@ export interface SettlementSignal {
  */
 // The words a settlement interprets, before any outcome is read.
 interface SettlementFacts {
-  status: string;
+  status: LifecycleStatus;
   event: unknown;
   declaredBlocked: boolean;
 }
@@ -426,7 +426,7 @@ export async function handleChildLifecycleEvent(
   if (isRunning(store, childSessionId)) {
     await settleRunningChild(host, store, childSessionId, {
       event,
-      status: getEventLifecycleStatus(event),
+      status: classifyLifecycleStatus(getEventLifecycleStatus(event)),
     }, capSource);
     return;
   }
@@ -438,7 +438,7 @@ export async function handleChildLifecycleEvent(
     // and errored records are final — post-interrupt errors are our own
     // abort's echo, not a discovery, and escalating them would notify the
     // parent of a "failure" it deliberately caused.
-    const status = getEventLifecycleStatus(event);
+    const status = classifyLifecycleStatus(getEventLifecycleStatus(event));
     if (!endedBadly(status)) return;
     if (settledRecord.state !== TaskState.Completed) return;
     const outcome = await hydrateLatestOutcome(host, childSessionId);

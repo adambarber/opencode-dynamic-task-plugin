@@ -21,10 +21,11 @@ import { emitRetainedChange } from "./change-sinks.js";
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
 import type { FailureClass } from "./failure-class.js";
-import type { TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
+import type { SettledTaskState } from "./task-records.js";
+import type { TaskRecord, TaskRecordBase } from "./task-state.js";
 
 export interface RetainedTaskState extends TaskRecordBase {
-  state: Exclude<TaskState, TaskState.Active>;
+  state: SettledTaskState;
   retainedAt: number;
   abortError?: string | undefined;
   /**

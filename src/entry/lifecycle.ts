@@ -18,6 +18,7 @@ import {
   terminalEventIsAttributable,
   transitionState,
 } from "../shared/task-state.js";
+import type { AgentCapSource } from "../shared/caps.js";
 import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
 import { FailureClass, classifyFailure, failureNote } from "../shared/failure-class.js";
 import {
@@ -26,9 +27,15 @@ import {
   hydrateLatestOutcome,
   invokePrompt,
 } from "../shared/prompt.js";
+import type { ModelOverride } from "../shared/prompt.js";
 import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
-import { UNKNOWN_PARENT, eventLooksDeleted, isParentless } from "../shared/session-lifecycle.js";
+import type { OpaqueHost } from "../shared/client.js";
+import { type ParentSession, UNKNOWN_PARENT, eventLooksDeleted, isParentless } from "../shared/session-lifecycle.js";
+import type { SessionId } from "../shared/ids.js";
+import { debugLog } from "../debug-logger.js";
+import { declaredBlocked } from "../shared/notice-claim.js";
 import { endedBadly, getEventLifecycleStatus, getSessionIdFromEvent } from "../shared/host-events.js";
+import { errorMessage } from "../shared/host-shape.js";
 import {
   gateLedger,
   notifyParent,
@@ -37,12 +44,6 @@ import {
   safeLog,
   settlementKind,
 } from "../shared/notify.js";
-import type { AgentCapSource } from "../shared/caps.js";
-import type { ModelOverride } from "../shared/prompt.js";
-import type { OpaqueHost } from "../shared/client.js";
-import { debugLog } from "../debug-logger.js";
-import { declaredBlocked } from "../shared/notice-claim.js";
-import { errorMessage } from "../shared/host-shape.js";
 import { resolveDependencies } from "../shared/admission.js";
 import { textBlock } from "../shared/text-block.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
@@ -57,8 +58,8 @@ import { waitsReleasedBody } from "../shared/voice.js";
 // resolves false immediately after recording the non-delivery.
 export function deliverParent(
   host: OpaqueHost,
-  parentSessionId: string,
-  childSessionId: string,
+  parentSessionId: ParentSession,
+  childSessionId: SessionId,
   description: string,
   kind: NotifyKind,
   text: string,
@@ -154,7 +155,7 @@ export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildR
 export function reviveWithPrompt(
   host: OpaqueHost,
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   prompt: string,
   capSource: AgentCapSource | undefined,
   model?: ModelOverride,
@@ -178,7 +179,7 @@ export function reviveWithPrompt(
 function resumeAfterBlip(
   host: OpaqueHost,
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   capSource: AgentCapSource | undefined,
 ): boolean {
   const text = textBlock(
@@ -263,7 +264,7 @@ function settleOutcome(input: SettlementFacts & {
 export async function settleRunningChild(
   host: OpaqueHost,
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   signal: SettlementSignal,
   capSource?: AgentCapSource,
 ): Promise<boolean> {
@@ -299,8 +300,6 @@ export async function settleRunningChild(
     status,
   };
   let verdict = settlementVerdict(facts);
-  const {parentSessionId} = task;
-  const childDescription = task.description;
   try {
     transitionState(store, childSessionId, verdict);
   } catch {
@@ -363,8 +362,8 @@ export async function settleRunningChild(
   // Observability survives via the ledger record, logged on completion.
   // deliverParent is the single funnel for parent-directed writes: it
   // records parentless settlements instead of dialing a phantom session.
-  void deliverParent(host, parentSessionId, childSessionId, childDescription, kind, settled.text)
-    .then((delivered) => debugLog(parentSessionId, childSessionId, "completion-notify", { delivered, kind }));
+  void deliverParent(host, task.parentSessionId, task.childSessionId, task.description, kind, settled.text)
+    .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "completion-notify", { delivered, kind }));
   // The parent's answer to a settlement this child may have been an EDGE for is
   // not sent here. It is sent by the store's own retained-change sink, which every
   // settlement passes through whether it came through this function or not — see
@@ -389,14 +388,14 @@ export async function settleRunningChild(
 export function releaseWaitingDispatches(
   host: OpaqueHost,
   store: TaskStore,
-  settledChildSessionId: string,
+  settledChildSessionId: SessionId,
 ): void {
   const release = releaseWaitsFor(store, settledChildSessionId, {
     isAdmissible: (wait: DependencyWait) => resolveDependencies(store, wait.dependsOn, wait.dependsOnSettled),
-    stillRunning: (id: string) => isRunning(store, id),
+    stillRunning: (id: SessionId) => isRunning(store, id),
   });
   if (release.ready.length === 0 && release.dead.length === 0) return;
-  const byParent = new Map<string, DependencyWait[]>();
+  const byParent = new Map<ParentSession, DependencyWait[]>();
   for (const wait of [...release.ready, ...release.dead]) {
     const group = byParent.get(wait.parentSessionId) ?? [];
     group.push(wait);

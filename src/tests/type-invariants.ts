@@ -20,7 +20,9 @@
 import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 import type { DependencyWait } from "../shared/dispatch-wait.js";
 import type { TaskStore } from "../shared/store.js";
+import { UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import { createTaskStore } from "../shared/store.js";
+import { sessionIdOf } from "../shared/ids.js";
 
 //jscpd:ignore-end
 const store = createTaskStore();
@@ -40,7 +42,7 @@ const wait: DependencyWait = {
   dependsOn: [],
   dependsOnSettled: [],
   description: "t",
-  parentSessionId: "ses_parent",
+  parentSessionId: sessionIdOf("ses_parent") ?? UNKNOWN_PARENT,
   queuedAt: 0,
 };
 

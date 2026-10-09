@@ -12,15 +12,16 @@
 
 //jscpd:ignore-start
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import { emitRetainedChange } from "./change-sinks.js";
+import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
+import { emitRetainedChange } from "./change-sinks.js";
 //jscpd:ignore-end
 // Types only. The record shapes stay declared in `task-state` because they are
 // the store's own vocabulary and a dozen modules import them by name; importing
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
-import type { TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
 import type { FailureClass } from "./failure-class.js";
+import type { TaskRecord, TaskRecordBase, TaskState } from "./task-state.js";
 
 export interface RetainedTaskState extends TaskRecordBase {
   state: Exclude<TaskState, TaskState.Active>;
@@ -56,7 +57,7 @@ export interface RetainedTaskState extends TaskRecordBase {
  * stays with the edge, because an internal rollback and a policy revival
  * genuinely disagree about a missing record.
  */
-export function retainedFor(store: TaskStore, childSessionId: string): RetainedTaskState | undefined {
+export function retainedFor(store: TaskStore, childSessionId: SessionId): RetainedTaskState | undefined {
   return store.retainedTasks.get(childSessionId);
 }
 
@@ -72,7 +73,7 @@ export function retainedFor(store: TaskStore, childSessionId: string): RetainedT
  */
 export function actOnSettled(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   act: (retained: RetainedTaskState) => boolean,
 ): boolean {
   const retained = retainedFor(store, childSessionId);
@@ -85,7 +86,7 @@ export function actOnSettled(
  * and not a decision: two sites had spelled the same literal, and a change kind
  * that quietly stopped carrying its record would have been invisible in both.
  */
-export const settledChange = (id: string, record: RetainedTaskState): LedgerChange => ({
+export const settledChange = (id: SessionId, record: RetainedTaskState): LedgerChange => ({
   id,
   kind: LedgerChangeKind.Settled,
   record,
@@ -107,7 +108,7 @@ export const settledChange = (id: string, record: RetainedTaskState): LedgerChan
  */
 export function decideRetained(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   amend: (retained: RetainedTaskState) => LedgerChange | false,
 ): boolean {
   return actOnSettled(store, childSessionId, (retained) => {
@@ -163,7 +164,7 @@ export const failureClassOf = (task: TaskRecord | null | undefined): FailureClas
  * design, so writing it would be a file write for a field that is not ledger
  * truth. `decideRetained`'s docblock says why it is not one of its amendments.
  */
-export function noteAbortLanded(store: TaskStore, childSessionId: string): boolean {
+export function noteAbortLanded(store: TaskStore, childSessionId: SessionId): boolean {
   return actOnSettled(store, childSessionId, (retained) => {
     retained.lastAbortAt = Date.now();
     return true;

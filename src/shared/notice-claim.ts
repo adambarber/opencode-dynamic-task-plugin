@@ -9,9 +9,10 @@
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
 //jscpd:ignore-start
-import { activeFor, annotateActive } from "./task-state.js";
 import type { ActiveTaskState } from "./task-state.js";
+import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
+import { activeFor, annotateActive } from "./task-state.js";
 
 //jscpd:ignore-end
 /**
@@ -54,7 +55,7 @@ export function noticeRecord(message: string, claim: NoticeClaim, at: number): A
   return { at, claim, message };
 }
 
-export function annotateNotice(store: TaskStore, childSessionId: string, message: string, claim: NoticeClaim): boolean {
+export function annotateNotice(store: TaskStore, childSessionId: SessionId, message: string, claim: NoticeClaim): boolean {
   return annotateActive(store, childSessionId, (active) => {
     active.lastNotice = noticeRecord(message, claim, Date.now());
   });
@@ -70,7 +71,7 @@ export function annotateNotice(store: TaskStore, childSessionId: string, message
  * settled on its own claim. A turn replacement is the only boundary a record
  * has, and a revival produces a new record with no declaration at all.
  */
-export function declaredBlocked(store: TaskStore, childSessionId: string): boolean {
+export function declaredBlocked(store: TaskStore, childSessionId: SessionId): boolean {
   const active = activeFor(store, childSessionId);
   if (!active?.lastNotice || active.lastNotice.claim !== NoticeClaim.NeedsInput) return false;
   return active.lastNotice.at > (active.replacedAt ?? 0);
@@ -81,7 +82,7 @@ export function declaredBlocked(store: TaskStore, childSessionId: string): boole
 // a replaced turn's terminal copies can still be in flight. Advisory like a
 // notice — the task stays active either way — so this pair may read and clear
 // the stamps but never moves a lifecycle state.
-export function markTurnReplacement(store: TaskStore, childSessionId: string): boolean {
+export function markTurnReplacement(store: TaskStore, childSessionId: SessionId): boolean {
   return annotateActive(store, childSessionId, (active) => {
     active.replacedAt = Date.now();
   });
@@ -92,7 +93,7 @@ export function markTurnReplacement(store: TaskStore, childSessionId: string): b
  * have reached the server, so the ORIGINAL turn is still live and will show its
  * own life signs.
  */
-export function clearTurnReplacement(store: TaskStore, childSessionId: string): boolean {
+export function clearTurnReplacement(store: TaskStore, childSessionId: SessionId): boolean {
   const active = activeFor(store, childSessionId);
   if (!active || active.replacedAt === undefined) return false;
   delete active.replacedAt;

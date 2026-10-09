@@ -13,10 +13,11 @@
 
 //jscpd:ignore-start
 import { type ActiveTaskState, type LineagePath, type RetainedTaskState, type TaskIdentity, type TaskRecordBase, oldestRetainedId } from "./task-state.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { DEFAULT_CONFIG } from "./config.js";
-import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { type LedgerChangeSink, type TaskStore } from "./store.js";
+import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import type { SessionId } from "./ids.js";
 import { TaskState, isTaskState, withoutAdvisory } from "./task-records.js";
 import { emitRetainedChange } from "./change-sinks.js";
 import { isEventRecord } from "./host-shape.js";
@@ -191,8 +192,8 @@ export function durableActiveTask(record: ActiveTaskState): ActiveTaskState {
  *   contradicted itself rather than only being told what survived.
  */
 export function dropSettledShadows(
-  retained: Map<string, RetainedTaskState>,
-  active: Map<string, ActiveTaskState>,
+  retained: Map<SessionId, RetainedTaskState>,
+  active: Map<SessionId, ActiveTaskState>,
 ): number {
   let dropped = 0;
   // Deleting during iteration is safe on a Map: the iterator visits entries
@@ -266,13 +267,13 @@ export function dropSettledShadows(
  * record would read the shared file N times for no gain.
  */
 function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
-  records: Map<string, T>,
-  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
-  place: (id: string, record: T, changes: LedgerChange[]) => void,
+  records: Map<SessionId, T>,
+  outrankedBy: ReadonlyMap<SessionId, ActiveTaskState | RetainedTaskState>,
+  place: (id: SessionId, record: T, changes: LedgerChange[]) => void,
   fire: LedgerChangeSink | undefined,
 ): number {
   const changes: LedgerChange[] = [];
-  const superseded: string[] = [];
+  const superseded: SessionId[] = [];
   const restored = hydrate(records, (id, record) => place(id, record, changes), outrankedBy, superseded);
   for (const id of superseded) changes.push({ id, kind: LedgerChangeKind.Stopped });
   if (changes.length > 0) fire?.(changes);
@@ -283,7 +284,7 @@ function restoreInto<T extends ActiveTaskState | RetainedTaskState>(
  * The running half, restored as running tasks. Over-cap actives block new
  * admissions until they settle.
  */
-export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskState>): number {
+export function restoreActive(store: TaskStore, records: Map<SessionId, ActiveTaskState>): number {
   return restoreInto(
     records,
     store.retainedTasks,
@@ -303,7 +304,7 @@ export function restoreActive(store: TaskStore, records: Map<string, ActiveTaskS
  */
 export function restoreRetained(
   store: TaskStore,
-  records: Map<string, RetainedTaskState>,
+  records: Map<SessionId, RetainedTaskState>,
   maxEntries: number = DEFAULT_CONFIG.retainedTaskMaxEntries,
 ): number {
   return restoreInto(
@@ -349,7 +350,7 @@ function pruneIfBounded(
   store: TaskStore,
   record: RetainedTaskState,
   maxEntries: number,
-): { kept: RetainedTaskState; forgotten: string | null } | { dropped: true } {
+): { kept: RetainedTaskState; forgotten: SessionId | null } | { dropped: true } {
   if (store.retainedTasks.size < maxEntries) return { forgotten: null, kept: record };
   const oldestId = oldestRetainedId(store);
   if (!oldestId) return { forgotten: null, kept: record };
@@ -374,10 +375,10 @@ function pruneIfBounded(
 // seen twice, so the rule is simply "the other half outranks me" and each caller
 // names the map that holds it instead of re-deriving the lookup.
 function hydrate<T extends ActiveTaskState | RetainedTaskState>(
-  records: Map<string, T>,
-  place: (id: string, record: T) => void,
-  outrankedBy: ReadonlyMap<string, ActiveTaskState | RetainedTaskState>,
-  superseded: string[] = [],
+  records: Map<SessionId, T>,
+  place: (id: SessionId, record: T) => void,
+  outrankedBy: ReadonlyMap<SessionId, ActiveTaskState | RetainedTaskState>,
+  superseded: SessionId[] = [],
 ): number {
   let restored = 0;
   for (const [id, record] of records) {

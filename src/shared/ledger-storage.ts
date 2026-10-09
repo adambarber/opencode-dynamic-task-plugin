@@ -23,6 +23,7 @@ import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { type PendingDelivery, owedIdentity } from "./notify.js";
 import type { Read, StateFacade } from "./state-facade.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
 import {
   activeFrom,
   dropSettledShadows,
@@ -104,13 +105,13 @@ export const LEDGER_KEYS = {
 
 /** What a boot read: the records, and what it could not say about them. */
 export interface LoadedLedger {
-  active: Map<string, ActiveTaskState>;
+  active: Map<SessionId, ActiveTaskState>;
   /** Host-held values that were not records. Counted, never handed over. */
   dropped: number;
   /** The host did not answer, so this is a PARTIAL read. Never call it an empty one. */
   incomplete: boolean;
   pending: PendingDelivery[];
-  retained: Map<string, RetainedTaskState>;
+  retained: Map<SessionId, RetainedTaskState>;
 }
 
 export interface LedgerStore {
@@ -124,10 +125,9 @@ export interface LedgerStore {
  * someone else's name is corrupt, not merely mislabelled, and admitting it would
  * restore one child under another's id.
  */
-function childOf(prefix: string, key: string, childSessionId: string): string | null {
-  return key.startsWith(`${prefix}/`) && key.slice(prefix.length + 1) === childSessionId
-    ? childSessionId
-    : null;
+function childOf(prefix: string, key: string, childSessionId: string): SessionId | null {
+  const id = sessionIdOf(childSessionId);
+  return id !== undefined && key.startsWith(`${prefix}/`) && key.slice(prefix.length + 1) === id ? id : null;
 }
 
 /**
@@ -149,14 +149,14 @@ export function createLedgerStore(facade: StateFacade): LedgerStore {
         readAll(LEDGER_PREFIXES.retained, isRetainedEntry),
         readAll(LEDGER_PREFIXES.pending, isStoredNotice),
       ]);
-      const running = new Map<string, ActiveTaskState>();
+      const running = new Map<SessionId, ActiveTaskState>();
       let dropped = 0;
       for (const [key, entry] of active.records) {
         const child = childOf(LEDGER_PREFIXES.active, key, entry.childSessionId);
         if (child === null) dropped++;
         else running.set(child, activeFrom(entry));
       }
-      const settled = new Map<string, RetainedTaskState>();
+      const settled = new Map<SessionId, RetainedTaskState>();
       for (const [key, entry] of retained.records) {
         const child = childOf(LEDGER_PREFIXES.retained, key, entry.childSessionId);
         if (child === null) dropped++;

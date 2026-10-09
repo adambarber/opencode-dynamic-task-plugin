@@ -24,9 +24,10 @@
 
 //jscpd:ignore-start
 import { type ActiveTaskState, type NewTaskRegistration, TaskState, withoutAdvisory } from "./task-records.js";
-import { agentKey } from "./agent-key.js";
 import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import type { SessionId } from "./ids.js";
+import { agentKey } from "./agent-key.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 
 //jscpd:ignore-end
@@ -113,7 +114,7 @@ const isWithdrawable = (retained: RetainedTaskState, claimTimeMs: number): boole
 
 export function withdrawInterruptClaim(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   claimTimeMs: number,
   bounds?: AgentCapSource,
 ): boolean {
@@ -146,7 +147,7 @@ export function withdrawInterruptClaim(
  */
 function reclaimAsActive(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   retained: RetainedTaskState,
   overrides: Partial<ActiveTaskState> = {},
 ): ActiveTaskState {
@@ -326,7 +327,7 @@ export function registerActiveTask(
 // rejected-transition shape is not the caller's problem.
 export function transitionState(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   to: Exclude<TaskState, TaskState.Active>,
 ): { state: TaskState; completed: boolean; task?: ActiveTaskState | RetainedTaskState } {
   const active = store.activeTasks.get(childSessionId);
@@ -387,7 +388,7 @@ export function transitionState(
  */
 export function recordSettledOutcome(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   outcome: Exclude<TaskState, TaskState.Active>,
   failureClass?: FailureClass,
 ): boolean {
@@ -415,7 +416,7 @@ export function recordSettledOutcome(
 // steers keep the task's model); omitted keeps it.
 export function reviveRetainedTask(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   config?: AgentCapSource,
   model?: ModelOverride,
 ): ActiveTaskState {
@@ -459,7 +460,7 @@ export function reviveRetainedTask(
 // reports false, and no writer can quietly mutate a lifecycle field instead.
 export function annotateActive(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   apply: (active: ActiveTaskState) => void,
 ): boolean {
   const active = activeFor(store, childSessionId);
@@ -476,7 +477,7 @@ export function annotateActive(
 // the floor when no event has been seen.
 export function noteActivity(
   store: TaskStore,
-  childSessionId: string | null | undefined,
+  childSessionId: SessionId | null | undefined,
   terminal: boolean,
 ): boolean {
   if (!childSessionId) return false;
@@ -512,7 +513,7 @@ export function turnReplacementPending(
  * restored one, whose attribution state was deliberately not persisted — has no
  * prior turn, so it always settles.
  */
-export function terminalEventIsAttributable(store: TaskStore, childSessionId: string): boolean {
+export function terminalEventIsAttributable(store: TaskStore, childSessionId: SessionId): boolean {
   return !turnReplacementPending(store.activeTasks.get(childSessionId));
 }
 
@@ -557,7 +558,7 @@ export function listTasks(store: TaskStore): {
   };
 }
 
-export function findTask(store: TaskStore, childSessionId: string): TaskRecord | null {
+export function findTask(store: TaskStore, childSessionId: SessionId): TaskRecord | null {
   return store.activeTasks.get(childSessionId) ?? retainedFor(store, childSessionId) ?? null;
 }
 
@@ -572,7 +573,7 @@ export function findTask(store: TaskStore, childSessionId: string): TaskRecord |
 // `abortError` is kept by the ledger reader (only `lastAbortAt` is dropped), so
 // this one owes the file — the reason a transport failure outlives the process
 // is that the record outlives it.
-export function recordAbortError(store: TaskStore, childSessionId: string, error: string): void {
+export function recordAbortError(store: TaskStore, childSessionId: SessionId, error: string): void {
   amendRetained(store, childSessionId, (retained) => {
     retained.abortError = error;
     return true;
@@ -590,7 +591,7 @@ export function recordAbortError(store: TaskStore, childSessionId: string, error
 // writer spells them the same way, so the pair lives here once.
 function amendRetained(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   edit: (record: RetainedTaskState) => boolean,
 ): boolean {
   return decideRetained(store, childSessionId, (retained) => {
@@ -606,19 +607,19 @@ function amendRetained(
  * each caller. The policy that answers it stays with the edge — an internal
  * rollback, a settlement and a revival genuinely disagree about a missing record.
  */
-export function activeFor(store: TaskStore, childSessionId: string): ActiveTaskState | undefined {
+export function activeFor(store: TaskStore, childSessionId: SessionId): ActiveTaskState | undefined {
   return store.activeTasks.get(childSessionId);
 }
 
 
 /** Is this one of ours, still running? The same question `activeFor` answers, as a verdict. */
-export function isRunning(store: TaskStore, childSessionId: string): boolean {
+export function isRunning(store: TaskStore, childSessionId: SessionId): boolean {
   return activeFor(store, childSessionId) !== undefined;
 }
 
 /** The oldest retained record, as an id: the eviction order for both prunes. */
-export function oldestRetainedId(store: TaskStore): string | null {
-  let oldest: string | null = null;
+export function oldestRetainedId(store: TaskStore): SessionId | null {
+  let oldest: SessionId | null = null;
   let oldestAt = Infinity;
   for (const [id, t] of store.retainedTasks) {
     if (t.retainedAt < oldestAt) {

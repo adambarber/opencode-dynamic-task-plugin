@@ -9,6 +9,8 @@
 //jscpd:ignore-start
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { NotifyKind } from "./notification-text.js";
+import type { ParentSession } from "./session-lifecycle.js";
+import type { SessionId } from "./ids.js";
 import { safeLog } from "./notify-log.js";
 
 //jscpd:ignore-end
@@ -18,8 +20,8 @@ import { safeLog } from "./notify-log.js";
  * two declarations to reach and a third meaning to keep in step.
  */
 export interface DeliveryTarget {
-  parentSessionId: string;
-  childSessionId: string;
+  parentSessionId: ParentSession;
+  childSessionId: SessionId;
   kind: NotifyKind;
 }
 

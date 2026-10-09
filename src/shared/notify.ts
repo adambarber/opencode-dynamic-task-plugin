@@ -19,8 +19,11 @@ import {
   notifyRecord,
   recordNotification,
 } from "./notify-records.js";
+import { NotifyKind } from "./notification-text.js";
 import { type OpaqueHost, callHost } from "./client.js";
+import type { SessionId } from "./ids.js";
 import { type SettlementVerdict, TaskState } from "./task-state.js";
+import { WRITE_BOUNDS } from "./execution-bound.js";
 import {
   announceDropped,
   dropPending,
@@ -29,8 +32,7 @@ import {
   queuePending,
 } from "./notify-queue.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
-import { NotifyKind } from "./notification-text.js";
-import { WRITE_BOUNDS } from "./execution-bound.js";
+import { isParentless } from "./session-lifecycle.js";
 import { safeLog } from "./notify-log.js";
 
 //jscpd:ignore-end
@@ -102,7 +104,7 @@ const DEFAULT_PENDING_MAX_ATTEMPTS = 3;
 interface NotifyParentOptions {
   sleep?: (ms: number) => Promise<void>;
   record?: (entry: NotificationRecord) => void;
-  childSessionId: string;
+  childSessionId: SessionId;
   kind: NotifyKind;
   dedupKey?: string;
   // Attempts earlier boots already spent on this exact write, restored from the
@@ -171,6 +173,11 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
   const owed = getPendingDeliveries();
   const offered = owed.slice(0, Math.max(1, batch));
   for (const debt of offered) {
+    if (isParentless(debt.parentSessionId)) {
+      dropPending(debt);
+      announceDropped(debt);
+      continue;
+    }
     void notifyParent(host, debt.parentSessionId, debt.text, {
       carriedAttempts: debt.attempts,
       childSessionId: debt.childSessionId,
@@ -198,7 +205,7 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
  * A refusal is never inferred from a failed read, only from the host's own
  * words, so a flaky channel defers nothing and loses nothing.
  */
-async function parentRefusal(host: OpaqueHost, sessionId: string): Promise<string | null> {
+async function parentRefusal(host: OpaqueHost, sessionId: SessionId): Promise<string | null> {
   // One read for the one question. A refusal is an open turn the host DESCRIBED — a
   // clock with no completion. A host that described nothing (no clock at all) refused
   // nothing, and reading that as a refusal declares every undescribed parent dead.
@@ -209,7 +216,7 @@ async function parentRefusal(host: OpaqueHost, sessionId: string): Promise<strin
 
 export async function notifyParent(
   host: OpaqueHost,
-  parentSessionId: string,
+  parentSessionId: SessionId,
   message: string,
   opts: NotifyParentOptions,
 ): Promise<boolean> {

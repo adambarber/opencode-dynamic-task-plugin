@@ -15,6 +15,7 @@
 // added to a task record breached the build.
 
 //jscpd:ignore-start
+import type { SessionId } from "./ids.js";
 import type { TaskRecord, TaskStore } from "./task-state.js";
 
 //jscpd:ignore-end
@@ -89,7 +90,7 @@ function findDispatchNode(nodes: DispatchNode[], sessionId: string): DispatchNod
   return undefined;
 }
 
-const descendDispatch = (node: DispatchNode): string[] => [
+const descendDispatch = (node: DispatchNode): SessionId[] => [
   node.task.childSessionId,
   ...node.children.flatMap(descendDispatch),
 ];
@@ -100,7 +101,7 @@ const descendDispatch = (node: DispatchNode): string[] => [
 // knowable descendants — the store only ever learns a parent link from a
 // record — so the answer is that session alone, which the caller's report
 // already names as untracked.
-export function subtreeTaskIds(store: TaskStore, rootSessionId: string): string[] {
+export function subtreeTaskIds(store: TaskStore, rootSessionId: SessionId): SessionId[] {
   const node = findDispatchNode(dispatchForest(store), rootSessionId);
   return node === undefined ? [rootSessionId] : descendDispatch(node);
 }

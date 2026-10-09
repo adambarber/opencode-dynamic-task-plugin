@@ -13,8 +13,9 @@
 // that decides what happened.
 
 //jscpd:ignore-start
-import { eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
 import type { OpenCodeEvent } from "@opencode/client/promise";
+import { type SessionId, sessionIdOf } from "./ids.js";
+import { eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
 
 //jscpd:ignore-end
 /** The host's event union — the source of truth for every name below. */
@@ -61,7 +62,7 @@ function isAskedData(value: unknown): value is AskedData {
 export interface HostAsk {
   /** The host's own id for the ask — the `requestID` a reply carries. */
   askId: string;
-  sessionId: string;
+  sessionId: SessionId;
 }
 
 /**
@@ -74,7 +75,8 @@ export interface HostAsk {
 export function readHostAsk(event: unknown): HostAsk | null {
   const data = eventField(event, "data");
   if (!isAskedData(data)) return null;
-  return { askId: data.id, sessionId: data.sessionID };
+  const sid = sessionIdOf(data.sessionID);
+  return sid ? { askId: data.id, sessionId: sid } : null;
 }
 
 // Host event payloads are untyped JSON at this boundary; the total readers that
@@ -131,7 +133,7 @@ export function normalizeStatus(raw: unknown): string {
 // Session id lives at data.info.id (host) or data.sessionID
 // (tests); aggregate/top-level spellings are fallbacks. A missing prefix
 // means the payload is not a session event.
-export function getSessionIdFromEvent(event: unknown): string | null {
+export function getSessionIdFromEvent(event: unknown): SessionId | null {
   const data = eventField(event, "data");
   const sid =
     eventString(data, "sessionID")
@@ -145,7 +147,7 @@ export function getSessionIdFromEvent(event: unknown): string | null {
     ?? eventString(event, "id")
     ?? eventString(event, "sessionID");
   if (!sid || !sid.startsWith("ses_")) return null;
-  return sid;
+  return sessionIdOf(sid) ?? null;
 }
 
 // Lifecycle status extraction for every observed event shape: the event's `data`

@@ -12,6 +12,8 @@
 
 //jscpd:ignore-start
 import type { DependencyBlock } from "./admission.js";
+import type { ParentSession } from "./session-lifecycle.js";
+import type { SessionId } from "./ids.js";
 import { evictOldest } from "./bounded-map.js";
 
 //jscpd:ignore-end
@@ -24,7 +26,7 @@ import { evictOldest } from "./bounded-map.js";
 export type Admissibility = { ok: true } | { ok: false; pending: DependencyBlock[] };
 
 /** Whether a child session is still running, asked fresh at the moment of the answer. */
-export type StillRunning = (childSessionId: string) => boolean;
+export type StillRunning = (childSessionId: SessionId) => boolean;
 
 /** Everything needed to close out one wait: the wait, where it lives, and where it goes. */
 interface Settling {
@@ -59,7 +61,7 @@ export interface DependencyWait {
   /** The parent's own words for this dispatch — its identity in every message. */
   description: string;
   /** The parent that asked. The hint goes here, not to the settling task's parent. */
-  parentSessionId: string;
+  parentSessionId: ParentSession;
   /** Edges that must reach `completed`. */
   dependsOn: string[];
   /** Edges that only have to settle. */

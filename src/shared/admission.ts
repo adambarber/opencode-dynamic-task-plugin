@@ -7,10 +7,10 @@
 
 //jscpd:ignore-start
 import type { DynamicTaskConfig } from "./config.js";
-import { resolveAgentCaps } from "./caps.js";
-import { liveAgentCaps } from "./caps.js";
-import { safeLog } from "./notify.js";
 import { type OpaqueHost, callHost } from "./client.js";
+import { liveAgentCaps } from "./caps.js";
+import { resolveAgentCaps } from "./caps.js";
+import { safeLog } from "./notify.js";
 
 //jscpd:ignore-end
 // The one host call the listing makes. Stated structurally so a FAKE can satisfy it
@@ -29,16 +29,11 @@ export interface AgentLister<C = AgentCaller> {
   host: OpaqueHost<C>;
 }
 
-import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
-import type { Verdict } from "./verdict.js";
-import { errorMessage } from "./host-shape.js";
 import { READ_BOUNDS } from "./execution-bound.js";
-import {
-  validateAgent,
-  validateLineage,
-  buildTaskLineage,
-  isDispatchableAgent,
-} from "./task-policy.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
+import type { Verdict } from "./verdict.js";
+import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
+import { errorMessage } from "./host-shape.js";
 import {
   registerActiveTask,
   findTask,
@@ -50,6 +45,12 @@ import {
   type TaskStore,
 } from "./task-state.js";
 import { toAgentRecords, type AgentRecord } from "./agent-record.js";
+import {
+  validateAgent,
+  validateLineage,
+  buildTaskLineage,
+  isDispatchableAgent,
+} from "./task-policy.js";
 
 /**
  * A refusal, as the one value that carries both the decision and the words.
@@ -180,7 +181,7 @@ const SATISFIED_DEPENDENCY_STATES: readonly TaskState[] = [TaskState.Completed];
 const SETTLED_DEPENDENCY_STATES: readonly TaskState[] = TASK_STATES.filter((state) => state !== TaskState.Active);
 
 export interface DependencyBlock {
-  id: string;
+  id: SessionId;
   state: TaskState;
 }
 
@@ -198,9 +199,11 @@ export function resolveDependencies(
   const check = (id: string, states: readonly TaskState[]): void => {
     if (seen.has(id)) return;
     seen.add(id);
-    const task = findTask(store, id);
+    const sid = sessionIdOf(id);
+    if (sid === undefined) return;
+    const task = findTask(store, sid);
     if (!task) return;
-    if (!states.includes(task.state)) pending.push({ id, state: task.state });
+    if (!states.includes(task.state)) pending.push({ id: sid, state: task.state });
   };
   for (const id of strict) check(id, SATISFIED_DEPENDENCY_STATES);
   for (const id of lenient) check(id, SETTLED_DEPENDENCY_STATES);

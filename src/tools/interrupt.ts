@@ -14,9 +14,15 @@
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
 //jscpd:ignore-start
-import { abortSession, stopPlan } from "../shared/session-abort.js";
-import { isEventRecord } from "../shared/host-shape.js";
-import { safeLog } from "../shared/notify.js";
+import {
+  type InterruptOutcome,
+  interruptReport,
+  interruptScopeRefused,
+  interruptStopRefused,
+  interruptSubtreeReport,
+} from "../shared/voice.js";
+import type { Refusal } from "../shared/verdict.js";
+import { type ResolvedSessionScope } from "./context.js";
 import {
   TaskState,
   isRunning,
@@ -26,15 +32,13 @@ import {
   transitionState,
   withdrawInterruptClaim,
 } from "../shared/task-state.js";
-import { type ResolvedSessionScope } from "./context.js";
-import type { Refusal } from "../shared/verdict.js";
-import {
-  type InterruptOutcome,
-  interruptReport,
-  interruptScopeRefused,
-  interruptStopRefused,
-  interruptSubtreeReport,
-} from "../shared/voice.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
+import { isEventRecord } from "../shared/host-shape.js";
+import { safeLog } from "../shared/notify.js";
+
+import type { SessionId } from "../shared/ids.js";
+
+
 
 //jscpd:ignore-end
 /**
@@ -79,7 +83,7 @@ interface InterruptClaim {
  * The `because` is a parameter because the two sites differ exactly there.
  */
 function abortFailedActive(
-  sessionId: string,
+  sessionId: SessionId,
   message: string,
   because: string,
 ): InterruptOutcome {
@@ -88,7 +92,7 @@ function abortFailedActive(
 }
 
 /** The synchronous half: settle the task before the server is told anything. */
-function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string): InterruptClaim {
+function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: SessionId): InterruptClaim {
   const claimTime = Date.now();
   if (!isRunning(store, sessionId)) return { claimTime, claimed: false };
   try {
@@ -102,7 +106,7 @@ function claimInterrupt(store: ResolvedSessionScope["store"], sessionId: string)
 /** The awaited half: abort the claimed session and say what actually happened. */
 async function abortClaimed(
   scope: ResolvedSessionScope,
-  sessionId: string,
+  sessionId: SessionId,
   claim: InterruptClaim,
 ): Promise<InterruptOutcome> {
   const { host, store, config } = scope;
@@ -173,7 +177,7 @@ export async function executeTaskInterrupt(scope: ResolvedSessionScope, args?: u
   if (plan.refusal !== undefined) return interruptStopRefused(sessionId, plan.refusal);
 
   const claims = plan.targets.map((id) => ({ claim: claimInterrupt(store, id), id }));
-  const members: { sessionId: string; outcome: InterruptOutcome }[] = [];
+  const members: { sessionId: SessionId; outcome: InterruptOutcome }[] = [];
   for (const { id, claim } of claims) {
     members.push({ outcome: await abortClaimed(scope, id, claim), sessionId: id });
   }

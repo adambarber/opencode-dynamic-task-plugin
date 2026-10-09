@@ -14,9 +14,10 @@
  * conventional.
  */
 //jscpd:ignore-start
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
+import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import type { SessionId } from "./ids.js";
 
 //jscpd:ignore-end
 /**
@@ -65,14 +66,14 @@ export class TaskStore implements WaitRegistry {
   // joined here so a settlement writes the whole file exactly once.
   onActiveChange?: LedgerChangeSink | undefined;
 
-  readonly #active = new Map<string, ActiveTaskState>();
-  readonly #retained = new Map<string, RetainedTaskState>();
+  readonly #active = new Map<SessionId, ActiveTaskState>();
+  readonly #retained = new Map<SessionId, RetainedTaskState>();
 
-  get activeTasks(): ReadonlyMap<string, ActiveTaskState> {
+  get activeTasks(): ReadonlyMap<SessionId, ActiveTaskState> {
     return this.#active;
   }
 
-  get retainedTasks(): ReadonlyMap<string, RetainedTaskState> {
+  get retainedTasks(): ReadonlyMap<SessionId, RetainedTaskState> {
     return this.#retained;
   }
 
@@ -101,7 +102,7 @@ export class TaskStore implements WaitRegistry {
    * change, and the delete inside here is what makes the impossible unrepresentable
    * even if a future caller forgets.
    */
-  markRunning(id: string, record: ActiveTaskState): LedgerChange {
+  markRunning(id: SessionId, record: ActiveTaskState): LedgerChange {
     this.#retained.delete(id);
     this.#active.set(id, record);
     return { id, kind: LedgerChangeKind.Running, record };
@@ -112,7 +113,7 @@ export class TaskStore implements WaitRegistry {
    * matching what the callers were told before this was a method: they fire on the
    * transition, not on the presence of an entry.
    */
-  stopRunning(id: string): LedgerChange {
+  stopRunning(id: SessionId): LedgerChange {
     this.#active.delete(id);
     return { id, kind: LedgerChangeKind.Stopped };
   }
@@ -124,7 +125,7 @@ export class TaskStore implements WaitRegistry {
    * reason `markRunning` empties the settled one: the two halves are exclusive, and
    * the store — not its callers — is what makes that true.
    */
-  markRetained(id: string, record: RetainedTaskState): void {
+  markRetained(id: SessionId, record: RetainedTaskState): void {
     this.#active.delete(id);
     this.#retained.set(id, record);
   }
@@ -135,7 +136,7 @@ export class TaskStore implements WaitRegistry {
    * and not an argument here: the reason is what the ledger is told, and the
    * ledger is told by the caller.
    */
-  dropRetained(id: string): boolean {
+  dropRetained(id: SessionId): boolean {
     return this.#retained.delete(id);
   }
 }

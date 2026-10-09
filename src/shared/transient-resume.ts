@@ -25,8 +25,9 @@
  */
 
 //jscpd:ignore-start
-import { FailureClass, classifyFailure } from "./failure-class.js";
 import type { AgentCapSource } from "./caps.js";
+import { FailureClass, classifyFailure } from "./failure-class.js";
+import type { SessionId } from "./ids.js";
 import type { TaskState } from "./task-state.js";
 import type { TaskStore } from "./store.js";
 import { retainedFor } from "./settled-record.js";
@@ -63,7 +64,7 @@ export const TRANSIENT_RESUME_BUDGET = 2;
  */
 export function transientResumeAvailable(
   store: TaskStore,
-  childSessionId: string,
+  childSessionId: SessionId,
   verdict: TaskState,
   errorDetail: unknown,
   capSource: AgentCapSource | undefined,

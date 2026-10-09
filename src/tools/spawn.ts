@@ -1,38 +1,6 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 //jscpd:ignore-start
-import type { ToolContext } from "@opencode/plugin/promise/tool";
-import { issueCreateIntent, resolveCreateIntent, type CreateIntent } from "../shared/create-intent.js";
-import {
-  admitToolPrompt,
-  fetchAgents,
-  registerAdmittedTask,
-  resolveAdmission,
-  resolveDependencies,
-} from "../shared/admission.js";
-import { agentCanNotify } from "../shared/agent-record.js";
-import { liveAgentCaps } from "../shared/caps.js";
-import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
-import { abortSession } from "../shared/session-abort.js";
-import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
-import { errorMessage } from "../shared/host-shape.js";
-import { isSessionMissing } from "../shared/liveness.js";
-import { WRITE_BOUNDS, ExpiryPhase } from "../shared/execution-bound.js";
-import { callHost } from "../shared/client.js";
-import { buildBackgroundPrompt } from "../shared/task-formatting.js";
-import {
-  type NewTaskRegistration,
-  TaskState,
-  activeRecord,
-  agentCapacityRefusal,
-  isRunning,
-  transitionState,
-} from "../shared/task-state.js";
-import { notifyRunning } from "../shared/change-sinks.js";
-import { holdDispatchWait } from "../shared/dispatch-wait.js";
-import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
-import { debugLog } from "../debug-logger.js";
-import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
   INVALID_PROMPT,
   PERMISSION_DENIED,
@@ -44,12 +12,45 @@ import {
   sessionLost,
   spawnConfirmation,
 } from "../shared/voice.js";
+import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
+import {
+  type NewTaskRegistration,
+  TaskState,
+  activeRecord,
+  agentCapacityRefusal,
+  isRunning,
+  transitionState,
+} from "../shared/task-state.js";
+import type { ToolContext } from "@opencode/plugin/promise/tool";
+import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
+import { WRITE_BOUNDS, ExpiryPhase } from "../shared/execution-bound.js";
+import { abortSession } from "../shared/session-abort.js";
+import {
+  admitToolPrompt,
+  fetchAgents,
+  registerAdmittedTask,
+  resolveAdmission,
+  resolveDependencies,
+} from "../shared/admission.js";
+import { agentCanNotify } from "../shared/agent-record.js";
+import { buildBackgroundPrompt } from "../shared/task-formatting.js";
+import { callHost } from "../shared/client.js";
+import { debugLog } from "../debug-logger.js";
+import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
+import { errorMessage } from "../shared/host-shape.js";
+import { holdDispatchWait } from "../shared/dispatch-wait.js";
+import { isSessionMissing } from "../shared/liveness.js";
+import { issueCreateIntent, resolveCreateIntent, type CreateIntent } from "../shared/create-intent.js";
+import { liveAgentCaps } from "../shared/caps.js";
+import { notifyRunning } from "../shared/change-sinks.js";
+import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 
 //jscpd:ignore-end
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
-import { createDummyLineage, type ToolDeps } from "./context.js";
+import type { SessionId } from "../shared/ids.js";
 import type { SpawnArgs } from "./args.js";
+import { createDummyLineage, type ToolDeps } from "./context.js";
 
 export type { SpawnArgs } from "./args.js";
 
@@ -124,7 +125,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   const requestedModelLabel =
     resolvedModel !== undefined ? `${resolvedModel.providerID}/${resolvedModel.modelID}` : null;
 
-  let createdSessionId: string | null = null;
+  let createdSessionId: SessionId | null = null;
   const parentSessionId = resolveParentSessionId(ctx);
   // The registration, minus the id the create has not returned yet. Built BEFORE
   // the try so the failure path can leave the record the success path would have

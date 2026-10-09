@@ -9,10 +9,11 @@
 
 //jscpd:ignore-start
 import { type OpaqueHost, type OpenCodeClient, callHost } from "./client.js";
-import { findTask, isRunning } from "./task-state.js";
+import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage } from "./host-shape.js";
+import { findTask, isRunning } from "./task-state.js";
 import { isSessionMissing } from "./liveness.js";
 import { subtreeTaskIds } from "./dispatch-tree.js";
 
@@ -83,9 +84,9 @@ export interface AbortTarget {
  */
 export function stopPlan(
   target: Pick<AbortTarget, "store" | "callerSessionId">,
-  sessionId: string,
+  sessionId: SessionId,
   reachSubtree: boolean,
-): { refusal?: AbortRefusal; targets: string[] } {
+): { refusal?: AbortRefusal; targets: SessionId[] } {
   const { store, callerSessionId } = target;
   if (callerSessionId !== undefined && callerSessionId === sessionId) {
     return { refusal: { kind: AbortRefusalKind.Self }, targets: [] };
@@ -100,7 +101,7 @@ export function stopPlan(
 /** The outcome an accepted request produces: stopped, and nothing more to say. */
 const ABORT_SENT: AbortOutcome = { serverGone: false, transportError: undefined };
 
-export function abortSession(target: AbortTarget, sessionId: string): Promise<AbortOutcome> {
+export function abortSession(target: AbortTarget, sessionId: SessionId): Promise<AbortOutcome> {
   const { host } = target;
   // Decided before any transport is touched, and answered without an await: a
   // refusal must cost nothing and must hold when the server is gone, because a

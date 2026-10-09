@@ -15,6 +15,8 @@
 //jscpd:ignore-start
 import type { ModelOverride } from "./prompt.js";
 import type { NoticeClaim } from "./notice-claim.js";
+import type { ParentSession } from "./session-lifecycle.js";
+import type { SessionId } from "./ids.js";
 
 //jscpd:ignore-end
 /**
@@ -67,8 +69,8 @@ export type LineagePath = LineageStep[];
 // added to a task is added here — a fourth coat is a fourth place a rename or a
 // new required field silently fails to reach.
 export interface TaskIdentity {
-  childSessionId: string;
-  parentSessionId: string;
+  childSessionId: SessionId;
+  parentSessionId: ParentSession;
   // The REGISTRY id: the routing key the host resolves and the policy key the caps
   // fold on. Never rendered to an operator as-is — renderers read `agentLabel`.
   agentName: string;

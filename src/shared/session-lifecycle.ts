@@ -12,8 +12,9 @@
 // process CWD, which for tests and multi-project hosts is somebody else's tree.
 
 //jscpd:ignore-start
-import { eventWord, isEventRecord } from "./host-shape.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
 import { envelopeShells } from "./host-events.js";
+import { eventWord, isEventRecord } from "./host-shape.js";
 
 //jscpd:ignore-end
 // Parent session resolution: the SDK context field first, then the
@@ -41,14 +42,17 @@ export interface SessionContext {
  *
  * Produce it with `|| UNKNOWN_PARENT`, test it with isParentless.
  */
-export const UNKNOWN_PARENT = "unknown";
+export const UNKNOWN_PARENT = "unknown" as const;
+
+/** The parent a child carries: a real session, or the recorded unknown. */
+export type ParentSession = SessionId | typeof UNKNOWN_PARENT;
 
 /** Whether a parent id names nobody: absent, or the recorded unknown. */
-export function isParentless(parentSessionId: string | null | undefined): boolean {
+export function isParentless(parentSessionId: ParentSession | null | undefined): parentSessionId is typeof UNKNOWN_PARENT | null | undefined {
   return !parentSessionId || parentSessionId === UNKNOWN_PARENT;
 }
 
-export function resolveParentSessionId(ctx: SessionContext): string | null {
+export function resolveParentSessionId(ctx: SessionContext): SessionId | null {
   if (!isEventRecord(ctx)) return null;
   const record = ctx;
   const session = isEventRecord(record.session) ? record.session : undefined;
@@ -60,7 +64,10 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
     record.id,
   ];
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate;
+    if (typeof candidate === "string") {
+      const id = sessionIdOf(candidate);
+      if (id !== undefined) return id;
+    }
   }
   return null;
 }
@@ -68,10 +75,10 @@ export function resolveParentSessionId(ctx: SessionContext): string | null {
 // Session-create responses arrive wrapped in the transport envelope and, under
 // some hosts, a second session envelope — unwrap known shells recursively,
 // never blindly.
-export function validateSessionResult(result: unknown): string | null {
+export function validateSessionResult(result: unknown): SessionId | null {
   if (!isEventRecord(result)) return null;
   const record = result;
-  if (typeof record.id === "string" && record.id) return record.id;
+  if (typeof record.id === "string" && record.id) return sessionIdOf(record.id) ?? null;
   for (const inner of envelopeShells(record)) {
     const found = validateSessionResult(inner);
     if (found) return found;

@@ -10,6 +10,7 @@
 //jscpd:ignore-start
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 import type { PendingDelivery } from "./notify.js";
+import type { SessionId } from "./ids.js";
 
 //jscpd:ignore-end
 /**
@@ -32,9 +33,9 @@ export enum LedgerChangeKind {
 }
 
 export type LedgerChange =
-  | { readonly kind: LedgerChangeKind.Running; readonly id: string; readonly record: ActiveTaskState }
-  | { readonly kind: LedgerChangeKind.Settled; readonly id: string; readonly record: RetainedTaskState }
-  | { readonly kind: LedgerChangeKind.Stopped; readonly id: string }
-  | { readonly kind: LedgerChangeKind.Forgotten; readonly id: string }
+  | { readonly kind: LedgerChangeKind.Running; readonly id: SessionId; readonly record: ActiveTaskState }
+  | { readonly kind: LedgerChangeKind.Settled; readonly id: SessionId; readonly record: RetainedTaskState }
+  | { readonly kind: LedgerChangeKind.Stopped; readonly id: SessionId }
+  | { readonly kind: LedgerChangeKind.Forgotten; readonly id: SessionId }
   | { readonly kind: LedgerChangeKind.Owed; readonly record: PendingDelivery }
   | { readonly kind: LedgerChangeKind.Delivered; readonly record: PendingDelivery };

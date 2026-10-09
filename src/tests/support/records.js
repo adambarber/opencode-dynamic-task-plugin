@@ -24,15 +24,12 @@ import {
   retainedRecord,
   withoutAdvisory,
 } from "../../../dist/shared/task-state.js";
-import {
-  annotateNotice,
-  markTurnReplacement,
-  noticeRecord,
-} from "../../../dist/shared/notice-claim.js";
+import {annotateNotice, markTurnReplacement} from "../../../dist/shared/notice-claim.js";
 import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
 import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
 
 //jscpd:ignore-end
+export { noticeRecord } from '../../../dist/shared/notice-claim.js';
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({
   agentName: "explore",
@@ -101,7 +98,7 @@ export const runningEntry = (childSessionId, overrides = {}) => ({
 export const notifiedAs = (kind, outcome, target = {}) =>
   notifyRecord({ childSessionId: "ses_1", kind, parentSessionId: UNKNOWN_PARENT, ...target }, "delivered", outcome);
 
-export { noticeRecord };
+
 /**
  * A delivery the plugin owes and has not landed: the exact write, not a recipe to
  * rebuild one, plus how many attempts the previous boot already spent.

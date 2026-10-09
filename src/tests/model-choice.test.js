@@ -59,7 +59,7 @@ function countingInherit(answer = PARENT_MODEL) {
 async function ladderCounted(agent, options) {
   const inherit = countingInherit();
   const resolved = await ladderFor(agent, { ...options, inherit: inherit.inherit });
-  return { resolved, calls: inherit.state.calls };
+  return { calls: inherit.state.calls, resolved };
 }
 
 /** A document stating both a fleet model and one agent's own, the two configured layers. */
@@ -133,7 +133,7 @@ describe("a stated model, read out of untrusted JSON", () => {
       undefined, null, 7, true, [], {}, "",
       "  ", "p/", "/m",
       { providerID: "z-ai" }, { modelID: "glm-5.3" },
-      { providerID: "", modelID: "x" }, { providerID: "p", modelID: "" },
+      { modelID: "x", providerID: "" }, { modelID: "", providerID: "p" },
       { modelID: 5, providerID: "p" },
     ];
     for (const value of bad) {

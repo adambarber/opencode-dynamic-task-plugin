@@ -9,7 +9,7 @@ import type { Refusal } from "../shared/verdict.js";
 import { type SessionId, sessionIdOf } from "../shared/ids.js";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { UntrackedStatus } from "../shared/liveness.js";
-import { findTask, type TaskRecord, type TaskStore } from "../shared/task-state.js";
+import { type TaskRecord, type TaskStore, findTask } from "../shared/task-state.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { isParentless, resolveParentSessionId } from "../shared/session-lifecycle.js";
 
@@ -84,8 +84,8 @@ export function openSessionScope(deps: ToolDeps, args: unknown, ctx: ToolContext
       config: deps.config,
       host: deps.host,
       intent: deps.intent,
-      store: deps.store,
       sessionId,
+      store: deps.store,
     },
   };
 }

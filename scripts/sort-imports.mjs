@@ -22,7 +22,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 //jscpd:ignore-end
 /** `none` is a bare side-effect import; `all` is a namespace; the rest count specifiers. */
-const RANK = { none: 0, all: 1, multiple: 2, single: 3 };
+const RANK = { all: 1, multiple: 2, none: 0, single: 3 };
 
 /** One `import ...;` plus the byte range it occupies, or null. */
 function statementAt(source, start) {
@@ -55,11 +55,11 @@ function specifiers(text) {
 function order(text) {
   const head = text.slice("import".length, text.lastIndexOf("from"));
   const names = specifiers(text);
-  if (!/[{*]/.test(head)) return { rank: RANK.none, key: "" };
+  if (!/[{*]/.test(head)) return { key: "", rank: RANK.none };
   const space = head.match(/\*\s+as\s+(\w+)/);
-  if (space) return { rank: RANK.all, key: space[1] };
-  if (names.length > 1) return { rank: RANK.multiple, key: names[0] };
-  return { rank: RANK.single, key: names[0] ?? "" };
+  if (space) return { key: space[1], rank: RANK.all };
+  if (names.length > 1) return { key: names[0], rank: RANK.multiple };
+  return { key: names[0] ?? "", rank: RANK.single };
 }
 
 /** Specifiers alphabetical inside the brace, one line when the brace was one line. */
@@ -125,7 +125,7 @@ export function sortImports(source) {
   if (found.length < 2) return null;
   const ordered = found
     .map((slot) => ({ ...slot, text: sortedInside(slot.text), ...order(slot.text) }))
-    .toSorted((a, b) => a.rank - b.rank || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .toSorted((a, b) => a.rank - b.rank || (a.key < b.key ? -1 : (a.key > b.key ? 1 : 0)))
     .map((slot) => slot.text);
 
   // The guard. A permutation changes order and nothing else, so if this ever fails the

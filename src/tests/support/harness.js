@@ -401,7 +401,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * reads it from. Going through the door rather than writing the map means a case
      * cannot put the host in a state the host would never be in.
      */
-    setSessionModel: (id, model) => client.session.switchModel({ sessionID: id, model }),
+    setSessionModel: (id, model) => client.session.switchModel({ model, sessionID: id }),
 
     /** The host's own not-found: it has no such session, and will say so. */
     forgetHostSession: (id) => {

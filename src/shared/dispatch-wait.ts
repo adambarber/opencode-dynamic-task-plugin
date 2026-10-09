@@ -135,7 +135,7 @@ export function releaseWaitsFor(
     const watching = [wait.dependsOn, wait.dependsOnSettled].some((edges) =>
       edges.includes(settledChildSessionId),
     );
-    if (watching) settleWait({ store, release, key, wait }, judges);
+    if (watching) settleWait({ key, release, store, wait }, judges);
   }
   return release;
 }

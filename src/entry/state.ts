@@ -13,7 +13,7 @@ import {
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
-import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
+import { type IntentStore, createIntentWriter } from "../shared/create-intent.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
 import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";

@@ -472,8 +472,8 @@ export function applyCapEdit(
     before: current.agents?.[key]?.[choice.cap],
     build: (value) => ({ ...current, agents: withAgentField(current, key, choice.cap, value) }),
     choice,
-    label,
     fallback: "falls back to the config file",
+    label,
     refuse: (value) => refuseCap(choice.cap, label, value),
   });
 }
@@ -630,14 +630,14 @@ function refuseModel(label: string, value: ModelOverride): string | null {
 export function applyGlobalModelEdit(current: AgentOverlay, choice: ModelChoice): EditOutcome {
   return editOutcome({
     before: current.model,
-    choice,
-    label: MODEL_LABEL,
-    fallback: "falls back to each agent's own model, then the parent's own",
-    refuse: (value) => refuseModel(MODEL_LABEL, value),
     build: (value) => {
       const { model: _dropped, ...rest } = current;
       return value === null ? rest : { ...rest, model: value };
     },
+    choice,
+    fallback: "falls back to each agent's own model, then the parent's own",
+    label: MODEL_LABEL,
+    refuse: (value) => refuseModel(MODEL_LABEL, value),
   });
 }
 
@@ -654,10 +654,10 @@ export function applyAgentModelEdit(current: AgentOverlay, agent: string, choice
   const label = `${agent} ${MODEL_LABEL}`;
   return editOutcome({
     before: current.agents?.[key]?.model,
-    choice,
-    label,
-    fallback: "falls back to the global model",
-    refuse: (value) => refuseModel(label, value),
     build: (value) => ({ ...current, agents: withAgentField(current, key, "model", value) }),
+    choice,
+    fallback: "falls back to the global model",
+    label,
+    refuse: (value) => refuseModel(label, value),
   });
 }

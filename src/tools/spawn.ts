@@ -24,7 +24,7 @@ import {
 } from "../shared/task-state.js";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
-import { WRITE_BOUNDS, ExpiryPhase } from "../shared/execution-bound.js";
+import { ExpiryPhase, WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { abortSession } from "../shared/session-abort.js";
 import {
   admitToolPrompt,
@@ -41,10 +41,12 @@ import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
 import { isSessionMissing } from "../shared/liveness.js";
-import { issueCreateIntent, resolveCreateIntent, type CreateIntent } from "../shared/create-intent.js";
+import { type CreateIntent, issueCreateIntent, resolveCreateIntent } from "../shared/create-intent.js";
 import { liveAgentCaps } from "../shared/caps.js";
 import { notifyRunning } from "../shared/change-sinks.js";
 import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
+
+//jscpd:ignore-end
 
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
@@ -117,10 +119,10 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // is live, and a configured model skips the host read entirely, so the ladder costs
   // as many host calls as the ladder has layers with nothing stated above them.
   const resolvedModel = await resolveChildModel({
-    requested: admitted.modelOverride,
-    scope: liveAgentCaps(config),
     agent: agent.id,
     inherit: () => readParentModel(host, resolveParentSessionId(ctx)),
+    requested: admitted.modelOverride,
+    scope: liveAgentCaps(config),
   });
   const requestedModelLabel =
     resolvedModel !== undefined ? `${resolvedModel.providerID}/${resolvedModel.modelID}` : null;

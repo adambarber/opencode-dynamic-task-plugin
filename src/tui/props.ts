@@ -14,9 +14,9 @@ import {
   CAP_NOUN,
   CEILING_LABEL,
   type CapCell,
-  type ModelCell,
-  MODEL_LABEL,
   MODEL_FROM_CONFIG,
+  MODEL_LABEL,
+  type ModelCell,
   capCellOf,
   ceilingOf,
   displayName,
@@ -229,7 +229,7 @@ export function modelPickerProps(
     // No provenance clause when the model is the parent's: there is nothing to attribute
     // it to but a live read, and "from config" beside `parent's model` would be a claim
     // about a file that holds no such setting.
-    title: pickerTitle(subject, cell.stated ? null : cell.model === null ? null : MODEL_FROM_CONFIG),
+    title: pickerTitle(subject, cell.stated ? null : (cell.model === null ? null : MODEL_FROM_CONFIG)),
     current: { agent: null, kind: ChoiceKind.ModelValue, value: cell.stated ? cell.model : null } as const satisfies PickerChoice,
     options: [
       ...models.map((model) => ({
@@ -243,8 +243,8 @@ export function modelPickerProps(
       // the same rule the value pickers follow.
       ...(cell.stated
         ? [{
-            title: "Inherit",
             description: inheritLabel,
+            title: "Inherit",
             value: { agent: null, kind: ChoiceKind.ModelValue, value: null } as const satisfies PickerChoice,
           }]
         : []),

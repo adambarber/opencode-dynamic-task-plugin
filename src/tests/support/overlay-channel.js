@@ -60,14 +60,6 @@ export function overlayChannel(directory, config, { host = {}, table } = {}) {
   const rpc = createRpc();
   rpc.register(OverlayRpc, overlayHandlers(store, config, directory));
   return {
-    /** The host's own table, for the one claim that is about what was STORED. */
-    kv: held.testState.kv,
-    read: () => store.read(),
-    /** Store caps as the dialog does: through the channel and its declared methods. */
-    seed: async (caps) => {
-      await rpc.subclient(OverlayRpc).write({ caps });
-    },
-    store,
     /**
      * Arm a fault on the host BEHIND this channel, once the screen is already up.
      *
@@ -85,5 +77,13 @@ export function overlayChannel(directory, config, { host = {}, table } = {}) {
     },
     /** The host's client, as the TUI sees it. */
     client: { rpc: rpc.subclient },
+    /** The host's own table, for the one claim that is about what was STORED. */
+    kv: held.testState.kv,
+    read: () => store.read(),
+    /** Store caps as the dialog does: through the channel and its declared methods. */
+    seed: async (caps) => {
+      await rpc.subclient(OverlayRpc).write({ caps });
+    },
+    store,
   };
 }

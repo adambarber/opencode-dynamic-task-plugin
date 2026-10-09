@@ -44,7 +44,7 @@ import {
   type AgentOverlay,
   resolveAgentCaps,
 } from "../shared/caps.js";
-import { overlayChannel, type ReadOutcome } from "./overlay-client.js";
+import { type ReadOutcome, overlayChannel } from "./overlay-client.js";
 import { rememberVerified, rememberWritten, remembered } from "./local-caps.js";
 import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { type OpaqueHost, asOpaqueHost } from "../shared/client.js";
@@ -55,8 +55,8 @@ import {
   type CapChoice,
   type CeilingChoice,
   type EditOutcome,
-  type ModelChoice,
   MODEL_LABEL,
+  type ModelChoice,
   agentDialogFrom,
   applyAgentModelEdit,
   applyCapEdit,
@@ -64,7 +64,7 @@ import {
   applyGlobalModelEdit,
   overlayFrom,
 } from "./agent-editor.js";
-import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps, type PickerChoice } from "./props.js";
+import { ChoiceKind, type PickerChoice, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps } from "./props.js";
 
 //jscpd:ignore-end
 /** The host side this screen talks to, named once. The flows below take it everywhere. */
@@ -246,9 +246,9 @@ async function openGlobalModel(ctx: Host, view: LimitsView, agentHost: OpaqueHos
  */
 async function openModelPicker(ctx: Host, view: LimitsView, agent: string, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   return drivePicker(ctx, view, agent, agentHost, {
-    props: (row) => modelPickerProps(`${agent} ${MODEL_LABEL}`, tuiModelList(ctx), row.model, "the global model"),
     isValue: (choice): choice is Extract<PickerChoice, { kind: ChoiceKind.ModelValue }> => choice.kind === ChoiceKind.ModelValue,
-    write: (choice) => ({ label: `${agent} ${MODEL_LABEL}`, edit: () => applyAgentModelEdit(view.overlay, agent, modelChoiceOf(choice.value)) }),
+    props: (row) => modelPickerProps(`${agent} ${MODEL_LABEL}`, tuiModelList(ctx), row.model, "the global model"),
+    write: (choice) => ({ edit: () => applyAgentModelEdit(view.overlay, agent, modelChoiceOf(choice.value)), label: `${agent} ${MODEL_LABEL}` }),
   });
 }
 
@@ -268,9 +268,9 @@ async function openAgentCaps(ctx: Host, view: LimitsView, agent: string, agentHo
 
 async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: AgentCapName, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
   return drivePicker(ctx, view, agent, agentHost, {
-    props: (row) => capPickerProps(agent, cap, row),
     isValue: (choice): choice is Extract<PickerChoice, { kind: ChoiceKind.Value }> => choice.kind === ChoiceKind.Value,
-    write: (choice) => ({ label: agent, edit: () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice) }),
+    props: (row) => capPickerProps(agent, cap, row),
+    write: (choice) => ({ edit: () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice), label: agent }),
   });
 }
 

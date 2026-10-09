@@ -22,7 +22,7 @@ import { agentKey } from "./agent-key.js";
 import type { ModelOverride } from "./model-choice.js";
 import { readModelSetting, readOverlayModel } from "./model-choice.js";
 import { isPlainRecord } from "./host-shape.js";
-import { depthLimits, type DepthBound } from "./task-policy.js";
+import { type DepthBound, depthLimits } from "./task-policy.js";
 
 //jscpd:ignore-end
 // ─── the vocabulary ──────────────────────────────────────────────────────────

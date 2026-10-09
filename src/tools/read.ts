@@ -24,7 +24,7 @@ import {
   formatTaskStatusDetail,
   taskResultRecord,
 } from "../shared/task-formatting.js";
-import { activeByAgent, type TaskRecord, TaskState, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
+import { type TaskRecord, TaskState, activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
 import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { agentOccupancy } from "../shared/caps.js";
@@ -188,17 +188,10 @@ export async function executeTaskList(deps: ToolDeps): Promise<string> {
     maxConcurrent: config.maxConcurrent,
     pruned,
     retained: retained.map(toRow),
-    tree: branch.map((node) => ({
-      ...toRow(node.task),
-      depth: node.depth,
-      parentSessionId: node.task.parentSessionId,
-      parentTracked: node.parentTracked,
-      // The two clocks the row's age is read from, off the record the store holds. Read
-      // through the settled-safe accessor rather than off `node.task` directly, because a
-      // tree row is a running task OR a settled one kept to place a running descendant —
-      // and only the running shape carries them. They are passed here rather than folded
-      // into `toRow` because only a row with a live turn has an age to be wrong about.
-      ...motionClocksOf(node.task),
-    })),
+    tree: branch.map((node) => (Object.assign(toRow(node.task), {
+	depth: node.depth,
+	parentSessionId: node.task.parentSessionId,
+	parentTracked: node.parentTracked
+}, motionClocksOf(node.task)))),
   });
 }

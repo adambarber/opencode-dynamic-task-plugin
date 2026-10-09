@@ -10,7 +10,7 @@
 // the kind of bug that only appears when two repos are open at once.
 
 //jscpd:ignore-start
-import { sameOverlay, type AgentOverlay } from "./caps.js";
+import { type AgentOverlay, sameOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
 import { type One, type StateFacade, recordKey } from "./state-facade.js";
 

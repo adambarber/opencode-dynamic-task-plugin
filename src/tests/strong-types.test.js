@@ -11,7 +11,7 @@
 //jscpd:ignore-start
 import path from "node:path";
 import { DOC_FIDELITY, DOC_TYPES, PROSE, gate, rule } from "./support/invariant-gate.js";
-import { TESTS_DIR, listProdFiles, listTestFiles, prodSources, readSource, siteOf } from "./support/corpus.js";
+import { TESTS_DIR, listTestFiles, prodSources, readSource, siteOf } from "./support/corpus.js";
 import { assert, describe, it } from "./support/runner.js";
 import { InterruptScope } from "../../dist/tools/interrupt.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";

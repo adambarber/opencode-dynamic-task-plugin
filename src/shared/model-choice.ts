@@ -177,7 +177,7 @@ export function readOverlayModel(raw: unknown): ModelOverride | undefined {
  */
 export function modelOverrideOf(session: unknown): ModelOverride | undefined {
   if (!isPlainRecord(session)) return undefined;
-  const model = session.model;
+  const {model} = session;
   if (!isPlainRecord(model)) return undefined;
   const { providerID, id } = model;
   if (typeof providerID !== "string" || providerID === "") return undefined;

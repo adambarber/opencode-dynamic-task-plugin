@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import tuiModule from "../../../dist/tui/index.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
-import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
+import {DIALOG_WIDTH, dialogRowText, fitsItsDialog} from "../../../dist/tui/geometry.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
 import { MODEL_LABEL } from "../../../dist/tui/agent-editor.js";
@@ -29,6 +29,7 @@ import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { overlayChannel } from "./overlay-channel.js";
 
 //jscpd:ignore-end
+export { dialogRowText } from '../../../dist/tui/geometry.js';
 /**
  * The models this host has, as its own catalog spells them.
  *
@@ -151,7 +152,7 @@ export async function listOver(directory, agentNames = REGISTERED) {
   return limitsListProps(dialog);
 }
 
-export { dialogRowText };
+
 
 /**
  * The row for a thing, by the spelling the OPERATOR gives it — not by the spelling on

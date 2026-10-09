@@ -56,7 +56,7 @@ async function dispatchFor(parentOptions, spawn, { parent = true } = {}) {
   const h = parent ? await withParentModel({}, parentOptions) : await setupHarness({});
   const { out, id } = await h.spawn(spawn);
   await sleep(0);
-  return { h, out, id, routed: routedModelOf(h, id), record: await recordOf(h, id) };
+  return { h, id, out, record: await recordOf(h, id), routed: routedModelOf(h, id) };
 }
 
 /** The confirmation line the spawning turn is told back, for a dispatch with these settings. */
@@ -72,7 +72,7 @@ async function readsBefore(parentOptions, spawn) {
   const before = h.client.testState.presenceReads;
   await h.spawn(spawn);
   await sleep(0);
-  return { h, before };
+  return { before, h };
 }
 
 describe("the ladder, asked at the dispatch boundary", () => {

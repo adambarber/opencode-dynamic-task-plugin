@@ -9,7 +9,7 @@
 // strings everywhere.
 
 //jscpd:ignore-start
-import { CREATE_INTENT_PREFIX, createIntentKey, type CreateIntent } from "./create-intent.js";
+import { CREATE_INTENT_PREFIX, type CreateIntent, createIntentKey } from "./create-intent.js";
 import type { DependencyBlock } from "./admission.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import { type SettledTaskState, TaskState } from "./task-records.js";

@@ -35,6 +35,7 @@ import {
 import { abortSession, stopPlan } from "../shared/session-abort.js";
 import { isEventRecord } from "../shared/host-shape.js";
 import { safeLog } from "../shared/notify.js";
+import { LogLevel } from "../shared/notify-log.js";
 
 import type { SessionId } from "../shared/ids.js";
 
@@ -87,7 +88,7 @@ function abortFailedActive(
   message: string,
   because: string,
 ): InterruptOutcome {
-  void safeLog("warn", `Interrupt: abort failed for ${sessionId} (${message}); ${because}.`);
+  void safeLog(LogLevel.Warn, `Interrupt: abort failed for ${sessionId} (${message}); ${because}.`);
   return { kind: "abort-failed-active", message };
 }
 

@@ -31,6 +31,7 @@ import { createStateFacade } from "../shared/state-facade.js";
 import { createStore } from "../shared/durable-store.js";
 import { readDynamicTaskPolicy } from "../shared/config.js";
 import { LifecycleStatus } from "../shared/host-events.js";
+import { LogLevel } from "../shared/notify-log.js";
 
 //jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)
@@ -54,7 +55,7 @@ export interface PluginState {
  */
 function installOverlayPolicy(config: DynamicTaskConfig, directory: string, read: OverlayRead): void {
   if (read.problem !== null) {
-    void safeLog("warn", `Dynamic task plugin: ${read.problem}. The config file's caps are in force.`);
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: ${read.problem}. The config file's caps are in force.`);
     debugLog("plugin", "agents", "agent-overlay-ignored", { reason: read.problem });
   }
   // The overlay this one replaced, named rather than ignored. Deleting a thing the
@@ -64,7 +65,7 @@ function installOverlayPolicy(config: DynamicTaskConfig, directory: string, read
   // is the alternative, and it is wrong in a way that cannot be undone — a lane file's
   // entries are agent names, so they would re-apply caps under keys nobody wrote.
   if (retiredOverlayPresent(directory)) {
-    void safeLog("warn", `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: ${retiredLaneOverlayPath(directory)} is left over from the lane feature and is NOT read. ` +
       "Caps are now keyed by agent name, and that file's keys were operator-invented. Delete it and re-set the caps you still want.");
     debugLog("plugin", "agents", "retired-lane-overlay", { path: retiredLaneOverlayPath(directory) });
   }
@@ -115,7 +116,7 @@ export function overlayHandlers(
  * merely reports itself reads like noise the next boot learns to skip.
  */
 function reportRefusal(what: string): void {
-  void safeLog("warn", `Dynamic task plugin: ${what}. The value is NOT saved, so this project's durable task state does not yet say so.`);
+  void safeLog(LogLevel.Warn, `Dynamic task plugin: ${what}. The value is NOT saved, so this project's durable task state does not yet say so.`);
   debugLog("ledger", "ledger", "ledger-write-refused", { reason: what });
 }
 
@@ -192,7 +193,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // dropped record is a task the operator may still believe is tracked, and a
   // partial read is a ledger this boot does NOT know is whole.
   if (read.dropped > 0 || read.incomplete) {
-    void safeLog("warn", `Dynamic task plugin: durable task state was not read whole — ${read.dropped} record(s) the host held were not records, and the read was ${read.incomplete ? "partial" : "complete"}. A task that is not in this list was not recovered.`);
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: durable task state was not read whole — ${read.dropped} record(s) the host held were not records, and the read was ${read.incomplete ? "partial" : "complete"}. A task that is not in this list was not recovered.`);
     debugLog("ledger", "ledger", "ledger-read-incomplete", { dropped: read.dropped, incomplete: read.incomplete });
   }
 
@@ -232,7 +233,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
     const each = owedDebts
       .map((debt) => `${debt.kind} for task ${debt.childSessionId} to parent ${debt.parentSessionId} (attempt ${debt.attempts + 1} of ${config.pendingMaxAttempts})`)
       .join("; ");
-    void safeLog("info", `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
+    void safeLog(LogLevel.Info, `Dynamic task plugin: carrying ${owedDebts.length} notification(s) owed from a previous run — ${each}. A parent that is mid-turn defers its notice and spends an attempt for it, so a count that climbs across restarts means the parent is still busy and one that reaches the end retires the notice as undelivered.`);
   }
 
   // The running set is restored BEFORE the pending notices are paid, and
@@ -275,7 +276,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
 // boot that returns early has already recorded what it decided.
 async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<void> {
   const restored = [...store.activeTasks.keys()];
-  void safeLog("info", `Reconciling ${restored.length} task(s) restored across restart`);
+  void safeLog(LogLevel.Info, `Reconciling ${restored.length} task(s) restored across restart`);
   for (const childSessionId of restored) {
     // Per child, not per pass: a read that fails (the status channel itself is
     // down) must not decide the fate of every task listed after it. Not knowing
@@ -288,11 +289,11 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // alone too: its silence is not evidence, and settling off it would invent the
       // very errors this pass exists to avoid.
       if (!reading.statusAnswered) {
-        void safeLog("info", `Restored task ${childSessionId}: status channel unanswered; left active`);
+        void safeLog(LogLevel.Info, `Restored task ${childSessionId}: status channel unanswered; left active`);
         continue;
       }
       if (hostTurnRunning(reading)) {
-        void safeLog("info", `Restored task ${childSessionId} is still running (host says "${reading.hostTurn}"); left active`);
+        void safeLog(LogLevel.Info, `Restored task ${childSessionId} is still running (host says "${reading.hostTurn}"); left active`);
         continue;
       }
       // No running turn, so the session's fate is the transcript's to say — which is

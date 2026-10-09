@@ -101,14 +101,27 @@ export function waitsReleasedBody(release: WaitRelease): string {
  * shape threw a bare Error for it, which is indistinguishable from a command failure,
  * and a parent reading "failed" re-runs the dispatch.
  */
-export type CreateRefusalReason = "idless" | "unanswered" | "unsent";
+/**
+ * Why a create could not become a tracked child, as an enum.
+ *
+ * An enum for the same reason as every other vocabulary here: three sites passed
+ * one of three literals, and a misspelling compiled clean and fell through to the
+ * lookup returning `undefined` — a parent told nothing about a session that may be
+ * running unmonitored. The words are the wire vocabulary of the sentence, so they
+ * stay spelled once, here, and the record lookup cannot miss.
+ */
+export enum CreateRefusalReason {
+  Idless = "idless",
+  Unanswered = "unanswered",
+  Unsent = "unsent",
+}
 
 /** What each situation is true about, in the order the parent can act on it. */
 const CREATE_REFUSALS: Record<CreateRefusalReason, string> = {
-  idless: "The host answered the create without a session id, so this session could not be registered, stopped, or reported on.",
-  unanswered:
+  [CreateRefusalReason.Idless]: "The host answered the create without a session id, so this session could not be registered, stopped, or reported on.",
+  [CreateRefusalReason.Unanswered]:
     "The host was handed this create and did not answer in time, so the session may exist with nothing tracking it. Re-running this dispatch can leave two.",
-  unsent: "There was no host to send this create to, so nothing happened and the dispatch is safe to run again.",
+  [CreateRefusalReason.Unsent]: "There was no host to send this create to, so nothing happened and the dispatch is safe to run again.",
 };
 
 /**

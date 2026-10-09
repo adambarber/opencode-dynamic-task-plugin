@@ -8,10 +8,10 @@
 // (docs/tasks/11-durability.md, M2)
 //jscpd:ignore-start
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { LogLevel, safeLog } from "./notify-log.js";
 import { NotifyKind } from "./notification-text.js";
 import type { ParentSession } from "./session-lifecycle.js";
 import type { SessionId } from "./ids.js";
-import { safeLog } from "./notify-log.js";
 
 //jscpd:ignore-end
 /**
@@ -107,7 +107,7 @@ function evictDebtRoomFor(entry: PendingDelivery): PendingDelivery | null {
 
 export const announceDropped = (dropped: PendingDelivery | null): void => {
   if (dropped === null) return;
-  void safeLog("warn", `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
+  void safeLog(LogLevel.Warn, `Dynamic task plugin: the queue of undelivered notices is full, so a ${dropped.kind} notice owed to parent ${dropped.parentSessionId} ` +
     `for task ${dropped.childSessionId ?? "(root)"} was DROPPED after ${dropped.attempts} attempt(s). It will not be retried.`);
 };
 

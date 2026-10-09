@@ -19,6 +19,7 @@ import {
   notifyRecord,
   recordNotification,
 } from "./notify-records.js";
+import { LogLevel, safeLog } from "./notify-log.js";
 import { NotifyKind } from "./notification-text.js";
 import { type OpaqueHost, callHost } from "./client.js";
 import type { SessionId } from "./ids.js";
@@ -33,8 +34,6 @@ import {
 } from "./notify-queue.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
 import { isParentless } from "./session-lifecycle.js";
-import { safeLog } from "./notify-log.js";
-
 //jscpd:ignore-end
 export { announceDropped, dropPending, getPendingDeliveries, owedDelivery, queuePending } from "./notify-queue.js";
 export { configurePendingPersistence, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
@@ -46,7 +45,7 @@ export { NOTIFY_KINDS } from "./notification-text.js";
 export type { DeliveryOutcome, NotificationRecord } from "./notify-records.js";
 export type { DeliveryTarget, PendingDelivery } from "./notify-queue.js";
 export type { GateLedger } from "./notify-gate.js";
-export type { LogLevel } from "./notify-log.js";
+export { LogLevel } from "./notify-log.js";
 
 
 /**
@@ -187,7 +186,7 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
   }
   if (owed.length > offered.length) {
     const held = owed.length - offered.length;
-    void safeLog("warn", `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: ${owed.length} notification(s) are owed and this boot is offering ${offered.length} of them — one batch, bounded by the concurrency cap, because each is a real turn in a parent session. The other ${held} stay owed and unchanged, and the next boot offers the next ${offered.length}.`);
   }
 }
 
@@ -312,7 +311,7 @@ export async function notifyParent(
     // variable before the process started, and the fact being reported is one
     // they have to act on — the parent session is not accepting writes, and
     // nothing will be retried.
-    void safeLog("warn", `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
       `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
       `The parent has NOT been told — read this task's status from the parent session to see the write-off.`);
     return Promise.resolve(false);
@@ -391,7 +390,7 @@ export async function notifyParent(
         // re-armed count is the one this boot spent.
         const dropped = queuePending({ ...owed, attempts: carried + 1 });
         if (epoch === currentGateEpoch()) emit({ attempts: carried + 1, delivered: false, pending: true });
-        void safeLog("warn", `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
+        void safeLog(LogLevel.Warn, `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
         announceDropped(dropped);
         // The claim goes back, because nothing was written and the debt is still
         // live: holding it would make every LATER obligation for this child and

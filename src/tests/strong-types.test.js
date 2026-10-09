@@ -282,7 +282,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     // found them — hardcoding them here would restate the very values this rule
     // exists to keep single, and a probe that copies its subject proves nothing.
     const byForm = (predicate) => [...constants].find(([, owner]) => predicate(owner.name))?.[0];
-    const bareExport = byForm((name) => name === "ASSISTANT_ROLE");
+    const bareExport = byForm((name) => name === "PERMISSION_ASKED");
     const bareLocal = byForm((name) => name === "DEBUG_DIR");
     const tableRow = byForm((name) => name.endsWith(".tag"));
     assert.ok(bareExport && bareLocal && tableRow, `expected all three binding forms in production, got ${[bareExport, bareLocal, tableRow].map(String).join(", ")}`);

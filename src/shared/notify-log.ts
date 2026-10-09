@@ -7,8 +7,19 @@ import { appendLogLine, getPluginLogPath } from "../debug-logger.js";
 import { errorMessage } from "./host-shape.js";
 
 //jscpd:ignore-end
-/** The level vocabulary this plugin writes; the only one it uses. */
-export type LogLevel = "info" | "warn" | "error";
+/**
+ * The level vocabulary this plugin writes; the only one it uses.
+ *
+ * An enum for the reason every other vocabulary here is one: a level is a
+ * discriminator the log line is read by, and `safeLog("wran", ...)` compiled
+ * clean — writing a line this plugin's own readers would not recognise as a
+ * level, with nothing red. Spelling it as members makes the typo a type error.
+ */
+export enum LogLevel {
+  Info = "info",
+  Warn = "warn",
+  Error = "error",
+}
 
 export function safeLog(level: LogLevel, message: string): void {
   appendLogLine(getPluginLogPath(), `${new Date().toISOString()} ${level} ${message}`);
@@ -21,5 +32,5 @@ export function safeLog(level: LogLevel, message: string): void {
  * that failure is undone rather than contained.
  */
 export function containFailure(what: string, error: unknown, tail = ""): void {
-  safeLog("warn", `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
+  safeLog(LogLevel.Warn, `${what}: ${errorMessage(error)}${tail ? `; ${tail}` : ""}`);
 }

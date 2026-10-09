@@ -150,13 +150,59 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
 // use the narrowed types instead of re-probing fields, so raw payloads are
 // treated as text parts or messages only once they have proven themselves.
 
-export type MessageRole = "user" | "assistant" | "system" | "error";
+/**
+ * The message roles this plugin knows, as an enum.
+ *
+ * An enum for the reason the rest of this plugin uses them: two sites branch on
+ * a role, and a role compared as a raw literal compiles clean under a rename.
+ * The host's own role vocabulary is OPEN — `messageRoleOf` answers with whatever
+ * the payload said — so this names only the roles the plugin reads, and an
+ * unrecognised one stays the string it was rather than becoming a type claim.
+ *
+ * The two aliases below are the roles anything actually branches on. They are
+ * names rather than restatements of the members so a caller spells the decision
+ * and not the wire word.
+ */
+export enum MessageRole {
+  User = "user",
+  Assistant = "assistant",
+  System = "system",
+  Error = "error",
+}
 
-// The only role the extraction group branches on. Unknown role strings in
-// raw payloads stay data (messageRoleOf returns them unvalidated), never
-// type claims.
-export const ASSISTANT_ROLE: MessageRole = "assistant";
-export const ERROR_ROLE: MessageRole = "error";
+/** The only role the extraction group branches on. */
+export const ASSISTANT_ROLE = MessageRole.Assistant;
+
+/** The role a failed turn carries its error under. */
+export const ERROR_ROLE = MessageRole.Error;
+
+const MESSAGE_ROLES: readonly string[] = Object.values(MessageRole);
+
+/**
+ * Is this string one of the message roles this plugin reads?
+ *
+ * A predicate over the enum's own values rather than a restated list, so a role
+ * added to the vocabulary is recognised without anyone editing a table. It is
+ * what makes the narrowing below a fact the compiler checks instead of a cast.
+ */
+export function isMessageRole(role: string): role is MessageRole {
+  return MESSAGE_ROLES.includes(role);
+}
+
+/**
+ * The role a branch reads, narrowed to the vocabulary — or undefined.
+ *
+ * `messageRoleOf` answers with the host's own word, which is an OPEN vocabulary:
+ * an unrecognised role must stay the string it was rather than become a type
+ * claim. That is the right answer at the boundary and the wrong one at a `===`,
+ * where comparing a raw string to an enum member is an unsafe comparison the
+ * lint gate refuses — correctly, because it is the comparison that survives a
+ * rename. Every branch that acts on a role narrows through here first.
+ */
+export function branchedRoleOf(message: Message): MessageRole | undefined {
+  const role = messageRoleOf(message);
+  return isMessageRole(role) ? role : undefined;
+}
 
 export interface TextPart {
   type: "text";
@@ -420,7 +466,7 @@ function* newestFirst(messages: unknown) {
 export function getLatestAssistantText(messages: unknown): string {
   for (const msg of newestFirst(messages)) {
     if (!isMessage(msg)) continue;
-    if (messageRoleOf(msg) !== ASSISTANT_ROLE) continue;
+    if (branchedRoleOf(msg) !== ASSISTANT_ROLE) continue;
 
     const text = extractTextFromParts(contentPartsOf(msg));
     if (text.trim()) return text;
@@ -454,7 +500,7 @@ export function messageErrorDetail(message: unknown): string {
     return detail.trim();
   }
   if (typeof error === "string" && error.trim()) return error.trim();
-  if (messageRoleOf(message) === ERROR_ROLE) return extractTextFromParts(contentPartsOf(message)).trim();
+  if (branchedRoleOf(message) === ERROR_ROLE) return extractTextFromParts(contentPartsOf(message)).trim();
   return "";
 }
 

@@ -51,6 +51,7 @@ import {
   buildTaskLineage,
   isDispatchableAgent,
 } from "./task-policy.js";
+import { LogLevel } from "./notify-log.js";
 
 /**
  * A refusal, as the one value that carries both the decision and the words.
@@ -401,7 +402,7 @@ async function fetchAgentListing<C extends AgentCaller>(host: AgentLister<C>, ca
         // safeLog, not a raw app.log: the client itself may be unusable
         // (host probes entry exports outside the plugin lifecycle) and a
         // throw here fails the entire plugin boot.
-        void safeLog("warn", `Failed to fetch agents: ${errorMessage(error)}`);
+        void safeLog(LogLevel.Warn, `Failed to fetch agents: ${errorMessage(error)}`);
       }
     }
   }

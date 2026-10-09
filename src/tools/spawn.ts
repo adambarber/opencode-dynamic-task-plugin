@@ -2,6 +2,7 @@
 // register, fire. The ONLY session.create site (funnel test pins this).
 //jscpd:ignore-start
 import {
+  CreateRefusalReason,
   INVALID_PROMPT,
   PERMISSION_DENIED,
   agentGone,
@@ -45,7 +46,6 @@ import { liveAgentCaps } from "../shared/caps.js";
 import { notifyRunning } from "../shared/change-sinks.js";
 import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 
-//jscpd:ignore-end
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
 import type { SessionId } from "../shared/ids.js";
@@ -181,7 +181,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       // have duplicated.
       const refused = created.phase === ExpiryPhase.Sent;
       if (refused) adoptLateAnswer(created.finished, intent);
-      return createFailed(created.value, intent, refused ? "unanswered" : "unsent");
+      return createFailed(created.value, intent, refused ? CreateRefusalReason.Unanswered : CreateRefusalReason.Unsent);
     }
     const sessionResult = created.value;
 
@@ -194,7 +194,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       //
       // The record STAYS for this one: the host answered, so the late-answer hook is
       // not there, and the session may still exist with nobody holding its id.
-      return createFailed(sessionResult, intent, "idless");
+      return createFailed(sessionResult, intent, CreateRefusalReason.Idless);
     }
     createdSessionId = childSessionId;
     // The create answered, so the child is the ledger's to name and this record has

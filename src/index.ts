@@ -23,6 +23,7 @@ import { containFailure, safeLog } from "./shared/notify.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
 import { initPluginState, overlayHandlers } from "./entry/state.js";
+import { LogLevel } from "./shared/notify-log.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
 import { buildToolMap } from "./tools/index.js";
 import { debugLog } from "./debug-logger.js";
@@ -41,7 +42,7 @@ async function setup(context: Context): Promise<void> {
   const host = asOpaqueHost(context);
 
   if (!probeHost(host, hasCoreApis)) {
-    safeLog("warn", "Missing required host APIs, plugin disabled");
+    safeLog(LogLevel.Warn, "Missing required host APIs, plugin disabled");
     return;
   }
 
@@ -62,7 +63,7 @@ async function setup(context: Context): Promise<void> {
   // guarantee is the host's, and it is why a dialog cannot reach another project's caps.
   await context.rpc.register(OverlayRpc, overlayHandlers(overlay, config, directory));
 
-  safeLog("info", "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
+  safeLog(LogLevel.Info, "Plugin loaded with dynamic_task, task_continue, task_notify, task_result, task_status, task_list, task_interrupt tools");
 
   // The event head, on v2's own registration surface. `transform` registers the
   // editor pass; `subscribe` is the stream itself.

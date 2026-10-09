@@ -11,7 +11,7 @@
 //jscpd:ignore-start
 import path from "node:path";
 import { DOC_FIDELITY, DOC_TYPES, PROSE, gate, rule } from "./support/invariant-gate.js";
-import { TESTS_DIR, listProdFiles, listTestFiles, readSource, siteOf } from "./support/corpus.js";
+import { TESTS_DIR, listProdFiles, listTestFiles, prodSources, readSource, siteOf } from "./support/corpus.js";
 import { assert, describe, it } from "./support/runner.js";
 import { InterruptScope } from "../../dist/tools/interrupt.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
@@ -179,16 +179,14 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     // sites for something no decision can drift: a gate that cries wolf gets switched
     // off, and then nothing watches the ones that matter.
     const fieldNames = new Set();
-    for (const file of listProdFiles()) {
-      const source = readSource(file).text;
+    for (const { file, source } of prodSources()) {
       // Property access (`session.model`, `raw.maxConcurrent`) and quoted keys
       // (`{"model": ...}`, `input["model"]`) — the two spellings a field has in source.
       for (const m of source.matchAll(/\.([A-Za-z_$][\w$]*)/g)) fieldNames.add(m[1]);
       for (const m of source.matchAll(/["']([A-Za-z_$][\w$]*)["']\s*:/g)) fieldNames.add(m[1]);
       for (const m of source.matchAll(/\[["']([A-Za-z_$][\w$]*)["']\]/g)) fieldNames.add(m[1]);
     }
-    for (const file of listProdFiles()) {
-      const source = readSource(file).text;
+    for (const { file, source } of prodSources()) {
       const forms = [
         // (1) and (2): a const bound to a bare string literal, exported or not.
         /(?:export\s+)?const\s+([A-Z_0-9]+)\s*(?::[^=]+)?=\s*"((?:[^"\\\n]|\\.)+)"/g,

@@ -26,11 +26,22 @@ import { agentKey } from "../../dist/shared/agent-key.js";
 // The dispatching parent's own model, as the host reads it: a session row.
 const PARENT_MODEL = { modelID: "glm-5.3", providerID: "z-ai" };
 
+/** The same model, spelled as the pair the ladder resolves to. */
+const GLM = { modelID: "glm-5.3", providerID: "z-ai" };
+
 /** A scope with nothing stated anywhere. */
 const EMPTY = { agents: {} };
 
 /** The settings an operator states, in the two places a document can state them. */
 const scope = (model, agents = {}) => ({ agents, ...(model === undefined ? {} : { model }) });
+
+/** The ladder asked for one agent: the case states only what differs from the defaults. */
+const ladderFor = (agent, { inherit, requested, scope: given = EMPTY } = {}) => resolveChildModel({
+  agent,
+  inherit: inherit ?? (() => Promise.resolve(undefined)),
+  ...(requested === undefined ? {} : { requested }),
+  scope: given,
+});
 
 /** A settings object that counts the inheritance reads made through it. */
 function countingInherit(answer = PARENT_MODEL) {
@@ -44,37 +55,32 @@ function countingInherit(answer = PARENT_MODEL) {
   };
 }
 
+/** The ladder asked, with the count of inheritance reads it made. */
+async function ladderCounted(agent, options) {
+  const inherit = countingInherit();
+  const resolved = await ladderFor(agent, { ...options, inherit: inherit.inherit });
+  return { resolved, calls: inherit.state.calls };
+}
+
+/** A document stating both a fleet model and one agent's own, the two configured layers. */
+const LADDER_SCOPE = scope({ modelID: "global", providerID: "global" }, { explore: { model: { modelID: "own", providerID: "own" } } });
+
 describe("the model ladder, layer by layer", () => {
   it("layer 4: the dispatch's own model beats everything below it", async () => {
-    const inherit = countingInherit();
-    const resolved = await resolveChildModel({
-      agent: "explore",
-      inherit: inherit.inherit,
-      requested: { modelID: "explicit", providerID: "given" },
-      scope: scope({ modelID: "global", providerID: "global" }, { explore: { model: { modelID: "own", providerID: "own" } } }),
-    });
+    const { resolved, calls } = await ladderCounted("explore", { requested: { modelID: "explicit", providerID: "given" }, scope: LADDER_SCOPE });
     assert.deepEqual(resolved, { modelID: "explicit", providerID: "given" }, "the argument wins, and the layers below are never consulted");
-    assert.equal(inherit.state.calls, 0, "and the parent's own model is not read — no host call is spent on an answer already held");
+    assert.equal(calls, 0, "and the parent's own model is not read — no host call is spent on an answer already held");
   });
 
   it("layer 3: the agent's own setting beats the global one", async () => {
-    const inherit = countingInherit();
-    const resolved = await resolveChildModel({
-      agent: "explore",
-      inherit: inherit.inherit,
-      scope: scope({ modelID: "global", providerID: "global" }, { explore: { model: { modelID: "own", providerID: "own" } } }),
-    });
+    const { resolved, calls } = await ladderCounted("explore", { scope: LADDER_SCOPE });
     assert.deepEqual(resolved, { modelID: "own", providerID: "own" }, "the agent's own model");
-    assert.equal(inherit.state.calls, 0, "and inheritance is never reached");
+    assert.equal(calls, 0, "and inheritance is never reached");
   });
 
   it("layer 2: the global setting answers an agent with none of its own", async () => {
     const inherit = countingInherit();
-    const resolved = await resolveChildModel({
-      agent: "general",
-      inherit: inherit.inherit,
-      scope: scope({ modelID: "global", providerID: "global" }, { explore: { model: { modelID: "own", providerID: "own" } } }),
-    });
+    const resolved = await ladderFor("general", { inherit: inherit.inherit, scope: LADDER_SCOPE });
     assert.deepEqual(resolved, { modelID: "global", providerID: "global" }, "a DIFFERENT agent's setting does not apply — the key space is the agent, not the document");
     assert.equal(inherit.state.calls, 0, "and the parent is not read");
   });
@@ -90,38 +96,30 @@ describe("the model ladder, layer by layer", () => {
     // The fold is the caps module's, and both sides of the lookup go through it: a
     // config key and a host name differ only in case, and only one side being folded is
     // how a cap an operator set applies to no agent at all.
-    const resolved = await resolveChildModel({
-      agent: "Explore",
-      inherit: () => Promise.resolve(undefined),
-      scope: scope(undefined, { explore: { model: { modelID: "own", providerID: "own" } } }),
-    });
+    const resolved = await ladderFor("Explore", { scope: scope(undefined, { explore: { model: { modelID: "own", providerID: "own" } } }) });
     assert.deepEqual(resolved, { modelID: "own", providerID: "own" }, "the key was folded, so the setting is found");
   });
 
   it("a parent with no model of its own leaves the child on the host default", async () => {
-    const resolved = await resolveChildModel({ agent: "explore", inherit: () => Promise.resolve(undefined), scope: EMPTY });
+    const resolved = await ladderFor("explore");
     assert.equal(resolved, undefined, "no override, which is the behaviour that shipped before this feature");
   });
 
   it("a settings object composes the pair, so the ladder never parses one", async () => {
     // The pair is the internal type; the qualified TEXT is the document's shape. Reading
     // it at the boundary is what keeps the ladder free of a parse per dispatch.
-    const resolved = await resolveChildModel({
-      agent: "explore",
-      inherit: () => Promise.resolve(undefined),
-      scope: scope({ modelID: "glm-5.3", providerID: "z-ai" }),
-    });
+    const resolved = await ladderFor("explore", { scope: scope({ modelID: "glm-5.3", providerID: "z-ai" }) });
     assert.deepEqual(resolved, { modelID: "glm-5.3", providerID: "z-ai" });
   });
 });
 
 describe("a stated model, read out of untrusted JSON", () => {
   it("reads the qualified text a person types in a config file", () => {
-    assert.deepEqual(readModelSetting("z-ai/glm-5.3"), { modelID: "glm-5.3", providerID: "z-ai" });
+    assert.deepEqual(readModelSetting("z-ai/glm-5.3"), GLM);
   });
 
   it("reads the pair the plugin writes", () => {
-    assert.deepEqual(readModelSetting({ modelID: "glm-5.3", providerID: "z-ai" }), { modelID: "glm-5.3", providerID: "z-ai" });
+    assert.deepEqual(readModelSetting(GLM), GLM);
   });
 
   it("rejects a bare model id, because it would route nowhere", () => {
@@ -144,7 +142,7 @@ describe("a stated model, read out of untrusted JSON", () => {
   });
 
   it("accepts whitespace around a qualified id", () => {
-    assert.deepEqual(readModelSetting("  z-ai/glm-5.3  "), { modelID: "glm-5.3", providerID: "z-ai" });
+    assert.deepEqual(readModelSetting("  z-ai/glm-5.3  "), GLM);
   });
 
   it("spells a pair the way the argument gate and the host's catalog do", () => {

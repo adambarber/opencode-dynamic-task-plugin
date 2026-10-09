@@ -470,21 +470,7 @@ export function applyCapEdit(
   const label = `${agent} ${CAP_LABEL[choice.cap]}`;
   return editOutcome({
     before: current.agents?.[key]?.[choice.cap],
-    build: (value) => {
-      const next: AgentCaps = { ...current.agents?.[key] };
-      const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
-      if (value === null) {
-        delete next[choice.cap];
-        // An agent whose last stated cap is gone leaves the overlay entirely. Leaving an
-        // empty body behind would have the screen keep showing the agent as "capped" with
-        // nothing capped, and would make the file grow one dead entry per experiment.
-        // A model is a statement too, so it is checked alongside before the body goes.
-        if (AGENT_CAP_NAMES.every((c) => next[c] === undefined) && next.model === undefined) delete agents[key];
-      } else {
-        next[choice.cap] = value;
-      }
-      return { ...current, agents };
-    },
+    build: (value) => ({ ...current, agents: withAgentField(current, key, choice.cap, value) }),
     choice,
     label,
     fallback: "falls back to the config file",
@@ -554,6 +540,32 @@ export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): 
  * `CAP_CHOICES` for the same reason — a picker's offer list is the acceptance rule, and
  * a model picker's list comes from the host's own catalog.
  */
+/**
+ * The agent map with one field of one agent written, or removed when `value` is null.
+ *
+ * Both the cap and the model edit go through here, so the rule that an agent with nothing
+ * left leaves the overlay lives in one place. Leaving an empty body behind would have the
+ * screen keep showing the agent as "capped" with nothing capped, and would make the file
+ * grow one dead entry per experiment. A model is a statement too, so it is checked with
+ * the caps before the body goes.
+ */
+function withAgentField<F extends keyof AgentCaps>(
+  current: AgentOverlay,
+  key: string,
+  field: F,
+  value: AgentCaps[F] | null,
+): Record<string, AgentCaps> {
+  const next: AgentCaps = { ...current.agents?.[key] };
+  const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
+  if (value === null) {
+    delete next[field];
+    if (AGENT_CAP_NAMES.every((c) => next[c] === undefined) && next.model === undefined) delete agents[key];
+  } else {
+    next[field] = value;
+  }
+  return agents;
+}
+
 function editOutcome<V>(spec: {
   before: V | undefined;
   choice: { value: V | null };
@@ -646,16 +658,6 @@ export function applyAgentModelEdit(current: AgentOverlay, agent: string, choice
     label,
     fallback: "falls back to the global model",
     refuse: (value) => refuseModel(label, value),
-    build: (value) => {
-      const next: AgentCaps = { ...current.agents?.[key] };
-      const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
-      if (value === null) {
-        delete next.model;
-        if (AGENT_CAP_NAMES.every((cap) => next[cap] === undefined) && next.model === undefined) delete agents[key];
-      } else {
-        next.model = value;
-      }
-      return { ...current, agents };
-    },
+    build: (value) => ({ ...current, agents: withAgentField(current, key, "model", value) }),
   });
 }

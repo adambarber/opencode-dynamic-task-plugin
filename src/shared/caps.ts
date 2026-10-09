@@ -340,16 +340,23 @@ export function readAgentOverlayCaps(raw: unknown): OverlayAgents {
   // Read by the model module's rule, so the screen's "stated" and the dispatch path's
   // in-force model answer the same question about the same untrusted document.
   const model = usable ? readOverlayModel(overlayBody(raw)) : undefined;
-  // `exactOptionalPropertyTypes` is on, so an absent key and a key holding
-  // `undefined` are different values. Spreading would write the latter and the
-  // dialog's `!== undefined` check would be answering a question about presence that
-  // the object no longer describes.
   return {
     agents,
     dropped,
     ...(stated === undefined ? {} : { maxConcurrent: stated }),
-    ...(model === undefined ? {} : { model }),
+    ...withModel(model),
   };
+}
+
+/**
+ * The model as an optional key, absent rather than `undefined`.
+ *
+ * `exactOptionalPropertyTypes` is on, so an absent key and a key holding `undefined` are
+ * different values. Every overlay builder writes its model through here, so the presence
+ * rule lives in one place instead of three spreads.
+ */
+function withModel(model: ModelOverride | undefined): { model?: ModelOverride } {
+  return model === undefined ? {} : { model };
 }
 
 /**
@@ -366,12 +373,7 @@ export function parseAgentOverlay(raw: unknown): AgentOverlay | null {
   if (!isPlainRecord(raw)) return null;
   const { agents, dropped, usable } = readOverlayAgents(raw);
   if (!usable || Object.keys(dropped).length > 0) return null;
-  const stated = readTopLevelCaps(raw);
-  const model = readOverlayModel(raw);
-  // Absent keys stay absent: `exactOptionalPropertyTypes` is on, so spreading would
-  // store an `undefined` and the reader on the other side would be answering a
-  // question about presence that the document no longer describes.
-  return { ...stated, agents, ...(model === undefined ? {} : { model }) };
+  return { ...readTopLevelCaps(raw), agents, ...withModel(readOverlayModel(raw)) };
 }
 
 /**
@@ -458,7 +460,7 @@ export function applyAgentOverlay(base: AgentCapSource, raw: unknown): AgentCapS
     agents: { ...base.agents, ...agents },
     maxConcurrent: caps.maxConcurrent ?? base.maxConcurrent,
     maxDepth: caps.maxDepth ?? base.maxDepth,
-    ...(model === undefined ? {} : { model }),
+    ...withModel(model),
   };
 }
 

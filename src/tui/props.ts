@@ -190,6 +190,11 @@ export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListCh
  * chooses a number is the last place it fits, and a picker that omitted it would leave the
  * information nowhere at all.
  */
+/** The way out of a picker, named by where it lands. */
+function backRow(description: string): { description: string; title: string; value: PickerChoice } {
+  return { description, title: BACK_LABEL, value: { kind: ChoiceKind.Back } as const satisfies PickerChoice };
+}
+
 function pickerTitle(subject: string, ...clauses: (string | null)[]): string {
   return [subject, ...clauses.filter((clause) => clause !== null).map((clause) => `(${clause})`)].join(" ");
 }
@@ -243,11 +248,7 @@ export function modelPickerProps(
             value: { agent: null, kind: ChoiceKind.ModelValue, value: null } as const satisfies PickerChoice,
           }]
         : []),
-      {
-        description: subject,
-        title: BACK_LABEL,
-        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
-      },
+      backRow(subject),
     ],
   };
 }
@@ -413,11 +414,7 @@ function valuePicker(
       // above the numbers reads as one of the numbers. And the host replaces the screen
       // under a press, so an exit sitting among the values is one mis-aimed press away
       // from throwing away the place the operator was standing.
-      {
-        description: backTo,
-        title: BACK_LABEL,
-        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
-      },
+      backRow(backTo),
     ],
   };
 }

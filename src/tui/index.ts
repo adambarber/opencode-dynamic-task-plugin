@@ -64,7 +64,7 @@ import {
   applyGlobalModelEdit,
   overlayFrom,
 } from "./agent-editor.js";
-import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps } from "./props.js";
+import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps, type PickerChoice } from "./props.js";
 
 //jscpd:ignore-end
 /** The host side this screen talks to, named once. The flows below take it everywhere. */
@@ -211,6 +211,11 @@ async function openCeiling(ctx: Host, view: LimitsView, agentHost: OpaqueHost<Ag
   }
 }
 
+/** A model pick from the picker, as the edit it becomes. */
+function modelChoiceOf(value: ModelChoice["value"]): ModelChoice {
+  return { value } satisfies ModelChoice;
+}
+
 /**
  * The global model, open: layer 2 of the ladder, for every agent with none of its own.
  *
@@ -227,8 +232,7 @@ async function openGlobalModel(ctx: Host, view: LimitsView, agentHost: OpaqueHos
     const choice = await selectLimitsRow(ctx, modelPickerProps(MODEL_LABEL, models, view.dialog.model, "each agent's own model, then the parent's own"));
     if (choice === undefined || choice.kind === ChoiceKind.Back) return view;
     if (choice.kind !== ChoiceKind.ModelValue) continue;
-    const edit = { value: choice.value } satisfies ModelChoice;
-    return applyEdit(ctx, view, MODEL_LABEL, () => applyGlobalModelEdit(view.overlay, edit), agentHost);
+    return applyEdit(ctx, view, MODEL_LABEL, () => applyGlobalModelEdit(view.overlay, modelChoiceOf(choice.value)), agentHost);
   }
 }
 
@@ -241,16 +245,11 @@ async function openGlobalModel(ctx: Host, view: LimitsView, agentHost: OpaqueHos
  * courtesy.
  */
 async function openModelPicker(ctx: Host, view: LimitsView, agent: string, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
-  const row = rowOf(view, agent);
-  for (;;) {
-    const models = tuiModelList(ctx);
-    const choice = await selectLimitsRow(ctx, modelPickerProps(`${agent} ${MODEL_LABEL}`, models, row.model, "the global model"));
-    if (choice === undefined) return view;
-    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent, agentHost);
-    if (choice.kind !== ChoiceKind.ModelValue) continue;
-    const edit = { value: choice.value } satisfies ModelChoice;
-    return openAgentCaps(ctx, await applyEdit(ctx, view, `${agent} ${MODEL_LABEL}`, () => applyAgentModelEdit(view.overlay, agent, edit), agentHost), agent, agentHost);
-  }
+  return drivePicker(ctx, view, agent, agentHost, {
+    props: (row) => modelPickerProps(`${agent} ${MODEL_LABEL}`, tuiModelList(ctx), row.model, "the global model"),
+    isValue: (choice): choice is Extract<PickerChoice, { kind: ChoiceKind.ModelValue }> => choice.kind === ChoiceKind.ModelValue,
+    write: (choice) => ({ label: `${agent} ${MODEL_LABEL}`, edit: () => applyAgentModelEdit(view.overlay, agent, modelChoiceOf(choice.value)) }),
+  });
 }
 
 /**
@@ -268,21 +267,39 @@ async function openAgentCaps(ctx: Host, view: LimitsView, agent: string, agentHo
 }
 
 async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: AgentCapName, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
-  const row = rowOf(view, agent);
-  for (;;) {
-    const choice = await selectLimitsRow(ctx, capPickerProps(agent, cap, row));
-    // Back goes UP one level, to the agent's own caps — not out to the list. The old
-    // stack had no push, so "back" was always a re-mount; the loop just says which
-    // screen is re-mounted, and from the picker that is the caps screen.
-    if (choice === undefined) return view;
-    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent, agentHost);
-    // The model picker is a row on this agent's screen now, so it lands here: the caps
-    // picker's own choice is the only one whose value is a number.
-    if (choice.kind === ChoiceKind.ModelValue) return openModelPicker(ctx, view, agent, agentHost);
-    // Lands back on THIS agent's caps, re-read: the other cap of the same pair has to
-    // be one choice away, and the row just written is stale the moment the file moves.
-    return openAgentCaps(ctx, await applyEdit(ctx, view, agent, () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice), agentHost), agent, agentHost);
+  return drivePicker(ctx, view, agent, agentHost, {
+    props: (row) => capPickerProps(agent, cap, row),
+    isValue: (choice): choice is Extract<PickerChoice, { kind: ChoiceKind.Value }> => choice.kind === ChoiceKind.Value,
+    write: (choice) => ({ label: agent, edit: () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice) }),
+  });
+}
+
+/**
+ * The loop both per-agent pickers run: show the picker, write a value, and land back on
+ * THIS agent's caps re-read. The other cap of the same pair has to be one choice away,
+ * and the row just written is stale the moment the file moves.
+ *
+ * Dismissal keeps the view in hand; Back goes UP to the agent's caps, never out to the
+ * list. A picker's own choice is either its value, which is written, or a way out.
+ */
+async function drivePicker<V extends PickerChoice>(
+  ctx: Host,
+  view: LimitsView,
+  agent: string,
+  agentHost: OpaqueHost<AgentCaller>,
+  picker: {
+    props: (row: AgentEntry) => DialogSelectOptions<PickerChoice>;
+    isValue: (choice: PickerChoice) => choice is V;
+    write: (choice: V) => ({ label: string, edit: () => EditOutcome }),
+  },
+): Promise<LimitsView> {
+  const choice = await selectLimitsRow(ctx, picker.props(rowOf(view, agent)));
+  if (choice !== undefined && picker.isValue(choice)) {
+    const { label, edit } = picker.write(choice);
+    return openAgentCaps(ctx, await applyEdit(ctx, view, label, edit, agentHost), agent, agentHost);
   }
+  if (choice === undefined) return view;
+  return openAgentCaps(ctx, view, agent, agentHost);
 }
 
 /** The list re-read, or the view in hand when the host cannot be reached. */

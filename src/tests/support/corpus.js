@@ -109,6 +109,11 @@ export function listProdFiles() {
   return walkSource(SRC_DIR, isTypeScript, { skipTests: true });
 }
 
+/** Each production file with its text read once: the funnel a source scan walks. */
+export function prodSources() {
+  return listProdFiles().map((file) => ({ file, source: readSource(file).text }));
+}
+
 /**
  * Production, suite and gate scripts alike — the file-size rule's corpus.
  *

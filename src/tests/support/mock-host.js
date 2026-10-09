@@ -59,8 +59,14 @@ export const sessionUpdatedEnvelope = (status) => ({
  */
 const sessionObject = (id, state) => {
   const turn = state?.turns?.get(id);
+  // The session's own model, as the host's projector writes it: `session.switchModel`
+  // publishes `ModelSelected` and the session row carries the ref from then on, so a
+  // `session.get` answers with it. The fake models the same round trip, because the
+  // plugin's inheritance layer reads exactly this.
+  const model = state?.sessionModels?.get(id);
   return {
     id,
+    ...(model === undefined ? {} : { model }),
     projectID: "ses_project_mock",
     directory: "/mock/project",
     title: `mock ${id}`,
@@ -209,6 +215,8 @@ export function createMockClient(hooks = {}, domain = {}) {
     agentListReads: 0,
     promptBodies: [],
     sessionBodies: new Map(),
+    // The model each session is currently running, as the host's projector holds it.
+    sessionModels: new Map(),
     createThrown: false,
     // How many times the host's status channel was read. Views that already
     // know what they need must not spend a read per row.
@@ -479,6 +487,12 @@ export function createMockClient(hooks = {}, domain = {}) {
       },
       switchModel: async ({ sessionID, model }) => {
         state.routed.set(sessionID, { ...state.routed.get(sessionID), modelID: model?.id, providerID: model?.providerID });
+        // The host's projector side: the switch lands on the session row, so a later
+        // `session.get` reads the model the host was asked to run. Without it the
+        // inheritance layer could never observe a parent that switched models.
+        if (model?.providerID !== undefined && model?.id !== undefined) {
+          state.sessionModels.set(sessionID, { id: model.id, providerID: model.providerID });
+        }
         return { ok: true };
       },
       interrupt: async ({ sessionID }) => {

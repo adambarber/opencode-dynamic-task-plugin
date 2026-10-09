@@ -11,8 +11,8 @@
 
 //jscpd:ignore-start
 import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
+import { agentKey } from "../../dist/shared/agent-key.js";
 import {
-  agentKey,
   agentOccupancy,
   applyAgentOverlay,
   checkAgentCapacity,

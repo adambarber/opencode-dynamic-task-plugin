@@ -169,6 +169,24 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
       if (literal.trim() === "") return;
       if (literal.length > 1 && !bound.has(literal)) bound.set(literal, { file, name });
     };
+    // The names production puts on its own FIELDS, read off the tree before any
+    // constant is. `MODEL_LABEL = "model"` and the `"model"` a test asserts is absent
+    // from a create body are the same six characters and different claims: one is a
+    // word the plugin invented for a row, the other is the name of a property the host
+    // declares. Exempting the field names is not a special case for one word — it is
+    // the distinction the two exemptions above already draw, applied to the one family
+    // of literal it missed. Without it a label names a field, and the gate reports two
+    // sites for something no decision can drift: a gate that cries wolf gets switched
+    // off, and then nothing watches the ones that matter.
+    const fieldNames = new Set();
+    for (const file of listProdFiles()) {
+      const source = readSource(file).text;
+      // Property access (`session.model`, `raw.maxConcurrent`) and quoted keys
+      // (`{"model": ...}`, `input["model"]`) — the two spellings a field has in source.
+      for (const m of source.matchAll(/\.([A-Za-z_$][\w$]*)/g)) fieldNames.add(m[1]);
+      for (const m of source.matchAll(/["']([A-Za-z_$][\w$]*)["']\s*:/g)) fieldNames.add(m[1]);
+      for (const m of source.matchAll(/\[["']([A-Za-z_$][\w$]*)["']\]/g)) fieldNames.add(m[1]);
+    }
     for (const file of listProdFiles()) {
       const source = readSource(file).text;
       const forms = [
@@ -194,6 +212,10 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
         }
       }
     }
+    // A literal that names a field is dropped last, so the decision literals it would
+    // otherwise displace are still collected — the map keeps only the FIRST binding,
+    // and dropping before adding would let a later decision claim the name instead.
+    for (const literal of fieldNames) bound.delete(literal);
     return bound;
   }
 

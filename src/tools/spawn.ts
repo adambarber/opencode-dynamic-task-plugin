@@ -11,6 +11,7 @@ import {
   resolveDependencies,
 } from "../shared/admission.js";
 import { agentCanNotify } from "../shared/agent-record.js";
+import { liveAgentCaps } from "../shared/caps.js";
 import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
 import { abortSession } from "../shared/session-abort.js";
 import { UNKNOWN_PARENT, resolveParentSessionId, validateSessionResult } from "../shared/session-lifecycle.js";
@@ -29,6 +30,7 @@ import {
 } from "../shared/task-state.js";
 import { notifyRunning } from "../shared/change-sinks.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
+import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
 import {
@@ -76,9 +78,6 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     return descriptionTooLong(args.description.length);
   }
 
-  const requestedModelLabel =
-    typeof args.model === "string" && args.model.trim() ? args.model.trim() : null;
-
   // Dependency readiness (temporal — after all static validation).
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
   if (!readiness.ok) {
@@ -109,6 +108,22 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   const limitError = agentCapacityRefusal(store, agent.id, config);
   if (limitError) return `ERROR: ${limitError}`;
 
+  // The model ladder, asked in ONE place and in the only order that means anything:
+  // the dispatch's own argument, then this agent's setting, then the global one, then
+  // the dispatching parent's own model. Nothing below reads a model — the RESOLVED
+  // pair rides the record and the record answers routing, the confirmation and the
+  // failure text alike. Per-dispatch rather than at configuration time because layer 1
+  // is live, and a configured model skips the host read entirely, so the ladder costs
+  // as many host calls as the ladder has layers with nothing stated above them.
+  const resolvedModel = await resolveChildModel({
+    requested: admitted.modelOverride,
+    scope: liveAgentCaps(config),
+    agent: agent.id,
+    inherit: () => readParentModel(host, resolveParentSessionId(ctx)),
+  });
+  const requestedModelLabel =
+    resolvedModel !== undefined ? `${resolvedModel.providerID}/${resolvedModel.modelID}` : null;
+
   let createdSessionId: string | null = null;
   const parentSessionId = resolveParentSessionId(ctx);
   // The registration, minus the id the create has not returned yet. Built BEFORE
@@ -124,7 +139,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     description: args.description || `Task: ${agent.name}`,
     lineage: admission.newLineage,
     parentSessionId: parentSessionId || UNKNOWN_PARENT,
-    ...(admitted.modelOverride !== undefined ? { requestedModel: admitted.modelOverride } : {}),
+    ...(resolvedModel !== undefined ? { requestedModel: resolvedModel } : {}),
     ...(args.depends_on !== undefined ? { dependsOn: args.depends_on } : {}),
     ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
   } satisfies Omit<NewTaskRegistration, "childSessionId">;

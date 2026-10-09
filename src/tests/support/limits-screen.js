@@ -24,10 +24,26 @@ import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent
 import { DIALOG_WIDTH, dialogRowText, fitsItsDialog } from "../../../dist/tui/geometry.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
+import { MODEL_LABEL } from "../../../dist/tui/agent-editor.js";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { overlayChannel } from "./overlay-channel.js";
 
 //jscpd:ignore-end
+/**
+ * The models this host has, as its own catalog spells them.
+ *
+ * Rows the picker reads from `ctx.data.location.model.list()`, keyed the way the host
+ * keys them — `providerID` and `id` — so a chosen row is the id the dispatch path would
+ * accept. `name` is the display name, which is what an operator reads.
+ */
+export const CATALOG = [
+  { id: "glm-5.3", name: "GLM 5.3", providerID: "z-ai" },
+  { id: "space-bunny-free", name: "Space Bunny", providerID: "opencode" },
+];
+
+/** The qualified pair a catalog row maps to, as the picker maps it. */
+export const CATALOG_MODELS = CATALOG.map((entry) => ({ modelID: entry.id, providerID: entry.providerID }));
+
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
 
@@ -59,7 +75,7 @@ export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
  * the TUI runtime client has no `agent` namespace, and a double that answers
  * `client.agent.list()` proves a reader the host cannot run.
  */
-export function hostApi(directory, { agents = REGISTERED, channel } = {}) {
+export function hostApi(directory, { agents = REGISTERED, channel, models = CATALOG } = {}) {
   const seen = { layers: [], selects: [], slots: [], toasts: [] };
   const pending = [];
   return {
@@ -68,12 +84,19 @@ export function hostApi(directory, { agents = REGISTERED, channel } = {}) {
       // a case that does not care pays nothing for it.
       client: channel?.client ?? { rpc: () => ({}) },
       location: { directory },
-      // The row set is the HOST's registered agents, read the way its own agent
-      // screens read them: the data store's per-location collection, synchronously.
+      // The row set is the HOST's registered agents, and the model catalog is the HOST'S
+      // registered models, both read the way its own screens read them: the data store's
+      // per-location collection, synchronously. The catalog rows carry the fields the
+      // host's `ModelInfo` declares, because the picker maps `providerID` and `id` — a
+      // double that omitted either would map `undefined` and the screen would offer
+      // `undefined/undefined` to the operator.
       data: {
         location: {
           agent: {
             list: () => agents.map((name) => ({ mode: "subagent", name, permissions: [] })),
+          },
+          model: {
+            list: () => models.map((entry) => ({ ...entry, compatibility: undefined, enabled: true, family: undefined, id: entry.id, name: entry.name, providerID: entry.providerID })),
           },
         },
       },
@@ -507,12 +530,18 @@ export const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
  */
 export const assertCapsDrawn = (dialog, why) => {
   const drawn = capRowsAsDrawn(dialog);
-  assert.equal(drawn.length, AGENT_CAP_NAMES.length, `${why}: one row per cap and the way out, nothing else`);
+  // The model is on this screen too, and it is a row rather than a cap: one row per cap,
+  // one for the agent's own model, and the way out. Asserting over the caps alone would
+  // pass while the model row was missing, which is the half of the screen nobody would
+  // be able to reach.
+  assert.equal(drawn.length, AGENT_CAP_NAMES.length + 1, `${why}: one row per cap, the agent's model, and the way out — nothing else`);
   AGENT_CAP_NAMES.forEach((cap, index) => {
     const label = CAP_LABEL[cap];
     assert.ok(drawn[index].startsWith(`${label} `), `${why}: row ${index} is ${cap}, and reads "${drawn[index]}"`);
     assert.notEqual(drawn[index].slice(label.length).trim(), "", `${why}: ${cap} carries its figure, not just its name`);
   });
+  assert.ok(drawn[AGENT_CAP_NAMES.length].startsWith(`${MODEL_LABEL} `), `${why}: the agent's model is a row, and reads "${drawn[AGENT_CAP_NAMES.length]}"`);
+  assert.notEqual(drawn[AGENT_CAP_NAMES.length].slice(MODEL_LABEL.length).trim(), "", `${why}: the model row carries its value, not just its name`);
 };
 
 /**

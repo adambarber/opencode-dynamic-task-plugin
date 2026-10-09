@@ -393,6 +393,16 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
      * same absence there, so a case that needs to separate them says so here.
      */
     rememberHostSession: (id) => state.foreignSessions.add(id),
+    /**
+     * Say which model a session is running, through the host's OWN door.
+     *
+     * `session.switchModel` is how a model is set on a session, and the host's projector
+     * writes it onto the session row — the only place the plugin's inheritance layer
+     * reads it from. Going through the door rather than writing the map means a case
+     * cannot put the host in a state the host would never be in.
+     */
+    setSessionModel: (id, model) => client.session.switchModel({ sessionID: id, model }),
+
     /** The host's own not-found: it has no such session, and will say so. */
     forgetHostSession: (id) => {
       state.foreignSessions.delete(id);

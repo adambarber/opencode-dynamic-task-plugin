@@ -22,7 +22,7 @@
  */
 //jscpd:ignore-start
 import type { ActiveTaskState } from "./task-state.js";
-import { agentKey } from "./caps.js";
+import { agentKey } from "./agent-key.js";
 
 //jscpd:ignore-end
 /**

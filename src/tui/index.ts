@@ -37,6 +37,7 @@
 import type { Plugin } from "@opencode/plugin/tui";
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
+import type { ModelOverride } from "../shared/model-choice.js";
 import { depthLimits } from "../shared/task-policy.js";
 import {
   type AgentCapName,
@@ -54,12 +55,16 @@ import {
   type CapChoice,
   type CeilingChoice,
   type EditOutcome,
+  type ModelChoice,
+  MODEL_LABEL,
   agentDialogFrom,
+  applyAgentModelEdit,
   applyCapEdit,
   applyCeilingEdit,
+  applyGlobalModelEdit,
   overlayFrom,
 } from "./agent-editor.js";
-import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps } from "./props.js";
+import { ChoiceKind, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps } from "./props.js";
 
 //jscpd:ignore-end
 /** The host side this screen talks to, named once. The flows below take it everywhere. */
@@ -186,6 +191,7 @@ async function openLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promis
     const choice = await selectLimitsRow(ctx, limitsListProps(view.dialog));
     if (choice === undefined) return;
     if (choice.kind === ChoiceKind.Ceiling) view = await openCeiling(ctx, view, agentHost);
+    else if (choice.kind === ChoiceKind.GlobalModel) view = await openGlobalModel(ctx, view, agentHost);
     else view = await openAgentCaps(ctx, view, choice.agent, agentHost);
   }
 }
@@ -200,7 +206,50 @@ async function openCeiling(ctx: Host, view: LimitsView, agentHost: OpaqueHost<Ag
   for (;;) {
     const choice = await selectLimitsRow(ctx, ceilingPickerProps(view.dialog.ceiling));
     if (choice === undefined || choice.kind === ChoiceKind.Back) return view;
+    if (choice.kind !== ChoiceKind.CeilingValue) continue;
     return applyEdit(ctx, view, CEILING_LABEL, () => applyCeilingEdit(view.overlay, { value: choice.value } satisfies CeilingChoice), agentHost);
+  }
+}
+
+/**
+ * The global model, open: layer 2 of the ladder, for every agent with none of its own.
+ *
+ * The exact sibling of `openCeiling` in shape and for the same reasons — one loop, one
+ * `applyEdit` at the bottom, and the view returned is the re-read one — because the
+ * target is the document rather than an agent body and there is nothing else about it
+ * to differ. The one thing that IS different is where the rows come from: the host's own
+ * catalog, read the way its own model selector reads it, rather than a list this plugin
+ * invented.
+ */
+async function openGlobalModel(ctx: Host, view: LimitsView, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
+  for (;;) {
+    const models = tuiModelList(ctx);
+    const choice = await selectLimitsRow(ctx, modelPickerProps(MODEL_LABEL, models, view.dialog.model, "each agent's own model, then the parent's own"));
+    if (choice === undefined || choice.kind === ChoiceKind.Back) return view;
+    if (choice.kind !== ChoiceKind.ModelValue) continue;
+    const edit = { value: choice.value } satisfies ModelChoice;
+    return applyEdit(ctx, view, MODEL_LABEL, () => applyGlobalModelEdit(view.overlay, edit), agentHost);
+  }
+}
+
+/**
+ * One agent's own model, open — layer 3, which beats the global one.
+ *
+ * The sibling of `openCapPicker`, and it lands where that one lands: back on the agent's
+ * own caps, re-read. The agent's screen holds three settings rather than two, and a
+ * model written from a stale view would drop the other two, so the re-read is not a
+ * courtesy.
+ */
+async function openModelPicker(ctx: Host, view: LimitsView, agent: string, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView> {
+  const row = rowOf(view, agent);
+  for (;;) {
+    const models = tuiModelList(ctx);
+    const choice = await selectLimitsRow(ctx, modelPickerProps(`${agent} ${MODEL_LABEL}`, models, row.model, "the global model"));
+    if (choice === undefined) return view;
+    if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent, agentHost);
+    if (choice.kind !== ChoiceKind.ModelValue) continue;
+    const edit = { value: choice.value } satisfies ModelChoice;
+    return openAgentCaps(ctx, await applyEdit(ctx, view, `${agent} ${MODEL_LABEL}`, () => applyAgentModelEdit(view.overlay, agent, edit), agentHost), agent, agentHost);
   }
 }
 
@@ -213,6 +262,7 @@ async function openAgentCaps(ctx: Host, view: LimitsView, agent: string, agentHo
   for (;;) {
     const choice = await selectLimitsRow(ctx, agentCapsProps(agent, rowOf(view, agent)));
     if (choice === undefined || choice.kind === ChoiceKind.Back) return readLimitsOr(ctx, view, agentHost);
+    if (choice.kind === ChoiceKind.Model) return openModelPicker(ctx, view, choice.agent, agentHost);
     return openCapPicker(ctx, view, choice.agent, choice.cap, agentHost);
   }
 }
@@ -226,6 +276,9 @@ async function openCapPicker(ctx: Host, view: LimitsView, agent: string, cap: Ag
     // screen is re-mounted, and from the picker that is the caps screen.
     if (choice === undefined) return view;
     if (choice.kind === ChoiceKind.Back) return openAgentCaps(ctx, view, agent, agentHost);
+    // The model picker is a row on this agent's screen now, so it lands here: the caps
+    // picker's own choice is the only one whose value is a number.
+    if (choice.kind === ChoiceKind.ModelValue) return openModelPicker(ctx, view, agent, agentHost);
     // Lands back on THIS agent's caps, re-read: the other cap of the same pair has to
     // be one choice away, and the row just written is stale the moment the file moves.
     return openAgentCaps(ctx, await applyEdit(ctx, view, agent, () => applyCapEdit(view.overlay, agent, { cap, value: choice.value } satisfies CapChoice), agentHost), agent, agentHost);
@@ -266,6 +319,27 @@ function tuiAgentCaller(ctx: Host): AgentCaller {
       },
     },
   };
+}
+
+/**
+ * The model catalog as the TUI host itself reads it, as the picker's row set.
+ *
+ * `ctx.data.location.model` is the same collection the host's own model selector reads,
+ * so a row on this screen and a row on the host's are the same fact — which is the only
+ * way a model picker can be worth pressing. The ids are the host's own spelling
+ * (`providerID/modelID`) and the exact spelling a dispatch and the config file use, so a
+ * chosen row is an id the dispatch path will recognise with no translation here.
+ *
+ * An unsynced store answers EMPTY rather than throwing: the picker then offers nothing
+ * to choose, which is visible, where a throw would take the dialog down over a store the
+ * host has not reached yet.
+ */
+function tuiModelList(ctx: Host): ModelOverride[] {
+  const listed = ctx.data.location.model.list(ctx.location ?? undefined) ?? [];
+  // The host's catalog row is already a pair in all but name: `providerID` is the field
+  // the API uses and `id` is the catalog model id, so the projection renames rather than
+  // parses. Nothing here composes a string.
+  return listed.map((model) => ({ modelID: model.id, providerID: model.providerID }));
 }
 
 async function readLimits(ctx: Host, agentHost: OpaqueHost<AgentCaller>): Promise<LimitsView | undefined> {
@@ -329,6 +403,9 @@ function rowOf(view: LimitsView, agent: string): AgentEntry {
   const limits = depthLimits({ allowSameAgentRecursion: view.base.allowSameAgentRecursion, maxDepth: policy.maxDepth }, names);
   return {
     depth: { boundBy: limits.boundBy, configured: policy.maxDepth, effective: limits.effective },
+    // The model cell falls back exactly as the caps do: nothing stated anywhere means the
+    // parent's own model, and `stated: false` is the honest answer for a row nobody wrote.
+    model: { model: view.base.model ?? null, stated: false },
     name: agent,
     resolved: { maxConcurrent: policy.maxConcurrent, maxDepth: policy.maxDepth },
     stated: {},

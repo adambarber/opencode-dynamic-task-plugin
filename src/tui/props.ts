@@ -5,6 +5,7 @@
 //jscpd:ignore-start
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
 import { AGENT_CAP_NAMES, type AgentCapName } from "../shared/caps.js";
+import type { ModelOverride } from "../shared/model-choice.js";
 import {
   type AgentDialog,
   type AgentEntry,
@@ -13,10 +14,16 @@ import {
   CAP_NOUN,
   CEILING_LABEL,
   type CapCell,
+  type ModelCell,
+  MODEL_LABEL,
+  MODEL_FROM_CONFIG,
   capCellOf,
   ceilingOf,
   displayName,
+  modelCell,
+  namedModelCell,
 } from "./agent-editor.js";
+import { spellModel } from "../shared/model-choice.js";
 import { FROM_CONFIG, boundClause, namedCell, plainSummary, terseCell } from "./theme.js";
 import { DIALOG_WIDTH, fitsItsDialog } from "./geometry.js";
 
@@ -30,11 +37,25 @@ import { DIALOG_WIDTH, fitsItsDialog } from "./geometry.js";
  * once per screen, which is the same claim in two places and so a claim free to
  * disagree with itself. It belongs here, where the two lists' vocabularies meet.
  */
-export type ListChoice = { kind: ChoiceKind.Agent; agent: string } | { kind: ChoiceKind.Ceiling };
-export type CapsChoice = { kind: ChoiceKind.Cap; agent: string; cap: AgentCapName } | { kind: ChoiceKind.Back };
+export type ListChoice =
+  | { kind: ChoiceKind.Agent; agent: string }
+  | { kind: ChoiceKind.Ceiling }
+  // The global model, a sibling of the total: one setting for every agent, held at the
+  // same level and edited through the same drill-down.
+  | { kind: ChoiceKind.GlobalModel };
+export type CapsChoice =
+  | { kind: ChoiceKind.Cap; agent: string; cap: AgentCapName }
+  // The agent's own model, which beats the global one. A row on the agent's screen rather
+  // than on the list, because it is the agent's setting and not the fleet's.
+  | { kind: ChoiceKind.Model; agent: string }
+  | { kind: ChoiceKind.Back };
 export type PickerChoice =
   | { kind: ChoiceKind.Value; agent: string; cap: AgentCapName; value: number | null }
   | { kind: ChoiceKind.CeilingValue; value: number | null }
+  // A model, or null to clear the stated one and let the layer below answer. `agent` is
+  // null for the global row, where there is no key to fold — the same distinction the
+  // list's own `Ceiling` and `Agent` kinds draw, for the same reason.
+  | { kind: ChoiceKind.ModelValue; agent: string | null; value: ModelOverride | null }
   // The same shape the agent screen's own Back row carries, and deliberately not a
   // third spelling of "go back": a kind that means one thing has one representation, so
   // a reader asking "which rows leave this screen alone" finds one answer.
@@ -54,6 +75,9 @@ export enum ChoiceKind {
   Back = "back",
   Value = "value",
   CeilingValue = "ceilingValue",
+  GlobalModel = "globalModel",
+  Model = "model",
+  ModelValue = "modelValue",
 }
 
 /**
@@ -113,6 +137,14 @@ export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListCh
         description: `${terseCell(dialog.ceiling)  } ${  CAP_NOUN.maxConcurrent}`,
         value: { kind: ChoiceKind.Ceiling } as const satisfies ListChoice,
       },
+      {
+        // The model, immediately below the total it answers to: the two document-level
+        // settings together, so an operator reading "what applies to every agent" reads
+        // them in one place instead of finding one on a second screen.
+        title: `${displayName(MODEL_LABEL)}:`,
+        ...(fitsItsDialog({ description: modelCell(dialog.model), title: MODEL_LABEL }, DIALOG_WIDTH) ? { description: modelCell(dialog.model) } : {}),
+        value: { kind: ChoiceKind.GlobalModel } as const satisfies ListChoice,
+      },
       ...dialog.rows.map((row) => ({
         title: `${displayName(row.name)}:`,
         category: "Agents",
@@ -160,6 +192,64 @@ export function limitsListProps(dialog: AgentDialog): DialogSelectOptions<ListCh
  */
 function pickerTitle(subject: string, ...clauses: (string | null)[]): string {
   return [subject, ...clauses.filter((clause) => clause !== null).map((clause) => `(${clause})`)].join(" ");
+}
+
+/**
+/**
+ * The model picker: the host's own catalog, then the way out.
+ *
+ * THE ROWS ARE THE HOST'S, and that is the whole claim. A model row the dispatch path
+ * could diverge from is a screen that lies, so the catalog arrives from
+ * `ctx.data.location.model.list()` — the same collection the host's own model selector
+ * reads — and is named providerID/modelID by the host, not by us. The agent rows on the
+ * list above are read the same way for the same reason.
+ *
+ * `models` is a parameter rather than a read because this module is pure: the props are
+ * the value and the host is not in sight. An empty catalog answers with nothing to
+ * choose, and a screen that offers no models says so rather than inventing them.
+ *
+ * The fallback row is NOT "use the config default": a cleared model falls back to the
+ * layer below, which for the global setting is the dispatching parent's own model — a
+ * live read and not a stored value. So the row says `Inherit` and the sentence under it
+ * names the layer, because the two pickers offer two different things and the operator
+ * is choosing between them.
+ */
+export function modelPickerProps(
+  subject: string,
+  models: readonly ModelOverride[],
+  cell: ModelCell,
+  inheritLabel: string,
+): DialogSelectOptions<PickerChoice> {
+  return {
+    // No provenance clause when the model is the parent's: there is nothing to attribute
+    // it to but a live read, and "from config" beside `parent's model` would be a claim
+    // about a file that holds no such setting.
+    title: pickerTitle(subject, cell.stated ? null : cell.model === null ? null : MODEL_FROM_CONFIG),
+    current: { agent: null, kind: ChoiceKind.ModelValue, value: cell.stated ? cell.model : null } as const satisfies PickerChoice,
+    options: [
+      ...models.map((model) => ({
+        // The host's own spelling, not ours: the title is what an operator reads on the
+        // host's own model selector, and the value is the pair the write path stores. One
+        // model, two representations, and only one of them is a string.
+        title: spellModel(model),
+        value: { agent: null, kind: ChoiceKind.ModelValue, value: model } as const satisfies PickerChoice,
+      })),
+      // Only where it can work: clearing a model the file does not state writes nothing,
+      // the same rule the value pickers follow.
+      ...(cell.stated
+        ? [{
+            title: "Inherit",
+            description: inheritLabel,
+            value: { agent: null, kind: ChoiceKind.ModelValue, value: null } as const satisfies PickerChoice,
+          }]
+        : []),
+      {
+        description: subject,
+        title: BACK_LABEL,
+        value: { kind: ChoiceKind.Back } as const satisfies PickerChoice,
+      },
+    ],
+  };
 }
 
 /**
@@ -214,6 +304,16 @@ export function agentCapsProps(agent: string, row: AgentEntry): DialogSelectOpti
         title: CAP_LABEL[cap],
         value: { agent, cap, kind: ChoiceKind.Cap } as const satisfies CapsChoice,
       })),
+      // The model sits with the caps because it is the agent's own setting in the same
+      // sense they are: this is the screen where an agent's dispatch behaviour is stated,
+      // and a model anywhere else would be a setting the operator has to leave this screen
+      // to find. `namedModelCell` spells provenance the same way `namedCell` does, so one
+      // vocabulary answers "is this mine?" across both kinds of row.
+      {
+        description: namedModelCell(row.model),
+        title: MODEL_LABEL,
+        value: { agent, kind: ChoiceKind.Model } as const satisfies CapsChoice,
+      },
       // The way out LAST, below both caps — and it stays a ROW. Escape cannot do this
       // job and the reason is structural rather than a matter of trying harder: the
       // host's own Dialog binds `escape`, `replace` keeps exactly one stack entry, and

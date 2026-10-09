@@ -24,11 +24,12 @@ import {
   type AgentCaps,
   type AgentOverlay,
   type OverlayAgents,
-  agentKey,
   applyAgentOverlay,
   readAgentOverlayCaps,
   resolveAgentCaps,
 } from "../shared/caps.js";
+import { agentKey } from "../shared/agent-key.js";
+import { type ModelOverride, isModelOverride, spellModel } from "../shared/model-choice.js";
 import type { DepthBound} from "../shared/task-policy.js";
 import { depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
@@ -71,6 +72,34 @@ export const CAP_NOUN: Record<AgentCapName, string> = {
 };
 
 /**
+ * The word for the model setting, in the register a label sits in.
+ *
+ * Beside `CAP_LABEL` rather than inside it: a model is not a cap, and the caps module's
+ * vocabulary is a list of names a `Record` over `AgentCapName` types to. A model added
+ * to that list would be a number type with a string in it.
+ */
+export const MODEL_LABEL = "model";
+
+/**
+ * What the screen says when nothing is configured and the parent's own model is used.
+ *
+ * A WORD and not `(default)`, because the ladder's bottom layer is a live fact about
+ * the dispatching parent rather than a stored value, and "default" would name a setting
+ * nobody can open. `(default)` is what the cap rows use for an absent number, and the
+ * two answers are different: one reads a config, the other reads the parent.
+ */
+export const FROM_PARENT = "parent's model";
+
+/**
+ * What the screen says when the model is the config file's rather than the operator's.
+ *
+ * The same claim `INHERITED` makes for a cap figure, in the register a full cell sits
+ * in, and it is separate rather than shared because a cell reads as a sentence `4 from
+ * config` and a figure does not.
+ */
+export const MODEL_FROM_CONFIG = "from config file";
+
+/**
  * An agent's name as a menu item's leading word, and NOT as a route.
  *
  * Capitalised because a list of names is a list of ITEMS, and a column of lower-case
@@ -97,6 +126,21 @@ export const CAP_CHOICES: Record<AgentCapName, readonly number[]> = {
 /** The two cap numbers in force for one agent, with the config file's fallbacks applied. */
 export interface ResolvedCaps { maxConcurrent: number; maxDepth: number }
 
+/**
+ * A model, as a cell: the qualified id in force, and whether the operator stated it.
+ *
+ * A PAIR for the same reason a cap cell is one — "is this mine?" is a question the
+ * screen has to answer rather than leave the operator to work out from a string. `model`
+ * is null only when nothing is configured anywhere and the ladder's bottom layer reads
+ * the dispatching parent, which is a live fact and not a stored value.
+ */
+export interface ModelCell {
+  /** The model in force, or null to inherit the parent's own. A pair, like every other model in the plugin. */
+  model: ModelOverride | null;
+  /** False when the config file or the layer above supplies it rather than this body. */
+  stated: boolean;
+}
+
 
 /** One agent, as the screen holds it. */
 export interface AgentEntry {
@@ -119,6 +163,15 @@ export interface AgentEntry {
    * answer to a question the screen already has an answer to.
    */
   depth: DepthBinding;
+  /**
+   * The model this agent's children run on, as a cell.
+   *
+   * The ladder's per-agent layer, resolved: the agent's own stated model, else the global
+   * one, else the parent. Carried resolved rather than as a stated pair, because the row
+   * has to show what a dispatch will USE and not merely what the operator typed — the
+   * same reason the caps ride resolved with `stated` beside them.
+   */
+  model: ModelCell;
 }
 
 /** The reachable depth, the cap that was set, and the constraint that binds. */
@@ -146,6 +199,15 @@ export interface AgentDialog {
    * own rather than living in a cell somewhere it has to be looked up from.
    */
   ceiling: CapCell;
+  /**
+   * The global model, as a cell — the layer every agent falls back to before the
+   * dispatching parent's own model is read.
+   *
+   * Beside `ceiling` rather than elsewhere on this shape because it is the same kind of
+   * thing: one setting that applies to every agent, held where the ceiling is held, and
+   * stated/inherited in exactly the same way.
+   */
+  model: ModelCell;
   /** Set when the file said something unusable, so the screen can say so too. */
   problem: string | null;
 }
@@ -183,14 +245,23 @@ export function agentDialogFrom(
   const inForce = applyAgentOverlay(base, raw) ?? base;
   return {
     ceiling: { bounded: null, stated: stated.maxConcurrent !== undefined, value: inForce.maxConcurrent },
+    // The overlay's own statement, else the config file's, else the parent. The stated
+    // half is the overlay's answer alone, so the cell can say which of the two files a
+    // model came from.
+    model: { model: inForce.model ?? null, stated: stated.model !== undefined },
     problem,
     rows: names.map((name) => {
       const policy = resolveAgentCaps(inForce, name);
+      const own = stated.agents[agentKey(name)] ?? {};
       return {
         depth: depthBindingFor(policy.maxDepth, allowSameAgentRecursion, agentNames),
+        // The agent's own model wins over the global one, by the ladder's own order, and
+        // the cell says whose it is: an agent showing the global model is not the same
+        // answer as one showing its own.
+        model: { model: own.model ?? inForce.model ?? null, stated: own.model !== undefined },
         name,
         resolved: capsOf(policy),
-        stated: stated.agents[agentKey(name)] ?? {},
+        stated: own,
       };
     }),
   };
@@ -228,11 +299,13 @@ interface StatedOverlay {
   agents: Record<string, AgentCaps>;
   /** The stated cross-agent total, or undefined when the file states none. */
   maxConcurrent: number | undefined;
+  /** The stated top-level model, or undefined when the file states none. */
+  model: ModelOverride | undefined;
 }
 
 function readStated(raw: unknown): StatedOverlay {
   const overlay = readAgentOverlayCaps(raw);
-  return { agents: statedByAgent(overlay), maxConcurrent: overlay.maxConcurrent };
+  return { agents: statedByAgent(overlay), maxConcurrent: overlay.maxConcurrent, model: overlay.model };
 }
 
 /**
@@ -251,6 +324,35 @@ function statedByAgent(overlay: OverlayAgents): Record<string, AgentCaps> {
   // exist. `readAgentOverlayCaps` keeps it so the caller can SAY it was dropped; here
   // the screen has better rows to draw, so the entry goes.
   return Object.fromEntries(Object.entries(agents).filter(([, caps]) => Object.keys(caps).length > 0));
+}
+
+/**
+ * A model cell as the screen prints it: the id in force, or whose it is.
+ *
+ * Beside `terseCell` rather than inside it, because a cap figure is a number with an
+ * optional bound and a model is a string with a fallback — one is `3/4`, the other is
+ * `nvidia/z-ai/glm-5.3` or `parent's model`. Folding them would make the number's two
+ * shapes (`3`, `3/4`) share a branch with the model's three.
+ *
+ * NO provenance here: this is the spelling on the list, a column of rows where an
+ * adjective on every entry is noise. The screen where the operator is DECIDING gets the
+ * other one, exactly as a cap does.
+ */
+export function modelCell(cell: ModelCell): string {
+  return cell.model === null ? FROM_PARENT : spellModel(cell.model);
+}
+
+/**
+ * A model cell where the operator is deciding about it, so it says whose it is.
+ *
+ * The same answer `namedCell` gives a cap figure, in the register a full row sits in: an
+ * agent showing the global model is a different statement from one showing its own, and
+ * the operator is on the screen where that difference is what they came to change.
+ */
+export function namedModelCell(cell: ModelCell): string {
+  if (cell.model === null) return FROM_PARENT;
+  const spelled = spellModel(cell.model);
+  return cell.stated ? spelled : `${spelled} ${MODEL_FROM_CONFIG}`;
 }
 
 /** The value a cell shows, and whether it is the operator's or the config file's. */
@@ -320,6 +422,17 @@ export const CEILING_LABEL = "total ceiling";
 export interface CeilingChoice { value: number | null }
 
 /**
+ * What a model choice means: a qualified providerID/modelID, or null to clear it.
+ *
+ * The same `{ value }` shape its two siblings use, deliberately: `CapChoice` and
+ * `CeilingChoice` both read `choice.value`, and a writer that had to know which of the
+ * three it held before it could find the value would be a third answer to one question.
+ * A model is not a number — that is `V`, not the field — so the field name stays shared
+ * and only the type moves.
+ */
+export interface ModelChoice { value: ModelOverride | null }
+
+/**
  * The outcome of an edit, or a refusal.
  *
  * A refusal is a KIND here rather than a thrown string, because a caller that has to
@@ -365,15 +478,17 @@ export function applyCapEdit(
         // An agent whose last stated cap is gone leaves the overlay entirely. Leaving an
         // empty body behind would have the screen keep showing the agent as "capped" with
         // nothing capped, and would make the file grow one dead entry per experiment.
-        if (AGENT_CAP_NAMES.every((cap) => next[cap] === undefined)) delete agents[key];
+        // A model is a statement too, so it is checked alongside before the body goes.
+        if (AGENT_CAP_NAMES.every((c) => next[c] === undefined) && next.model === undefined) delete agents[key];
       } else {
         next[choice.cap] = value;
       }
       return { ...current, agents };
     },
-    cap: choice.cap,
     choice,
     label,
+    fallback: "falls back to the config file",
+    refuse: (value) => refuseCap(choice.cap, label, value),
   });
 }
 
@@ -387,8 +502,15 @@ export function overlayFrom(raw: unknown): AgentOverlay {
   // written whole on every edit, so anything this does not carry forward is
   // destroyed — the two halves are not independent documents that happen to share a
   // file, they are one document.
+  //
+  // The model rides the same rule and for the same reason, at both levels: a capability
+  // edit that dropped the global model would leave the file saying nothing about a
+  // setting the operator had just watched work, and an agent edit would do the same to
+  // the agent's own body — which is why `AgentCaps` carries `model` rather than the
+  // document having a second per-agent place to hold it.
   const carried = Object.keys(stated.agents).length > 0 ? { agents: stated.agents } : {};
-  return stated.maxConcurrent === undefined ? carried : { ...carried, maxConcurrent: stated.maxConcurrent };
+  const withTotal = stated.maxConcurrent === undefined ? carried : { ...carried, maxConcurrent: stated.maxConcurrent };
+  return stated.model === undefined ? withTotal : { ...withTotal, model: stated.model };
 }
 
 /**
@@ -404,7 +526,8 @@ export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): 
     before: current.maxConcurrent,
     choice,
     label: CEILING_LABEL,
-    cap: "maxConcurrent",
+    fallback: "falls back to the config file",
+    refuse: (value) => refuseCap("maxConcurrent", CEILING_LABEL, value),
     // Spread-then-delete rather than a conditional object, so clearing the ceiling
     // leaves the agents exactly as they were. The key is absent, not `undefined`:
     // `exactOptionalPropertyTypes` is on, and a file carrying `null` where a reader
@@ -419,28 +542,37 @@ export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): 
 /**
  * Every edit's three questions before the file is touched, in the order both ask them.
  *
- * `build` is the only part that differs between the two editors, and it is a FUNCTION so
+ * `build` is the only part that differs between the editors, and it is a FUNCTION so
  * that difference is visible in the signature rather than buried in a branch: what the
  * target is called, and how a value is written under it. The label is the operator's
  * word for that target, and it is the same word the refusal and the success sentence
  * use — so a screen can no more call the total "at once" than the toast can.
+ *
+ * GENERIC over the value, and the caps are one instantiation rather than the definition:
+ * a model is not a number, so the number-typed version would have had to be forked and
+ * the fork is where the two would drift. `refuse` is a parameter rather than a call to
+ * `CAP_CHOICES` for the same reason — a picker's offer list is the acceptance rule, and
+ * a model picker's list comes from the host's own catalog.
  */
-function editOutcome(spec: {
-  before: number | undefined;
-  choice: { value: number | null };
+function editOutcome<V>(spec: {
+  before: V | undefined;
+  choice: { value: V | null };
   label: string;
-  cap: AgentCapName;
-  build: (value: number | null) => AgentOverlay;
+  /** What a cleared value falls back to, as the clause that finishes the sentence. */
+  fallback: string;
+  /** Why a value is not one the picker may offer, or null when it is. */
+  refuse: (value: V) => string | null;
+  build: (value: V | null) => AgentOverlay;
 }): EditOutcome {
   if (spec.before === (spec.choice.value ?? undefined)) return { kind: "unchanged" };
-  const problem = refuseValue(spec.label, spec.cap, spec.choice.value);
+  const problem = spec.choice.value === null ? null : spec.refuse(spec.choice.value);
   if (problem) return { kind: "invalid", problem };
   return {
     kind: "written",
     overlay: spec.build(spec.choice.value),
     summary:
       spec.choice.value === null
-        ? `${spec.label} now falls back to the config file`
+        ? `${spec.label} now ${spec.fallback}`
         : `${spec.label} set to ${spec.choice.value}`,
   };
 }
@@ -455,7 +587,75 @@ function editOutcome(spec: {
  * concurrency, `total ceiling` for the total — instead of both naming the cap the
  * vocabulary happens to be keyed by.
  */
-function refuseValue(label: string, cap: AgentCapName, value: number | null): string | null {
-  if (value === null || CAP_CHOICES[cap].includes(value)) return null;
+function refuseCap(cap: AgentCapName, label: string, value: number): string | null {
+  if (CAP_CHOICES[cap].includes(value)) return null;
   return `${value} is not a value ${label} can take here: ${CAP_CHOICES[cap].join(", ")}.`;
+}
+
+/**
+ * Why a model the picker offers would be refused, or null when it is one of them.
+ *
+ * The model module's OWN rule, asked by the writer so the two cannot be two: a screen
+ * that offered a bare id would write a pair with an empty provider and then tell the
+ * operator it was in force. The host's catalog is the picker's content, so a value the
+ * catalog does not hold is the only thing this can still catch — and it catches it
+ * rather than writing a model the dispatch path would route nowhere.
+ */
+function refuseModel(label: string, value: ModelOverride): string | null {
+  return isModelOverride(value) ? null : `"${JSON.stringify(value)}" is not a providerID/modelID pair, which is the only form ${label} can take.`;
+}
+
+/**
+ * Set the global model, in the overlay — layer 2 of the ladder, for every agent that does
+ * not choose one of its own.
+ *
+ * The sibling of `applyCeilingEdit` for the same reason and in the same shape: the target
+ * is the document rather than an agent body, so there is no key to fold and no body to
+ * prune. Clearing it hands every agent without its own model back to the layer below —
+ * the dispatching parent's own model, which is a live read and not a stored value, so the
+ * sentence says so rather than naming a file.
+ */
+export function applyGlobalModelEdit(current: AgentOverlay, choice: ModelChoice): EditOutcome {
+  return editOutcome({
+    before: current.model,
+    choice,
+    label: MODEL_LABEL,
+    fallback: "falls back to each agent's own model, then the parent's own",
+    refuse: (value) => refuseModel(MODEL_LABEL, value),
+    build: (value) => {
+      const { model: _dropped, ...rest } = current;
+      return value === null ? rest : { ...rest, model: value };
+    },
+  });
+}
+
+/**
+ * Set one agent's own model, in the overlay — layer 3, which beats the global one.
+ *
+ * The sibling of `applyCapEdit`: one key folded, one body merged, and the same pruning
+ * rule afterwards, because an agent whose last statement of any kind is gone has nothing
+ * left for the overlay to say about it.
+ */
+export function applyAgentModelEdit(current: AgentOverlay, agent: string, choice: ModelChoice): EditOutcome {
+  const key = agentKey(agent);
+  if (!key) return { kind: "invalid", problem: "That agent has no name, so there is no key to write the model under." };
+  const label = `${agent} ${MODEL_LABEL}`;
+  return editOutcome({
+    before: current.agents?.[key]?.model,
+    choice,
+    label,
+    fallback: "falls back to the global model",
+    refuse: (value) => refuseModel(label, value),
+    build: (value) => {
+      const next: AgentCaps = { ...current.agents?.[key] };
+      const agents: Record<string, AgentCaps> = { ...current.agents, [key]: next };
+      if (value === null) {
+        delete next.model;
+        if (AGENT_CAP_NAMES.every((cap) => next[cap] === undefined) && next.model === undefined) delete agents[key];
+      } else {
+        next.model = value;
+      }
+      return { ...current, agents };
+    },
+  });
 }

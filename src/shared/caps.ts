@@ -18,6 +18,9 @@
 //jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { agentKey } from "./agent-key.js";
+import type { ModelOverride } from "./model-choice.js";
+import { readModelSetting, readOverlayModel } from "./model-choice.js";
 import { isPlainRecord } from "./host-shape.js";
 import { depthLimits, type DepthBound } from "./task-policy.js";
 
@@ -48,8 +51,13 @@ export type AgentCapName = (typeof AGENT_CAP_NAMES)[number];
  * One agent's own caps. Every field is optional because an agent may set only some of
  * them and inherit the rest from the top level — `AgentCapPolicy` is the resolved
  * shape, the one that has all of them.
+ *
+ * `model` rides in the same body even though a model is not a cap: the overlay has ONE
+ * per-agent body, and a second place for one agent's settings is the second vocabulary
+ * the lane feature left behind. Its meaning belongs to `model-choice.ts` — this carries
+ * it because the body is where an operator's per-agent settings live together.
  */
-export type AgentCaps = Partial<Record<AgentCapName, number>>;
+export type AgentCaps = Partial<Record<AgentCapName, number>> & { model?: ModelOverride };
 
 /**
  * The caps in force, and the only part of a config this module reads.
@@ -62,6 +70,13 @@ export type AgentCaps = Partial<Record<AgentCapName, number>>;
 export interface AgentCapSource {
   readonly maxConcurrent: number;
   readonly maxDepth: number;
+  /**
+   * The model an agent falls back to when it chooses none of its own — the global layer
+   * of the model ladder. Optional because a config that states no model anywhere is the
+   * default, and that default is "the dispatching parent's own model", which is a live
+   * read rather than a stored value. See `model-choice.ts`.
+   */
+  readonly model?: ModelOverride | undefined;
   readonly agents: Readonly<Record<string, AgentCaps>>;
 }
 
@@ -74,21 +89,6 @@ export interface AgentCapPolicy {
 }
 
 // ─── the key space ───────────────────────────────────────────────────────────
-
-/**
- * The one spelling of an agent name: case-folded and trimmed, which is the match the
- * admission gate has always used to find an agent by name.
- *
- * A dispatch supplies the HOST's name, whose case is the host's business, while a
- * config key is whatever the operator typed. Folding only one side is the bug: the
- * write is folded and the read is not, so the cap an operator set applies to no agent
- * at all, and nothing reports that — no error, no refusal, just an agent running
- * uncapped under a cap they can see. So the fold happens HERE, on both sides, and
- * every lookup and every write in the plugin goes through this function.
- */
-export function agentKey(name: unknown): string {
-  return typeof name === "string" ? name.trim().toLowerCase() : "";
-}
 
 /**
  * An agent's caps, with every number filled in.
@@ -244,6 +244,11 @@ export function readAgentCapBody(raw: unknown): AgentCaps {
     const value = cap(body[name]);
     if (value !== undefined) out[name] = value;
   }
+  // Carried by the model module's own rule, because the body holds a model too and a
+  // reader that dropped it would make every write lose the operator's choice — the
+  // silent destruction the one-reader rule exists to prevent.
+  const model = readModelSetting(body.model);
+  if (model !== undefined) out.model = model;
   return out;
 }
 
@@ -262,7 +267,12 @@ export function readAgentCapBody(raw: unknown): AgentCaps {
 export function parseAgentCaps(raw: unknown): AgentCaps | null {
   if (!isPlainRecord(raw)) return null;
   const caps = readTopLevelCaps(raw);
-  return Object.keys(caps).length === 0 ? null : caps;
+  // A body that states a model says something even with no cap in it: layer 3 is the
+  // agent's own model, and dropping the body for having no numbers would leave the
+  // agent inheriting the global one with nothing on screen saying otherwise.
+  const model = readModelSetting(raw.model);
+  if (Object.keys(caps).length === 0 && model === undefined) return null;
+  return model === undefined ? caps : { ...caps, model };
 }
 
 // ─── the overlay: the operator's edit, as a document ─────────────────────────
@@ -294,6 +304,15 @@ export interface OverlayAgents {
    * rule for the same untrusted file, which is the thing this module exists to prevent.
    */
   maxConcurrent?: number;
+  /**
+   * The model the file STATES for the whole ladder, or undefined when it states none.
+   *
+   * The same stated/inherited pair the ceiling carries, for the same reason and read by
+   * the model module's own rule: a screen can then say whether the model every agent
+   * falls back to is the operator's own choice — and a second reader of this field
+   * would be a second answer to what the file states.
+   */
+  model?: ModelOverride;
 }
 
 export interface AgentOverlay {
@@ -301,6 +320,8 @@ export interface AgentOverlay {
   maxConcurrent?: number;
   /** The fallback depth for any agent that does not cap one of its own. */
   maxDepth?: number;
+  /** The fallback model for any agent that does not choose one of its own. */
+  model?: ModelOverride;
   agents?: Record<string, AgentCaps>;
 }
 
@@ -316,11 +337,19 @@ export interface AgentOverlay {
 export function readAgentOverlayCaps(raw: unknown): OverlayAgents {
   const { agents, dropped, usable } = readOverlayAgents(raw);
   const stated = usable ? cap(overlayBody(raw)?.maxConcurrent) : undefined;
+  // Read by the model module's rule, so the screen's "stated" and the dispatch path's
+  // in-force model answer the same question about the same untrusted document.
+  const model = usable ? readOverlayModel(overlayBody(raw)) : undefined;
   // `exactOptionalPropertyTypes` is on, so an absent key and a key holding
   // `undefined` are different values. Spreading would write the latter and the
   // dialog's `!== undefined` check would be answering a question about presence that
   // the object no longer describes.
-  return stated === undefined ? { agents, dropped } : { agents, dropped, maxConcurrent: stated };
+  return {
+    agents,
+    dropped,
+    ...(stated === undefined ? {} : { maxConcurrent: stated }),
+    ...(model === undefined ? {} : { model }),
+  };
 }
 
 /**
@@ -338,10 +367,11 @@ export function parseAgentOverlay(raw: unknown): AgentOverlay | null {
   const { agents, dropped, usable } = readOverlayAgents(raw);
   if (!usable || Object.keys(dropped).length > 0) return null;
   const stated = readTopLevelCaps(raw);
+  const model = readOverlayModel(raw);
   // Absent keys stay absent: `exactOptionalPropertyTypes` is on, so spreading would
   // store an `undefined` and the reader on the other side would be answering a
   // question about presence that the document no longer describes.
-  return { ...stated, agents };
+  return { ...stated, agents, ...(model === undefined ? {} : { model }) };
 }
 
 /**
@@ -388,7 +418,10 @@ function fileOneAgent(
 ): void {
   const caps = readAgentCapBody(entry);
   const ignored = unusableCapNames(entry);
-  const honoured = AGENT_CAP_NAMES.some((field) => caps[field] !== undefined);
+  // A model is a statement too: an agent whose only setting is a model is honoured, or
+  // the overlay would drop the very body that exists to name that agent's model and
+  // report it as "nothing to honour" — naming cap fields the operator never set.
+  const honoured = AGENT_CAP_NAMES.some((field) => caps[field] !== undefined) || caps.model !== undefined;
   if (!honoured) {
     filed.dropped[key] = ignored.length > 0 ? ignored : [...AGENT_CAP_NAMES];
     return;
@@ -411,7 +444,13 @@ export function applyAgentOverlay(base: AgentCapSource, raw: unknown): AgentCapS
   const { agents, usable } = readOverlayAgents(raw);
   if (!usable) return null;
   const caps = readTopLevelCaps(body);
-  if (Object.keys(caps).length === 0 && Object.keys(agents).length === 0) return null;
+  // The model is an EDIT here, not a replacement, on exactly the terms the caps are: the
+  // document states one and it wins, and a document that states none leaves the base
+  // file's model alone. A whole-document replacement would make an operator's cap edit
+  // silently delete the model they configured, which is why the field rides the same
+  // resolver rather than a second one beside it.
+  const model = readOverlayModel(body);
+  if (Object.keys(caps).length === 0 && Object.keys(agents).length === 0 && model === undefined) return null;
   return {
     // An agent the overlay does not mention keeps the base file's numbers: the
     // overlay is an EDIT, not a replacement, so an operator who capped one agent does
@@ -419,6 +458,7 @@ export function applyAgentOverlay(base: AgentCapSource, raw: unknown): AgentCapS
     agents: { ...base.agents, ...agents },
     maxConcurrent: caps.maxConcurrent ?? base.maxConcurrent,
     maxDepth: caps.maxDepth ?? base.maxDepth,
+    ...(model === undefined ? {} : { model }),
   };
 }
 

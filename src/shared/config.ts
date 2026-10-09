@@ -13,13 +13,21 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginOptions } from "@opencode/plugin";
-import { type AgentCaps, agentKey, parseAgentCaps } from "./caps.js";
+import { agentKey } from "./agent-key.js";
+import { type AgentCaps, parseAgentCaps } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
+import { type ModelOverride, readModelSetting } from "./model-choice.js";
 
 //jscpd:ignore-end
 export interface DynamicTaskConfig {
   maxDepth: number;
   maxConcurrent: number;
+  /**
+   * The model every child runs on unless the agent or the dispatch says otherwise —
+   * layer 2 of the model ladder. Absent is the default, and the default is the layer
+   * below it: the dispatching parent's own model. See `model-choice.ts`.
+   */
+  model?: ModelOverride;
   /**
    * Per-agent caps, by agent name. Empty means "no agent is capped separately", not
    * "no agents" — the keys are the HOST's registered agents, so this is a set of
@@ -133,10 +141,19 @@ function takePositiveInt(target: DynamicTaskConfig, src: Record<string, unknown>
   if (value !== undefined) target[key] = value;
 }
 
-/** The numeric fields `takePositiveInt` may write, so a typo cannot reach `target`. */
-type PositiveIntField = {
-  [K in keyof DynamicTaskConfig]: DynamicTaskConfig[K] extends number ? K : never;
-}[keyof DynamicTaskConfig];
+/**
+ * The numeric fields `takePositiveInt` may write, so a typo cannot reach `target`.
+ *
+ * `Exclude` because a homomorphic mapped type keeps a key's optionality, so an optional
+ * field's value is `never | undefined` and its union poisons the key space with an
+ * `undefined` that cannot index a record at all.
+ */
+type PositiveIntField = Exclude<
+  {
+    [K in keyof DynamicTaskConfig]: DynamicTaskConfig[K] extends number ? K : never;
+  }[keyof DynamicTaskConfig],
+  | undefined
+>;
 
 // Shape-checked merge of one untyped config source (tuple options or parsed
 // file) onto the target — invalid fields are ignored, never coerced.
@@ -155,6 +172,11 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
     target.blockedAgents = s.blockedAgents.filter((a): a is string => typeof a === "string" && a.trim().length > 0);
   }
   if (typeof s.allowSameAgentRecursion === "boolean") target.allowSameAgentRecursion = s.allowSameAgentRecursion;
+  // The global model, by the model module's own rule. A stated model the rule drops is a
+  // stated model that routes nowhere, so leaving the field absent lets the layer below
+  // answer rather than poisoning the ladder with a pair whose provider is empty.
+  const model = readModelSetting(s.model);
+  if (model !== undefined) target.model = model;
   if (!isPlainRecord(s.agents)) return;
   for (const [rawName, rawBody] of Object.entries(s.agents)) {
     // `agentKey` and `parseAgentCaps` are the caps module's, deliberately: this is the
@@ -183,6 +205,7 @@ export const ENV = {
   blockedAgents: "DYNAMIC_TASK_FORBIDDEN_AGENTS",
   maxConcurrent: "DYNAMIC_TASK_MAX_CONCURRENT",
   maxDepth: "DYNAMIC_TASK_MAX_DEPTH",
+  model: "DYNAMIC_TASK_MODEL",
   pendingMaxAttempts: "DYNAMIC_TASK_PENDING_MAX_ATTEMPTS",
   retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
   retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
@@ -211,7 +234,10 @@ export function normalizeDynamicTaskConfig(
   applyKnownFields(base, fileConfig);
   applyKnownFields(base, options);
 
-  const env: Partial<Record<keyof DynamicTaskConfig, () => number | string[] | boolean | undefined>> = {
+  // The readers' own return type, and `string` is no longer in it: the model reader
+  // answers the PAIR rather than the text a document spelled it in, so the only values
+  // env can produce are the ones its fields hold.
+  const env: Partial<Record<keyof DynamicTaskConfig, () => number | boolean | string[] | ModelOverride | undefined>> = {
     agentCacheTtlMs: () => parsePositiveInt(envValue(ENV.agentCacheTtlMs)),
     allowSameAgentRecursion: () => parseBoolean(envValue(ENV.allowSameAgentRecursion)),
     blockedAgents: () => {
@@ -224,6 +250,9 @@ export function normalizeDynamicTaskConfig(
     },
     maxConcurrent: () => parsePositiveInt(envValue(ENV.maxConcurrent)),
     maxDepth: () => parsePositiveInt(envValue(ENV.maxDepth)),
+    // Read by the model module's rule, like the file's, so a variable that names a bare
+    // id configures nothing rather than a pair with an empty provider.
+    model: () => readModelSetting(envValue(ENV.model)),
     pendingMaxAttempts: () => parsePositiveInt(envValue(ENV.pendingMaxAttempts)),
     retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
     retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
@@ -245,6 +274,10 @@ export function normalizeDynamicTaskConfig(
     blockedAgents: merged.blockedAgents,
     maxConcurrent: merged.maxConcurrent,
     maxDepth: merged.maxDepth,
+    // Absent stays absent rather than being spread as `undefined`: an absent key and a
+    // key holding nothing are different statements, and "no global model" has to
+    // survive normalization so the ladder can tell it from one that said something.
+    ...(merged.model === undefined ? {} : { model: merged.model }),
     pendingMaxAttempts: merged.pendingMaxAttempts,
     retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
     retainedTaskTtlMs: merged.retainedTaskTtlMs,

@@ -7,7 +7,7 @@
 import {
   BASE, REGISTERED, assertEveryRowFits, booted, capText, openList, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
 } from "./support/limits-screen.js";
-import { CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
+import { CEILING_LABEL, MODEL_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { assert, describe, it } from "./support/runner.js";
 import { BETWEEN } from "../../dist/tui/theme.js";
 import { REPO_ROOT } from "./support/corpus.js";
@@ -28,7 +28,10 @@ import tuiModule from "../../dist/tui/index.js";
  * added its colons — which is what these expectations once did for a round, failing
  * thirty-odd cases for one uninteresting change.
  */
-const WHOLE_SCREEN = [`${displayName(CEILING_LABEL)}:`, ...REGISTERED.map((name) => `${displayName(name)}:`)];
+// The model sits with the total, directly under it: the two document-level settings
+// together, so "what applies to every agent" is read in one place. Five rows for three
+// registered agents and no overlay.
+const WHOLE_SCREEN = [`${displayName(CEILING_LABEL)}:`, `${displayName(MODEL_LABEL)}:`, ...REGISTERED.map((name) => `${displayName(name)}:`)];
 
 /**
  * The harness, checked against itself.

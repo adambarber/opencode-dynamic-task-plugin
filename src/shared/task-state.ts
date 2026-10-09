@@ -24,7 +24,8 @@
 
 //jscpd:ignore-start
 import { type ActiveTaskState, type NewTaskRegistration, TaskState, withoutAdvisory } from "./task-records.js";
-import { type AgentCapSource, agentKey, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
+import { agentKey } from "./agent-key.js";
+import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 

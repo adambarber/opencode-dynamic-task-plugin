@@ -13,17 +13,12 @@
 // fromJsonSchemaDocument shape differs — the server runs the nested rc.112, and only it
 // reproduces the production error text this gate exists for.
 
-//jscpd:ignore-start
 import { overlayHandlers } from "../../dist/entry/state.js";
 import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
 import { createOverlayStore, overlayKey } from "../../dist/shared/overlay-store.js";
 import { Effect, JsonSchema, Schema, SchemaRepresentation } from "../../node_modules/@opencode/plugin/node_modules/effect/dist/index.js";
-import { facadeOver } from "./support/durable-world.js";
-import { withTempDir } from "./support/fixtures.js";
-import { createMockClient } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, createMockClient, describe, facadeOver, it, withTempDir } from "./support/index.js";
 
-//jscpd:ignore-end
 /** The host's decode for a plain JSON Schema, mirrored from core/rpc.ts. */
 async function hostValidates(schema, value) {
   const codec = Schema.make(SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(schema)).ast);

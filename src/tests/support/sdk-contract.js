@@ -13,13 +13,11 @@
 // loudly and immediately, and a fake that invents one cannot pass the gate at all.
 
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { SESSION_NOT_FOUND_TAG } from "../../../dist/shared/liveness.js";
 import { REPO_ROOT } from "./corpus.js";
 
-//jscpd:ignore-end
 const SCHEMA_ROOT = path.join(REPO_ROOT, "node_modules", "@opencode", "schema", "dist");
 const TYPES = path.join(SCHEMA_ROOT, "session.d.ts");
 
@@ -56,7 +54,6 @@ function source() {
 // Two parse idioms the readers below share: distinct capture-group words out of a
 // body, and every quoted word out of one. One spelling each, so a reader cannot
 // quietly change what "declared" means for its own word list.
-const requiredDistinct = (what, matches) => requireFound(what, [...new Set([...matches].map((m) => m[1]))]);
 const requiredQuoted = (what, text) => requireFound(what, [...text.matchAll(/"([^"]+)"/g)].map((m) => m[1]));
 
 function requireFound(what, found) {
@@ -74,14 +71,6 @@ function requireFound(what, found) {
  * why that scanner went blind: v2 renamed `question` to `permission` and added `agent`,
  * and a hand-written allowlist cannot notice. Parsed instead, so the set is the host's.
  */
-export function realDomainNames() {
-  const file = path.join(REPO_ROOT, "node_modules", "@opencode", "plugin", "dist", "promise", "plugin.d.ts");
-  const text = readFileSync(file, "utf8");
-  const start = text.indexOf("export interface Context {");
-  if (start === -1) throw new Error(`sdk-contract could not read Context out of ${file} — the declaration moved`);
-  const body = text.slice(start, text.indexOf("\n}", start));
-  return requiredDistinct("Context", body.matchAll(/readonly (\w+):/g));
-}
 
 /**
  * Every verdict the host declares for a COMPLETED execution, parsed out of
@@ -109,9 +98,6 @@ export function hostOutcomeWords() {
  * carry their own completion, so a step ending is not a turn ending, and a
  * vocabulary that could not tell them apart is how the two got confused.
  */
-export function turnStateWords() {
-  return ["open", ...hostOutcomeWords()];
-}
 
 /**
  * Every reason the client declares it can FAIL, parsed out of `ClientErrorReason`.
@@ -153,10 +139,3 @@ export function missingSessionError(sessionID = "ses_missing") {
   });
 }
 
-/** The reason that pairs with a 404 to mean "no such session". */
-export const NOT_FOUND_REASON = "UnexpectedStatus";
-
-/** The installed SDK version, so a drifting dependency cannot pass unnoticed. */
-export function installedSdkVersion() {
-  return JSON.parse(readFileSync(path.join(SDK_ROOT, "package.json"), "utf8")).version;
-}

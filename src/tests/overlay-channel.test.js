@@ -11,16 +11,11 @@
  * boundary a test may own: it is the host's storage, not ours.
  */
 
-//jscpd:ignore-start
 import { liveAgentCaps, resetLiveAgentCaps } from "../../dist/shared/caps.js";
 import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
 import { overlayKey } from "../../dist/shared/overlay-store.js";
-import { withTempDir } from "./support/fixtures.js";
-import { createMockClient } from "./support/mock-host.js";
-import { overlayChannel } from "./support/overlay-channel.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, createMockClient, describe, it, overlayChannel, withTempDir } from "./support/index.js";
 
-//jscpd:ignore-end
 /** The base a bare boot would have in force: defaults, with nothing stated. */
 const BASE = { agents: {}, maxConcurrent: 4, maxDepth: 2 };
 

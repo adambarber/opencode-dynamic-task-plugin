@@ -6,7 +6,6 @@
 // lifecycle module, because a formatter is easy to park next to the data it
 // reads. `task-state: no file outgrows 1000 lines` is the gate that noticed.
 
-//jscpd:ignore-start
 import type { AgentOccupancy } from "./caps.js";
 import { FailureClass, failureNote } from "./failure-class.js";
 import { hostTurnRunning, type LivenessReading, SessionExistence, UntrackedStatus } from "./liveness.js";
@@ -17,7 +16,6 @@ import { DepthBound } from "./task-policy.js";
 import { type ActiveTaskState, failureClassOf, type RetainedTaskState, type TaskIdentity, type TaskRecord, TaskState, turnReplacementPending } from "./task-state.js";
 import { present, textBlock } from "./text-block.js";
 
-//jscpd:ignore-end
 /**
  * How long ago a moment was, in the words an operator reads.
  *
@@ -27,7 +25,7 @@ import { present, textBlock } from "./text-block.js";
  * reason the seconds are dropped below a minute: the reader is comparing, not
  * auditing, and the more digits on the line the less of the line they read.
  */
-export function formatAge(startedAt: number): string {
+function formatAge(startedAt: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -46,7 +44,7 @@ const PREMATURE_SETTLEMENT =
 // Stall visibility without clocks-as-decisions: past this age an active turn
 // with no activity renders a warning line. Display only — nothing branches
 // on it (Tenet 11: the degradation direction is "operator looks, then acts").
-export const STALE_TURN_AFTER_MS = 10 * 60 * 1000;
+const STALE_TURN_AFTER_MS = 10 * 60 * 1000;
 
 /**
  * The opening every background child is sent.
@@ -131,7 +129,7 @@ export interface TreeRow extends FleetRow {
  * Newest wins rather than first-found, so a notice that arrived before the last event
  * does not hide it.
  */
-export function observedMotion(startedAt: number, lastNoticeAt?: number, lastActivityAt?: number): number {
+function observedMotion(startedAt: number, lastNoticeAt?: number, lastActivityAt?: number): number {
   return Math.max(startedAt, lastNoticeAt ?? 0, lastActivityAt ?? 0);
 }
 
@@ -407,7 +405,7 @@ function activeDiagnosis(
   return undefined;
 }
 
-export function formatLivenessLines(
+function formatLivenessLines(
   task: TaskRecord,
   liveness: LivenessReading | null,
 ): string[] {

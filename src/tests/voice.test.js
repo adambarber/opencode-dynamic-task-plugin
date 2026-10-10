@@ -7,11 +7,9 @@
  * either is a user about to be surprised by the plugin's own design.
  */
 
-//jscpd:ignore-start
 import { parentUndelivered, TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("operator voice: continue description", () => {
   it("warns that mid-steer settles and stalls are possible", () => {
     assert.match(TASK_CONTINUE_DESCRIPTION, /mid-steer/);

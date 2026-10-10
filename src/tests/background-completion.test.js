@@ -8,14 +8,9 @@
  * plugin arms no timers, and every task settles exactly once by event.
  */
 
-//jscpd:ignore-start
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { textDeclaresKind } from "./support/assertions.js";
-import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
-import { events } from "./support/mock-host.js";
-import { assert, beforeEach, describe, it } from "./support/runner.js";
+import { assert, beforeEach, describe, events, it, renderedAgeSeconds, setupHarness, sleep, textDeclaresKind } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("Background Task Settlement", () => {
   let harness;
 

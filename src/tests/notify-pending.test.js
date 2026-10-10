@@ -1,12 +1,8 @@
 
-//jscpd:ignore-start
 import { configurePendingPersistence, getLatestNotification, getPendingDeliveries, notifyParent, restorePendingDeliveries } from "../../dist/shared/notify.js";
-import { recordingClient } from "./support/mock-host.js";
-import { accepted, answeredClient, gate, queuedFor, withHeldWrites } from "./support/notify-setup.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, opaqueHost, recordingClient } from "./support/index.js";
+import { accepted, answeredClient, gateOpts, queuedFor, withHeldWrites } from "./support/notify-setup.js";
 
-//jscpd:ignore-end
 describe("durable pending delivery: the queue IS the crash window", () => {
   // Two cases in this block are the same ARRANGEMENT — a completed delivery, with
   // something recorded from inside the dial — and only the probe differs. One
@@ -19,7 +15,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
       probe();
       return accepted();
     });
-    return () => notifyParent(opaqueHost(client), "parent_1", "settled", gate(childSessionId, "completed"));
+    return () => notifyParent(opaqueHost(client), "parent_1", "settled", gateOpts(childSessionId, "completed"));
   };
 
   it("the write is already on the queue at the moment it dials", async () => {
@@ -52,7 +48,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
 
   it("a held write stays queued until the host answers, then leaves", async () => {
     await withHeldWrites(async ({ client, release }) => {
-      await notifyParent(opaqueHost(client), "parent_1", "held", gate("ses_heldq", "completed"));
+      await notifyParent(opaqueHost(client), "parent_1", "held", gateOpts("ses_heldq", "completed"));
       assert.strictEqual(queuedFor("ses_heldq").length, 1, "an unanswered write is still owed");
       assert.strictEqual(getLatestNotification("ses_heldq").pending, true, "and the record says so");
       await release();
@@ -63,19 +59,19 @@ describe("durable pending delivery: the queue IS the crash window", () => {
 
   it("a delivered write leaves nothing owed, a failed one neither", async () => {
     const { client } = answeredClient([]);
-    await notifyParent(opaqueHost(client), "parent_1", "ok", gate("ses_okq", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "ok", gateOpts("ses_okq", "completed"));
     assert.deepStrictEqual(queuedFor("ses_okq"), [], "delivered: the debt is settled");
 
     const failing = answeredClient([new Error("down"), new Error("still down")]);
-    await notifyParent(opaqueHost(failing.client), "parent_1", "no", gate("ses_noq", "error"));
+    await notifyParent(opaqueHost(failing.client), "parent_1", "no", gateOpts("ses_noq", "error"));
     assert.deepStrictEqual(queuedFor("ses_noq"), [], "a known failure is a known outcome, not a debt");
     assert.strictEqual(getLatestNotification("ses_noq").delivered, false);
   });
 
   it("a suppressed repeat never dials and never queues", async () => {
     const { client, calls } = answeredClient([]);
-    await notifyParent(opaqueHost(client), "parent_1", "once", gate("ses_supp", "completed"));
-    await notifyParent(opaqueHost(client), "parent_1", "once", gate("ses_supp", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "once", gateOpts("ses_supp", "completed"));
+    await notifyParent(opaqueHost(client), "parent_1", "once", gateOpts("ses_supp", "completed"));
     assert.strictEqual(calls.length, 1, "suppressed: nothing dialed");
     assert.deepStrictEqual(queuedFor("ses_supp"), [], "nothing dialed, nothing owed");
   });
@@ -85,7 +81,7 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     // answering: reset to zero, a write held across five restarts would read as
     // five first tries and the escalation would be invisible.
     const { client, calls } = answeredClient([]);
-    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gate("ses_carry", "completed"), carriedAttempts: 2 });
+    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gateOpts("ses_carry", "completed"), carriedAttempts: 2 });
     assert.strictEqual(calls.length, 1, "one redelivery attempt, not three");
     assert.strictEqual(getLatestNotification("ses_carry").attempts, 3, "third attempt overall, not first");
   });

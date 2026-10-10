@@ -1,14 +1,10 @@
 
-//jscpd:ignore-start
 import { formatParentNotification, isParentNotification, notificationTag } from "../../dist/shared/notification-text.js";
 import { gateLedger, getLatestNotification, noticeDedupKey, notifyParent, truncateText } from "../../dist/shared/notify.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { bounded } from "./support/harness.js";
-import { answeredClient, boot, gate, heldWriteClient, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, bounded, describe, it, opaqueHost } from "./support/index.js";
+import { answeredClient, boot, gateOpts, heldWriteClient, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
 
-//jscpd:ignore-end
 describe("notify: the redelivery budget", () => {
   // The arrangement every case here is a variation of: one child, one owed
   // notice, on a transport that never answers. Stated once, so a case says what
@@ -16,7 +12,7 @@ describe("notify: the redelivery budget", () => {
   // re-stating the fixture, which is what jscpd reads as a clone and what makes
   // the difference between two cases invisible on a diff.
   const CHILD = "ses_stuck";
-  const settle = (held, over = {}) => notifyParent(opaqueHost(held.client), "parent_1", "owed", { ...gate(CHILD, "error"), ...over });
+  const settle = (held, over = {}) => notifyParent(opaqueHost(held.client), "parent_1", "owed", { ...gateOpts(CHILD, "error"), ...over });
   const owedAt = () => queuedFor(CHILD).map((e) => e.attempts);
   /** The starting world, owed and already dialed, for the cases that begin there. */
   const givenAnUnansweredDebt = (body) =>
@@ -163,7 +159,7 @@ describe("notify: the redelivery budget", () => {
   const toParent = async (text, opts, world) => {
     const { client, calls, ...transport } = answeredClient([]);
     world(transport);
-    await notifyParent(opaqueHost(client), "parent_1", text, { ...gate(CHILD, "error"), ...opts });
+    await notifyParent(opaqueHost(client), "parent_1", text, { ...gateOpts(CHILD, "error"), ...opts });
     return { owed: queuedFor(CHILD).map((entry) => entry.attempts), writes: calls.length };
   };
   // One transcript, three shapes, and the difference IS the check: a clock with no
@@ -207,7 +203,7 @@ describe("notify: the redelivery budget", () => {
   // on that path. Mid-turn and wedged are the same sentence with different words,
   // and two copies of a boot walk is where one of them quietly stops being
   // tested while still looking like it is. Driven across real boot boundaries
-  // (`boot` clears the in-memory gate, which a process boundary takes with it)
+  // (`boot` clears the in-memory gateOpts, which a process boundary takes with it)
   // because re-offering in this process would be SUPPRESSED by the claim the
   // first offer still holds, and would prove nothing.
   for (const [label, world] of [["mid-turn", BUSY], ["wedged", WEDGED]]) {
@@ -263,7 +259,7 @@ describe("notify: the redelivery budget", () => {
     // parent that is merely slow must still be served on the next boot. Without
     // this, "expires" and "is refused early" look identical from the outside.
     const { client, calls } = answeredClient([]);
-    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gate(CHILD, "error"), carriedAttempts: 1, maxAttempts: 3 });
+    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gateOpts(CHILD, "error"), carriedAttempts: 1, maxAttempts: 3 });
 
     assert.strictEqual(calls.length, 1, "a debt inside its budget is still dialed");
     assert.strictEqual(getLatestNotification(CHILD).delivered, true, "and delivered");

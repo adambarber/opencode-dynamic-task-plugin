@@ -3,16 +3,14 @@
 // suite shares, so three files can hold three subjects instead of one
 // big preamble. Each importer inherits the before/after clean state.
 
-//jscpd:ignore-start
 import { gateLedger, getPendingDeliveries, notifyChainCount, redeliverOwedNotifications, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { cleanNotifyState } from "./gate-world.js";
 import { bounded, drain } from "./harness.js";
-import { deferred, recordingClient } from "./mock-host.js";
+import { deferred, recordingClient } from "./mock-gates.js";
 import { opaqueHost } from "./opaque-host.js";
 import { afterEach, assert, beforeEach } from "./runner.js";
 
-//jscpd:ignore-end
-export const NO_SLEEP = async () => {};
+const NO_SLEEP = async () => {};
 
 /** The answer a host gives a write it accepted — one answer, so "accepted" is a name and not a shape. */
 export const accepted = () => ({ ok: true });
@@ -78,7 +76,7 @@ export function answeredClient(script = []) {
 
 // The gate's own inputs: which child, what kind, and no real backoff — the
 // retry count is the thing under test, so waiting for it proves nothing.
-export const gate = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
+export const gateOpts = (childSessionId, kind) => ({ childSessionId, kind, sleep: NO_SLEEP });
 
 /** The queue as one child's slice of it — module scope, because the debt's owner is the queue, not any one describe. */
 export const queuedFor = (childSessionId) =>

@@ -6,11 +6,9 @@
  * suite made the jscpd gate report its own import block as a clone.
  */
 
-//jscpd:ignore-start
 import path from "node:path";
 import { listTestFiles, readProductionSource, readSource, TESTS_DIR } from "./corpus.js";
 
-//jscpd:ignore-end
 /**
  * A record shape is declared once, in production, and the tests BUILD it there.
  *
@@ -41,7 +39,7 @@ import { listTestFiles, readProductionSource, readSource, TESTS_DIR } from "./co
  * is drift; `DeliveryTarget` is in the first only, because production spells that
  * identity triple inline at every `notifyRecord` call and a builder would teach nothing.
  */
-export const SHAPE_HOMES = [
+const SHAPE_HOMES = [
   { file: "shared/task-records.ts", name: "TaskRecordBase" },
   { file: "shared/task-records.ts", name: "ActiveTaskState" },
   { file: "shared/settled-record.ts", name: "RetainedTaskState" },

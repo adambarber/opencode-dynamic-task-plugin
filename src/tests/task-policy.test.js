@@ -6,7 +6,6 @@
  * so a new spelling of a refusal is a new row rather than another arrangement.
  */
 
-//jscpd:ignore-start
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import {
   buildTaskLineage,
@@ -16,11 +15,8 @@ import {
   validateAgent,
   validateLineage,
 } from "../../dist/shared/task-policy.js";
-import { admits, assertIs, assertNothing, refuses } from "./support/assertions.js";
-import { blockingConfig, defaultConfig } from "./support/fixtures.js";
-import { assert, describe, it } from "./support/runner.js";
+import { admits, assert, assertIs, assertNothing, blockingConfig, defaultConfig, describe, it, refuses } from "./support/index.js";
 
-//jscpd:ignore-end
 // type PolicyResult is type-only, imported via the functions' return types
 describe("normalizeAgentName", () => {
   it("lowercases and trims agent names", () => {

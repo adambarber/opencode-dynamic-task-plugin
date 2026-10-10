@@ -15,16 +15,11 @@
  * silently deleted it under a success toast.
  */
 
-//jscpd:ignore-start
 import { CAP_CHOICES, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/props.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
-import { 
-  BASE, backRow, capRow, choose, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn,readOverlay, 
-  rowText, titlesOf, top, withList, withOpen,} from "./support/limits-screen.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, BASE, backRow, capRow, choose, chooseValue, clearRow, describe, given, havingWritten, it, pressRow, pressRowOn, readOverlay, rowText, titlesOf, top, withList, withOpen } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * …with the cross-agent total's picker open.
  *

@@ -9,7 +9,6 @@
  * would report green through.
  */
 
-//jscpd:ignore-start
 import { writeFileSync } from "node:fs";
 import { resolveAdmission } from "../../dist/shared/admission.js";
 import { agentKey } from "../../dist/shared/agent-key.js";
@@ -29,11 +28,8 @@ import {
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, TaskState, transitionState } from "../../dist/shared/task-state.js";
-import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
-import { overlayChannel } from "./support/overlay-channel.js";
-import { assert, beforeEach, describe, it } from "./support/runner.js";
+import { assert, beforeEach, bothCaps, defaultConfig, describe, it, overlayChannel, tempProject } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * A project whose caps live in the HOST'S TABLE, the way they do now, and the wiring
  * boot does: the document is read through the store and applied over the config. A case

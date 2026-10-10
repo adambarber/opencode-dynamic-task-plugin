@@ -7,12 +7,10 @@
  * existed was the subject, not the line count.
  */
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { corpus, FLOOR_LINES, FLOOR_TOKENS, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * The gate jscpd structurally cannot be: duplication ACROSS the test/production
  * boundary. jscpd pools tokens per format, so a `.js` test is never compared to the

@@ -1,5 +1,4 @@
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -11,10 +10,8 @@ import {
   toolCallOf,
   touchedFiles,
 } from "../../dist/shared/prompt.js";
-import { TESTS_DIR } from "./support/corpus.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, TESTS_DIR } from "./support/index.js";
 
-//jscpd:ignore-end
 const gold = JSON.parse(readFileSync(join(TESTS_DIR, "support", "v2-transcript.json"), "utf8"));
 
 describe("transcript readers speak the v2 host vocabulary", () => {

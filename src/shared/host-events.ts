@@ -12,24 +12,29 @@
 // them is two vocabularies for one host boundary, and the read side is the one
 // that decides what happened.
 
-//jscpd:ignore-start
 import type { OpenCodeEvent } from "@opencode/client/promise";
 import { eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
 import { type SessionId, sessionIdOf } from "./ids.js";
 
-//jscpd:ignore-end
+// The boundary re-serves the reading vocabulary (the record guard and the id
+// mint), as notify.js re-serves the log vocabulary: a module that reads the
+// host should not need three imports to say one thing — “a session fact, read
+// off a host value” — and the gate flagged that trio arriving as a unit.
+export { isEventRecord } from "./host-shape.js";
+export { type SessionId, sessionIdOf } from "./ids.js";
+
 /** The host's event union — the source of truth for every name below. */
 export type HostEventType = OpenCodeEvent["type"];
 
 /** One host event, narrowed to the shape the host declares for that name. */
-export type HostEvent<T extends HostEventType> = Extract<OpenCodeEvent, { type: T }>;
+type HostEvent<T extends HostEventType> = Extract<OpenCodeEvent, { type: T }>;
 
 // v2 renamed the ask channel: `question.asked` became `permission.asked`, and the
 // payload moved from `properties` to `data`. The RETIRED names have no reader, so
 // a vocabulary that lists only what is read is one a reader cannot trust.
 export const PERMISSION_ASKED = "permission.asked" satisfies HostEventType;
 export const PERMISSION_REPLIED = "permission.replied" satisfies HostEventType;
-export const FORM_CREATED = "form.created" satisfies HostEventType;
+const FORM_CREATED = "form.created" satisfies HostEventType;
 export const FORM_CANCELLED = "form.cancelled" satisfies HostEventType;
 
 // The turn-ending events, spelled here for the same reason: a lifecycle branch
@@ -47,7 +52,7 @@ export function isHostAsked(type: string): boolean {
 }
 
 /** True when the turn ended, one way or the other. */
-export function isTurnEnding(type: string): boolean {
+function isTurnEnding(type: string): boolean {
   return type === SESSION_IDLE || type === SESSION_ERROR;
 }
 
@@ -148,6 +153,14 @@ export function getSessionIdFromEvent(event: unknown): SessionId | null {
     ?? eventString(event, "sessionID");
   if (!sid || !sid.startsWith("ses_")) return null;
   return sessionIdOf(sid) ?? null;
+}
+
+// session.deleted may arrive name-only (no status field): a vanished session
+// is a failure, never a clean completion — deletion needs two probes.
+export function eventLooksDeleted(event: unknown): boolean {
+  const type = eventWord(event, "type");
+  const name = eventWord(event, "name");
+  return type.includes("deleted") || name.includes("deleted");
 }
 
 // Lifecycle status extraction for every observed event shape: the event's `data`

@@ -4,11 +4,9 @@
 // deliberately ignorant of settled versus running, which is what makes it possible
 // to read and check it on its own.
 
-//jscpd:ignore-start
 import type { LedgerChange } from "./ledger-change.js";
 import type { TaskStore } from "./store.js";
 
-//jscpd:ignore-end
 /**
  * The one retained-write funnel: it states WHAT moved, not the resulting map.
  *

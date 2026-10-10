@@ -16,7 +16,6 @@
  * states the one fact it is about.
  */
 
-//jscpd:ignore-start
 import {annotateNotice, markTurnReplacement} from "../../../dist/shared/notice-claim.js";
 import { notifyRecord, owedDelivery } from "../../../dist/shared/notify.js";
 import { UNKNOWN_PARENT } from "../../../dist/shared/session-lifecycle.js";
@@ -28,9 +27,6 @@ import {
   retainedRecord,
   withoutAdvisory,
 } from "../../../dist/shared/task-state.js";
-
-//jscpd:ignore-end
-export { noticeRecord } from '../../../dist/shared/notice-claim.js';
 
 /** The registration a spawn hands the store. No `state`: production adds that. */
 const registration = (overrides = {}) => ({

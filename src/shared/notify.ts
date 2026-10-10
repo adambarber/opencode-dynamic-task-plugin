@@ -10,7 +10,6 @@
 // holds a write to a mid-turn parent rather than refusing it, so "slow" and
 // "never" are the same call from inside the gate.
 
-//jscpd:ignore-start
 import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { SessionId } from "./ids.js";
@@ -35,19 +34,17 @@ import {
 import { isParentless } from "./session-lifecycle.js";
 import { type SettlementVerdict, TaskState } from "./task-state.js";
 
-//jscpd:ignore-end
 export { NOTIFY_KINDS } from "./notification-text.js";
-export { currentGateEpoch, gateLedger } from "./notify-gate.js";
+export { gateLedger } from "./notify-gate.js";
 export { containFailure, safeLog } from "./notify-log.js";
-export { announceDropped, configurePendingPersistence, dropPending, getPendingDeliveries, owedDelivery, owedIdentity, queuePending, restorePendingDeliveries } from "./notify-queue.js";
-export type { DeliveryOutcome, NotificationRecord } from "./notify-records.js";
-export { clearDeliveryLedger, getLatestNotification, getTurnNotification, notifyRecord, recordNotification } from "./notify-records.js";
+export { configurePendingPersistence, getPendingDeliveries, owedDelivery, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
+export type { NotificationRecord } from "./notify-records.js";
+export { getLatestNotification, getTurnNotification, notifyRecord, recordNotification } from "./notify-records.js";
 
 import type { DeliverableDebt } from "./notify-queue.js";
 
-export type { GateLedger } from "./notify-gate.js";
 export { LogLevel } from "./notify-log.js";
-export type { DeliveryTarget, PendingDelivery } from "./notify-queue.js";
+export type { PendingDelivery } from "./notify-queue.js";
 
 
 /**
@@ -83,7 +80,7 @@ export function clearNotifyLedger(): void {
   clearGate();
 }
 
-export function defaultSleep(ms: number): Promise<void> {
+function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     globalThis.setTimeout(resolve, ms);
   });

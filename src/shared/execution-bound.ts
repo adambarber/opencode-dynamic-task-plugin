@@ -158,7 +158,7 @@ export function withBound<T, D>(
 // A transcript read is one call to a local server. Generous enough to survive a
 // loaded machine, far short of the minutes a parent waits before assuming its
 // child is stuck.
-export const READ_BOUND_MS = 5_000;
+const READ_BOUND_MS = 5_000;
 
 // A parent-directed write. Short on purpose. The host accepts a prompt to a
 // session that is mid-turn and holds the request until that turn ends — proven
@@ -166,7 +166,7 @@ export const READ_BOUND_MS = 5_000;
 // minutes and arrived the moment the parent's turn finished. A parent works for
 // minutes at a stretch, so "busy" is the ordinary case and must not read as
 // "failed": the bound exists to hand the caller an answer NOW, not to give up.
-export const PARENT_WRITE_BOUND_MS = 2_000;
+const PARENT_WRITE_BOUND_MS = 2_000;
 
 // A stop. Short for the same reason and by the same argument as the parent
 // write, and for one more: this is the one call the plugin makes to work it may
@@ -176,13 +176,13 @@ export const PARENT_WRITE_BOUND_MS = 2_000;
 // its replacement prompt, with the steer claim already armed. The child then sat
 // `active` waiting for a replacement turn that could not start, which is a
 // stranded child with a live process and no way to see why.
-export const ABORT_BOUND_MS = 2_000;
+const ABORT_BOUND_MS = 2_000;
 
 // Durable state. The host keeps plugin records in its own SQLite database, so the
 // write is local but not free: it contends for the same write lock as the host's
 // event traffic. Bound it like a parent write and REFUSE on timeout — a refused
 // write is loud and retried by the next mutation; a hung tool call is neither.
-export const STORAGE_WRITE_BOUND_MS = 2_000;
+const STORAGE_WRITE_BOUND_MS = 2_000;
 
 // Deadlines named per KIND, not per call site: a new read or write that must not
 // outlive its caller says which bound it wants instead of inventing a number.
@@ -205,12 +205,12 @@ export const READ_BOUNDS: { transcript: number; agents: number; presence: number
 // the create is awaited by the CALLER'S turn, so a host that accepts it and never
 // answers does not return a late session, it returns nothing at all, and the
 // parent's turn stays open for as long as the server feels like holding it.
-export const CREATE_BOUND_MS = 2_000;
+const CREATE_BOUND_MS = 2_000;
 
 // Answering a child's question. The caller AWAITS the answer and decides the
 // child's fate from it, so a reply the host accepts and never returns is not a slow
 // answer — it is a settlement that never settles, with the child's turn open.
-export const QUESTION_BOUND_MS = 2_000;
+const QUESTION_BOUND_MS = 2_000;
 
 // v2 has no host log sink (`app.log` is gone), so there is no bounded log WRITE:
 // `safeLog` is local file I/O now and needs no deadline against the host. The old

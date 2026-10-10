@@ -14,13 +14,8 @@
  * `permission.reply({decision: "once" | "always" | "reject"})`, and DENY is it.
  */
 
-//jscpd:ignore-start
-import { answerMatches, answerOmits, answerSays, assertNoticeCount, assertPermissionDenied, stateOf } from "./support/assertions.js";
-import { setupHarness, withAskedChild, withChild, withLoggedChild } from "./support/harness.js";
-import { events } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { answerMatches, answerOmits, answerSays, assert, assertNoticeCount, assertPermissionDenied, describe, events, it, setupHarness, stateOf, withAskedChild, withChild, withLoggedChild } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("permission gate: child asks settle", () => {
   it("a live child's ask is denied, at the host's own route and shape", async () => {
     const { h } = await withAskedChild("q1");

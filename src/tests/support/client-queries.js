@@ -6,10 +6,8 @@
  * primary `h` are all equally valid subjects. Extracted from harness.js so
  * the question vocabulary lives in one module.
  */
-//jscpd:ignore-start
-import { promptText } from "./mock-host.js";
+import { promptText } from "./mock-events.js";
 
-//jscpd:ignore-end
 /** Every prompt the host was asked to send, oldest first. */
 export const sentPrompts = (client) => client.testState.promptBodies;
 
@@ -37,7 +35,7 @@ const carries = (words) => (p) => promptText(p).includes(words);
 export const promptsToCarrying = (client, sessionId, words) => promptsTo(client, sessionId).filter(carries(words));
 
 /** Every prompt whose text contains the given words — "which turn said this". */
-export const promptsCarrying = (client, words) => sentPrompts(client).filter(carries(words));
+const promptsCarrying = (client, words) => sentPrompts(client).filter(carries(words));
 
 /** How many prompts said the given words — the count a "nothing fired" case asserts. */
 export const promptsSaying = (client, words) => promptsCarrying(client, words).length;

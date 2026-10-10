@@ -14,12 +14,10 @@
  *
  * Run: bun scripts/render-proof.js --screen
  */
-//jscpd:ignore-start
 import { RGBA, TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
 
-//jscpd:ignore-end
 /** The colours a dark terminal hands the host, which is where `theme.text` comes from. */
 const value = RGBA.fromInts(0xD0, 0xD0, 0xD0);
 const context = RGBA.fromInts(0x6C, 0x6C, 0x6C);

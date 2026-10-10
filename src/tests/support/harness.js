@@ -14,7 +14,6 @@
  * in `mock-host.js` — this module is the driver, that one is the server.
  */
 
-//jscpd:ignore-start
 import { appendFileSync, mkdtempSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
@@ -27,17 +26,13 @@ import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
 import { ledgerOver } from "./durable-world.js";
 import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
-import {
-  applyHostStatus,
-  createMockClient,
-  events,
-  setHostTurn,
-} from "./mock-host.js";
+import { events } from "./mock-events.js";
+import { createMockClient } from "./mock-host.js";
+import { applyHostStatus, setHostTurn } from "./mock-transcript.js";
 import { opaqueHost } from "./opaque-host.js";
 import { afterEach, assert } from "./runner.js";
 import { textTools, v2Context } from "./v2-context.js";
 
-//jscpd:ignore-end
 export {
   abortedSessions,
   abortRequests,
@@ -46,7 +41,6 @@ export {
   declareNeedsInput,
   dialCount,
   notifiedNotes,
-  promptsCarrying,
   promptsSaying,
   promptsTo,
   promptsToCarrying,
@@ -72,7 +66,7 @@ export {
   withSettledDispatchTree,
 } from "./child-fixtures.js";
 export { drain, settled, sleep } from "./timing.js";
-export { textTools, v2Context } from "./v2-context.js";
+export { v2Context } from "./v2-context.js";
 
 
 /**
@@ -118,7 +112,7 @@ export const bounded = (ms, fn) => withSeam(() => shrinkBoundsForTesting(ms), fn
  * off a fake host array the host no longer writes — is what makes a log assertion
  * mean anything: the writer under test is the one whose output is checked.
  */
-export function debugLines(directory) {
+function debugLines(directory) {
   return readLogDir(directory)
     .filter((name) => name !== PLUGIN_LOG)
     .flatMap((name) => readFileSync(nodePath.join(directory, DEBUG_DIR, name), "utf8").split("\n"))
@@ -127,7 +121,7 @@ export function debugLines(directory) {
 }
 
 /** The prose warnings the plugin leaves for an operator, from `plugin.log`. */
-export function pluginLog(directory) {
+function pluginLog(directory) {
   try {
     return readFileSync(nodePath.join(directory, DEBUG_DIR, PLUGIN_LOG), "utf8");
   } catch {
@@ -163,15 +157,6 @@ export const withEnv = (key, value, fn) =>
  * unlinked only the file, so a failing atomic write could leave the sidecar
  * behind; the absence check is the cleanup, not a hope.
  */
-/**
- * A unique path for a ledger file, for a case that owns one.
- *
- * Shared because two suites durably write ledgers and the factory was copied: the
- * copy drifted to a different prefix while `withTempFile` still cleaned up both
- * the path and its `.tmp` sidecar, so nothing caught the divergence.
- */
-export const tmpLedgerPath = () => `${tmpdir()}/dt-ledger-${Date.now()}-${Math.floor(Math.random() * 1e6)}.json`;
-
 export const withTempFile = (target, fn) =>
   // Nothing to install — the case is handed the path, and the undo is the cleanup.
   withSeam(() => () => {
@@ -197,7 +182,7 @@ export function tmpProjectDir() {
 }
 
 /** Parse the child id out of the same line the parent reads. */
-export function extractSessionId(spawnOutput) {
+function extractSessionId(spawnOutput) {
   const match = spawnOutput.match(/Session: (\S+)/);
   assert.ok(match, `spawn output must contain a session id, got: ${spawnOutput}`);
   return match[1];
@@ -617,7 +602,7 @@ export const PARENT = "p1";
 
 
 /** Release one harness's children. Best-effort: settled children are fine. */
-export async function releaseSpawns(harness) {
+async function releaseSpawns(harness) {
   for (const id of harness.spawned.splice(0)) {
     try {
       await harness.tool.task_interrupt.execute({ session_id: id });
@@ -647,43 +632,4 @@ afterEach(async () => {
   }
 });
 
-
-/**
- * A host theme, for the api double.
- *
- * The host derives `text` from the TERMINAL's own `defaultForeground` and `textMuted`
- * from a gray scale over the terminal background, so these are a dark terminal's
- * foreground and one step of gray below it — the values that actually occur, rather than
- * a theme shaped to suit an assertion.
- *
- * It is all that is left of a set of four. `lightTheme`, `themeRoles` and `bareTheme`
- * existed for one claim — that our own token resolution followed the host's theme through
- * a light one, a set of role names, and a theme declaring none of the optional roles —
- * and no screen of ours paints a figure any more, so the claim has no subject and those
- * three fixtures have no reader.
- */
-export const darkTheme = () => ({
-  current: {
-    accent: RGBA.fromInts(0x88, 0x88, 0xFF),
-    syntaxComment: RGBA.fromInts(0x50, 0x50, 0x50),
-    text: RGBA.fromInts(0xD0, 0xD0, 0xD0),
-    textMuted: RGBA.fromInts(0x6C, 0x6C, 0x6C),
-  },
-  mode: () => "dark",
-});
-
-/**
- * A cap cell, whole.
- *
- * Added because a `bounded` field arrived on `CapCell` and three suites still built
- * `{ value, stated }` literals: the renderer asked `cell.bounded !== null`, `undefined`
- * is not null, and the footer painted the string "undefined" where the number was. The
- * tests are JavaScript, so the type that would have caught it does not run here — which
- * makes this the only place that CAN catch it. Building cells by hand is how a suite
- * starts describing a shape the production code no longer has, and it fails as a wrong
- * number rather than as an error, which is the worst way to fail.
- */
-export const capCell = (value, stated = true, limit = null) => ({ bounded: limit, stated, value });
-
-import { RGBA } from "@opentui/core";
 

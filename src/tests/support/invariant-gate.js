@@ -12,12 +12,10 @@
  * rule can quietly assert a different thing than it documents.
  */
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { listProdFiles, siteOf } from "./corpus.js";
 import { assert, it } from "./runner.js";
 
-//jscpd:ignore-end
 /** The skip marker for comment/prose lines, for rules about code rather than text. */
 export const PROSE = Symbol("prose");
 

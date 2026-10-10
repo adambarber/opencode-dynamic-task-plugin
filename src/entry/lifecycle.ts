@@ -3,27 +3,26 @@
 // call except spawn's create and the steer/interrupt aborts (Tenet 9: those
 // stay in their tool executors beside the claims that order them).
 
-//jscpd:ignore-start
 import { debugLog } from "../debug-logger.js";
 import { resolveDependencies } from "../shared/admission.js";
 import type { AgentCapSource } from "../shared/caps.js";
 import type { OpaqueHost } from "../shared/client.js";
 import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
 import { classifyFailure, FailureClass, failureNote } from "../shared/failure-class.js";
-import { classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent, type LifecycleStatus } from "../shared/host-events.js";
+import { classifyLifecycleStatus, endedBadly, eventLooksDeleted, getEventLifecycleStatus, getSessionIdFromEvent, type LifecycleStatus } from "../shared/host-events.js";
 import { errorMessage } from "../shared/host-shape.js";
 import type { SessionId } from "../shared/ids.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import {
   gateLedger,
+  LogLevel,
   notifyParent,
   notifyRecord,
   recordNotification,
   safeLog,
   settlementKind,
 } from "../shared/notify.js";
-import { LogLevel } from "../shared/notify-log.js";
 import type { ModelOverride } from "../shared/prompt.js";
 import {
   classifyPromptError,
@@ -31,7 +30,7 @@ import {
   hydrateLatestOutcome,
   invokePrompt,
 } from "../shared/prompt.js";
-import { eventLooksDeleted, isParentless, type ParentSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
+import { isParentless, type ParentSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import {
   type ActiveTaskState,
   findTask,
@@ -51,7 +50,6 @@ import { textBlock } from "../shared/text-block.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
 import { waitsReleasedBody } from "../shared/voice.js";
 
-//jscpd:ignore-end
 // One delivery helper for every settlement path (event, prompt failure):
 // notification is fire-and-forget by contract — the gate owns retries, the
 // ledger owns history, and a failed delivery is visible via the notification

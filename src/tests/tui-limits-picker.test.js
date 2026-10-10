@@ -3,17 +3,12 @@
  * The design thesis and the harness rationale are in `tui-limits-command.test.js`.
  */
 
-//jscpd:ignore-start
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_CHOICES, CAP_LABEL } from "../../dist/tui/agent-editor.js";
 import { ALL_AGENTS_LABEL, BACK_LABEL, capPickerProps } from "../../dist/tui/props.js";
 import { boundClause, FROM_CONFIG } from "../../dist/tui/theme.js";
-import {agentEntry, assertCapsDrawn, assertEveryRowFits, 
-  BOUND_DEPTH, backRow, backToCaps, choose, clearRow, everyRowClaims, readOverlay, row, rowsOn, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen,
-} from "./support/limits-screen.js";
-import { assert, describe, it } from "./support/runner.js";
+import { agentEntry, assert, assertCapsDrawn, assertEveryRowFits, BOUND_DEPTH, backRow, backToCaps, choose, clearRow, describe, everyRowClaims, it, readOverlay, row, rowsOn, titlesOf, top, valueRow, withCapsOpen, withOpen, withPickerClaimed, withPickerOpen } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("a bound is a note, not a removal", () => {
   it("marks a depth the AGENT SET holds below the cap, and still offers it", () =>
     // The cap is what the operator SET; the depth they can reach is bounded by the

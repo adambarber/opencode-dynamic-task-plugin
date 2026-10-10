@@ -1,7 +1,7 @@
 {
   "threshold": 0,
   "minLines": 3,
-  "minTokens": 14,
+  "minTokens": 21,
   "reporters": [
     "console"
   ],

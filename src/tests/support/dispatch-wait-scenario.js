@@ -9,13 +9,11 @@
  * prevent, one level up.
  */
 
-//jscpd:ignore-start
 import { setupHarness } from "./harness.js";
 
-import { events } from "./mock-host.js";
+import { events } from "./mock-events.js";
 import { assert } from "./runner.js";
 
-//jscpd:ignore-end
 /**
  * A dispatch the dependency gate refuses, which is what leaves a wait held.
  * The refusal is asserted here because every caller depends on it: a fixture
@@ -92,7 +90,7 @@ export async function refusedOverEdges(h, description, count) {
   return edges;
 }
 /** What a waiting parent is told to remember, so cases do not each spell it out. */
-export const WAITING_FOR = "consume the edge";
+const WAITING_FOR = "consume the edge";
 
 /**
  * A parent waiting on one edge, and the announcement its edge's death produces.

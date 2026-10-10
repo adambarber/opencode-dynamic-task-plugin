@@ -7,10 +7,8 @@
 // Every key is bound to a per-child generation: forgetChild (revival) bumps it and
 // clears the child's pending claims, so an in-flight commit from a previous turn emits
 // history but can never reserve the revived turn's key.
-//jscpd:ignore-start
 import { evictOldest } from "./bounded-map.js";
 
-//jscpd:ignore-end
 /**
  * What a claim IS: which notice of which child, bound to the generation it was taken
  * under. Named because four of the five methods take exactly this triple, and both ids
@@ -53,11 +51,11 @@ export interface GateLedger {
 
 const GATE_MAX_CHILDREN = 1000;
 
-export function duplicateOf(map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): boolean {
+function duplicateOf(map: Map<string, Set<string>>, childSessionId: string, dedupKey: string): boolean {
   return map.get(childSessionId)?.has(dedupKey) ?? false;
 }
 
-export function currentGeneration(generations: Map<string, number>, childSessionId: string): number {
+function currentGeneration(generations: Map<string, number>, childSessionId: string): number {
   return generations.get(childSessionId) ?? 0;
 }
 

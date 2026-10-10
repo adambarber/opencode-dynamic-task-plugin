@@ -4,13 +4,11 @@
 // The store owns the mechanism. This owns the two questions the mechanism cannot
 // answer: is what came back a record, and did it all come back?
 
-//jscpd:ignore-start
 import { createHash } from "node:crypto";
 import { type Store } from "./durable-store.js";
 
-//jscpd:ignore-end
 /** One kind of record, and the check that says a value is one. */
-export type Guard<T> = (value: unknown) => value is T;
+type Guard<T> = (value: unknown) => value is T;
 
 /** A read's outcome. The three facts are separate because operators must tell them apart. */
 export interface Read<T> {

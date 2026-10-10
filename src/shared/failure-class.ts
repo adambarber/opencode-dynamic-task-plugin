@@ -34,10 +34,8 @@
  * will say Transient. Absent a marker, it declines.
  */
 
-//jscpd:ignore-start
 import { TaskState } from "./task-state.js";
 
-//jscpd:ignore-end
 /** Why a child failed. `None` is not a failure class — it is its absence. */
 export enum FailureClass {
   /** The child finished. Nothing to classify, and nothing to investigate. */

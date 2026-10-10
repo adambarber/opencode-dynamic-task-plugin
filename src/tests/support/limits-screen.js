@@ -16,7 +16,6 @@
  * SEQUENCES: a command pressed, a row chosen, a value chosen. It does not model escape,
  * because the host owns escape.
  */
-//jscpd:ignore-start
 import assert from "node:assert/strict";
 import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
@@ -27,8 +26,8 @@ import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
 import { overlayChannel } from "./overlay-channel.js";
 
-//jscpd:ignore-end
 export { dialogRowText } from '../../../dist/tui/geometry.js';
+
 /**
  * The models this host has, as its own catalog spells them.
  *
@@ -36,13 +35,12 @@ export { dialogRowText } from '../../../dist/tui/geometry.js';
  * keys them — `providerID` and `id` — so a chosen row is the id the dispatch path would
  * accept. `name` is the display name, which is what an operator reads.
  */
-export const CATALOG = [
+const CATALOG = [
   { id: "glm-5.3", name: "GLM 5.3", providerID: "z-ai" },
   { id: "space-bunny-free", name: "Space Bunny", providerID: "opencode" },
 ];
 
 /** The qualified pair a catalog row maps to, as the picker maps it. */
-export const CATALOG_MODELS = CATALOG.map((entry) => ({ modelID: entry.id, providerID: entry.providerID }));
 
 /** The base config the TUI can see: defaults only, no plugin options. */
 export const BASE = normalizeDynamicTaskConfig(null);
@@ -75,7 +73,7 @@ export const LONG_AGENT_NAME = "a-very-long-hyphenated-agent-name-indeed";
  * the TUI runtime client has no `agent` namespace, and a double that answers
  * `client.agent.list()` proves a reader the host cannot run.
  */
-export function hostApi(directory, { agents = REGISTERED, channel, models = CATALOG } = {}) {
+function hostApi(directory, { agents = REGISTERED, channel, models = CATALOG } = {}) {
   const seen = { layers: [], selects: [], slots: [], toasts: [] };
   const pending = [];
   return {
@@ -132,7 +130,7 @@ export function hostApi(directory, { agents = REGISTERED, channel, models = CATA
 export const readOverlay = async (directory) => (await overlayChannel(directory, BASE).read()).caps;
 
 /** The overlay as the operator stated it, through the channel rather than the table. */
-export async function withCaps(directory, overlay, hostHooks) {
+async function withCaps(directory, overlay, hostHooks) {
   const channel = overlayChannel(directory, BASE, { host: hostHooks });
   if (overlay !== undefined) await channel.seed(overlay);
   return channel;
@@ -145,7 +143,7 @@ export async function withCaps(directory, overlay, hostHooks) {
  * below use, and it is why they need no double: the props ARE the value, and nothing
  * between the disk and the assertion is a stand-in.
  */
-export async function listOver(directory, agentNames = REGISTERED) {
+async function listOver(directory, agentNames = REGISTERED) {
   const read = await overlayChannel(directory, BASE).read();
   const dialog = agentDialogFrom(read.caps, BASE, agentNames, false, read.problem);
   return limitsListProps(dialog);
@@ -274,11 +272,16 @@ export const withConfigScreen = (configBody, fn) =>
  * The command's `run` is typed `() => void` — the host does not await it — so every
  * screen this plugin mounts lands in a continuation, and the suite has to yield before
  * it can look at one. A tick COUNT would be a second claim about how many awaits the
- * production path has, and one more await upstream would leave every case here failing
- * on a number rather than on a behaviour. One named yield, everywhere, because the four
- * sites that needed it were four chances to spell it three different ways.
+
+/**
+ * One yield of the event loop, so a screen the host drew has actually been drawn
+ * before the case reads it. Every renderer involved is synchronous, so this is the
+ * same as production's single-threaded ordering with one more await — without it a
+ * case asserts against a screen that exists, but not yet, which is a flake and not a
+ * behaviour. One named yield, everywhere, because the four sites that needed it
+ * were four chances to spell it three different ways.
  */
-export const settle = () => new Promise((done) => setImmediate(done));
+const settle = () => new Promise((done) => setImmediate(done));
 
 /** How long a case waits for a screen the host has not drawn yet. A bound, not a claim. */
 const SCREEN_TICKS = 50;
@@ -301,8 +304,6 @@ export const withOpen = (fn, opts) =>
     return fn(host, directory, channel);
   }, opts);
 
-/** …over an overlay capping `explore`, which is what most of the sequences below are about. */
-export const withExploreOpen = (fn) => withOpen(fn, { overlay: { agents: { explore: { maxConcurrent: 2 } } } });
 
 /**
  * One scenario step, then the case, as a single wrapper.
@@ -464,10 +465,10 @@ export const rowsOn = (host) => top(host.seen).options;
  * and whose assertions read `option.title` see only the label, so a case can pass while
  * the row says nothing at all — which is what happened to the caps screen for a round.
  */
-export const rowsText = (dialog) => dialog.options.map((option) => rowText(dialog, option.title));
+const rowsText = (dialog) => dialog.options.map((option) => rowText(dialog, option.title));
 
 /** The row with a given title, or undefined. */
-export const rowOn = (host, title) => rowsOn(host).find((option) => option.title === title);
+const rowOn = (host, title) => rowsOn(host).find((option) => option.title === title);
 
 /** The value-list row offering `value`. */
 export const valueRow = (host, value) => rowOn(host, String(value));
@@ -518,7 +519,7 @@ export const capText = (host, cap) => {
  * flow found and needs both caps individually pressable. Spelled twice it is one fact
  * restated at two sites, which is the defect the harness exists to prevent.
  */
-export const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
+const capRowsAsDrawn = (dialog) => rowsText(dialog).slice(0, -1);
 
 /**
  * The drawn screen carries both caps, in order, each labelled and each with a figure.

@@ -1,7 +1,6 @@
 // Plugin state boot (entry): config normalization, per-instance store, and
 // durable-state wiring. Lives apart from the entry so the entry stays wiring.
 
-//jscpd:ignore-start
 import type { PluginOptions } from "@opencode/plugin";
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
@@ -19,11 +18,11 @@ import {
   configurePendingPersistence,
   containFailure,
   getPendingDeliveries,
+  LogLevel,
   redeliverOwedNotifications,
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
-import { LogLevel } from "../shared/notify-log.js";
 import type { OverlayHandlers } from "../shared/overlay-rpc.js";
 import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
 import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
@@ -34,7 +33,6 @@ import type { TaskStore } from "../shared/task-state.js";
 import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 
-//jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)
 export interface PluginState {
   store: TaskStore;

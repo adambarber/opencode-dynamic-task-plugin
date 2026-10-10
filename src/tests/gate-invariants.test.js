@@ -8,16 +8,13 @@
 // Rules except the corpus walk, which is why that walk is the one thing imported
 // From support/corpus.js rather than repeated.
 
-//jscpd:ignore-start
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
-import { lineCount, listSourceFiles, listTestFiles, listTestSupportFiles, REPO_ROOT, readSource, siteOf } from "./support/corpus.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, lineCount, listSourceFiles, listTestFiles, listTestSupportFiles, REPO_ROOT, readSource, siteOf } from "./support/index.js";
 
-//jscpd:ignore-end
 // --- the duplicate-detection gate ------------------------------------------------
 // The thresholds are not taste. 3 lines / 16 tokens is the strictest level this
 // Tree passes, and it passes because every clone it reported was ELIMINATED
@@ -53,11 +50,11 @@ import { assert, describe, it } from "./support/runner.js";
 describe("invariant: the duplicate-detection gate stays where the tree passes", () => {
   const config = JSON.parse(readFileSync(path.join(REPO_ROOT, ".jscpd.json"), "utf8"));
 
-  it("enforces zero tolerance at 3 lines / 14 tokens", () => {
+  it("enforces zero tolerance at 3 lines / 21 tokens", () => {
     const loosened = [
       ["threshold", 0],
       ["minLines", 3],
-      ["minTokens", 14],
+      ["minTokens", 21],
     ].filter(([key, expected]) => config[key] !== expected);
     assert.deepStrictEqual(
       loosened.map(([key, expected]) => `${key} is ${config[key]}, not ${expected}`),
@@ -67,14 +64,15 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
         `3/15 reported 67, 3/12 reported 10, and 2/20 reported 86 more arrangements\n` +
         `below the line floor — including 26 hand-rolled queries into the test\n` +
         `harness's recorded state, now behind named readers. 3/16 was the tree's clean\n` +
-        `level at the time it was measured; 3/14 is the tree's clean level now, after\n` +
-        `the record shapes were built by production instead of by hand. The number is\n` +
-        `a MEASUREMENT, so it has to be re-measured and re-pinned when it stops holding\n` +
-        `rather than left to drift: 3/13 is not clean, and the 13 it reports is two\n` +
-        `type-predicate preambles — \`function isX(v: unknown): v is Y { if (!isEventRecord(v))\n` +
-        `return false; }\` — a structural idiom whose remainder is each predicate's own\n` +
-        `fields. Factoring that would mean inventing a generic type-guard combinator,\n` +
-        `which is the helper-per-expression this rule exists to prevent.`,
+        `level when it was first measured; 3/14 was clean after the record shapes were\n` +
+        `built by production instead of by hand. The imports then lost their marker\n` +
+        `exemption, every traveling block got its home (the support barrel, the ledger\n` +
+        `vocabulary, LogLevel through notify), and what remained at 3/14 was one\n` +
+        `anatomy: a single already-homed vocabulary line riding the \`} from "..."\`\n` +
+        `closer and the \`describe(\` opener, with strings collapsed — the assert trio\n` +
+        `IS the abstraction those imports name. 3/20 still reports two of them; 3/21\n` +
+        `is the tree's clean level now. The number is a MEASUREMENT, so it has to be\n` +
+        `re-measured and re-pinned when it stops holding rather than left to drift.`,
     );
   });
 
@@ -96,31 +94,26 @@ describe("invariant: the duplicate-detection gate stays where the tree passes", 
   // See the test script. A threshold pinned here and never executed is a
   // Comment; the script is what makes duplication a failing run.
 
-  // Six of the reported clones were import preludes, and the only escape hatch
-  // jscpd honours is the inline pair. That is an exclusion mechanism, and an
-  // unaudited one just deletes findings: stretch a marker over a function and the
-  // gate goes blind. So the gate runs the pin first, and these rows keep that call
-  // from being deleted alongside the marks.
-  it("runs the import-region pin before it believes any clone count", () => {
+  // Import preludes used to be exempted by inline marker pairs, and a pin
+  // audited the markers. That whole escape hatch is gone: an import block that
+  // travels between files is a missing extraction, and the gate is what names
+  // it. These rows keep the hatch from being rebuilt to make a finding vanish.
+  it("has no import exemption: no markers, and no audit machinery for markers", () => {
     const gate = readFileSync(path.join(REPO_ROOT, "scripts/duplicate-gate.mjs"), "utf8");
-    assert.match(
-      gate,
-      /pin-import-ignore-regions\.mjs["',\s\S]{0,40}--check/,
-      "the duplicate gate no longer verifies the marks, so a marker stretched over real logic is silent",
+    assert.ok(
+      !/jscpd:ignore|pin-import-ignore-regions/.test(gate),
+      "the gate re-adopted the marker escape hatch it no longer grants",
     );
-    assert.match(gate, /marks\.status\s*!==\s*0/, "the gate reads the pin's verdict and carries on anyway");
-  });
-
-  it("keeps the pin able to tell imports from everything else", () => {
-    const pin = readFileSync(path.join(REPO_ROOT, "scripts/pin-import-ignore-regions.mjs"), "utf8");
-    // The first version matched "any plausible continuation" and called `describe(` an
-    // import. Brace depth is the only answer that does not accept arbitrary statements.
-    assert.match(pin, /braceDepth/, "the pin no longer decides import membership by brace depth");
-    assert.match(
-      pin,
-      /sourceFiles\(join\(ROOT, "scripts"\)\)/,
-      "the pin stopped scanning scripts/, so the checker exempts itself",
+    assert.ok(
+      !existsSync(path.join(REPO_ROOT, "scripts/pin-import-ignore-regions.mjs")),
+      "the marker auditor is back while nothing marks anything",
     );
+    // The ban's own file is exempt because it is the one place the banned bytes
+    // must be nameable to ban them; everywhere else, the string is the violation.
+    const marked = listSourceFiles()
+      .filter((f) => f !== path.join(REPO_ROOT, "src", "tests", "gate-invariants.test.js"))
+      .filter((f) => readFileSync(f, "utf8").includes("jscpd:ignore"));
+    assert.deepStrictEqual(marked, [], "markers are back: each one deletes a finding the gate must see");
   });
 });
 
@@ -163,19 +156,27 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
   // plenty of (RETRYABLE_FRAGMENTS and friends in prompt.ts), which the
   // cross-boundary gate cannot tell from this fixture's content since it compares
   // the string token, not the string.
-   DECLARED_TWICE = `interface A {
+    DECLARED_TWICE = `interface A {
   /** The depth cap as configured. */
   depthConfigured: number;
   /** \`null\` when the set could not be read — an unknown, not a zero. */
   depthEffective: number | null;
   /** Which constraint caps the depth. */
   depthBoundBy: Bound | null;
+  /** The source the configured number was read from, so drift is nameable. */
+  depthSource: string | null;
+  /** When the configured number was last measured. */
+  depthReadAt: number | null;
 }`,
-   DECLARED_TWICE_AGAIN = `interface B {
+    DECLARED_TWICE_AGAIN = `interface B {
   depthConfigured: number;
   /** \`null\` when the set could not be read. */
   depthEffective: number | null;
   depthBoundBy: Bound | null;
+  /** Where the configured number came from. */
+  depthSource: string | null;
+  /** The read that last said so. */
+  depthReadAt: number | null;
 }`;
 
   // The regression, stated as the OUTCOME rather than as the arithmetic. The pin
@@ -210,9 +211,9 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
   //
   // It is also a COARSE net, and the slack is structural rather than accidental.
   // Measured on this config: jscpd will not report a clone smaller than 4 lines
-  // And 17 tokens, and this stream adds a token per line on top, so anything
-  // Byte-identical that jscpd reports measures at least 21 against a bar of 14.
-  // A seven-token margin means this test cannot be made to fail by narrowing the
+  // And 21 tokens, and this stream adds a token per line on top, so anything
+  // Byte-identical that jscpd reports measures at least 25 against a bar of 21.
+  // A four-token margin means this test cannot be made to fail by narrowing the
   // Stream — verified, not assumed: dropping `new_line` and shifting the range
   // By a line both leave it green. The fine net for the mapping is the case
   // Below, which has no slack; this one earns its keep by being the only place

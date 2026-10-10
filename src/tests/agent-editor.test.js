@@ -13,16 +13,12 @@
  * value, and a test that hard-codes a cap name is a hand-kept mirror of a
  * vocabulary it does not own.
  */
-//jscpd:ignore-start
 import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlayCaps } from "../../dist/shared/caps.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { agentDialogFrom, applyCapEdit, CAP_CHOICES, CAP_LABEL, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
 import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
-import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
-import { overlayChannel } from "./support/overlay-channel.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, bothCaps, describe, it, overlayChannel, tempProject, withTempDir } from "./support/index.js";
 
-//jscpd:ignore-end
 const BASE = normalizeDynamicTaskConfig(null);
 
 /** One project's caps channel, over the config the dialog writes against. */
@@ -40,6 +36,17 @@ const AGENTS = ["explore", "general", "review"];
 function edit(agent, cap, value, raw) {
   return applyCapEdit(overlayFrom(raw), agent, { cap, value });
 }
+
+/**
+ * The claim both edit paths end on, named once: the write succeeded and
+ * `explore`'s overlay landed whole. The dialog helper and the raw `applyCapEdit`
+ * answer with the same shape, and this is the one place that knows what a
+ * landed cap edit reads.
+ */
+const editLanded = (outcome, expected, why) => {
+  assert.equal(outcome.kind, "written");
+  assert.deepEqual(outcome.overlay.agents.explore, expected, why);
+};
 
 /** `explore`'s row, as the list drew it. The fixture four cases reason about. */
 const exploreRow = (caps) => view({ agents: { explore: caps } }, AGENTS).rows[0];
@@ -246,9 +253,7 @@ describe("the cap vocabulary", () => {
 describe("an answer sets the cap it was asked for", () => {
   it("and leaves every other cap exactly as it was", () => {
     const outcome = edit("explore", "maxConcurrent", 4, { agents: { explore: bothCaps(1, 2) } });
-    assert.equal(outcome.kind, "written");
-    assert.deepEqual(outcome.overlay.agents.explore, bothCaps(4, 2),
-      "the depth the operator was never asked about survives");
+    editLanded(outcome, bothCaps(4, 2), "the depth the operator was never asked about survives");
   });
 
   it("the depth cap sets the depth, and not the concurrency", () => {
@@ -426,8 +431,7 @@ describe("a hand-mangled overlay", () => {
     // choosing an offered one — an unoffered value would have tested the list rather
     // than the reader's agreement.
     const outcome = applyCapEdit(overlayFrom(mangled), "explore", { cap: "maxConcurrent", value: 4 });
-    assert.equal(outcome.kind, "written");
-    assert.deepEqual(outcome.overlay.agents.explore, bothCaps(4, 2),
+    editLanded(outcome, bothCaps(4, 2),
       "the file keeps the new number and the one the server honoured, and loses the value the server would have refused");
   });
 });

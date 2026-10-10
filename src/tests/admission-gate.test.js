@@ -7,18 +7,14 @@
  * than a per-file ladder.
  */
 
-//jscpd:ignore-start
 import { registerAdmittedTask, resolveAdmission, resolveDependencies } from "../../dist/shared/admission.js";
 import { agentCanNotify, DEFAULT_AGENT_MODE, toAgentRecords, wildcardMatches } from "../../dist/shared/agent-record.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { isDispatchableAgent } from "../../dist/shared/task-policy.js";
 import { createTaskStore, registerActiveTask, transitionState } from "../../dist/shared/task-state.js";
-import { admits, assertNoAgents, refuses, said } from "./support/assertions.js";
-import { blockingConfig, childParams, defaultConfig, singleSlotConfig } from "./support/fixtures.js";
-import { assert, describe, it } from "./support/runner.js";
+import { admits, assert, assertNoAgents, blockingConfig, childParams, defaultConfig, describe, it, refuses, said, singleSlotConfig } from "./support/index.js";
 
-//jscpd:ignore-end
 // --- What the host publishes -------------------------------------------------
 describe("admission gate: resolveAdmission", () => {
   const records = toAgentRecords([

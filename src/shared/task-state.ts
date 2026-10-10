@@ -22,21 +22,18 @@
 // The transition result is deliberately plain — callers branch on
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
-//jscpd:ignore-start
 import { agentKey } from "./agent-key.js";
 import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
-import type { SessionId } from "./ids.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind, type SessionId } from "./ledger-change.js";
 import { type ActiveTaskState, type NewTaskRegistration, type SettledTaskState, TaskState, withoutAdvisory } from "./task-records.js";
 
-//jscpd:ignore-end
 // The store is its own subject: it owns the SET and the only way to change it,
 // while this module owns what a set MEANS. Re-exported here because task-state is
 // where the state machine reads and writes it, and eight modules already reach the
 // store through this path; the alternative is eight import lines for a type they
 // did not previously have to name.
-export { createTaskStore, type LedgerChangeSink, TaskStore } from "./store.js";
+export { createTaskStore, TaskStore } from "./store.js";
 
 import type { DynamicTaskConfig } from "./config.js";
 import { foldActiveByAgent } from "./occupancy.js";
@@ -53,9 +50,7 @@ import type { TaskStore } from "./store.js";
 export {
   type ActiveTaskState,
   ADVISORY_FIELDS,
-  isTaskState,
   type LineagePath,
-  type LineageStep,
   type NewTaskRegistration,
   type SettlementVerdict,
   TASK_STATES,
@@ -75,7 +70,7 @@ export {
 // every reader learn a new address for it.
 import type { FailureClass } from "./failure-class.js";
 
-export { actOnSettled, decideRetained, failureClassOf, motionClocksOf, noteAbortLanded, type RetainedTaskState, retainedFor, settledChange } from "./settled-record.js";
+export { failureClassOf, motionClocksOf, noteAbortLanded, type RetainedTaskState, retainedFor } from "./settled-record.js";
 
 import { actOnSettled, decideRetained, type RetainedTaskState, retainedFor, settledChange } from "./settled-record.js";
 
@@ -200,7 +195,7 @@ function reclaimAsActive(
  * agent is the one direction of error that never announces itself. One normalizer, on
  * both sides, is the whole fix.
  */
-export function agentActiveCount(store: TaskStore, agent: string): number {
+function agentActiveCount(store: TaskStore, agent: string): number {
   return foldActiveByAgent(store.activeTasks.values()).get(agentKey(agent)) ?? 0;
 }
 

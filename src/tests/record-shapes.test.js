@@ -6,11 +6,8 @@
  * funnels. Both are Tenet 12, both read production on disk, neither needed the other.
  */
 
-//jscpd:ignore-start
-import { recordShapeRestatements } from "./support/record-scan.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, recordShapeRestatements } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("invariant: record shapes are built, not re-declared (Tenet 12)", () => {
   it("a test that spells out a whole record is rebuilding production's shape by hand", () => {
     const findings = recordShapeRestatements();

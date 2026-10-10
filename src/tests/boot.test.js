@@ -12,13 +12,8 @@
  * nothing about a namespace it did not read, and never writes into one.
  */
 
-//jscpd:ignore-start
-import { answerMatches, answerOmits, answerSays, compareStrings, textDeclaresKind } from "./support/assertions.js";
-import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
-import { bootOn, ledgerSays, settledOnDisk, waitFor } from "./support/integration.js";
-import { assert, describe, it } from "./support/runner.js";
+import { answerMatches, answerOmits, answerSays, assert, bootOn, compareStrings, describe, dialCount, it, ledgerSays, owedEntry, retainedEntry, runningEntry, settledOnDisk, setupHarness, sleep, textDeclaresKind, tmpProjectDir, waitFor, withEnv } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * Wait for a notice to land, because boot deliberately does not block on
  * redelivery and the arrival is the observable.
@@ -33,7 +28,6 @@ const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why)
 import { ENV } from "../../dist/shared/config.js";
 import { LEDGER_PREFIXES, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
-import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 
 /**
  * A v3 file that reads, with one record inside it that does not.

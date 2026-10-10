@@ -6,23 +6,10 @@
  * return immediately, create nothing it cannot keep, and leave no orphan behind.
  */
 
-//jscpd:ignore-start
 import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
-import {
-  announcedAbout,
-  failEdge,
-  refusedOnOneEdge,
-  refusedOverEdges,
-} from "./support/dispatch-wait-scenario.js";
-import { abortWasRequestedFor, confirmationFor, PARENT, promptsTo, promptTextsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
-import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
-import { events } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
-import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
+import { abortWasRequestedFor, announcedAbout, answerOmits, answerSays, assert, assertNoticeCount, confirmationFor, describe, dispatchArgs, eventHarness, events, failEdge, harnessThrowingPrompt, it, PARENT, promptsTo, promptTextsTo, refusedOnOneEdge, refusedOverEdges, sessionBody, sessionCount, setupHarness, sleep, statusSays, wasAborted, withChild, withRefusedSecondSpawn, withSingleSlot } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * A create that made a session and then refused to say so, by either door.
  *

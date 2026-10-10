@@ -12,7 +12,6 @@
 // arrangement as every other case that does, and the duplicate gate reads that as
 // duplication of the code under test rather than of the fixture.
 
-//jscpd:ignore-start
 import { createStore } from "../../../dist/shared/durable-store.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { createLedgerStore, LEDGER_KEYS } from "../../../dist/shared/ledger-storage.js";
@@ -22,7 +21,6 @@ import { createMockClient } from "./mock-host.js";
 import { opaqueHost } from "./opaque-host.js";
 import { afterEach, assert, beforeEach } from "./runner.js";
 
-//jscpd:ignore-end
 /** Small enough that a hung host costs a case milliseconds rather than seconds. */
 const PATIENCE_MS = 5;
 

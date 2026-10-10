@@ -12,10 +12,8 @@
 // back from the store or only ever written is KEPT, because the two are different claims
 // and the screen has to say which one it is making.
 
-//jscpd:ignore-start
 import type { AgentOverlay } from "../shared/caps.js";
 
-//jscpd:ignore-end
 /** One project's last known caps, and how far that is known. */
 interface Remembered {
   /** True when the store itself produced this, false when only a write confirmed it. */
@@ -55,15 +53,4 @@ export function rememberWritten(directory: string, overlay: AgentOverlay): void 
 /** What the screen can draw without the channel, or `undefined` if it has never learned. */
 export function remembered(directory: string): { overlay: AgentOverlay; verified: boolean } | undefined {
   return memory.get(directory);
-}
-
-/**
- * Forget one project.
- *
- * There because a project directory is reused — a second window on the same tree is a
- * new screen, not a new project, and a reload must not hand it last session's caps as if
- * they were current.
- */
-export function forget(directory: string): void {
-  memory.delete(directory);
 }

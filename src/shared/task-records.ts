@@ -12,13 +12,11 @@
 // The settled half was already split out (settled-record.ts); this is the other
 // half, and the union of the two belongs to the machine that consumes both.
 
-//jscpd:ignore-start
 import type { SessionId } from "./ids.js";
 import type { NoticeClaim } from "./notice-claim.js";
 import type { ModelOverride } from "./prompt.js";
 import type { ParentSession } from "./session-lifecycle.js";
 
-//jscpd:ignore-end
 /**
  * A task's lifecycle state.
  *
@@ -72,10 +70,8 @@ export type SettlementVerdict = Extract<TaskState, TaskState.Completed | TaskSta
  */
 export type SettledTaskState = Exclude<TaskState, TaskState.Active>;
 
-/** A settled state, or `unknown` when no record is left to read it from. */
-export type SettledState = SettledTaskState | "unknown";
 
-export type LineageStep = string;
+type LineageStep = string;
 export type LineagePath = LineageStep[];
 
 // The identity and routing of a task: the store's record, the durable entry the

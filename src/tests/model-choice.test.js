@@ -11,7 +11,6 @@
  * was asked to switch the child's session to.
  */
 
-//jscpd:ignore-start
 import { agentKey } from "../../dist/shared/agent-key.js";
 import {
   isModelOverride,
@@ -21,9 +20,8 @@ import {
   resolveChildModel,
   spellModel,
 } from "../../dist/shared/model-choice.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/index.js";
 
-//jscpd:ignore-end
 // The dispatching parent's own model, as the host reads it: a session row.
 const PARENT_MODEL = { modelID: "glm-5.3", providerID: "z-ai" };
 

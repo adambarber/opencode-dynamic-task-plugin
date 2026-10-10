@@ -6,14 +6,12 @@
 // declared type, never a local re-declaration of it. Both re-declarations that
 // used to live here were load-bearing and both were wrong.
 
-//jscpd:ignore-start
 import type { Session } from "@opencode/schema/session";
 import { callHost, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { includesWord, isPlainRecord } from "./host-shape.js";
 import { isMessage, readSessionMessages } from "./prompt.js";
 
-//jscpd:ignore-end
 /** The host's own session object, by its declared type — never a local copy of it. */
 type SessionInfo = Session.Info;
 
@@ -199,7 +197,7 @@ export interface SessionPresence {
 export const NOT_FOUND_REASON = "UnexpectedStatus" as const;
 
 /** The HTTP status that, paired with the reason above, means "no such session". */
-export const NOT_FOUND_STATUS = 404;
+const NOT_FOUND_STATUS = 404;
 
 /** The host's own "no such session", narrowed to what we actually compare. */
 export type HostSessionMissing = Record<string, unknown>;
@@ -245,7 +243,7 @@ export function isSessionMissing(error: unknown): error is HostSessionMissing {
  * here reject on a 404 rather than returning an envelope payload, so existence is
  * answered by the catch below.
  */
-export async function readSessionState(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
+async function readSessionState(host: OpaqueHost, sessionId: string): Promise<SessionPresence> {
   try {
     const bounded = await callHost(host, READ_BOUNDS.presence, (client) => client.session.get({ sessionID: sessionId }), null);
     if (bounded.timedOut) return { existence: SessionExistence.Unread, statusAnswered: false };

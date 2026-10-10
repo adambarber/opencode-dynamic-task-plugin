@@ -19,11 +19,9 @@
  * two functions that compose them. That is not a smaller feature: it is the same screen,
  * drawn the way every other dialog in the host is drawn.
  */
-//jscpd:ignore-start
 import { AGENT_CAP_NAMES } from "../shared/caps.js";
 import { type AgentEntry, CAP_NOUN, type CapCell, capCellOf } from "./agent-editor.js";
 
-//jscpd:ignore-end
 /**
  * The mark between an agent's two figures.
  *

@@ -11,7 +11,6 @@
  */
 
 
-//jscpd:ignore-start
 import {
   assertRefusedWithoutReachingTheHost,
   assertStopped,
@@ -26,7 +25,6 @@ import {
 import { withSingleSlot } from "./integration.js";
 import { assert } from "./runner.js";
 
-//jscpd:ignore-end
 /**
  * Boot, spawn one child, stop it as `caller`, and require the request to exist.
  * A case that only wants to observe the tool's wording gets the answer back.

@@ -8,15 +8,9 @@
  * only reads what the channel recorded.
  */
 
-//jscpd:ignore-start
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { answerMatches, answerOmits, answerSays, assertNoticeCount, stateOf, stillActive, textDeclaresKind } from "./support/assertions.js";
-import { bounded, confirmationFor, declareNeedsInput, promptTextsTo, setupHarness, sleep, withChild, withSettledChild } from "./support/harness.js";
-import { bootOn } from "./support/integration.js";
-import { agentDeclaring, allowAction, denyAction, events } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, withChild, withSettledChild } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("task_notify: the child-to-parent channel", () => {
 
   it("delivers a mid-flight notice and leaves the task active", async () => {

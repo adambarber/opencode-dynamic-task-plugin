@@ -1,14 +1,13 @@
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { getDebugLogPath } from "../../../dist/debug-logger.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { PARENT, setupHarness, tmpProjectDir, withEnv } from "./harness.js";
-import { events, promptText, unclockedSaid } from "./mock-host.js";
+import { events, promptText } from "./mock-events.js";
+import { unclockedSaid } from "./mock-transcript.js";
 
 
-//jscpd:ignore-end
 /**
  * Boot the plugin, spawn one child, and return the pair a tool test needs.
  * This is the suite's standard arrangement, so it is declared once here rather

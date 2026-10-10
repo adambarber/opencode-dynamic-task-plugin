@@ -2,7 +2,6 @@
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
 
-//jscpd:ignore-start
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { admitToolPrompt } from "../shared/admission.js";
@@ -35,7 +34,6 @@ import {
 import type { ContinueArgs } from "./args.js";
 import { type ResolvedSessionScope } from "./context.js";
 
-//jscpd:ignore-end
 export type { ContinueArgs } from "./args.js";
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {

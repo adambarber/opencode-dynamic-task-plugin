@@ -15,7 +15,6 @@
 // numbers instead of the store itself: this module can judge occupancy without
 // knowing what a task is, and every consumer that does know builds the map the one
 // way `agentKey` says to.
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { agentKey } from "./agent-key.js";
@@ -23,7 +22,6 @@ import { isPlainRecord } from "./host-shape.js";
 import { type ModelOverride, readModelSetting, readOverlayModel } from "./model-choice.js";
 import { type DepthBound, depthLimits } from "./task-policy.js";
 
-//jscpd:ignore-end
 // ─── the vocabulary ──────────────────────────────────────────────────────────
 
 /**
@@ -175,7 +173,7 @@ function counted(n: number): string {
  * message. Nothing about that is a reader bug: the reader was right and the writer
  * was wrong, and the only fix is for there to be one rule both ask.
  */
-export function isAgentCap(value: unknown): value is number {
+function isAgentCap(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
@@ -207,7 +205,7 @@ function spelling(value: unknown): string {
  * once to name them — and two inline answers to one question drift the first time a
  * cap is added.
  */
-export function unusableCapNames(raw: unknown): AgentCapName[] {
+function unusableCapNames(raw: unknown): AgentCapName[] {
   if (!isPlainRecord(raw)) return [];
   return AGENT_CAP_NAMES.filter((name) => raw[name] !== undefined && cap(raw[name]) === undefined);
 }
@@ -235,7 +233,7 @@ function readTopLevelCaps(body: Record<string, unknown>): { maxConcurrent?: numb
  * every overlay the plugin ever applies — silently, because a field a reader never
  * mentions cannot be a type error against it.
  */
-export function readAgentCapBody(raw: unknown): AgentCaps {
+function readAgentCapBody(raw: unknown): AgentCaps {
   if (!isPlainRecord(raw)) return {};
   const body = raw;
   const out: AgentCaps = {};
@@ -475,7 +473,7 @@ function overlayBody(raw: unknown): Record<string, unknown> | null {
  * at boot, because an operator who had caps working last week and finds them silently
  * not applying deserves to be told which file stopped being read.
  */
-export const RETIRED_LANE_FILE = ".dynamic-task-lanes.json";
+const RETIRED_LANE_FILE = ".dynamic-task-lanes.json";
 
 /** The retired overlay's path, so a stale file can be named rather than ignored. */
 export function retiredLaneOverlayPath(directory: string | undefined): string {

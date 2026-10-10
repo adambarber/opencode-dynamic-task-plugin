@@ -7,14 +7,8 @@
  * still owed — rather than about any one tool.
  */
 
-//jscpd:ignore-start
-import { answerMatches, answerSays, assertNoticeCount, textDeclaresKind } from "./support/assertions.js";
-import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
-import { dispatchArgs, eventHarness, harnessRejectingPrompt, withSingleSlot } from "./support/integration.js";
-import { deferred, events } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { abortedSessions, answerMatches, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("settlement: the notification layer owns outcomes", () => {
   // The head that sees EVERY event is the most-executed code in the plugin, so
   // what it charges the host is a design claim and not a detail. A single turn

@@ -5,7 +5,6 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
-//jscpd:ignore-start
 import { callHost, type FailureReporter, fireAndForget, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { hostPayload } from "./host-events.js";
@@ -13,7 +12,6 @@ import { errorMessage, eventField, eventString, isEventRecord } from "./host-sha
 import type { Verdict } from "./verdict.js";
 import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 
-//jscpd:ignore-end
 // ─── invokePrompt ──────────────────────────────────────────────────
 // Builds the single payload shape and invokes it. Rejects with the raw
 // client error — callers classify via classifyPromptError.
@@ -162,7 +160,7 @@ export function classifyPromptError(error: unknown): PromptErrorClass {
  * names rather than restatements of the members so a caller spells the decision
  * and not the wire word.
  */
-export enum MessageRole {
+enum MessageRole {
   User = "user",
   Assistant = "assistant",
   System = "system",
@@ -173,7 +171,7 @@ export enum MessageRole {
 export const ASSISTANT_ROLE = MessageRole.Assistant;
 
 /** The role a failed turn carries its error under. */
-export const ERROR_ROLE = MessageRole.Error;
+const ERROR_ROLE = MessageRole.Error;
 
 const MESSAGE_ROLES: readonly string[] = Object.values(MessageRole);
 
@@ -184,7 +182,7 @@ const MESSAGE_ROLES: readonly string[] = Object.values(MessageRole);
  * added to the vocabulary is recognised without anyone editing a table. It is
  * what makes the narrowing below a fact the compiler checks instead of a cast.
  */
-export function isMessageRole(role: string): role is MessageRole {
+function isMessageRole(role: string): role is MessageRole {
   return MESSAGE_ROLES.includes(role);
 }
 
@@ -198,7 +196,7 @@ export function isMessageRole(role: string): role is MessageRole {
  * lint gate refuses — correctly, because it is the comparison that survives a
  * rename. Every branch that acts on a role narrows through here first.
  */
-export function branchedRoleOf(message: Message): MessageRole | undefined {
+function branchedRoleOf(message: Message): MessageRole | undefined {
   const role = messageRoleOf(message);
   return isMessageRole(role) ? role : undefined;
 }
@@ -253,32 +251,10 @@ export function messageRoleOf(message: Message): string {
 }
 
 /** The members a message speaks through, v2 first: `content`, then `parts`. */
-export function contentPartsOf(message: Message): unknown[] {
+function contentPartsOf(message: Message): unknown[] {
   if (Array.isArray(message.content)) return message.content;
   if (Array.isArray(message.parts)) return message.parts;
   return [];
-}
-
-/**
- * Did this message's turn open and never close?
- *
- * Guard-first for the same reason the rest of this family is: the raw host
- * payload stays data, and a caller that has already established the message is
- * an assistant turn gets one word instead of a cast.
- *
- * The absent clock is NOT a stuck turn, and refusing to say so is the whole
- * point. A message carrying no `time` at all is a host that described none of
- * it, which is a different statement from a host that reported a turn and left
- * it open — and reading the first as the second turns every transcript the
- * plugin cannot fully describe into a dead parent. Caught 2026-09-28 by the
- * integration harness, whose default assistant turn has no clock.
- */
-export function messageTurnStuck(message: Message): boolean {
-  const info = isEventRecord(message.info) ? message.info : undefined;
-  const direct = isEventRecord(message.time) ? message.time : undefined;
-  const time = isEventRecord(info?.time) ? info.time : direct;
-  if (time === undefined) return false;
-  return typeof time.completed !== "number";
 }
 
 // ─── extractTextFromParts ──────────────────────────────────────────
@@ -435,7 +411,7 @@ export async function readSessionMessages(
 // ─── extractMessages ───────────────────────────────────────────────
 // (Moved verbatim from index.ts — message-shape handling belongs here.)
 
-export function extractMessages(result: unknown): unknown[] {
+function extractMessages(result: unknown): unknown[] {
   if (Array.isArray(result)) return result;
   const payload = hostPayload(result);
   if (Array.isArray(payload)) return payload;

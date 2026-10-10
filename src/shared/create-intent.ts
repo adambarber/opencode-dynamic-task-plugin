@@ -23,10 +23,8 @@
  * It is named here because it is a limit and not an accident.
  */
 
-//jscpd:ignore-start
 import { recordKey } from "./state-facade.js";
 
-//jscpd:ignore-end
 /** The durable prefix every issued-but-unanswered create lives under. */
 export const CREATE_INTENT_PREFIX = "create-intent";
 
@@ -47,16 +45,6 @@ export function createIntentKey(intent: CreateIntent): string {
   return recordKey(CREATE_INTENT_PREFIX, intent.parentSessionId ?? "", intent.title);
 }
 
-/**
- * `create-intent` — the guard a lookup validates against, so a record that fails it is
- * withheld and counted rather than handed to a caller as a live create.
- */
-export function isCreateIntent(value: unknown): value is CreateIntent {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as { parentSessionId?: unknown; title?: unknown };
-  if (typeof record.title !== "string") return false;
-  return record.parentSessionId === null || typeof record.parentSessionId === "string";
-}
 
 /**
  * Record the intent. Awaiting durability is the caller's business: an intent that

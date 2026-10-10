@@ -4,16 +4,11 @@
  * `tui-limits-command.test.js`.
  */
 
-//jscpd:ignore-start
 import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_LABEL } from "../../dist/tui/agent-editor.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
-import {assertCapsDrawn, 
-  BASE, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
-} from "./support/limits-screen.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, assertCapsDrawn, BASE, backToCaps, capRow, capText, choose, chooseValue, clearRow, describe, havingWritten, it, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("the flow, end to end on disk", () => {
   it("a chosen cap lands in the overlay the dispatch path reads", () =>
     withPickerOpen(havingWritten((host) => chooseValue(host, 4))(async (host, directory) => {

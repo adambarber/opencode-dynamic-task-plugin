@@ -7,7 +7,6 @@
  * invented to match the code certifies the code, not the host.
  */
 
-//jscpd:ignore-start
 import { PERMISSION_ASKED, readHostAsk } from "../../dist/shared/host-events.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { truncateText } from "../../dist/shared/notify.js";
@@ -15,11 +14,8 @@ import {
   decideAsk,
   denyAsk,
 } from "../../dist/shared/question-handling.js";
-import { assertIs, assertNothing } from "./support/assertions.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, assertIs, assertNothing, describe, it, opaqueHost } from "./support/index.js";
 
-//jscpd:ignore-end
 // One verb survives the v2 rename: the gate DENIES. `permission.reply` takes a
 // decision ("once" | "always" | "reject"), so there is no answer to send and no
 // separate reject call — one call, one decision.

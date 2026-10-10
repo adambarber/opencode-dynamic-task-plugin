@@ -15,11 +15,9 @@
  * measurement.
  */
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-//jscpd:ignore-end
 const require = createRequire(import.meta.url);
 const { tokenize } = require("@jscpd/tokenizer");
 

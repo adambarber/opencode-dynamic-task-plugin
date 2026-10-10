@@ -11,11 +11,8 @@
  * refusal. Each case therefore takes a world built for it, from `durable`.
  */
 
-//jscpd:ignore-start
-import { durable } from "./support/durable-world.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, durable, it } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("durable store", () => {
   durable.tightBounds();
 

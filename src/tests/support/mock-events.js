@@ -15,7 +15,6 @@
  */
 export * from "../../../dist/shared/host-events.js";
 
-//jscpd:ignore-start
 import {
   FORM_CANCELLED,
   PERMISSION_ASKED,
@@ -29,7 +28,6 @@ import {
 } from "../../../dist/shared/host-events.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 
-//jscpd:ignore-end
 /**
  * A host event envelope: the type the server names, the session it is about, and
  * whatever else it carries. The server's lifecycle event shapes below are all

@@ -69,14 +69,12 @@
  * being silently absorbed.
  */
 
-//jscpd:ignore-start
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { longestSharedRun, readMinTokens, stream, tokensInRange } from "./measure.mjs";
 
-//jscpd:ignore-end
 const REPO = new URL("..", import.meta.url).pathname;
 const SCAN = "src";
 
@@ -120,26 +118,12 @@ const reproduces = (first, second) => {
   return longestSharedRun(a, b) >= minTokens;
 };
 
-// The scope of the exemption, checked BY THE GATE THAT GRANTS IT. Import
-// declarations are marked `//jscpd:ignore-start/end` because canonical import
-// ordering makes unrelated files' blocks byte-alike, and no code is copied by that.
-// That marker is jscpd's only escape hatch, so before any of this is believed, this
-// gate verifies the marks cover imports and nothing else — a marker stretched over
-// real logic, or an unmarked import, turns this red rather than silently deleting a
-// finding. See scripts/pin-import-ignore-regions.mjs for why the config's
-// `ignorePattern` could not do this job.
-const marks = spawnSync("node", ["scripts/pin-import-ignore-regions.mjs", "--check"], {
-  cwd: REPO,
-  encoding: "utf8",
-});
-if (marks.error) throw marks.error;
-if (marks.status !== 0) {
-  process.stderr.write(marks.stderr || "");
-  process.stderr.write(
-    "\nThe import-region marks are wrong, so the exclusions below cannot be trusted. Fix the marks before trusting the clone count.\n",
-  );
-  process.exit(1);
-}
+// Import ordering makes unrelated files' blocks byte-alike, and that travel is
+// not exempted any more. An import block that always arrives as a unit names an
+// abstraction that has not been extracted yet — the barrel in src/tests/support
+// is what this gate named into existence once already — so the clone is the
+// finding and the home is the fix. No marker, no audit of markers: the escape
+// hatch is gone, so there is nothing left to stretch over real logic.
 
 const out = mkdtempSync(join(tmpdir(), "dt-jscpd-"));
 let report;

@@ -10,23 +10,21 @@
 // Its own module because it is its own subject: nothing here decides a task's
 // state, and nothing that decides a task's state belongs here.
 
-//jscpd:ignore-start
 import type { DependencyBlock } from "./admission.js";
 import { evictOldest } from "./bounded-map.js";
 import type { SessionId } from "./ids.js";
 import type { ParentSession } from "./session-lifecycle.js";
 
-//jscpd:ignore-end
 /**
  * Whether a wait's edges are all satisfied; otherwise which ones still block it.
  *
  * The two answers to one question, kept together so a caller cannot answer "admissible"
  * and "still blocked" inconsistently.
  */
-export type Admissibility = { ok: true } | { ok: false; pending: DependencyBlock[] };
+type Admissibility = { ok: true } | { ok: false; pending: DependencyBlock[] };
 
 /** Whether a child session is still running, asked fresh at the moment of the answer. */
-export type StillRunning = (childSessionId: SessionId) => boolean;
+type StillRunning = (childSessionId: SessionId) => boolean;
 
 /** Everything needed to close out one wait: the wait, where it lives, and where it goes. */
 interface Settling {
@@ -80,10 +78,10 @@ export interface WaitRegistry {
 }
 
 /** How many refused dispatches one parent may have outstanding. */
-export const MAX_WAITS = 64;
+const MAX_WAITS = 64;
 
 /** A wait's key: who is waiting, for what. The parent named both. */
-export function waitKey(parentSessionId: string, description: string): string {
+function waitKey(parentSessionId: string, description: string): string {
   return `${parentSessionId  } ${  description}`;
 }
 

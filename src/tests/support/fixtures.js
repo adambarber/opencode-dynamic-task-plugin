@@ -1,9 +1,7 @@
 
-//jscpd:ignore-start
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DYNAMIC_TASK_FILE, normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
-//jscpd:ignore-end
 /**
  * The fixtures every module's suite needs: a config, and a registration literal.
  *
@@ -60,7 +58,7 @@ export const childParams = ({ id, parent = "parent_1", agent = "explore", descri
  * directory says `tempProject()`; a suite that needs a bare temp dir says
  * `tempDir()`.
  */
-export const tempDir = (prefix = "dynamic-task-") => mkdtempSync(join(tmpdir(), prefix));
+const tempDir = (prefix = "dynamic-task-") => mkdtempSync(join(tmpdir(), prefix));
 
 /**
  * `tempDir`, with the removal attached.

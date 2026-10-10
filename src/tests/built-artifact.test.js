@@ -8,12 +8,9 @@
  * not in any of the four hundred tests.
  */
 
-//jscpd:ignore-start
 import { join } from "node:path";
-import { DIST_DIR, exists, listProdFiles, REPO_ROOT, readSource, siteOf, walkSource } from "./support/corpus.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, DIST_DIR, describe, exists, it, listProdFiles, REPO_ROOT, readSource, siteOf, walkSource } from "./support/index.js";
 
-//jscpd:ignore-end
 /** Every `.js` the build emitted, which is every file the host can import. */
 const builtFiles = () => walkSource(DIST_DIR, (file) => file.endsWith(".js"));
 

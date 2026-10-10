@@ -6,11 +6,9 @@
  * than guessed.
  */
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import { corpus, FLOOR_LINES, FLOOR_TOKENS, findCrossBoundaryClones, shortPath } from "./cross-boundary.mjs";
 
-//jscpd:ignore-end
 const minTokens = Number(process.argv[2] ?? FLOOR_TOKENS);
 const minLines = Number(process.argv[3] ?? FLOOR_LINES);
 const { tests, production } = corpus();

@@ -10,12 +10,10 @@
 // `OpaqueHost` rather than the host, and the only way out is `callHost`, so a
 // deadline is an argument at the call rather than a scan finding above it.
 
-//jscpd:ignore-start
 import type { Context } from "@opencode/plugin/promise/plugin";
 import { type BoundArgs, type Bounded, expired, withBound } from "./execution-bound.js";
 import { isEventRecord } from "./host-shape.js";
 
-//jscpd:ignore-end
 /** The host, as v2 defines it: a set of typed domains and no client. */
 export type OpenCodeClient = Context;
 

@@ -15,9 +15,7 @@
 // exists to prevent. So the schema says "an object" and the readers below say what
 // an overlay is.
 
-//jscpd:ignore-start
 import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
-//jscpd:ignore-end
 // TYPES from the schema package only; the host's `Rpc.define` is deliberately NOT
 // called. The built plugin is loaded from a SYMLINKED directory with no node_modules
 // beside it, so a bare runtime specifier resolves against the link path and the host

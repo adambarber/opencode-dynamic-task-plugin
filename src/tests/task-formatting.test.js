@@ -7,14 +7,11 @@
  * shape with no compiler over it, and it drifts silently in both directions.
  */
 
-//jscpd:ignore-start
 import { SessionExistence } from "../../dist/shared/liveness.js";
 import { noticeRecord } from "../../dist/shared/notice-claim.js";
 import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
-import { notifiedAs } from "./support/records.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, notifiedAs } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * A liveness reading in the shape `readLiveness` returns.
  *

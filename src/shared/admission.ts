@@ -5,13 +5,11 @@
 // land here in Task 07 proper; the funnel exists now so no new spawn path
 // can bypass it.
 
-//jscpd:ignore-start
 import { liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { callHost, type OpaqueHost } from "./client.js";
 import type { DynamicTaskConfig } from "./config.js";
 import { safeLog } from "./notify.js";
 
-//jscpd:ignore-end
 // The one host call the listing makes. Stated structurally so a FAKE can satisfy it
 // without the whole host: the reader is bounded, so it needs the shape, not the client.
 export interface AgentCaller {
@@ -67,7 +65,7 @@ import type { Verdict } from "./verdict.js";
  * by the CALLER from an agent list the gate itself had already been handed — two
  * derivations of one fact, free to disagree. The gate builds it once now.
  */
-export interface AdmissionDenial {
+interface AdmissionDenial {
   /** Exactly what the parent reads. */
   refusal: string;
 }
@@ -104,7 +102,7 @@ export type Admission =
  * would report a depth the operator can never reach: a cap that looks generous
  * and is not.
  */
-export function dispatchableAgentNames(
+function dispatchableAgentNames(
   agents: readonly AgentRecord[],
   config: Pick<DynamicTaskConfig, "blockedAgents">,
 ): string[] {
@@ -312,7 +310,7 @@ export async function fetchAgents<C extends AgentCaller>(host: AgentLister<C>, c
  * A STALE cached list is `known`: it is a real list, just an old one, and saying
  * otherwise would make a transient blip look like a project with no agents.
  */
-export interface AgentListing {
+interface AgentListing {
   agents: AgentRecord[];
   known: boolean;
 }
@@ -336,7 +334,7 @@ export async function dispatchableAgentNamesOrNull<C extends AgentCaller>(
   return listing.known ? dispatchableAgentNames(listing.agents, config) : null;
 }
 
-export async function fetchAgentsOrUnknown<C extends AgentCaller>(
+async function fetchAgentsOrUnknown<C extends AgentCaller>(
   host: AgentLister<C>,
   cacheTtlMs: number = CACHE_TTL,
 ): Promise<AgentListing> {

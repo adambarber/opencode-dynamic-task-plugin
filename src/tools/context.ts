@@ -1,7 +1,6 @@
 // Shared tool context (entry/tools boundary): everything a tool executor
 // needs, owned in one place so no executor reaches past the funnel.
 
-//jscpd:ignore-start
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import type { OpaqueHost } from "../shared/client.js";
 import type { DynamicTaskConfig } from "../shared/config.js";
@@ -14,7 +13,6 @@ import { formatTaskResultSummary, NO_SESSION_RECORD, taskResultRecord } from "..
 import { findTask, type TaskRecord, type TaskStore } from "../shared/task-state.js";
 import type { Refusal } from "../shared/verdict.js";
 
-//jscpd:ignore-end
 export interface ToolDeps {
   host: OpaqueHost;
   /** Durable writes for issued-but-unanswered creates; the same chain as the ledger. */
@@ -113,7 +111,7 @@ export function callerSessionId(ctx: ToolContext): SessionId | undefined {
 }
 
 /** The caller's own record, or undefined when there is no caller or it is not one of ours. */
-export function callerTask(ctx: ToolContext, store: TaskStore): TaskRecord | undefined {
+function callerTask(ctx: ToolContext, store: TaskStore): TaskRecord | undefined {
   const caller = callerSessionId(ctx);
   return caller === undefined ? undefined : (findTask(store, caller) ?? undefined);
 }

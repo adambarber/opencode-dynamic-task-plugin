@@ -12,10 +12,8 @@
  * never faked here. Only the host is, because the server is not what these suites are
  * about.
  */
-//jscpd:ignore-start
 import { assert } from "./runner.js";
 
-//jscpd:ignore-end
 /**
  * Refuse a question settlement the host would not accept. Derived from the SDK's
  * QuestionReplyData/QuestionRejectData: the path key is `requestID` (verified

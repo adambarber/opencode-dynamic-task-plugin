@@ -4,7 +4,6 @@
 // scope once and hands it to the executor. Bodies live beside their hazards; this
 // file owns the inventory the Task-00 fidelity gate reads.
 
-//jscpd:ignore-start
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import type { Tool } from "@opencode/schema/tool";
 import { NOTICE_CLAIMS } from "../shared/notice-claim.js";
@@ -28,7 +27,6 @@ import { executeTaskNotify } from "./notice.js";
 import { executeTaskList, executeTaskResult, executeTaskStatus } from "./read.js";
 import { executeDynamicTask } from "./spawn.js";
 
-//jscpd:ignore-end
 // One JSON Schema per tool's WHOLE input, not a record of per-argument schemas: v2's
 // `Tool.Info` takes a single `input`. JSON Schema is not a fallback — `ValueSchema`
 // declares it as one of three accepted forms, so writing it directly drops the zod-ish

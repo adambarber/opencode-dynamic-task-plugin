@@ -6,20 +6,14 @@
  * and what an unusable value at one level does to the level below it.
  */
 
-//jscpd:ignore-start
 import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
-import { assertAnswer, assertNothing } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, assertAnswer, assertNothing, bothCaps, describe, it, REPO_ROOT, tmpFilePath, withEnv, withTempFile } from "./support/index.js";
 
-//jscpd:ignore-end
 /** The repository root, for the source-count pin that cannot retype the path. */
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
-import { REPO_ROOT } from "./support/corpus.js";
-import { bothCaps } from "./support/fixtures.js";
-import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 
 /**
  * The safe config defaults, asserted as a set. They are one contract — two

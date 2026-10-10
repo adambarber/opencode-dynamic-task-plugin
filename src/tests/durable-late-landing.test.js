@@ -11,11 +11,8 @@
  * duplicated rather than as a fixture reused.
  */
 
-//jscpd:ignore-start
-import { durable } from "./support/durable-world.js";
-import { assert, it } from "./support/runner.js";
+import { assert, durable, it } from "./support/index.js";
 
-//jscpd:ignore-end
 durable.tightBounds();
 
 it("repairs a late landing rather than leaving the older value durable", async () => {

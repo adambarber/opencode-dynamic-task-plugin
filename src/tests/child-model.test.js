@@ -8,12 +8,9 @@
  * was resolved rather than what was merely requested.
  */
 
-//jscpd:ignore-start
 import { resetAgentCache } from "../../dist/shared/admission.js";
-import { PARENT, setupHarness, sleep } from "./support/harness.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it, PARENT, setupHarness, sleep } from "./support/index.js";
 
-//jscpd:ignore-end
 const GLOBAL = { modelID: "global-model", providerID: "global-provider" };
 const OWN = { modelID: "own-model", providerID: "own-provider" };
 const PARENT_MODEL = { id: "parent-model", providerID: "parent-provider" };

@@ -10,16 +10,13 @@
 // "a retained record is only ever read here, changed there, and published once"
 // checkable by reading one screen.
 
-//jscpd:ignore-start
 import { emitRetainedChange } from "./change-sinks.js";
-//jscpd:ignore-end
 // Types only. The record shapes stay declared in `task-state` because they are
 // the store's own vocabulary and a dozen modules import them by name; importing
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
 import type { FailureClass } from "./failure-class.js";
-import type { SessionId } from "./ids.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind, type SessionId } from "./ledger-change.js";
 import type { TaskStore } from "./store.js";
 import type { SettledTaskState } from "./task-records.js";
 import type { TaskRecord, TaskRecordBase } from "./task-state.js";

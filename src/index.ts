@@ -16,7 +16,6 @@
 // factory function — the v1 shape — is rejected by the loader before any of it
 // runs, so this is where "does the plugin load at all" is decided.
 
-//jscpd:ignore-start
 import type { Context, Plugin } from "@opencode/plugin/promise/plugin";
 import { debugLog } from "./debug-logger.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
@@ -25,13 +24,11 @@ import { initPluginState, overlayHandlers } from "./entry/state.js";
 import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
-import { containFailure, safeLog } from "./shared/notify.js";
-import { LogLevel } from "./shared/notify-log.js";
+import { containFailure, LogLevel, safeLog } from "./shared/notify.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
 import { noteActivity } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
-//jscpd:ignore-end
 async function setup(context: Context): Promise<void> {
   const {directory} = context.location;
   // v2 carries plugin options ON the context (`context.options`), not as a second

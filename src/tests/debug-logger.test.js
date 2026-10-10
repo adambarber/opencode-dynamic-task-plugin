@@ -8,15 +8,12 @@
  * asserting against a value nothing reads.
  */
 
-//jscpd:ignore-start
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { debugLog, getDebugLogPath, LOG_CAP_BYTES, safeDebugPayload } from "../../dist/debug-logger.js";
 import { SESSION_IDLE } from "../../dist/shared/host-events.js";
-import { withEnv } from "./support/harness.js";
-import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
+import { afterEach, assert, beforeEach, describe, it, withEnv } from "./support/index.js";
 
-//jscpd:ignore-end
 describe("safeDebugPayload", () => {
   it("keeps event metadata but removes blocked fields (prompt, fullPrompt)", () => {
     const payload = safeDebugPayload({

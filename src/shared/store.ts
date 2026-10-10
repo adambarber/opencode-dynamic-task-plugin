@@ -14,13 +14,10 @@
  * conventional.
  */
 
-//jscpd:ignore-start
 import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
-import type { SessionId } from "./ids.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { type LedgerChange, LedgerChangeKind, type SessionId } from "./ledger-change.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
-//jscpd:ignore-end
 /**
  * How the store tells its durable writer WHAT changed. Named once because the two
  * observers share a shape and a reason, and a reader who meets the signature

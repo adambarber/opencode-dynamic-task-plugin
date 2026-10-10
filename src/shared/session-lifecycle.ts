@@ -11,12 +11,8 @@
 // Durable state resolves from the host-provided project `directory` — never
 // process CWD, which for tests and multi-project hosts is somebody else's tree.
 
-//jscpd:ignore-start
-import { envelopeShells } from "./host-events.js";
-import { eventWord, isEventRecord } from "./host-shape.js";
-import { type SessionId, sessionIdOf } from "./ids.js";
+import { envelopeShells, isEventRecord, type SessionId, sessionIdOf } from "./host-events.js";
 
-//jscpd:ignore-end
 // Parent session resolution: the SDK context field first, then the
 // historical spellings. Deliberately not `extends ToolContext`: ToolContext.metadata is a method,
 // so this shape is a structural subset. No ambient fallback: a stray env var
@@ -84,12 +80,4 @@ export function validateSessionResult(result: unknown): SessionId | null {
     if (found) return found;
   }
   return null;
-}
-
-// session.deleted may arrive name-only (no status field): a vanished session
-// is a failure, never a clean completion — deletion needs two probes.
-export function eventLooksDeleted(event: unknown): boolean {
-  const type = eventWord(event, "type");
-  const name = eventWord(event, "name");
-  return type.includes("deleted") || name.includes("deleted");
 }

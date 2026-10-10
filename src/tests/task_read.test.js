@@ -8,18 +8,11 @@
  * "a descendant was not acted on" rather than silence.
  */
 
-//jscpd:ignore-start
 import { isSessionMissing } from "../../dist/shared/liveness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
-import { resultForChild, resultForUnreadableChild, setupHarness, sleep, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
-import { eventHarness } from "./support/integration.js";
-import { hostSaid, unclockedSaid } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
-import { withSettledMiddleChild } from "./support/stop-scenarios.js";
+import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, describe, eventHarness, hostSaid, it, resultForChild, resultForUnreadableChild, setupHarness, sleep, stateOf, statusSays, stillActive, textDeclaresKind, unclockedSaid, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree, withSettledMiddleChild } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * A child whose abort transport is down, settled — the arrangement behind both
  * "the gap is recorded" and "success is not annotated by a failed abort".

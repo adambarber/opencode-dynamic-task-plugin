@@ -4,7 +4,6 @@
  * every case running on the real prop builders — and the harness rationale are here.
  */
 
-//jscpd:ignore-start
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,14 +11,8 @@ import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { CEILING_LABEL, displayName, MODEL_LABEL } from "../../dist/tui/agent-editor.js";
 import tuiModule from "../../dist/tui/index.js";
 import { BETWEEN } from "../../dist/tui/theme.js";
-import { REPO_ROOT } from "./support/corpus.js";
-import { bothCaps } from "./support/fixtures.js";
-import {assertEveryRowFits, 
-  BASE, booted, capText, openList, REGISTERED, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
-} from "./support/limits-screen.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, assertEveryRowFits, BASE, booted, bothCaps, capText, describe, it, openList, REGISTERED, REPO_ROOT, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * Every row the list draws, in order, as the SCREEN prints it.
  *

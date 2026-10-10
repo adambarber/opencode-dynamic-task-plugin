@@ -1,9 +1,7 @@
 
-//jscpd:ignore-start
 import type { Agent } from "@opencode/schema/agent";
 import { includesWord, isEventRecord } from "./host-shape.js";
 
-//jscpd:ignore-end
 /**
  * An agent, as the ONE shape this plugin is allowed to hold.
  *
@@ -61,7 +59,7 @@ export const DEFAULT_AGENT_MODE: Agent.Info["mode"] = "all";
  * never re-check for shape. Two spellings of "an agent, unvalidated" meant two
  * places for a field to be forgotten, and the second one was anonymous.
  */
-export function toAgentRecord(raw: unknown): AgentRecord | null {
+function toAgentRecord(raw: unknown): AgentRecord | null {
   if (!isEventRecord(raw)) return null;
   const item = raw;
   const {name} = item;

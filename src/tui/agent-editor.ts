@@ -17,7 +17,6 @@
  * directly, with no stand-in for the host's widgets.
  */
 
-//jscpd:ignore-start
 import { agentKey } from "../shared/agent-key.js";
 import {
   AGENT_CAP_NAMES,
@@ -33,7 +32,6 @@ import {
 import { isModelOverride, type ModelOverride, spellModel } from "../shared/model-choice.js";
 import { type DepthBound, depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
-//jscpd:ignore-end
 /**
  * How each cap reads in a cell.
  *
@@ -88,7 +86,7 @@ export const MODEL_LABEL = "model";
  * nobody can open. `(default)` is what the cap rows use for an absent number, and the
  * two answers are different: one reads a config, the other reads the parent.
  */
-export const FROM_PARENT = "parent's model";
+const FROM_PARENT = "parent's model";
 
 /**
  * What the screen says when the model is the config file's rather than the operator's.
@@ -124,7 +122,7 @@ export const CAP_CHOICES: Record<AgentCapName, readonly number[]> = {
 };
 
 /** The two cap numbers in force for one agent, with the config file's fallbacks applied. */
-export interface ResolvedCaps { maxConcurrent: number; maxDepth: number }
+interface ResolvedCaps { maxConcurrent: number; maxDepth: number }
 
 /**
  * A model, as a cell: the qualified id in force, and whether the operator stated it.

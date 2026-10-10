@@ -11,15 +11,12 @@
  * document the boot will quietly ignore.
  */
 
-//jscpd:ignore-start
 import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
 import { owedIdentity } from "../../../dist/shared/notify-queue.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
-import { setupHarness, sleep, tmpFilePath, tmpProjectDir, withTempFile } from "./harness.js";
-import { events } from "./mock-host.js";
+import { setupHarness, sleep, tmpProjectDir } from "./harness.js";
 import { assert } from "./runner.js";
 
-//jscpd:ignore-end
 /**
  * A harness whose children fail every turn with `detail`, and one such child.
  *
@@ -59,7 +56,7 @@ const HALVES = [
  * writer does, which is why a fixture cannot hand the reader a shape production could
  * never have written and call the reader's rejection a bug.
  */
-export const putLedger = (kv, document) => {
+const putLedger = (kv, document) => {
   for (const [half, keyOf] of HALVES) {
     for (const [childSessionId, entry] of Object.entries(document[half] ?? {})) {
       kv.set(keyOf(childSessionId), JSON.stringify(entry));
@@ -174,10 +171,6 @@ export const harnessThrowingPrompt = (sessionId) => harnessWithFailingPrompt("pr
  * it: it publishes `session.idle` and deletes the key. A case that means "this turn
  * ended" says that instead.
  */
-export const hostStatus = async (h, id, type) => {
-  h.setHostStatus(id, type);
-  await h.fireEvent(type === "idle" ? events.idle(id) : events.working(id));
-};
 
 /**
  * Wait for an observable, and fail rather than hang. The bound is the only clock
@@ -194,12 +187,4 @@ export async function waitFor(predicate, what) {
 }
 
 /** A scratch file in the OS temp dir, cleaned up including the `.tmp` sidecar. */
-export const inTempFile = (fn) => withTempFile(tmpFilePath("dt-integration"), fn);
 
-/**
- * The ledger as the HOST holds it, parsed raw.
- *
- * Not through the reader: a case about what durable state says must not be answered
- * by the reader under test, because the reader is the component that discards.
- */
-export const fileSays = (kv) => ledgerSays(kv);

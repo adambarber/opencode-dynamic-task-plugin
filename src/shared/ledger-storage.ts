@@ -18,7 +18,6 @@
 // that, so a refusal degrades into the contradiction the reader was built to settle
 // rather than into a lost child.
 
-//jscpd:ignore-start
 import { createHash } from "node:crypto";
 import { isEventRecord } from "./host-shape.js";
 import { type SessionId, sessionIdOf } from "./ids.js";
@@ -36,7 +35,6 @@ import {
 } from "./task-ledger.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
-//jscpd:ignore-end
 /**
  * A record, as the host can hold it. The value is JSON TEXT rather than a structured
  * object, and that is not a retreat: `Storage.set` accepts `Schema.Json`, which has
@@ -104,7 +102,7 @@ export const LEDGER_KEYS = {
 };
 
 /** What a boot read: the records, and what it could not say about them. */
-export interface LoadedLedger {
+interface LoadedLedger {
   active: Map<SessionId, ActiveTaskState>;
   /** Host-held values that were not records. Counted, never handed over. */
   dropped: number;

@@ -4,16 +4,14 @@
 // The host keeps plugin records in its own SQLite table and `set` is one atomic
 // upsert per key, so a record no longer needs a read-modify-write to be safe.
 
-//jscpd:ignore-start
 import type { StorageDomain } from "@opencode/plugin/promise/storage";
 import type { StorageScanResult } from "@opencode/plugin/storage";
 import { callHost, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS, WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage } from "./host-shape.js";
 
-//jscpd:ignore-end
 /** Whatever the host will store, derived from the host's own declaration. */
-export type StoredValue = Parameters<StorageDomain["set"]>[1];
+type StoredValue = Parameters<StorageDomain["set"]>[1];
 
 /** The page a host answers with when its scan is finished: no rows, no cursor. */
 const FINISHED_PAGE: StorageScanResult = { entries: [] };
@@ -23,7 +21,7 @@ const FINISHED_PAGE: StorageScanResult = { entries: [] };
 const SCAN_PAGE = 1_000;
 
 /** What a scan found, and whether it reached the end. An unreadable scan is not an empty one. */
-export interface Scan {
+interface Scan {
   entries: ReadonlyMap<string, StoredValue>;
   complete: boolean;
 }

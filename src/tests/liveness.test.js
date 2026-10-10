@@ -18,7 +18,6 @@
  * the previous version of this module read as a finished turn.
  */
 
-//jscpd:ignore-start
 import {
   hostTurnInFlight,
   hostTurnRunning,
@@ -34,12 +33,8 @@ import {
   UntrackedStatus,
 } from "../../dist/shared/liveness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { compareStrings } from "./support/assertions.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { assert, describe, it } from "./support/runner.js";
-import { clientErrorReasons, hostOutcomeWords } from "./support/sdk-contract.js";
+import { assert, clientErrorReasons, compareStrings, describe, hostOutcomeWords, it, opaqueHost } from "./support/index.js";
 
-//jscpd:ignore-end
 // What each verdict the host DECLARES means here. The expectation is the claim; the
 // word list is the SDK's, so a host that adds or renames one lands in this table's
 // absence and the case below fails rather than silently going untested.

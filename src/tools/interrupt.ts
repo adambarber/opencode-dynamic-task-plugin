@@ -14,7 +14,6 @@
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
 
-//jscpd:ignore-start
 import { isEventRecord } from "../shared/host-shape.js";
 import type { SessionId } from "../shared/ids.js";
 import { safeLog } from "../shared/notify.js";
@@ -41,7 +40,6 @@ import { type ResolvedSessionScope } from "./context.js";
 
 
 
-//jscpd:ignore-end
 /**
  * How far a stop reaches. `subtree` is the default and the honest one.
  *
@@ -63,7 +61,7 @@ function isInterruptScope(value: unknown): value is InterruptScope {
 // understand is never defaulted: silently widening a stop kills work the caller
 // did not name, and silently narrowing one leaves a descendant running behind a
 // report that reads as success.
-export function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
+function readInterruptScope(args: unknown): { ok: true; scope: InterruptScope } | Refusal {
   const raw = isEventRecord(args) ? args.scope : undefined;
   if (raw === undefined) return { ok: true, scope: InterruptScope.Subtree };
   if (isInterruptScope(raw)) return { ok: true, scope: raw };

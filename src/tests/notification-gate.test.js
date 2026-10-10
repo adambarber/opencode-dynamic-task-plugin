@@ -7,27 +7,9 @@
  * records say it was told, which is the only failure this plugin must not have.
  */
 
-//jscpd:ignore-start
 import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
-import {
-  afterEach,
-  assert,
-  beforeEach,
-  bounded,
-  deferred,
-  describe,
-  isolatedGate,
-  it,
-  PARENT,
-  recordingClient,
-  refuseDispatch,
-  settled,
-  setupHarness,
-} from "./support/index.js";
-import { opaqueHost } from "./support/opaque-host.js";
-import { missingSessionError } from "./support/sdk-contract.js";
+import { afterEach, assert, beforeEach, bounded, deferred, describe, isolatedGate, it, missingSessionError, opaqueHost, PARENT, recordingClient, refuseDispatch, settled, setupHarness } from "./support/index.js";
 
-//jscpd:ignore-end
 // The host's own not-found name, read from production rather than retyped: a literal
 // here would pass on a day the host renames it and fail on no day at all.
 

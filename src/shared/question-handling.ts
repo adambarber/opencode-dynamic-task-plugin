@@ -15,13 +15,11 @@
 // refusal is still reported to the parent as the child's `needs_input`, so a child
 // blocked this way stays visibly blocked instead of settling as a success.
 
-//jscpd:ignore-start
 import { callHost, hasPermissionReply, type OpaqueHost, type OpenCodeClient, probeHost } from "./client.js";
 import { ExpiryError, WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage, isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
 
-//jscpd:ignore-end
 export interface QuestionResult {
   succeeded: boolean;
   reason?: string;

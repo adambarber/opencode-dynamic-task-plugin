@@ -42,13 +42,11 @@
  * different one.
  */
 
-//jscpd:ignore-start
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-//jscpd:ignore-end
 const REPO = new URL("..", import.meta.url).pathname;
 const SRC = join(REPO, "src");
 const TESTS = join(SRC, "tests");
@@ -116,7 +114,7 @@ export const importLines = (source) => {
  * measures a known run, the other looks for an unknown one, and that is the whole
  * reason the two policies differ.
  */
-export const stream = (path) => {
+const stream = (path) => {
   const source = readFileSync(path, "utf8");
   const imports = importLines(source);
   return tokenize(source, "typescript")
@@ -125,7 +123,7 @@ export const stream = (path) => {
 };
 
 /** Maximal runs shared by two streams, found by window hash then extension. */
-export const sharedRuns = (a, b, window) => {
+const sharedRuns = (a, b, window) => {
   const windowsOf = (s) => {
     const index = new Map();
     for (let i = 0; i + window <= s.length; i++) {

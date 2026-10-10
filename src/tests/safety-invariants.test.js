@@ -20,30 +20,11 @@
  * `support/invariant-gate.js`; this file is the rules themselves.
  */
 
-//jscpd:ignore-start
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { buildToolMap } from "../../dist/tools/index.js";
-import { listProdFiles, listTestSupportFiles, REPO_ROOT, SRC_DIR, TESTS_DIR } from "./support/corpus.js";
-import {
-  DOC_ADMISSION,
-  DOC_FIDELITY,
-  DOC_LIFECYCLE,
-  DOC_NOTIFY,
-  DOC_PERSISTENCE,
-  DOC_QUESTIONS,
-  DOC_SETTLEMENT,
-  DOC_TYPES,
-  gate,
-  PROMPT_CALL,
-  PROSE,
-  rule,
-  scanLines,
-  TIMER_PRIMITIVE,
-} from "./support/invariant-gate.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, DOC_ADMISSION, DOC_FIDELITY, DOC_LIFECYCLE, DOC_NOTIFY, DOC_PERSISTENCE, DOC_QUESTIONS, DOC_SETTLEMENT, DOC_TYPES, describe, gate, it, listProdFiles, listTestSupportFiles, PROMPT_CALL, PROSE, REPO_ROOT, rule, SRC_DIR, scanLines, TESTS_DIR, TIMER_PRIMITIVE } from "./support/index.js";
 
-//jscpd:ignore-end
 // (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle
 // fields (state/abortError/lastAbortAt/lastNotice/lastActivityAt/replacedAt/
 // turnLiveAt) belong to the state machine alone: outside task-state.ts they may

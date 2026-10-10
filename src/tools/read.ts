@@ -2,7 +2,6 @@
 // the server's own liveness read beside them. Pure readers — they mutate
 // nothing except read-path TTL pruning.
 
-//jscpd:ignore-start
 import { debugLog } from "../debug-logger.js";
 import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import { agentOccupancy } from "../shared/caps.js";
@@ -31,7 +30,6 @@ import {
 import { activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks, type TaskRecord, TaskState } from "../shared/task-state.js";
 import { type ResolvedSessionScope, type ToolDeps, unknownSessionResult } from "./context.js";
 
-//jscpd:ignore-end
 // The prologue both readers share: resolve the session, prune, look up. Pruning
 // first is the point — a retained record past its TTL must not answer as though
 // it were live — and both readers depend on that order, so it is one function

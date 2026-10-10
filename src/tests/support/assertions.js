@@ -15,16 +15,14 @@
  * it asserts with nothing.
  */
 
-//jscpd:ignore-start
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 import { assert } from "./runner.js";
 
-//jscpd:ignore-end
 /**
  * The failure line every claim helper here shares: the case's own claim, then
  * what the reader actually answered.
  */
-export const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found)}`;
+const claimFailure = (why, found) => `${why}. got: ${JSON.stringify(found)}`;
 
 /**
  * The ordering every sorted claim shares, once.
@@ -73,7 +71,7 @@ export const assertAnswer = (answer, expected, why) => sameShape(answer, expecte
  * asserting that field alone — so a refusal that came back saying nothing at all
  * read the same as one that explained itself.
  */
-export function verdict(result, expected, why) {
+function verdict(result, expected, why) {
   sameValue(result.ok, expected, why);
   return result;
 }
@@ -103,7 +101,7 @@ export function said(text, needle, why) {
  * answer as the only evidence there is. Composed once so a new kind of claim
  * cannot leave the answer out of its own failure.
  */
-export const proseFailure = (note, answer, extra = "") => `${note ? `${note}. ` : ""}${extra}got: ${answer}`;
+const proseFailure = (note, answer, extra = "") => `${note ? `${note}. ` : ""}${extra}got: ${answer}`;
 
 export function answerSays(answer, reason, note) {
   assert.ok(answer.includes(reason), proseFailure(note, answer));
@@ -146,7 +144,6 @@ export function assertNoticeCount(h, count, why) {
  * read from the same ledger in the same way, because "notified once" and
  * "notified the right thing" are the two halves of a settlement's claim.
  */
-export const noticeSays = (h, index, reason, note) => answerSays(h.noticeBodies()[index], reason, note);
 
 /**
  * What KIND the nth notice declared. The count is `assertNoticeCount`; the kind is
@@ -243,17 +240,4 @@ export function assertPermissionDenied(h) {
   return calls[0];
 }
 
-/**
- * A footer's characters, whichever of the three things a footer can be.
- *
- * The host's row markup puts a footer in a box of its own, and a footer may arrive as a
- * plain string OR as the `StyledText` this repo's cells are built from. Two suites were
- * each reading it, one of them into a helper that would have thrown on the absence a
- * row legitimately has — and the two answers were free to disagree about a footer's
- * width, which is the number the layout budget is measured in.
- */
-export function footerText(footer) {
-  if (footer === undefined || footer === null) return "";
-  if (typeof footer === "string") return footer;
-  return footer.chunks.map((run) => run.text).join("");
-}
+

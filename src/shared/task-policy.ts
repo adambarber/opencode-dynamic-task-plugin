@@ -3,12 +3,10 @@
 // No OpenCode client calls, no task-map mutation, no environment reads.
 // All config is passed in via the DynamicTaskConfig parameter.
 
-//jscpd:ignore-start
 import type { DynamicTaskConfig } from "./config.js";
 import type { AgentRecord } from "./host-shape.js";
 import type { Refusal } from "./verdict.js";
 
-//jscpd:ignore-end
 // ─── PolicyResult ──────────────────────────────────────────────────
 
 export type PolicyResult = { ok: true } | Refusal;

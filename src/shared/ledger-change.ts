@@ -7,12 +7,14 @@
 // merge. A vocabulary that lived in the merge's module would make one of those
 // three edges a cycle.
 
-//jscpd:ignore-start
 import type { SessionId } from "./ids.js";
 import type { PendingDelivery } from "./notify.js";
 import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
-//jscpd:ignore-end
+// The change contract carries its own key: every change is about a session, so
+// a change speaker never needs a second import to name what the change is about.
+export type { SessionId } from "./ids.js";
+
 /**
  * The discriminant of a ledger change, as an enum rather than a union of string
  * literals: the merge is the whole consumer of it, and a switch written against

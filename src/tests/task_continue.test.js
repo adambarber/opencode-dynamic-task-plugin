@@ -8,17 +8,10 @@
  * that never happened, and revives rather than strands.
  */
 
-//jscpd:ignore-start
 import { ENV } from "../../dist/shared/config.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusOmits, statusSays, textDeclaresKind } from "./support/assertions.js";
-import { bounded, dialCount, promptsSaying, promptsToCarrying, promptTextsTo, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, wasAborted, withChild, withEnv, withSettledChild } from "./support/harness.js";
-import { bootOn, childFailingWith, eventHarness } from "./support/integration.js";
-import { deferred, events, promptText } from "./support/mock-host.js";
-import { retainedEntry } from "./support/records.js";
-import { assert, describe, it } from "./support/runner.js";
+import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, bootOn, bounded, childFailingWith, deferred, describe, dialCount, eventHarness, events, it, promptsSaying, promptsToCarrying, promptText, promptTextsTo, retainedEntry, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, stateOf, statusOmits, statusSays, textDeclaresKind, wasAborted, withChild, withEnv, withSettledChild } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * A steer that will lose a race to an interrupt, and the report it hands back.
  * The steps are always the same — boot a child, park the steer's abort at the

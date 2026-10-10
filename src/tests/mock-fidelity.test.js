@@ -1,13 +1,6 @@
 
-//jscpd:ignore-start
-import { listFakeModules, listTestSupportFiles, readSource } from "./support/corpus.js";
-import { ARMERS, FAULTS, unengagedFaults } from "./support/faults.js";
-import { sleep } from "./support/harness.js";
-import { createMockClient, setHostTurn } from "./support/mock-host.js";
-import { assert, describe, it } from "./support/runner.js";
-import { hostOutcomeWords } from "./support/sdk-contract.js";
+import { ARMERS, assert, createMockClient, describe, FAULTS, hostOutcomeWords, it, listFakeModules, listTestSupportFiles, readSource, setHostTurn, sleep, unengagedFaults } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * The fake host is a CLAIM about the host, and nothing used to check it. That is
  * not a theoretical gap: the cases in hostile-host.test.js armed a silent host,

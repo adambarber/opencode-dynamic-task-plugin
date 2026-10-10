@@ -15,18 +15,13 @@
  * fixture that wired it differently would be testing a join this plugin does not have.
  */
 
-//jscpd:ignore-start
 import assert from "node:assert/strict";
 import { FailureClass } from "../../dist/shared/failure-class.js";
 import { LEDGER_PREFIXES } from "../../dist/shared/ledger-storage.js";
 import { TaskState } from "../../dist/shared/task-records.js";
 import { recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
-import { durable } from "./support/durable-world.js";
-import { childParams, defaultConfig } from "./support/fixtures.js";
-import { ledgerSays } from "./support/integration.js";
-import { describe, it } from "./support/runner.js";
+import { childParams, defaultConfig, describe, durable, it, ledgerSays } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * One child registered and settled to `failureClass`, so the durable table holds a
  * recorded result that a restart has to read back. One builder, so a case states its

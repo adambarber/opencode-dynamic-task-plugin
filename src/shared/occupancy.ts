@@ -21,11 +21,9 @@
  * is what keeps the edge from becoming a runtime one.
  */
 
-//jscpd:ignore-start
 import { agentKey } from "./agent-key.js";
 import type { ActiveTaskState } from "./task-state.js";
 
-//jscpd:ignore-end
 /**
  * Running records to running tasks per agent, by folded key.
  *

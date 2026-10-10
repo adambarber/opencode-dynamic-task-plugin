@@ -21,30 +21,8 @@
 // where the bug lives: the previous implementation asked the server to kill the
 // caller's own session, and a test written against `wasAborted` saw a clean 404
 // and called it correct.
-//jscpd:ignore-start
-import {
-  abortRequests,
-  answerOmits,
-  answerSays,
-  assert,
-  assertStopped,
-  bounded,
-  describe,
-  interruptAs,
-  it,
-  sleep,
-  withChild,
-  withLostAbort,
-  withOrphan,
-  withRefusedStop,
-  withSelfSteer,
-  withSelfStop,
-  withSteeredChild,
-  withStoppedChild,
-  withStoppedTreeChild,
-} from "./support/index.js";
+import { abortRequests, answerOmits, answerSays, assert, assertStopped, bounded, describe, interruptAs, it, sleep, withChild, withLostAbort, withOrphan, withRefusedStop, withSelfSteer, withSelfStop, withSteeredChild, withStoppedChild, withStoppedTreeChild } from "./support/index.js";
 
-//jscpd:ignore-end
 // The caller's own session, as the host names it. The harness uses this id for
 // the parent throughout; a suite that invented a parent id would be testing a
 // session the plugin never sees.

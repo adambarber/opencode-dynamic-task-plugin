@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/knip@6.41.0/schema.json",
+  "entry": [
+    "src/plugin-entry.ts",
+    "src/tests/type-invariants.ts",
+    "src/tests/type-invariants-host.ts",
+    "src/tests/**/*.test.js"
+  ],
+  "project": ["src/**/*.ts", "src/**/*.js", "scripts/**/*.mjs"],
+  "paths": {
+    "../../dist/*": ["src/*"],
+    "../../../dist/*": ["src/*"],
+    "../dist/*": ["src/*"]
+  },
+  "ignoreMembers": ["Error"]
+}

@@ -5,19 +5,17 @@
 // directory or a new gate script would leave one suite's corpus quietly empty
 // while it reported green. One walk, one answer to "what counts as a file here".
 
-//jscpd:ignore-start
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compareStrings } from "./assertions.js";
 
-//jscpd:ignore-end
 // The tests directory is this module's PARENT: this file lives in support/, and
 // anchoring on its own location would make SRC_DIR src/tests — a corpus that
 // resolves to something real and is silently the wrong thing.
 export const TESTS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const SRC_DIR = path.join(TESTS_DIR, "..");
-export const SCRIPTS_DIR = path.join(SRC_DIR, "..", "scripts");
+const SCRIPTS_DIR = path.join(SRC_DIR, "..", "scripts");
 /**
  * The repository root — the ONE derivation, for every suite that reads a checked-in file
  * (the `tui.json` manifest, a config file's path spelled once in production).
@@ -93,15 +91,15 @@ export function walkSource(dir, accept, { skipTests = false } = {}) {
   return out.toSorted(compareStrings);
 }
 
-export const isTypeScript = (file) => file.endsWith(".ts");
+const isTypeScript = (file) => file.endsWith(".ts");
 /**
  * The extensions the file-size rule reads, as a list rather than a chain of
  * `endsWith` calls — because a chain is a thing you extend by forgetting. The
  * repo writes `.mjs` for its own gate scripts, and a rule that skipped them was
  * a rule whose own tooling was ungated.
  */
-export const SOURCE_EXTENSIONS = [".ts", ".js", ".mjs"];
-export const isProductionOrSuite = (file) => SOURCE_EXTENSIONS.some((extension) => file.endsWith(extension));
+const SOURCE_EXTENSIONS = [".ts", ".js", ".mjs"];
+const isProductionOrSuite = (file) => SOURCE_EXTENSIONS.some((extension) => file.endsWith(extension));
 
 /** The production sources: the .ts tree, minus the suite. */
 export function listProdFiles() {

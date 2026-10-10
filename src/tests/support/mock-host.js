@@ -20,7 +20,6 @@
  * this module re-exports both so a suite has one import to name the host through.
  */
 
-//jscpd:ignore-start
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
 import { armedFlag, armedHostFault, armFault, armHookFaults, fault, forId, neverAnswers } from "./faults.js";
 import { captureNotice, noticeRecord } from "./mock-events.js";
@@ -30,15 +29,6 @@ import { createMockStorage } from "./mock-storage.js";
 import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
 import { missingSessionError } from "./sdk-contract.js";
 
-//jscpd:ignore-end
-export * from "./mock-events.js";
-export * from "./mock-gates.js";
-export * from "./mock-permission.js";
-// A suite names the host through ONE import, whichever of these subjects it needs.
-// `export *` rather than a named list: these bindings are also used below, and a
-// barrel that both uses and re-exports a name cannot satisfy `prefer-export-from` any
-// other way — the rule wants the re-export to come straight from the source module.
-export * from "./mock-transcript.js";
 
 /**
  * The host's sync session.updated envelope. `status` is the word it reports, or

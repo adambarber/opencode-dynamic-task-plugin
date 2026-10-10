@@ -15,7 +15,6 @@
 // had no owner. It borrows nothing from caps — the key space moved to agent-key.ts so a
 // sibling owner never has to import the other.
 
-//jscpd:ignore-start
 import { debugLog } from "../debug-logger.js";
 import { agentKey } from "./agent-key.js";
 import { callHost, type OpaqueHost } from "./client.js";
@@ -24,7 +23,6 @@ import { errorMessage, isPlainRecord } from "./host-shape.js";
 import { type ModelOverride, parseModelOverride } from "./prompt.js";
 
 
-//jscpd:ignore-end
 /**
  * A model, as the plugin's own vocabulary already spells it: a PAIR, because every
  * consumer of one — routing, the record, the confirmation that renders it — needs the
@@ -44,7 +42,7 @@ export type { ModelOverride } from "./prompt.js";
  * fourth shape for one fact. The qualified TEXT is the document's spelling, and the two
  * functions that cross in and out of it live here rather than at each boundary.
  */
-export interface ModelSetting {
+interface ModelSetting {
   readonly model?: ModelOverride | undefined;
 }
 

@@ -7,11 +7,9 @@
  * overlay, with no degraded signal — the worst kind of empty.
  */
 
-//jscpd:ignore-start
 import { overlayChannel } from "../../dist/tui/overlay-client.js";
-import { assert, describe, it } from "./support/runner.js";
+import { assert, describe, it } from "./support/index.js";
 
-//jscpd:ignore-end
 /** A TUI context in which rpc.subclient records what options the dialog sent. */
 function ctxRecording(record) {
   return {

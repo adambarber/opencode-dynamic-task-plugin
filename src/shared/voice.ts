@@ -8,7 +8,6 @@
 // operator voice). Centralize the primitive "words in tool results", not all
 // strings everywhere.
 
-//jscpd:ignore-start
 import type { DependencyBlock } from "./admission.js";
 import { CREATE_INTENT_PREFIX, type CreateIntent, createIntentKey } from "./create-intent.js";
 import type { WaitRelease } from "./dispatch-wait.js";
@@ -17,7 +16,6 @@ import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
 import { type SettledTaskState, TaskState } from "./task-records.js";
 import { textBlock } from "./text-block.js";
 
-//jscpd:ignore-end
 // ─── Tool descriptions (inventory scanned in tools/index.ts) ─────────────
 
 export const DYNAMIC_TASK_DESCRIPTION =
@@ -379,35 +377,35 @@ export const QUESTION_SETTLED =
 
 // ─── Interrupt ───────────────────────────────────────────────────────────
 
-export function interruptUnknown(sessionId: string): string {
+function interruptUnknown(sessionId: string): string {
   return `ERROR: Session "${sessionId}" not found.`;
 }
 
-export function interruptAbortedUntracked(sessionId: string): string {
+function interruptAbortedUntracked(sessionId: string): string {
   return `Session ${sessionId} aborted (not a tracked task).`;
 }
 
-export function interruptAbortFailedActive(abortMessage: string): string {
+function interruptAbortFailedActive(abortMessage: string): string {
   return `ERROR: abort failed (${abortMessage}) — task left active; its lifecycle events will still settle it. Retry task_interrupt to abort again.`;
 }
 
-export function interruptAbortFailedRetained(abortMessage: string): string {
+function interruptAbortFailedRetained(abortMessage: string): string {
   return `ERROR: abort failed (${abortMessage}) — task retained as interrupted; history preserved. Retry task_interrupt to abort again.`;
 }
 
-export function interruptAbortFailedSettled(abortMessage: string, state: SettledTaskState | "unknown"): string {
+function interruptAbortFailedSettled(abortMessage: string, state: SettledTaskState | "unknown"): string {
   return `ERROR: abort failed (${abortMessage}) — task already settled as ${state}; history preserved.`;
 }
 
-export function interruptServerGone(sessionId: string): string {
+function interruptServerGone(sessionId: string): string {
   return `ERROR: Session "${sessionId}" not found — history preserved.`;
 }
 
-export function interruptAlreadySettled(sessionId: SessionId, state: SettledTaskState): string {
+function interruptAlreadySettled(sessionId: SessionId, state: SettledTaskState): string {
   return `Session ${sessionId} already settled as ${state}; abort sent to the server, history preserved.`;
 }
 
-export function taskInterrupted(sessionId: string): string {
+function taskInterrupted(sessionId: string): string {
   return `Session ${sessionId} interrupted.`;
 }
 

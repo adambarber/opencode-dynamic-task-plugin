@@ -23,23 +23,11 @@
  * the throw escaped and the bound's promise stayed pending forever.
  */
 
-//jscpd:ignore-start
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 
-import {
-  answerMatches,
-  answerOmits,
-  bounded,
-  describe,
-  it,
-  setupHarness,
-  sleep,
-  withChild,
-} from "./support/index.js";
-import { assert } from "./support/runner.js";
+import { answerMatches, answerOmits, assert, bounded, describe, it, setupHarness, sleep, withChild } from "./support/index.js";
 
-//jscpd:ignore-end
 /**
  * The plugin's own deadlines, shortened so a case can outwait them. The bound is
  * real and the timer still fires — only the patience changes — so what a case

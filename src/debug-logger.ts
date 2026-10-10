@@ -1,8 +1,6 @@
-//jscpd:ignore-start
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-//jscpd:ignore-end
 export const DEBUG_DIR = ".dynamic-task-logs";
 // Same scoping rule as the ledger: logs land in the project the host gave
 // the plugin, not the process CWD. initPluginState sets this once per boot;

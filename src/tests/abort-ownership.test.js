@@ -27,7 +27,6 @@ import {
   answerOmits,
   answerSays,
   assert,
-  assertRefusedWithoutReachingTheHost,
   assertStopped,
   bounded,
   describe,
@@ -38,7 +37,9 @@ import {
   withLostAbort,
   withOrphan,
   withRefusedStop,
+  withSelfSteer,
   withSelfStop,
+  withSteeredChild,
   withStoppedChild,
   withStoppedTreeChild,
 } from "./support/index.js";
@@ -145,19 +146,11 @@ describe("abort ownership", () => {
 
   it("a child steering itself is refused rather than killing its own turn", async () => {
     // A steer is abort-then-prompt, so the self case passes every ownership check.
-    const { h, c } = await withChild({ spawn: { description: "self-steerer" } });
-
-    const answer = await c.tool("task_continue")({ prompt: "actually, do this instead" }, { sessionID: c.id });
-
-    assertRefusedWithoutReachingTheHost(h, { answer, note: "a steer is an abort, and this one is its own", targets: c.id });
+    await withSelfSteer({ note: "a steer is an abort, and this one is its own" });
   });
 
   it("a parent steering its child still works", async () => {
-    const { h, c } = await withChild({ spawn: { description: "steerable" } });
-
-    await c.steer("also check the logs");
-
-    assertStopped(h, { targets: c.id, note: "a parent steering its child aborts first" });
+    await withSteeredChild({ note: "a parent steering its child aborts first", prompt: "also check the logs" });
   });
 
   it("a self-steer leaves the child running rather than stranding it", async () => {

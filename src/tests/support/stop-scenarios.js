@@ -10,20 +10,21 @@
  * so it cannot be retyped loosely.
  */
 
-//jscpd:ignore-start
-import { assert } from "./runner.js";
 
+//jscpd:ignore-start
 import {
-  PARENT,
   assertRefusedWithoutReachingTheHost,
   assertStopped,
   interruptAs,
+  PARENT,
   sessionIds,
   setupHarness,
+  steerAs,
   withChild,
   withDispatchTree,
 } from "./harness.js";
 import { withSingleSlot } from "./integration.js";
+import { assert } from "./runner.js";
 
 //jscpd:ignore-end
 /**
@@ -130,4 +131,23 @@ export async function withRefusedSecondSpawn() {
   const before = new Set(sessionIds(h.client));
   const second = await h.trySpawn({ description: "two", prompt: "hi", subagent_type: "explore" });
   return { created: sessionIds(h.client).filter((id) => !before.has(id)), h, second };
+}
+
+/**
+ * A child steering its own session, refused, with no abort asked for — the steer
+ * sibling of `withSelfStop`, and the same claim is what makes it a scenario:
+ * a steer is abort-then-prompt, so the self case passes every ownership check
+ * until the REQUEST is read, and this is where that reading lives.
+ */
+export async function withSelfSteer({ note, prompt = "actually, do this instead" }) {
+  const { h, c } = await withChild();
+  const answer = await steerAs(h, { caller: c.id, prompt, sessionID: c.id });
+  assertRefusedWithoutReachingTheHost(h, { answer, note, targets: c.id });
+}
+
+/** A steer the caller was entitled to make, proven by the abort request it caused. */
+export async function withSteeredChild({ note, prompt }) {
+  const { h, c } = await withChild();
+  await steerAs(h, { prompt, sessionID: c.id });
+  assertStopped(h, { note, targets: c.id });
 }

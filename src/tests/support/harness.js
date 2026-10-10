@@ -15,33 +15,33 @@
  */
 
 //jscpd:ignore-start
-import { afterEach, assert } from "./runner.js";
-import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
+import { appendFileSync, mkdtempSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import nodePath, { join } from "node:path";
+import { DEBUG_DIR } from "../../../dist/debug-logger.js";
+import { resetAgentCache } from "../../../dist/shared/admission.js";
+import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
+import { createStore } from "../../../dist/shared/durable-store.js";
+import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
+import { clearNotifyLedger } from "../../../dist/shared/notify.js";
 import { abortRequests, abortWasRequestedFor } from "./client-queries.js";
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
+import { ledgerOver } from "./durable-world.js";
+import { FAULTS, unengagedFaults, witnesses } from "./faults.js";
 import {
   applyHostStatus,
   createMockClient,
   events,
   setHostTurn,
 } from "./mock-host.js";
-import { textTools, v2Context } from "./v2-context.js";
-import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
-import { DEBUG_DIR } from "../../../dist/debug-logger.js";
-import { clearNotifyLedger } from "../../../dist/shared/notify.js";
-import { createStore } from "../../../dist/shared/durable-store.js";
-import nodePath, { join } from "node:path";
-import { ledgerOver } from "./durable-world.js";
 import { opaqueHost } from "./opaque-host.js";
-import { resetAgentCache } from "../../../dist/shared/admission.js";
-import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
-import { tmpdir } from "node:os";
+import { afterEach, assert } from "./runner.js";
+import { textTools, v2Context } from "./v2-context.js";
 
 //jscpd:ignore-end
 export {
+  abortedSessions,
   abortRequests,
   abortWasRequestedFor,
-  abortedSessions,
   confirmationFor,
   declareNeedsInput,
   dialCount,
@@ -57,9 +57,9 @@ export {
   sessionIds,
   wasAborted,
 } from "./client-queries.js";
+
 import { sleep } from "./timing.js";
 
-export { drain, settled, sleep } from "./timing.js";
 export {
   resultForChild,
   resultForUnreadableChild,
@@ -71,6 +71,7 @@ export {
   withSettledChild,
   withSettledDispatchTree,
 } from "./child-fixtures.js";
+export { drain, settled, sleep } from "./timing.js";
 export { textTools, v2Context } from "./v2-context.js";
 
 
@@ -224,6 +225,10 @@ export function renderedAgeSeconds(detail, label) {
  */
 export const interruptAs = (h, sessionId, caller = PARENT) =>
   h.tool.task_interrupt.execute({ session_id: sessionId }, { sessionID: caller });
+
+/** The steer sibling of `interruptAs` — a follow-up aimed at `sessionID` from `caller`. */
+export const steerAs = (h, { caller = PARENT, prompt, sessionID }) =>
+  h.tool.task_continue.execute({ prompt, session_id: sessionID }, { sessionID: caller });
 
 /**
  * That a stop was REFUSED and never reached the host — the one claim an
@@ -679,5 +684,6 @@ export const darkTheme = () => ({
  * number rather than as an error, which is the worst way to fail.
  */
 export const capCell = (value, stated = true, limit = null) => ({ bounded: limit, stated, value });
+
 import { RGBA } from "@opentui/core";
 

@@ -1,10 +1,11 @@
+
 //jscpd:ignore-start
-import { PARENT, setupHarness, tmpProjectDir, withEnv } from "./harness.js";
-import { events, promptText, unclockedSaid } from "./mock-host.js";
-import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
+import { readFileSync } from "node:fs";
 import { getDebugLogPath } from "../../../dist/debug-logger.js";
 import { isParentNotification } from "../../../dist/shared/notification-text.js";
-import { readFileSync } from "node:fs";
+import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
+import { PARENT, setupHarness, tmpProjectDir, withEnv } from "./harness.js";
+import { events, promptText, unclockedSaid } from "./mock-host.js";
 
 
 //jscpd:ignore-end

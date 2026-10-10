@@ -18,14 +18,13 @@
  */
 //jscpd:ignore-start
 import assert from "node:assert/strict";
+import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
+import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
+import { agentDialogFrom, CAP_LABEL, displayName, MODEL_LABEL } from "../../../dist/tui/agent-editor.js";
+import {DIALOG_WIDTH, dialogRowText, fitsItsDialog} from "../../../dist/tui/geometry.js";
 import tuiModule from "../../../dist/tui/index.js";
 import { BACK_LABEL, limitsListProps } from "../../../dist/tui/props.js";
-import { CAP_LABEL, agentDialogFrom, displayName } from "../../../dist/tui/agent-editor.js";
-import {DIALOG_WIDTH, dialogRowText, fitsItsDialog} from "../../../dist/tui/geometry.js";
 import { withTempDir, writeProjectConfig } from "./fixtures.js";
-import { AGENT_CAP_NAMES } from "../../../dist/shared/caps.js";
-import { MODEL_LABEL } from "../../../dist/tui/agent-editor.js";
-import { normalizeDynamicTaskConfig } from "../../../dist/shared/config.js";
 import { overlayChannel } from "./overlay-channel.js";
 
 //jscpd:ignore-end

@@ -12,7 +12,7 @@
 //jscpd:ignore-start
 import { type AgentOverlay, sameOverlay } from "./caps.js";
 import { isPlainRecord } from "./host-shape.js";
-import { type One, type StateFacade, recordKey } from "./state-facade.js";
+import { type One, recordKey, type StateFacade } from "./state-facade.js";
 
 //jscpd:ignore-end
 /** One place to change it, so the prefix and the keys written under it cannot disagree. */

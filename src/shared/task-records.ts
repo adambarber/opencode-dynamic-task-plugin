@@ -13,10 +13,10 @@
 // half, and the union of the two belongs to the machine that consumes both.
 
 //jscpd:ignore-start
-import type { ModelOverride } from "./prompt.js";
-import type { NoticeClaim } from "./notice-claim.js";
-import type { ParentSession } from "./session-lifecycle.js";
 import type { SessionId } from "./ids.js";
+import type { NoticeClaim } from "./notice-claim.js";
+import type { ModelOverride } from "./prompt.js";
+import type { ParentSession } from "./session-lifecycle.js";
 
 //jscpd:ignore-end
 /**

@@ -19,11 +19,12 @@
 // rather than into a lost child.
 
 //jscpd:ignore-start
-import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import { type PendingDelivery, owedIdentity } from "./notify.js";
-import type { Read, StateFacade } from "./state-facade.js";
+import { createHash } from "node:crypto";
+import { isEventRecord } from "./host-shape.js";
 import { type SessionId, sessionIdOf } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { owedIdentity, type PendingDelivery } from "./notify.js";
+import type { Read, StateFacade } from "./state-facade.js";
 import {
   activeFrom,
   dropSettledShadows,
@@ -33,8 +34,7 @@ import {
   isRetainedEntry,
   retainedFrom,
 } from "./task-ledger.js";
-import { createHash } from "node:crypto";
-import { isEventRecord } from "./host-shape.js";
+import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
 //jscpd:ignore-end
 /**

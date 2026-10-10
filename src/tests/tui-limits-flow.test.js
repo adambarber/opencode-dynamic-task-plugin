@@ -3,14 +3,15 @@
  * what the operator is told. The design thesis and harness rationale are in
  * `tui-limits-command.test.js`.
  */
+
 //jscpd:ignore-start
-import {
-  BASE, assertCapsDrawn, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
-} from "./support/limits-screen.js";
+import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 import { CAP_LABEL } from "../../dist/tui/agent-editor.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
+import {assertCapsDrawn, 
+  BASE, backToCaps, capRow, capText, choose, chooseValue, clearRow, havingWritten, readOverlay, rowText, top, valueRow, withCapsOpen, withOpen, withPickerOpen,
+} from "./support/limits-screen.js";
 import { assert, describe, it } from "./support/runner.js";
-import { AGENT_CAP_NAMES } from "../../dist/shared/caps.js";
 
 //jscpd:ignore-end
 describe("the flow, end to end on disk", () => {

@@ -11,6 +11,7 @@
 //jscpd:ignore-start
 import { SESSION_DELETED, SESSION_ERROR, SESSION_EXECUTION_INTERRUPTED, SESSION_EXECUTION_STARTED, SESSION_EXECUTION_SUCCEEDED, SESSION_IDLE } from "./mock-events.js";
 import { hostOutcomeWords } from "./sdk-contract.js";
+
 //jscpd:ignore-end
 // One builder for every assistant message the fake writes, in the host's
 // own v2 spelling: flat `type`, flat clock, `content` members.

@@ -21,7 +21,10 @@
  */
 
 //jscpd:ignore-start
+import { readFileSync } from "node:fs";
 import path from "node:path";
+import { buildToolMap } from "../../dist/tools/index.js";
+import { listProdFiles, listTestSupportFiles, REPO_ROOT, SRC_DIR, TESTS_DIR } from "./support/corpus.js";
 import {
   DOC_ADMISSION,
   DOC_FIDELITY,
@@ -31,17 +34,14 @@ import {
   DOC_QUESTIONS,
   DOC_SETTLEMENT,
   DOC_TYPES,
+  gate,
   PROMPT_CALL,
   PROSE,
-  TIMER_PRIMITIVE,
-  gate,
   rule,
   scanLines,
+  TIMER_PRIMITIVE,
 } from "./support/invariant-gate.js";
-import { REPO_ROOT, SRC_DIR, TESTS_DIR, listProdFiles, listTestSupportFiles } from "./support/corpus.js";
 import { assert, describe, it } from "./support/runner.js";
-import { buildToolMap } from "../../dist/tools/index.js";
-import { readFileSync } from "node:fs";
 
 //jscpd:ignore-end
 // (?!=) excludes == / === reads: only real assignments are bypasses. Lifecycle

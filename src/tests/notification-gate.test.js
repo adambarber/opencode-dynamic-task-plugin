@@ -8,8 +8,8 @@
  */
 
 //jscpd:ignore-start
+import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
 import {
-  PARENT,
   afterEach,
   assert,
   beforeEach,
@@ -18,14 +18,15 @@ import {
   describe,
   isolatedGate,
   it,
+  PARENT,
   recordingClient,
   refuseDispatch,
   settled,
   setupHarness,
 } from "./support/index.js";
-import { getLatestNotification, getPendingDeliveries, notifyParent } from "../../dist/shared/notify.js";
-import { missingSessionError } from "./support/sdk-contract.js";
 import { opaqueHost } from "./support/opaque-host.js";
+import { missingSessionError } from "./support/sdk-contract.js";
+
 //jscpd:ignore-end
 // The host's own not-found name, read from production rather than retyped: a literal
 // here would pass on a day the host renames it and fail on no day at all.

@@ -9,13 +9,13 @@
 // From support/corpus.js rather than repeated.
 
 //jscpd:ignore-start
-import path from "node:path";
-import { REPO_ROOT, lineCount, listSourceFiles, listTestFiles, listTestSupportFiles, readSource, siteOf } from "./support/corpus.js";
-import { assert, describe, it } from "./support/runner.js";
-import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import path from "node:path";
+import { longestSharedRun, readMinTokens, sharedRunBetween, stream, tokensInRange } from "../../scripts/measure.mjs";
+import { lineCount, listSourceFiles, listTestFiles, listTestSupportFiles, REPO_ROOT, readSource, siteOf } from "./support/corpus.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 // --- the duplicate-detection gate ------------------------------------------------
@@ -430,6 +430,7 @@ const DOCUMENTED_WAIVERS = [
   "eslint/no-ternary",
   "eslint/one-var",
   "no-await-in-loop",
+  "sort-imports",
   "typescript/no-meaningless-void-operator",
   "unicorn/no-null",
   "unicorn/numeric-separators-style",

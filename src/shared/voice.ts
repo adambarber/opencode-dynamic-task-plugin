@@ -9,12 +9,12 @@
 // strings everywhere.
 
 //jscpd:ignore-start
-import { CREATE_INTENT_PREFIX, type CreateIntent, createIntentKey } from "./create-intent.js";
 import type { DependencyBlock } from "./admission.js";
+import { CREATE_INTENT_PREFIX, type CreateIntent, createIntentKey } from "./create-intent.js";
 import type { WaitRelease } from "./dispatch-wait.js";
-import { type SettledTaskState, TaskState } from "./task-records.js";
 import type { SessionId } from "./ids.js";
 import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
+import { type SettledTaskState, TaskState } from "./task-records.js";
 import { textBlock } from "./text-block.js";
 
 //jscpd:ignore-end

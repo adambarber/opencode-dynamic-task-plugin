@@ -1,7 +1,8 @@
-//jscpd:ignore-start
-import { assert } from "./runner.js";
 
+
+//jscpd:ignore-start
 import { createRpc } from "./mock-rpc.js";
+import { assert } from "./runner.js";
 import { sleep } from "./timing.js";
 
 //jscpd:ignore-end

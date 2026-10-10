@@ -5,9 +5,10 @@
  * production and the tests both need those four imports, and inlining it in the
  * suite made the jscpd gate report its own import block as a clone.
  */
+
 //jscpd:ignore-start
-import { TESTS_DIR, listTestFiles, readProductionSource, readSource } from "./corpus.js";
 import path from "node:path";
+import { listTestFiles, readProductionSource, readSource, TESTS_DIR } from "./corpus.js";
 
 //jscpd:ignore-end
 /**

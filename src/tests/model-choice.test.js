@@ -10,8 +10,9 @@
  * That is `child-model.test.js`, which runs a whole dispatch and asserts what the host
  * was asked to switch the child's session to.
  */
+
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
+import { agentKey } from "../../dist/shared/agent-key.js";
 import {
   isModelOverride,
   modelOverrideOf,
@@ -20,7 +21,7 @@ import {
   resolveChildModel,
   spellModel,
 } from "../../dist/shared/model-choice.js";
-import { agentKey } from "../../dist/shared/agent-key.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 // The dispatching parent's own model, as the host reads it: a session row.

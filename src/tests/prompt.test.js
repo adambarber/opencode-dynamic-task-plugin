@@ -9,10 +9,10 @@
 
 //jscpd:ignore-start
 import { ASSISTANT_ROLE, classifyPromptError, describeModelShapeError, extractTextFromParts, getLatestAssistantText, hydrateLatestOutcome, invokePrompt, isMessage, isTextPart, messageErrorDetail, messageRoleOf, parseModelOverride, touchedFiles } from "../../dist/shared/prompt.js";
-import { assert, describe, it } from "./support/runner.js";
 import { assertAbsent, assertEmpty, assertNothing } from "./support/assertions.js";
-import { opaqueHost } from "./support/opaque-host.js";
 import { settled } from "./support/harness.js";
+import { opaqueHost } from "./support/opaque-host.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 // The smallest shapes the reader tests are about, stated once: a text part, and

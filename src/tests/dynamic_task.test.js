@@ -8,18 +8,18 @@
 
 //jscpd:ignore-start
 import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
-import { PARENT, abortWasRequestedFor, confirmationFor, promptTextsTo, promptsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
+import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
 import {
   announcedAbout,
   failEdge,
   refusedOnOneEdge,
   refusedOverEdges,
 } from "./support/dispatch-wait-scenario.js";
-import { answerOmits, answerSays, assertNoticeCount, statusSays } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
+import { abortWasRequestedFor, confirmationFor, PARENT, promptsTo, promptTextsTo, sessionBody, sessionCount, setupHarness, sleep, wasAborted, withChild } from "./support/harness.js";
 import { dispatchArgs, eventHarness, harnessThrowingPrompt, withSingleSlot } from "./support/integration.js";
-import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { events } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
 import { withRefusedSecondSpawn } from "./support/stop-scenarios.js";
 
 //jscpd:ignore-end

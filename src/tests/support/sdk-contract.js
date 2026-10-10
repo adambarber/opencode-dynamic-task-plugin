@@ -12,12 +12,12 @@
 // code compiles against, so a host that adds or renames a word fails these tests
 // loudly and immediately, and a fake that invents one cannot pass the gate at all.
 
-//jscpd:ignore-start
-import path from "node:path";
-import { REPO_ROOT } from "./corpus.js";
-import { SESSION_NOT_FOUND_TAG } from "../../../dist/shared/liveness.js";
 
+//jscpd:ignore-start
 import { readFileSync } from "node:fs";
+import path from "node:path";
+import { SESSION_NOT_FOUND_TAG } from "../../../dist/shared/liveness.js";
+import { REPO_ROOT } from "./corpus.js";
 
 //jscpd:ignore-end
 const SCHEMA_ROOT = path.join(REPO_ROOT, "node_modules", "@opencode", "schema", "dist");

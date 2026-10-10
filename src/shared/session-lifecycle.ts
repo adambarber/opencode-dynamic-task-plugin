@@ -12,9 +12,9 @@
 // process CWD, which for tests and multi-project hosts is somebody else's tree.
 
 //jscpd:ignore-start
-import { type SessionId, sessionIdOf } from "./ids.js";
 import { envelopeShells } from "./host-events.js";
 import { eventWord, isEventRecord } from "./host-shape.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
 
 //jscpd:ignore-end
 // Parent session resolution: the SDK context field first, then the

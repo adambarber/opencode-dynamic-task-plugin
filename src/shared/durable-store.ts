@@ -5,10 +5,10 @@
 // upsert per key, so a record no longer needs a read-modify-write to be safe.
 
 //jscpd:ignore-start
-import { type OpaqueHost, callHost } from "./client.js";
-import { READ_BOUNDS, WRITE_BOUNDS } from "./execution-bound.js";
 import type { StorageDomain } from "@opencode/plugin/promise/storage";
 import type { StorageScanResult } from "@opencode/plugin/storage";
+import { callHost, type OpaqueHost } from "./client.js";
+import { READ_BOUNDS, WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage } from "./host-shape.js";
 
 //jscpd:ignore-end

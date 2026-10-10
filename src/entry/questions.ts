@@ -6,14 +6,15 @@
 // `permission.asked`, so a correlation map across events is not needed and could
 // only mis-attribute a reused id. A map this gate used to keep existed to bridge an
 // `asked` event that carried no session id — a shape the host has never published.
+
 //jscpd:ignore-start
-import { NoticeClaim, annotateNotice } from "../shared/notice-claim.js";
-import type { OpaqueHost } from "../shared/client.js";
-import { type TaskIdentity, TaskState, type TaskStore, findTask } from "../shared/task-state.js";
 import { debugLog } from "../debug-logger.js";
-import { decideAsk, denyAsk } from "../shared/question-handling.js";
+import type { OpaqueHost } from "../shared/client.js";
 import { isHostAsked, readHostAsk } from "../shared/host-events.js";
 import { sessionIdOf } from "../shared/ids.js";
+import { annotateNotice, NoticeClaim } from "../shared/notice-claim.js";
+import { decideAsk, denyAsk } from "../shared/question-handling.js";
+import { findTask, type TaskIdentity, TaskState, type TaskStore } from "../shared/task-state.js";
 
 //jscpd:ignore-end
 // One reporting tail for every denial: a denied ask is logged by outcome and the tag

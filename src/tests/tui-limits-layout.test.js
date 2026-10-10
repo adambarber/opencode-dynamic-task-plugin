@@ -2,15 +2,16 @@
  * The row against the host's own geometry: how many columns a dialog really offers, and
  * what a row does when its name and its caps cannot both fit. Measured, not modelled.
  */
+
 //jscpd:ignore-start
-import {
-  BOUND_DEPTH, LONG_AGENT_NAME, REGISTERED, agentEntry, assertEveryRowFits, dialogRowText, row, rowText, withList,
-} from "./support/limits-screen.js";
-import { BETWEEN, plainSummary } from "../../dist/tui/theme.js";
-import { DIALOG_WIDTH, fitsItsDialog } from "../../dist/tui/geometry.js";
-import { assert, describe, it } from "./support/runner.js";
-import { bothCaps } from "./support/fixtures.js";
 import { displayName } from "../../dist/tui/agent-editor.js";
+import { DIALOG_WIDTH, fitsItsDialog } from "../../dist/tui/geometry.js";
+import { BETWEEN, plainSummary } from "../../dist/tui/theme.js";
+import { bothCaps } from "./support/fixtures.js";
+import {agentEntry, assertEveryRowFits, 
+  BOUND_DEPTH, dialogRowText, LONG_AGENT_NAME, REGISTERED, row, rowText, withList,
+} from "./support/limits-screen.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("the host's own layout, as measured rather than modelled", () => {

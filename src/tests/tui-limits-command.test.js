@@ -3,20 +3,21 @@
  * palette, and the list the operator came with. The design thesis — no invented host API,
  * every case running on the real prop builders — and the harness rationale are here.
  */
+
 //jscpd:ignore-start
-import {
-  BASE, REGISTERED, assertEveryRowFits, booted, capText, openList, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
-} from "./support/limits-screen.js";
-import { CEILING_LABEL, MODEL_LABEL, displayName } from "../../dist/tui/agent-editor.js";
-import { assert, describe, it } from "./support/runner.js";
-import { BETWEEN } from "../../dist/tui/theme.js";
-import { REPO_ROOT } from "./support/corpus.js";
-import { bothCaps } from "./support/fixtures.js";
-import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { overlayKey } from "../../dist/shared/overlay-store.js";
+import { CEILING_LABEL, displayName, MODEL_LABEL } from "../../dist/tui/agent-editor.js";
 import tuiModule from "../../dist/tui/index.js";
+import { BETWEEN } from "../../dist/tui/theme.js";
+import { REPO_ROOT } from "./support/corpus.js";
+import { bothCaps } from "./support/fixtures.js";
+import {assertEveryRowFits, 
+  BASE, booted, capText, openList, REGISTERED, row, rowText, titlesOf, top, withBooted, withCapsOpen, withConfigScreen, withList, withPickerOpen, withProject,
+} from "./support/limits-screen.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

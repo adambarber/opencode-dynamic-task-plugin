@@ -17,14 +17,14 @@
 
 //jscpd:ignore-start
 import assert from "node:assert/strict";
-import { childParams, defaultConfig } from "./support/fixtures.js";
-import { describe, it } from "./support/runner.js";
-import { recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { FailureClass } from "../../dist/shared/failure-class.js";
 import { LEDGER_PREFIXES } from "../../dist/shared/ledger-storage.js";
 import { TaskState } from "../../dist/shared/task-records.js";
+import { recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
 import { durable } from "./support/durable-world.js";
+import { childParams, defaultConfig } from "./support/fixtures.js";
 import { ledgerSays } from "./support/integration.js";
+import { describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

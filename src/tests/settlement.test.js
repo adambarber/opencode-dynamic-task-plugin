@@ -8,11 +8,11 @@
  */
 
 //jscpd:ignore-start
-import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
 import { answerMatches, answerSays, assertNoticeCount, textDeclaresKind } from "./support/assertions.js";
+import { abortedSessions, notifiedNotes, sessionIds, setupHarness, sleep, wasAborted, withChild, withSettledChild } from "./support/harness.js";
+import { dispatchArgs, eventHarness, harnessRejectingPrompt, withSingleSlot } from "./support/integration.js";
 import { deferred, events } from "./support/mock-host.js";
 import { assert, describe, it } from "./support/runner.js";
-import { dispatchArgs, eventHarness, harnessRejectingPrompt, withSingleSlot } from "./support/integration.js";
 
 //jscpd:ignore-end
 describe("settlement: the notification layer owns outcomes", () => {

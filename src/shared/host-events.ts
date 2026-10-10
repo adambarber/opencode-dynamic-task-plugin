@@ -14,8 +14,8 @@
 
 //jscpd:ignore-start
 import type { OpenCodeEvent } from "@opencode/client/promise";
-import { type SessionId, sessionIdOf } from "./ids.js";
 import { eventField, eventString, eventWord, isEventRecord } from "./host-shape.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
 
 //jscpd:ignore-end
 /** The host's event union — the source of truth for every name below. */

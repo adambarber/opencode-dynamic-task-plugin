@@ -13,7 +13,23 @@
 // Then each target is aborted in turn, and each reports its own outcome: the
 // abort may never have reached the server, in which case that task alone is
 // withdrawn back to active and its genuine terminal event still settles it.
+
 //jscpd:ignore-start
+import { isEventRecord } from "../shared/host-shape.js";
+import type { SessionId } from "../shared/ids.js";
+import { safeLog } from "../shared/notify.js";
+import { LogLevel } from "../shared/notify-log.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
+import {
+  isRunning,
+  noteAbortLanded,
+  recordAbortError,
+  retainedFor,
+  TaskState,
+  transitionState,
+  withdrawInterruptClaim,
+} from "../shared/task-state.js";
+import type { Refusal } from "../shared/verdict.js";
 import {
   type InterruptOutcome,
   interruptReport,
@@ -21,23 +37,7 @@ import {
   interruptStopRefused,
   interruptSubtreeReport,
 } from "../shared/voice.js";
-import type { Refusal } from "../shared/verdict.js";
 import { type ResolvedSessionScope } from "./context.js";
-import {
-  TaskState,
-  isRunning,
-  noteAbortLanded,
-  recordAbortError,
-  retainedFor,
-  transitionState,
-  withdrawInterruptClaim,
-} from "../shared/task-state.js";
-import { abortSession, stopPlan } from "../shared/session-abort.js";
-import { isEventRecord } from "../shared/host-shape.js";
-import { safeLog } from "../shared/notify.js";
-import { LogLevel } from "../shared/notify-log.js";
-
-import type { SessionId } from "../shared/ids.js";
 
 
 

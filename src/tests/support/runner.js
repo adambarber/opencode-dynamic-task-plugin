@@ -16,5 +16,5 @@
  * `4` and `"4"` to the same pass, and every suite here wants that to be a failure.
  */
 
-export { describe, it, beforeEach, afterEach } from "node:test";
 export { default as assert } from "node:assert/strict";
+export { afterEach, beforeEach, describe, it } from "node:test";

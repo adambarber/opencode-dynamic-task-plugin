@@ -12,8 +12,8 @@
  */
 
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
 import { durable } from "./support/durable-world.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("durable store", () => {

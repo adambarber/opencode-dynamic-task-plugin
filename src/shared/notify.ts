@@ -11,20 +11,13 @@
 // "never" are the same call from inside the gate.
 
 //jscpd:ignore-start
-import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
-import {
-  type DeliveryOutcome,
-  type NotificationRecord,
-  clearDeliveryLedger,
-  notifyRecord,
-  recordNotification,
-} from "./notify-records.js";
-import { LogLevel, safeLog } from "./notify-log.js";
-import { NotifyKind } from "./notification-text.js";
-import { type OpaqueHost, callHost } from "./client.js";
-import type { SessionId } from "./ids.js";
-import { type SettlementVerdict, TaskState } from "./task-state.js";
+import { callHost, type OpaqueHost } from "./client.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
+import type { SessionId } from "./ids.js";
+import { hostTurnRunning, readLiveness } from "./liveness.js";
+import { NotifyKind } from "./notification-text.js";
+import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
+import { LogLevel, safeLog } from "./notify-log.js";
 import {
   announceDropped,
   dropPending,
@@ -32,21 +25,29 @@ import {
   owedDelivery,
   queuePending,
 } from "./notify-queue.js";
-import { hostTurnRunning, readLiveness } from "./liveness.js";
+import {
+  clearDeliveryLedger,
+  type DeliveryOutcome,
+  type NotificationRecord,
+  notifyRecord,
+  recordNotification,
+} from "./notify-records.js";
 import { isParentless } from "./session-lifecycle.js";
+import { type SettlementVerdict, TaskState } from "./task-state.js";
+
 //jscpd:ignore-end
-export { announceDropped, dropPending, getPendingDeliveries, owedDelivery, queuePending } from "./notify-queue.js";
-export { configurePendingPersistence, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
-export { clearDeliveryLedger, notifyRecord, recordNotification } from "./notify-records.js";
-export { getLatestNotification, getTurnNotification } from "./notify-records.js";
+export { NOTIFY_KINDS } from "./notification-text.js";
 export { currentGateEpoch, gateLedger } from "./notify-gate.js";
 export { containFailure, safeLog } from "./notify-log.js";
-export { NOTIFY_KINDS } from "./notification-text.js";
+export { announceDropped, configurePendingPersistence, dropPending, getPendingDeliveries, owedDelivery, owedIdentity, queuePending, restorePendingDeliveries } from "./notify-queue.js";
 export type { DeliveryOutcome, NotificationRecord } from "./notify-records.js";
+export { clearDeliveryLedger, getLatestNotification, getTurnNotification, notifyRecord, recordNotification } from "./notify-records.js";
+
 import type { DeliverableDebt } from "./notify-queue.js";
-export type { DeliveryTarget, PendingDelivery } from "./notify-queue.js";
+
 export type { GateLedger } from "./notify-gate.js";
 export { LogLevel } from "./notify-log.js";
+export type { DeliveryTarget, PendingDelivery } from "./notify-queue.js";
 
 
 /**

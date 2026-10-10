@@ -12,9 +12,9 @@
 
 //jscpd:ignore-start
 import type { DependencyBlock } from "./admission.js";
-import type { ParentSession } from "./session-lifecycle.js";
-import type { SessionId } from "./ids.js";
 import { evictOldest } from "./bounded-map.js";
+import type { SessionId } from "./ids.js";
+import type { ParentSession } from "./session-lifecycle.js";
 
 //jscpd:ignore-end
 /**

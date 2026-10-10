@@ -14,9 +14,10 @@
  * moment a caller can pass it, the pin and the thing it pins stop being one
  * measurement.
  */
+
 //jscpd:ignore-start
-import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 //jscpd:ignore-end
 const require = createRequire(import.meta.url);

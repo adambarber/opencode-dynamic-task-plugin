@@ -15,12 +15,12 @@
 // hardcoded event name is asserting against a name it invented: rename the host
 // event and the case keeps firing something the plugin correctly ignores.
 //jscpd:ignore-start
-import { LifecycleStatus, SESSION_DELETED, SESSION_ERROR, SESSION_IDLE, classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isLifecycleStatus, isTerminalSessionEvent, normalizeStatus } from "../../dist/shared/host-events.js";
-import { assert, describe, it } from "./support/runner.js";
-import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
+import { classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent, hostPayload, isLifecycleStatus, isTerminalSessionEvent, LifecycleStatus, normalizeStatus, SESSION_DELETED, SESSION_ERROR, SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { resolveParentSessionId, validateSessionResult } from "../../dist/shared/session-lifecycle.js";
-import { sessionUpdatedEnvelope } from "./support/mock-host.js";
+import { assertAbsent, assertEmpty, assertIs, assertNothing } from "./support/assertions.js";
 import { withEnv } from "./support/harness.js";
+import { sessionUpdatedEnvelope } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("validateSessionResult", () => {

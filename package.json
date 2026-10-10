@@ -10,7 +10,7 @@
     "test:coverage": "npm run build && npm run lint && npm run test:duplication && c8 --check-coverage --lines 90 --branches 80 --functions 90 node --test src/tests/*.test.js",
     "test:duplication": "node scripts/duplicate-gate.mjs",
     "test:cross-boundary": "node scripts/cross-boundary-clones.mjs",
-    "lint": "node scripts/lint-budget.mjs",
+    "lint": "node scripts/lint-budget.mjs && biome check",
     "watch": "tsc --watch",
     "lint:report": "oxlint --type-aware",
     "lint:budget": "node scripts/lint-budget.mjs --write"
@@ -24,6 +24,7 @@
   "type": "module",
   "license": "MIT",
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@jscpd/tokenizer": "4.2.6",
     "@opencode-ai/plugin": "1.18.34",
     "@opencode-ai/sdk": "1.18.34",

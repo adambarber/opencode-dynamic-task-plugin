@@ -6,9 +6,10 @@
  * seen live: the dialog rendered a clean ceiling from a different project's empty
  * overlay, with no degraded signal — the worst kind of empty.
  */
+
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
 import { overlayChannel } from "../../dist/tui/overlay-client.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /** A TUI context in which rpc.subclient records what options the dialog sent. */

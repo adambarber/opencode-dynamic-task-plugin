@@ -9,12 +9,12 @@
  */
 
 //jscpd:ignore-start
-import { LOG_CAP_BYTES, debugLog, getDebugLogPath, safeDebugPayload } from "../../dist/debug-logger.js";
-import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { dirname } from "node:path";
+import { debugLog, getDebugLogPath, LOG_CAP_BYTES, safeDebugPayload } from "../../dist/debug-logger.js";
+import { SESSION_IDLE } from "../../dist/shared/host-events.js";
 import { withEnv } from "./support/harness.js";
+import { afterEach, assert, beforeEach, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("safeDebugPayload", () => {

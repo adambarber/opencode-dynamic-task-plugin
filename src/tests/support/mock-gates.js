@@ -9,8 +9,8 @@
  */
 
 //jscpd:ignore-start
-import { hostSaid, hostSaying } from "./mock-transcript.js";
 import { armFault } from "./faults.js";
+import { hostSaid, hostSaying } from "./mock-transcript.js";
 import { missingSessionError } from "./sdk-contract.js";
 
 //jscpd:ignore-end

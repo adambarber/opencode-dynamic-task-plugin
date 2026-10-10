@@ -14,18 +14,15 @@
  * invisible as a bug until there was a way to set it, and then setting an agent's cap
  * silently deleted it under a success toast.
  */
+
 //jscpd:ignore-start
-import { describe, it } from "./support/runner.js";
 import { CAP_CHOICES, CEILING_LABEL, displayName } from "../../dist/tui/agent-editor.js";
 import { BACK_LABEL, ceilingPickerProps } from "../../dist/tui/props.js";
 import { FROM_CONFIG } from "../../dist/tui/theme.js";
-import { assert } from "./support/runner.js";
-import { capRow, readOverlay } from "./support/limits-screen.js";
-
-import {
-  BASE, backRow, choose, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn,
-  rowText, titlesOf, top, withList, withOpen,
-} from "./support/limits-screen.js";
+import { 
+  BASE, backRow, capRow, choose, chooseValue, clearRow, given, havingWritten, pressRow, pressRowOn,readOverlay, 
+  rowText, titlesOf, top, withList, withOpen,} from "./support/limits-screen.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

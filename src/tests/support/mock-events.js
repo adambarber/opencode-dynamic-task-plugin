@@ -14,6 +14,7 @@
  * one owner rather than one import per consumer.
  */
 export * from "../../../dist/shared/host-events.js";
+
 //jscpd:ignore-start
 import {
   FORM_CANCELLED,
@@ -27,6 +28,7 @@ import {
   SESSION_IDLE,
 } from "../../../dist/shared/host-events.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
+
 //jscpd:ignore-end
 /**
  * A host event envelope: the type the server names, the session it is about, and

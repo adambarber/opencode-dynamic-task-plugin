@@ -15,9 +15,9 @@
  */
 
 //jscpd:ignore-start
-import { FailureClass, classifyFailure, failureNote } from "../../dist/shared/failure-class.js";
-import { assert, describe, it } from "./support/runner.js";
+import { classifyFailure, FailureClass, failureNote } from "../../dist/shared/failure-class.js";
 import { TaskState } from "../../dist/shared/task-state.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 const failed = (detail) => classifyFailure(TaskState.Error, detail);

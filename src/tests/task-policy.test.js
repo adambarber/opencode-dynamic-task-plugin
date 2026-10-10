@@ -7,9 +7,7 @@
  */
 
 //jscpd:ignore-start
-import { admits, assertIs, assertNothing, refuses } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
-import { blockingConfig, defaultConfig } from "./support/fixtures.js";
+import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import {
   buildTaskLineage,
   depthLimits,
@@ -18,7 +16,9 @@ import {
   validateAgent,
   validateLineage,
 } from "../../dist/shared/task-policy.js";
-import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { admits, assertIs, assertNothing, refuses } from "./support/assertions.js";
+import { blockingConfig, defaultConfig } from "./support/fixtures.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 // type PolicyResult is type-only, imported via the functions' return types

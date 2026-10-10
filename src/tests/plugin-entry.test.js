@@ -12,8 +12,8 @@
  */
 
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
 import pluginEntry from "../../dist/index.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("plugin entry: decodes as a v2 plugin definition", () => {

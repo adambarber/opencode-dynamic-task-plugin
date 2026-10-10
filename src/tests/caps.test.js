@@ -10,8 +10,10 @@
  */
 
 //jscpd:ignore-start
-import { TaskState, activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
+import { writeFileSync } from "node:fs";
+import { resolveAdmission } from "../../dist/shared/admission.js";
 import { agentKey } from "../../dist/shared/agent-key.js";
+import { toAgentRecords } from "../../dist/shared/agent-record.js";
 import {
   agentOccupancy,
   applyAgentOverlay,
@@ -24,14 +26,12 @@ import {
   retiredLaneOverlayPath,
   retiredOverlayPresent,
 } from "../../dist/shared/caps.js";
-import { assert, beforeEach, describe, it } from "./support/runner.js";
-import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
-import { overlayChannel } from "./support/overlay-channel.js";
 import { overlayKey } from "../../dist/shared/overlay-store.js";
-import { resolveAdmission } from "../../dist/shared/admission.js";
-import { toAgentRecords } from "../../dist/shared/agent-record.js";
-import { writeFileSync } from "node:fs";
+import { activeByAgent, createTaskStore, registerActiveTask, reviveRetainedTask, TaskState, transitionState } from "../../dist/shared/task-state.js";
+import { bothCaps, defaultConfig, tempProject } from "./support/fixtures.js";
+import { overlayChannel } from "./support/overlay-channel.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

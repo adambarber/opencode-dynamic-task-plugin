@@ -9,14 +9,14 @@
  */
 
 //jscpd:ignore-start
+import { isSessionMissing } from "../../dist/shared/liveness.js";
+import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { answerMatches, answerOmits, answerSays, assertNeedsSessionId, assertNoticeCount, stateOf, statusSays, stillActive, textDeclaresKind } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
-import { hostSaid, unclockedSaid } from "./support/mock-host.js";
 import { resultForChild, resultForUnreadableChild, setupHarness, sleep, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree } from "./support/harness.js";
-import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { eventHarness } from "./support/integration.js";
-import { isSessionMissing } from "../../dist/shared/liveness.js";
+import { hostSaid, unclockedSaid } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
 import { withSettledMiddleChild } from "./support/stop-scenarios.js";
 
 //jscpd:ignore-end

@@ -12,15 +12,17 @@
 // The effect COPY the host validates with. Top-level effect is beta.83, whose
 // fromJsonSchemaDocument shape differs — the server runs the nested rc.112, and only it
 // reproduces the production error text this gate exists for.
+
 //jscpd:ignore-start
-import { Effect, JsonSchema, Schema, SchemaRepresentation } from "../../node_modules/@opencode/plugin/node_modules/effect/dist/index.js";
-import { assert, describe, it } from "./support/runner.js";
-import { createOverlayStore, overlayKey } from "../../dist/shared/overlay-store.js";
-import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
-import { createMockClient } from "./support/mock-host.js";
-import { facadeOver } from "./support/durable-world.js";
 import { overlayHandlers } from "../../dist/entry/state.js";
+import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
+import { createOverlayStore, overlayKey } from "../../dist/shared/overlay-store.js";
+import { Effect, JsonSchema, Schema, SchemaRepresentation } from "../../node_modules/@opencode/plugin/node_modules/effect/dist/index.js";
+import { facadeOver } from "./support/durable-world.js";
 import { withTempDir } from "./support/fixtures.js";
+import { createMockClient } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
+
 //jscpd:ignore-end
 /** The host's decode for a plain JSON Schema, mirrored from core/rpc.ts. */
 async function hostValidates(schema, value) {

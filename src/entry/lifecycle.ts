@@ -2,41 +2,19 @@
 // terminal-event settlement handler. Owns every entry-side client.session
 // call except spawn's create and the steer/interrupt aborts (Tenet 9: those
 // stay in their tool executors beside the claims that order them).
+
 //jscpd:ignore-start
-import {
-  type ActiveTaskState,
-  type SettlementVerdict,
-  type TaskIdentity,
-  type TaskRecordBase,
-  TaskState,
-  type TaskStore,
-  findTask,
-  isRunning,
-  recordSettledOutcome,
-  retainedFor,
-  reviveRetainedTask,
-  terminalEventIsAttributable,
-  transitionState,
-} from "../shared/task-state.js";
-import type { AgentCapSource } from "../shared/caps.js";
-import { LogLevel } from "../shared/notify-log.js";
-import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
-import { FailureClass, classifyFailure, failureNote } from "../shared/failure-class.js";
-import {
-  type HydratedOutcome,
-  classifyPromptError,
-  hydrateLatestOutcome,
-  invokePrompt,
-} from "../shared/prompt.js";
-import type { ModelOverride } from "../shared/prompt.js";
-import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
-import type { OpaqueHost } from "../shared/client.js";
-import { type ParentSession, UNKNOWN_PARENT, eventLooksDeleted, isParentless } from "../shared/session-lifecycle.js";
-import type { SessionId } from "../shared/ids.js";
 import { debugLog } from "../debug-logger.js";
-import { declaredBlocked } from "../shared/notice-claim.js";
-import { type LifecycleStatus, classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent } from "../shared/host-events.js";
+import { resolveDependencies } from "../shared/admission.js";
+import type { AgentCapSource } from "../shared/caps.js";
+import type { OpaqueHost } from "../shared/client.js";
+import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
+import { classifyFailure, FailureClass, failureNote } from "../shared/failure-class.js";
+import { classifyLifecycleStatus, endedBadly, getEventLifecycleStatus, getSessionIdFromEvent, type LifecycleStatus } from "../shared/host-events.js";
 import { errorMessage } from "../shared/host-shape.js";
+import type { SessionId } from "../shared/ids.js";
+import { declaredBlocked } from "../shared/notice-claim.js";
+import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import {
   gateLedger,
   notifyParent,
@@ -45,7 +23,30 @@ import {
   safeLog,
   settlementKind,
 } from "../shared/notify.js";
-import { resolveDependencies } from "../shared/admission.js";
+import { LogLevel } from "../shared/notify-log.js";
+import type { ModelOverride } from "../shared/prompt.js";
+import {
+  classifyPromptError,
+  type HydratedOutcome,
+  hydrateLatestOutcome,
+  invokePrompt,
+} from "../shared/prompt.js";
+import { eventLooksDeleted, isParentless, type ParentSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
+import {
+  type ActiveTaskState,
+  findTask,
+  isRunning,
+  recordSettledOutcome,
+  retainedFor,
+  reviveRetainedTask,
+  type SettlementVerdict,
+  type TaskIdentity,
+  type TaskRecordBase,
+  TaskState,
+  type TaskStore,
+  terminalEventIsAttributable,
+  transitionState,
+} from "../shared/task-state.js";
 import { textBlock } from "../shared/text-block.js";
 import { transientResumeAvailable } from "../shared/transient-resume.js";
 import { waitsReleasedBody } from "../shared/voice.js";

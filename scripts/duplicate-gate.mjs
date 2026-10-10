@@ -68,12 +68,13 @@
  * the verified count, so a report that is mostly phantoms stays visible instead of
  * being silently absorbed.
  */
+
 //jscpd:ignore-start
-import { longestSharedRun, readMinTokens, stream, tokensInRange } from "./measure.mjs";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { longestSharedRun, readMinTokens, stream, tokensInRange } from "./measure.mjs";
 
 //jscpd:ignore-end
 const REPO = new URL("..", import.meta.url).pathname;

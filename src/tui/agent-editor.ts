@@ -16,20 +16,21 @@
  * rather than a side effect of opening. That is what lets the props be asserted on
  * directly, with no stand-in for the host's widgets.
  */
+
 //jscpd:ignore-start
+import { agentKey } from "../shared/agent-key.js";
 import {
   AGENT_CAP_NAMES,
   type AgentCapName,
   type AgentCapSource,
   type AgentCaps,
   type AgentOverlay,
-  type OverlayAgents,
   applyAgentOverlay,
+  type OverlayAgents,
   readAgentOverlayCaps,
   resolveAgentCaps,
 } from "../shared/caps.js";
-import { agentKey } from "../shared/agent-key.js";
-import { type ModelOverride, isModelOverride, spellModel } from "../shared/model-choice.js";
+import { isModelOverride, type ModelOverride, spellModel } from "../shared/model-choice.js";
 import { type DepthBound, depthHeldBy, depthLimits } from "../shared/task-policy.js";
 
 //jscpd:ignore-end

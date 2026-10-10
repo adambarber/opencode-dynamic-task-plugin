@@ -26,11 +26,11 @@
 
 //jscpd:ignore-start
 import type { AgentCapSource } from "./caps.js";
-import { FailureClass, classifyFailure } from "./failure-class.js";
+import { classifyFailure, FailureClass } from "./failure-class.js";
 import type { SessionId } from "./ids.js";
-import type { TaskState } from "./task-state.js";
-import type { TaskStore } from "./store.js";
 import { retainedFor } from "./settled-record.js";
+import type { TaskStore } from "./store.js";
+import type { TaskState } from "./task-state.js";
 
 //jscpd:ignore-end
 /**

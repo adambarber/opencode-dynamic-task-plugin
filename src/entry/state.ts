@@ -1,10 +1,20 @@
 // Plugin state boot (entry): config normalization, per-instance store, and
 // durable-state wiring. Lives apart from the entry so the entry stays wiring.
+
 //jscpd:ignore-start
-import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
-import { SessionExistence, hostTurnRunning, readLiveness, readSessionPresence } from "../shared/liveness.js";
-import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
+import type { PluginOptions } from "@opencode/plugin";
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
+import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
+import type { OpaqueHost } from "../shared/client.js";
+import type { DynamicTaskConfig } from "../shared/config.js";
+import { readDynamicTaskPolicy } from "../shared/config.js";
+import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
+import { createStore } from "../shared/durable-store.js";
+import { LifecycleStatus } from "../shared/host-events.js";
+import type { LedgerChange } from "../shared/ledger-change.js";
+import { LedgerChangeKind } from "../shared/ledger-change.js";
+import { createLedgerStore } from "../shared/ledger-storage.js";
+import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
 import {
   configurePendingPersistence,
   containFailure,
@@ -13,25 +23,16 @@ import {
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
-import { type IntentStore, createIntentWriter } from "../shared/create-intent.js";
-import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
-import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
-import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
-import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
-import type { DynamicTaskConfig } from "../shared/config.js";
-import type { LedgerChange } from "../shared/ledger-change.js";
-import { LedgerChangeKind } from "../shared/ledger-change.js";
-import type { OpaqueHost } from "../shared/client.js";
+import { LogLevel } from "../shared/notify-log.js";
 import type { OverlayHandlers } from "../shared/overlay-rpc.js";
-import type { PluginOptions } from "@opencode/plugin";
-import type { TaskStore } from "../shared/task-state.js";
-import { createLedgerStore } from "../shared/ledger-storage.js";
+import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
+import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
 import { createOverlayStore } from "../shared/overlay-store.js";
 import { createStateFacade } from "../shared/state-facade.js";
-import { createStore } from "../shared/durable-store.js";
-import { readDynamicTaskPolicy } from "../shared/config.js";
-import { LifecycleStatus } from "../shared/host-events.js";
-import { LogLevel } from "../shared/notify-log.js";
+import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
+import type { TaskStore } from "../shared/task-state.js";
+import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
+import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 
 //jscpd:ignore-end
 // Plugin-level state store (ephemeral — lost on restart)

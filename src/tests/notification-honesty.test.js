@@ -8,9 +8,9 @@
 
 //jscpd:ignore-start
 import {
+  formatParentNotification,
   NOTIFICATION_MAX_CHARS,
   NotifyKind,
-  formatParentNotification,
   notificationKindOf,
 } from "../../dist/shared/notification-text.js";
 import { assert, describe, it } from "./support/index.js";

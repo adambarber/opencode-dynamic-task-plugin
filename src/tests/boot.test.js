@@ -13,11 +13,10 @@
  */
 
 //jscpd:ignore-start
-import { answerMatches, answerOmits, answerSays, textDeclaresKind } from "./support/assertions.js";
+import { answerMatches, answerOmits, answerSays, compareStrings, textDeclaresKind } from "./support/assertions.js";
+import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
 import { bootOn, ledgerSays, settledOnDisk, waitFor } from "./support/integration.js";
 import { assert, describe, it } from "./support/runner.js";
-import { dialCount, setupHarness, sleep, tmpProjectDir, withEnv } from "./support/harness.js";
-import { compareStrings } from "./support/assertions.js";
 
 //jscpd:ignore-end
 /**
@@ -30,10 +29,11 @@ import { compareStrings } from "./support/assertions.js";
  * fire-and-forget write.
  */
 const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
-import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
+
+import { ENV } from "../../dist/shared/config.js";
 import { LEDGER_PREFIXES, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
-import { ENV } from "../../dist/shared/config.js";
+import { owedEntry, retainedEntry, runningEntry } from "./support/records.js";
 
 /**
  * A v3 file that reads, with one record inside it that does not.

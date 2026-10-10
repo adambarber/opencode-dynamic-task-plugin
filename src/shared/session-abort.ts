@@ -8,14 +8,14 @@
 // alone, and the ledger's atomic-write dance sanctions another alone.
 
 //jscpd:ignore-start
-import { type OpaqueHost, type OpenCodeClient, callHost } from "./client.js";
-import type { SessionId } from "./ids.js";
-import type { TaskStore } from "./store.js";
+import { callHost, type OpaqueHost, type OpenCodeClient } from "./client.js";
+import { subtreeTaskIds } from "./dispatch-tree.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage } from "./host-shape.js";
-import { findTask, isRunning } from "./task-state.js";
+import type { SessionId } from "./ids.js";
 import { isSessionMissing } from "./liveness.js";
-import { subtreeTaskIds } from "./dispatch-tree.js";
+import type { TaskStore } from "./store.js";
+import { findTask, isRunning } from "./task-state.js";
 
 //jscpd:ignore-end
 // The ONE child-abort site. Tenet 9 keeps the await at the call site — a steer

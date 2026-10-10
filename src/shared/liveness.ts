@@ -7,11 +7,11 @@
 // used to live here were load-bearing and both were wrong.
 
 //jscpd:ignore-start
-import { type OpaqueHost, callHost } from "./client.js";
-import { isMessage, readSessionMessages } from "./prompt.js";
+import type { Session } from "@opencode/schema/session";
+import { callHost, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { includesWord, isPlainRecord } from "./host-shape.js";
-import type { Session } from "@opencode/schema/session";
+import { isMessage, readSessionMessages } from "./prompt.js";
 
 //jscpd:ignore-end
 /** The host's own session object, by its declared type — never a local copy of it. */

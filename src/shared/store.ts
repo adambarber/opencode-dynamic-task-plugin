@@ -13,11 +13,12 @@
  * way; `verbatimModuleSyntax` is what makes the erasure guaranteed rather than
  * conventional.
  */
+
 //jscpd:ignore-start
-import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 import type { DependencyWait, WaitRegistry } from "./dispatch-wait.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import type { SessionId } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
 //jscpd:ignore-end
 /**

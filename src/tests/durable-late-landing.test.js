@@ -12,8 +12,8 @@
  */
 
 //jscpd:ignore-start
-import { assert, it } from "./support/runner.js";
 import { durable } from "./support/durable-world.js";
+import { assert, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 durable.tightBounds();

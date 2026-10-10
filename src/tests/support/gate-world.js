@@ -11,10 +11,10 @@
  */
 
 //jscpd:ignore-start
-import { afterEach, beforeEach } from "./runner.js";
 import { clearNotifyLedger, configurePendingPersistence, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { PARENT } from "./harness.js";
 import { recordingClient } from "./mock-host.js";
+import { afterEach, beforeEach } from "./runner.js";
 
 //jscpd:ignore-end
 /**

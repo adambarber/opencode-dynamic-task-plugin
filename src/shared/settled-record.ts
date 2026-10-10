@@ -11,9 +11,6 @@
 // checkable by reading one screen.
 
 //jscpd:ignore-start
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import type { SessionId } from "./ids.js";
-import type { TaskStore } from "./store.js";
 import { emitRetainedChange } from "./change-sinks.js";
 //jscpd:ignore-end
 // Types only. The record shapes stay declared in `task-state` because they are
@@ -21,6 +18,9 @@ import { emitRetainedChange } from "./change-sinks.js";
 // the ENUM as a type rather than a value is what keeps this file from forming a
 // runtime cycle back through it.
 import type { FailureClass } from "./failure-class.js";
+import type { SessionId } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import type { TaskStore } from "./store.js";
 import type { SettledTaskState } from "./task-records.js";
 import type { TaskRecord, TaskRecordBase } from "./task-state.js";
 

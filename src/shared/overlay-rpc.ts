@@ -15,23 +15,23 @@
 // exists to prevent. So the schema says "an object" and the readers below say what
 // an overlay is.
 
+//jscpd:ignore-start
+import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
+//jscpd:ignore-end
 // TYPES from the schema package only; the host's `Rpc.define` is deliberately NOT
 // called. The built plugin is loaded from a SYMLINKED directory with no node_modules
 // beside it, so a bare runtime specifier resolves against the link path and the host
 // reports "Cannot find package" — every other import in `dist/` is a `node:` builtin
 // for exactly that reason. What `define` buys is one check (no declared error name may
 // start with the reserved `rpc.`), so that check is ours to keep, in a test.
-//jscpd:ignore-start
 import type { PortableDefinition, PortableValueSchema } from "@opencode/schema/rpc";
 import type { AgentOverlay } from "./caps.js";
-import type { OverlayRead } from "./overlay-store.js";
-import type { RpcHandlers } from "@opencode/plugin/promise/rpc";
-import { UNREADABLE } from "./overlay-store.js";
-import { isPlainRecord } from "./host-shape.js";
 import { parseAgentOverlay } from "./caps.js";
+import { isPlainRecord } from "./host-shape.js";
+import type { OverlayRead } from "./overlay-store.js";
+import { UNREADABLE } from "./overlay-store.js";
 
 
-//jscpd:ignore-end
 /**
  * An object schema, closed. Every payload here is an object and nothing else.
  *

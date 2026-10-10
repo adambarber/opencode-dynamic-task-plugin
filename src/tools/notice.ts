@@ -1,28 +1,29 @@
 // task_notify executor: the child's mid-flight voice. Advisory metadata on
 // the active record, delivery through the gate — never a settlement.
+
 //jscpd:ignore-start
+import type { ToolContext } from "@opencode/plugin/promise/tool";
+import { isEventRecord } from "../shared/host-shape.js";
+import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
+import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
+import { getLatestNotification, noticeDedupKey, notifyParent } from "../shared/notify.js";
+import { isParentless } from "../shared/session-lifecycle.js";
+import { findTask, pruneRetainedTasks, TaskState } from "../shared/task-state.js";
 import {
+  alreadySettledNotice,
   CALLER_UNKNOWN,
   MESSAGE_REQUIRED,
+  NOT_A_TRACKED_TASK,
   NOTICE_DUPLICATE_SUPPRESSED,
   NOTICE_PARENTLESS,
   NOTICE_PENDING_ACK,
   NOTICE_SENT,
-  NOT_A_TRACKED_TASK,
-  alreadySettledNotice,
   noticeClaimRefused,
   noticeTooLong,
   parentUndelivered,
 } from "../shared/voice.js";
-import { NoticeClaim, annotateNotice, isNoticeClaim } from "../shared/notice-claim.js";
 import type { NotifyArgs } from "./args.js";
-import { NotifyKind, formatParentNotification } from "../shared/notification-text.js";
-import { TaskState, findTask, pruneRetainedTasks } from "../shared/task-state.js";
-import type { ToolContext } from "@opencode/plugin/promise/tool";
-import { type ToolDeps, callerSessionId } from "./context.js";
-import { getLatestNotification, noticeDedupKey, notifyParent } from "../shared/notify.js";
-import { isEventRecord } from "../shared/host-shape.js";
-import { isParentless } from "../shared/session-lifecycle.js";
+import { callerSessionId, type ToolDeps } from "./context.js";
 
 
 

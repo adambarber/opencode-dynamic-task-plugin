@@ -13,13 +13,13 @@
  */
 //jscpd:ignore-start
 import assert from "node:assert/strict";
+import { overlayHandlers } from "../../../dist/entry/state.js";
 import { OverlayRpc } from "../../../dist/shared/overlay-rpc.js";
+import { createOverlayStore } from "../../../dist/shared/overlay-store.js";
+import { facadeOver } from "./durable-world.js";
 import { armFault } from "./faults.js";
 import { createMockClient } from "./mock-host.js";
-import { createOverlayStore } from "../../../dist/shared/overlay-store.js";
 import { createRpc } from "./mock-rpc.js";
-import { facadeOver } from "./durable-world.js";
-import { overlayHandlers } from "../../../dist/entry/state.js";
 
 //jscpd:ignore-end
 /**

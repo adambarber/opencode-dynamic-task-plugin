@@ -8,9 +8,9 @@
  */
 
 //jscpd:ignore-start
-import { FLOOR_LINES, FLOOR_TOKENS, corpus, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
-import { assert, describe, it } from "./support/runner.js";
 import { readFileSync } from "node:fs";
+import { corpus, FLOOR_LINES, FLOOR_TOKENS, findCrossBoundaryClones, importLines, shortPath, withProbeCorpus } from "../../scripts/cross-boundary.mjs";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

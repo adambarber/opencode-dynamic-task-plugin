@@ -8,11 +8,11 @@
 // offering.
 
 //jscpd:ignore-start
-import { OverlayRpc, readOverlayPayload } from "../shared/overlay-rpc.js";
-import { errorMessage, isPlainRecord } from "../shared/host-shape.js";
-import type { AgentOverlay } from "../shared/caps.js";
-import type { OverlayRead } from "../shared/overlay-store.js";
 import type { Plugin } from "@opencode/plugin/tui";
+import type { AgentOverlay } from "../shared/caps.js";
+import { errorMessage, isPlainRecord } from "../shared/host-shape.js";
+import { OverlayRpc, readOverlayPayload } from "../shared/overlay-rpc.js";
+import type { OverlayRead } from "../shared/overlay-store.js";
 
 //jscpd:ignore-end
 /** What a write achieved: the caps are in force, or here is why they are not. */

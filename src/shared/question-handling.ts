@@ -16,10 +16,10 @@
 // blocked this way stays visibly blocked instead of settling as a success.
 
 //jscpd:ignore-start
+import { callHost, hasPermissionReply, type OpaqueHost, type OpenCodeClient, probeHost } from "./client.js";
+import { ExpiryError, WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage, isEventRecord } from "./host-shape.js";
 import { QUESTION_NO_ANSWER, QUESTION_SETTLED } from "./voice.js";
-import { type OpaqueHost, type OpenCodeClient, callHost, hasPermissionReply, probeHost } from "./client.js";
-import { ExpiryError, WRITE_BOUNDS } from "./execution-bound.js";
 
 //jscpd:ignore-end
 export interface QuestionResult {

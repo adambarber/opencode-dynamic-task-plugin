@@ -4,8 +4,8 @@
 // All config is passed in via the DynamicTaskConfig parameter.
 
 //jscpd:ignore-start
-import type { AgentRecord } from "./host-shape.js";
 import type { DynamicTaskConfig } from "./config.js";
+import type { AgentRecord } from "./host-shape.js";
 import type { Refusal } from "./verdict.js";
 
 //jscpd:ignore-end

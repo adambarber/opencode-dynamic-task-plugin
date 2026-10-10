@@ -15,12 +15,12 @@
  */
 //jscpd:ignore-start
 import { AGENT_CAP_NAMES, applyAgentOverlay, readAgentOverlayCaps } from "../../dist/shared/caps.js";
-import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
-import { CAP_CHOICES, CAP_LABEL, agentDialogFrom, applyCapEdit, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
-import { assert, describe, it } from "./support/runner.js";
-import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
+import { agentDialogFrom, applyCapEdit, CAP_CHOICES, CAP_LABEL, capCellOf, overlayFrom } from "../../dist/tui/agent-editor.js";
+import { BETWEEN, INHERITED, namedCell, plainSummary, terseCell } from "../../dist/tui/theme.js";
+import { bothCaps, tempProject, withTempDir } from "./support/fixtures.js";
 import { overlayChannel } from "./support/overlay-channel.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 const BASE = normalizeDynamicTaskConfig(null);

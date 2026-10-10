@@ -1,9 +1,10 @@
 /** The lint budget: findings are measured, recorded per rule in lint-budget.json, and ratcheted. */
+
 //jscpd:ignore-start
-import { readFileSync, writeFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 //jscpd:ignore-end
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

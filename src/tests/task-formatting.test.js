@@ -8,11 +8,11 @@
  */
 
 //jscpd:ignore-start
-import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
-import { assert, describe, it } from "./support/runner.js";
 import { SessionExistence } from "../../dist/shared/liveness.js";
 import { noticeRecord } from "../../dist/shared/notice-claim.js";
+import { agentDisplayName, buildBackgroundPrompt, formatTaskListSummary, formatTaskResultSummary, formatTaskStatusDetail, taskResultRecord } from "../../dist/shared/task-formatting.js";
 import { notifiedAs } from "./support/records.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

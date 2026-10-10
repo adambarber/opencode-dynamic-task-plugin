@@ -6,10 +6,9 @@
 // can bypass it.
 
 //jscpd:ignore-start
+import { liveAgentCaps, resolveAgentCaps } from "./caps.js";
+import { callHost, type OpaqueHost } from "./client.js";
 import type { DynamicTaskConfig } from "./config.js";
-import { type OpaqueHost, callHost } from "./client.js";
-import { liveAgentCaps } from "./caps.js";
-import { resolveAgentCaps } from "./caps.js";
 import { safeLog } from "./notify.js";
 
 //jscpd:ignore-end
@@ -29,29 +28,29 @@ export interface AgentLister<C = AgentCaller> {
   host: OpaqueHost<C>;
 }
 
+import { type AgentRecord, toAgentRecords } from "./agent-record.js";
 import { READ_BOUNDS } from "./execution-bound.js";
-import { type SessionId, sessionIdOf } from "./ids.js";
-import type { Verdict } from "./verdict.js";
-import { admitPromptInput, type AdmittedPromptInput } from "./prompt.js";
 import { errorMessage } from "./host-shape.js";
+import { type SessionId, sessionIdOf } from "./ids.js";
+import { LogLevel } from "./notify-log.js";
+import { type AdmittedPromptInput, admitPromptInput } from "./prompt.js";
 import {
-  registerActiveTask,
-  findTask,
-  pruneRetainedTasks,
-  TASK_STATES,
-  TaskState,
-  type ActiveTaskState,
-  type NewTaskRegistration,
-  type TaskStore,
-} from "./task-state.js";
-import { toAgentRecords, type AgentRecord } from "./agent-record.js";
-import {
-  validateAgent,
-  validateLineage,
   buildTaskLineage,
   isDispatchableAgent,
+  validateAgent,
+  validateLineage,
 } from "./task-policy.js";
-import { LogLevel } from "./notify-log.js";
+import {
+  type ActiveTaskState,
+  findTask,
+  type NewTaskRegistration,
+  pruneRetainedTasks,
+  registerActiveTask,
+  TASK_STATES,
+  TaskState,
+  type TaskStore,
+} from "./task-state.js";
+import type { Verdict } from "./verdict.js";
 
 /**
  * A refusal, as the one value that carries both the decision and the words.

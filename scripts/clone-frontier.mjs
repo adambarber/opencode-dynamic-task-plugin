@@ -17,9 +17,10 @@
  *
  * Usage: node scripts/clone-frontier.mjs [outDir]
  */
+
 //jscpd:ignore-start
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 //jscpd:ignore-end

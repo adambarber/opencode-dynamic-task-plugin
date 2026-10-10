@@ -8,11 +8,12 @@
  * slightly different trees — the same defect the shape-first harness exists to
  * prevent, one level up.
  */
+
 //jscpd:ignore-start
-import { assert } from "./runner.js";
+import { setupHarness } from "./harness.js";
 
 import { events } from "./mock-host.js";
-import { setupHarness } from "./harness.js";
+import { assert } from "./runner.js";
 
 //jscpd:ignore-end
 /**

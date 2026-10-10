@@ -12,16 +12,16 @@
 // places for that to drift.
 
 //jscpd:ignore-start
-import { type ActiveTaskState, type LineagePath, type RetainedTaskState, type TaskIdentity, type TaskRecordBase, oldestRetainedId } from "./task-state.js";
-import { DEFAULT_CONFIG } from "./config.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import { type LedgerChangeSink, type TaskStore } from "./store.js";
-import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
-import type { SessionId } from "./ids.js";
-import { TaskState, isTaskState, withoutAdvisory } from "./task-records.js";
 import { emitRetainedChange } from "./change-sinks.js";
-import { isEventRecord } from "./host-shape.js";
+import { DEFAULT_CONFIG } from "./config.js";
 import { isFailureClass } from "./failure-class.js";
+import { isEventRecord } from "./host-shape.js";
+import type { SessionId } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { NOTIFY_KINDS, type PendingDelivery } from "./notify.js";
+import { type LedgerChangeSink, type TaskStore } from "./store.js";
+import { isTaskState, TaskState, withoutAdvisory } from "./task-records.js";
+import { type ActiveTaskState, type LineagePath, oldestRetainedId, type RetainedTaskState, type TaskIdentity, type TaskRecordBase } from "./task-state.js";
 
 //jscpd:ignore-end
 // A task's durable record must be complete or absent: any field the render

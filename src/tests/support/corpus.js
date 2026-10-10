@@ -6,10 +6,10 @@
 // while it reported green. One walk, one answer to "what counts as a file here".
 
 //jscpd:ignore-start
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { compareStrings } from "./assertions.js";
 import { fileURLToPath } from "node:url";
+import { compareStrings } from "./assertions.js";
 
 //jscpd:ignore-end
 // The tests directory is this module's PARENT: this file lives in support/, and

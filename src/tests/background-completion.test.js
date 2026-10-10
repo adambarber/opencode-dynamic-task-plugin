@@ -9,11 +9,11 @@
  */
 
 //jscpd:ignore-start
-import { assert, beforeEach, describe, it } from "./support/runner.js";
-import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { events } from "./support/mock-host.js";
 import { textDeclaresKind } from "./support/assertions.js";
+import { renderedAgeSeconds, setupHarness, sleep } from "./support/harness.js";
+import { events } from "./support/mock-host.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("Background Task Settlement", () => {
@@ -53,7 +53,7 @@ describe("Background Task Settlement", () => {
   }
 
   const expectSingleSuccessNotification = (parentId, description, buildEvent) =>
-    expectSingleNotification({ parentId, description, buildEvent, kind: "completed", why: "the success kind" });
+    expectSingleNotification({ buildEvent, description, kind: "completed", parentId, why: "the success kind" });
 
   it("settlement never waits on observability — v2 has no host log sink", async () => {
     const childId = await spawn("parent_hung_log", "hung log task");
@@ -109,7 +109,7 @@ describe("Background Task Settlement", () => {
   });
 
   it("error status yields error-kind notification", async () => {
-    await expectSingleNotification({ parentId: "err_parent", description: "Error test", buildEvent: (childId) => events.error(childId), kind: "error", why: "error-kind notification" });
+    await expectSingleNotification({ buildEvent: (childId) => events.error(childId), description: "Error test", kind: "error", parentId: "err_parent", why: "error-kind notification" });
   });
 
   it("deleted session is a failure, never a success", async () => {

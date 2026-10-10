@@ -1,9 +1,11 @@
+
 //jscpd:ignore-start
-import { accepted, answeredClient, assertDelivered, gate, gatedClient, withHeldWrites } from "./support/notify-setup.js";
-import { assert, beforeEach, describe, it } from "./support/runner.js";
 import { clearNotifyLedger, gateLedger, getLatestNotification, notifyChainCount, notifyParent } from "../../dist/shared/notify.js";
 import { deferred, promptText, recordingClient } from "./support/mock-host.js";
+import { accepted, answeredClient, assertDelivered, gate, gatedClient, withHeldWrites } from "./support/notify-setup.js";
 import { opaqueHost } from "./support/opaque-host.js";
+import { assert, beforeEach, describe, it } from "./support/runner.js";
+
 //jscpd:ignore-end
 describe("notify gate: notifyParent", () => {
   beforeEach(clearNotifyLedger);

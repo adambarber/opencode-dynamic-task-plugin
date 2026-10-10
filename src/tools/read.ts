@@ -1,34 +1,35 @@
 // Session read executors (result/status/list): store-authoritative views with
 // the server's own liveness read beside them. Pure readers — they mutate
 // nothing except read-path TTL pruning.
+
 //jscpd:ignore-start
+import { debugLog } from "../debug-logger.js";
+import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
+import { agentOccupancy } from "../shared/caps.js";
+import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
+import { errorMessage, eventField } from "../shared/host-shape.js";
+import {
+  isSessionMissing,
+  type LivenessReading,
+  readLiveness,
+  statusFromHostTurn,
+  UNANSWERED_LIVENESS,
+} from "../shared/liveness.js";
+import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
+import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
 import {
   API_UNAVAILABLE,
-  type FleetRow,
-  NO_ASSISTANT_TEXT,
-  SEE_ERROR_ABOVE,
   agentDisplayName,
+  type FleetRow,
   formatTaskListSummary,
   formatTaskResultSummary,
   formatTaskStatusDetail,
+  NO_ASSISTANT_TEXT,
+  SEE_ERROR_ABOVE,
   taskResultRecord,
 } from "../shared/task-formatting.js";
-import { type DispatchNode, dispatchForest } from "../shared/dispatch-tree.js";
-import {
-  type LivenessReading,
-  UNANSWERED_LIVENESS,
-  isSessionMissing,
-  readLiveness,
-  statusFromHostTurn,
-} from "../shared/liveness.js";
+import { activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks, type TaskRecord, TaskState } from "../shared/task-state.js";
 import { type ResolvedSessionScope, type ToolDeps, unknownSessionResult } from "./context.js";
-import { type TaskRecord, TaskState, activeByAgent, failureClassOf, findTask, listTasks, motionClocksOf, pruneRetainedTasks } from "../shared/task-state.js";
-import { errorMessage, eventField } from "../shared/host-shape.js";
-import { getLatestAssistantText, readSessionMessages, touchedFiles } from "../shared/prompt.js";
-import { getLatestNotification, getTurnNotification } from "../shared/notify.js";
-import { agentOccupancy } from "../shared/caps.js";
-import { debugLog } from "../debug-logger.js";
-import { dispatchableAgentNamesOrNull } from "../shared/admission.js";
 
 //jscpd:ignore-end
 // The prologue both readers share: resolve the session, prune, look up. Pruning

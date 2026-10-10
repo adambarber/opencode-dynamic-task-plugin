@@ -1,10 +1,27 @@
 // task_continue executor: steer a running child (turn replacement) or revive
 // a settled one. Holds one of the three sanctioned session.abort sites
 // (Tenet 9: beside the steer claim that orders it).
+
 //jscpd:ignore-start
+import { debugLog } from "../debug-logger.js";
+import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
+import { admitToolPrompt } from "../shared/admission.js";
+import { errorMessage } from "../shared/host-shape.js";
+import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
+import { NotifyKind } from "../shared/notification-text.js";
+import { abortSession, stopPlan } from "../shared/session-abort.js";
+import type { SettledTaskState } from "../shared/task-records.js";
 import {
-  PROMPT_REQUIRED,
+  activeFor,
+  isRunning,
+  retainedFor,
+  TaskState,
+  transitionState,
+} from "../shared/task-state.js";
+import { textBlock } from "../shared/text-block.js";
+import {
   followupSent,
+  PROMPT_REQUIRED,
   steerAbortFailed,
   steerAutoRevived,
   steerMissing,
@@ -15,24 +32,8 @@ import {
   steerWonBySettler,
   untrackedSession,
 } from "../shared/voice.js";
-import {
-  TaskState,
-  activeFor,
-  isRunning,
-  retainedFor,
-  transitionState,
-} from "../shared/task-state.js";
-import { abortSession, stopPlan } from "../shared/session-abort.js";
-import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
-import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import type { ContinueArgs } from "./args.js";
-import { NotifyKind } from "../shared/notification-text.js";
-import { admitToolPrompt } from "../shared/admission.js";
-import { debugLog } from "../debug-logger.js";
-import { errorMessage } from "../shared/host-shape.js";
-import { textBlock } from "../shared/text-block.js";
 import { type ResolvedSessionScope } from "./context.js";
-import type { SettledTaskState } from "../shared/task-records.js";
 
 //jscpd:ignore-end
 export type { ContinueArgs } from "./args.js";

@@ -23,12 +23,12 @@
 // `completed` (first terminal reporter wins) and throw to signal rejection.
 
 //jscpd:ignore-start
-import { type ActiveTaskState, type NewTaskRegistration, type SettledTaskState, TaskState, withoutAdvisory } from "./task-records.js";
-import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import type { SessionId } from "./ids.js";
 import { agentKey } from "./agent-key.js";
+import { type AgentCapSource, checkAgentCapacity, liveAgentCaps, resolveAgentCaps } from "./caps.js";
 import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
+import type { SessionId } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { type ActiveTaskState, type NewTaskRegistration, type SettledTaskState, TaskState, withoutAdvisory } from "./task-records.js";
 
 //jscpd:ignore-end
 // The store is its own subject: it owns the SET and the only way to change it,
@@ -36,12 +36,12 @@ import { emitRetainedChange, notifyRunning } from "./change-sinks.js";
 // where the state machine reads and writes it, and eight modules already reach the
 // store through this path; the alternative is eight import lines for a type they
 // did not previously have to name.
-export { TaskStore, createTaskStore, type LedgerChangeSink } from "./store.js";
+export { createTaskStore, type LedgerChangeSink, TaskStore } from "./store.js";
 
 import type { DynamicTaskConfig } from "./config.js";
+import { foldActiveByAgent } from "./occupancy.js";
 import type { ModelOverride } from "./prompt.js";
 import type { TaskStore } from "./store.js";
-import { foldActiveByAgent } from "./occupancy.js";
 
 // The vocabulary of a task record — the state enum, both record shapes, the
 // lineage types and the advisory strip — is declared in `task-records.ts`, which
@@ -51,8 +51,9 @@ import { foldActiveByAgent } from "./occupancy.js";
 // owner is one line below, so where a thing lives is still answerable by reading
 // this header rather than by searching the tree.
 export {
-  ADVISORY_FIELDS,
   type ActiveTaskState,
+  ADVISORY_FIELDS,
+  isTaskState,
   type LineagePath,
   type LineageStep,
   type NewTaskRegistration,
@@ -61,7 +62,6 @@ export {
   type TaskIdentity,
   type TaskRecordBase,
   TaskState,
-  isTaskState,
   withoutAdvisory,
 } from "./task-records.js";
 
@@ -75,8 +75,9 @@ export {
 // every reader learn a new address for it.
 import type { FailureClass } from "./failure-class.js";
 
-export { retainedFor, actOnSettled, decideRetained, settledChange, noteAbortLanded, failureClassOf, motionClocksOf, type RetainedTaskState } from "./settled-record.js";
-import { retainedFor, actOnSettled, decideRetained, settledChange, type RetainedTaskState } from "./settled-record.js";
+export { actOnSettled, decideRetained, failureClassOf, motionClocksOf, noteAbortLanded, type RetainedTaskState, retainedFor, settledChange } from "./settled-record.js";
+
+import { actOnSettled, decideRetained, type RetainedTaskState, retainedFor, settledChange } from "./settled-record.js";
 
 export type TaskRecord = ActiveTaskState | RetainedTaskState;
 

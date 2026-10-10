@@ -14,16 +14,17 @@
 // keying and the ladder have to change together, and while they lived apart the concept
 // had no owner. It borrows nothing from caps — the key space moved to agent-key.ts so a
 // sibling owner never has to import the other.
+
 //jscpd:ignore-start
+import { debugLog } from "../debug-logger.js";
 import { agentKey } from "./agent-key.js";
-import { type OpaqueHost, callHost } from "./client.js";
+import { callHost, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { errorMessage, isPlainRecord } from "./host-shape.js";
 import { type ModelOverride, parseModelOverride } from "./prompt.js";
-import { debugLog } from "../debug-logger.js";
+
 
 //jscpd:ignore-end
-
 /**
  * A model, as the plugin's own vocabulary already spells it: a PAIR, because every
  * consumer of one — routing, the record, the confirmation that renders it — needs the

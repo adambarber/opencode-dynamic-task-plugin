@@ -1,6 +1,7 @@
+
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
 import { readContinueArgs, readNotifyArgs, readSpawnArgs } from "../../dist/tools/args.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /** A well-formed spawn shape, written once: a field that is dropped or invented shows here. */

@@ -8,18 +8,18 @@
 
 //jscpd:ignore-start
 import { DEFAULT_CONFIG, DYNAMIC_TASK_FILE, ENV, normalizeDynamicTaskConfig, parseDynamicTaskJsonc, readDynamicTaskPolicy } from "../../dist/shared/config.js";
-import { assert, describe, it } from "./support/runner.js";
 import { assertAnswer, assertNothing } from "./support/assertions.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /** The repository root, for the source-count pin that cannot retype the path. */
 
-import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
+import { checkAgentCapacity, knownCappedAgents, resolveAgentCaps } from "../../dist/shared/caps.js";
 import { REPO_ROOT } from "./support/corpus.js";
 import { bothCaps } from "./support/fixtures.js";
+import { tmpFilePath, withEnv, withTempFile } from "./support/harness.js";
 
 /**
  * The safe config defaults, asserted as a set. They are one contract — two

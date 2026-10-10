@@ -7,10 +7,10 @@
  */
 
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
-import { READ_BOUNDS, WRITE_BOUNDS, shrinkBoundsForTesting, withBound } from "../../dist/shared/execution-bound.js";
+import { READ_BOUNDS, shrinkBoundsForTesting, WRITE_BOUNDS, withBound } from "../../dist/shared/execution-bound.js";
 import { bounded, sleep } from "./support/harness.js";
 import { deferred } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 const NO_VALUE = Symbol("degradation");

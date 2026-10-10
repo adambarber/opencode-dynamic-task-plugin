@@ -36,35 +36,35 @@
 //jscpd:ignore-start
 import type { Plugin } from "@opencode/plugin/tui";
 import type { DialogSelectOptions } from "@opencode/plugin/tui/context";
-import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
-import type { ModelOverride } from "../shared/model-choice.js";
-import { depthLimits } from "../shared/task-policy.js";
+import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
 import {
   type AgentCapName,
   type AgentOverlay,
   resolveAgentCaps,
 } from "../shared/caps.js";
-import { type ReadOutcome, overlayChannel } from "./overlay-client.js";
-import { rememberVerified, rememberWritten, remembered } from "./local-caps.js";
-import { type AgentCaller, dispatchableAgentNamesOrNull } from "../shared/admission.js";
-import { type OpaqueHost, asOpaqueHost } from "../shared/client.js";
+import { asOpaqueHost, type OpaqueHost } from "../shared/client.js";
+import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
+import type { ModelOverride } from "../shared/model-choice.js";
+import { depthLimits } from "../shared/task-policy.js";
 import {
   type AgentDialog,
   type AgentEntry,
-  CEILING_LABEL,
-  type CapChoice,
-  type CeilingChoice,
-  type EditOutcome,
-  MODEL_LABEL,
-  type ModelChoice,
   agentDialogFrom,
   applyAgentModelEdit,
   applyCapEdit,
   applyCeilingEdit,
   applyGlobalModelEdit,
+  type CapChoice,
+  CEILING_LABEL,
+  type CeilingChoice,
+  type EditOutcome,
+  MODEL_LABEL,
+  type ModelChoice,
   overlayFrom,
 } from "./agent-editor.js";
-import { ChoiceKind, type PickerChoice, agentCapsProps, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps } from "./props.js";
+import { remembered, rememberVerified, rememberWritten } from "./local-caps.js";
+import { overlayChannel, type ReadOutcome } from "./overlay-client.js";
+import { agentCapsProps, ChoiceKind, capPickerProps, ceilingPickerProps, limitsListProps, modelPickerProps, type PickerChoice } from "./props.js";
 
 //jscpd:ignore-end
 /** The host side this screen talks to, named once. The flows below take it everywhere. */

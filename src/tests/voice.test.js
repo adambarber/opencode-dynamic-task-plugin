@@ -8,7 +8,7 @@
  */
 
 //jscpd:ignore-start
-import { TASK_CONTINUE_DESCRIPTION, parentUndelivered } from "../../dist/shared/voice.js";
+import { parentUndelivered, TASK_CONTINUE_DESCRIPTION } from "../../dist/shared/voice.js";
 import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end

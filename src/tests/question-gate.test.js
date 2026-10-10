@@ -16,9 +16,9 @@
 
 //jscpd:ignore-start
 import { answerMatches, answerOmits, answerSays, assertNoticeCount, assertPermissionDenied, stateOf } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
 import { setupHarness, withAskedChild, withChild, withLoggedChild } from "./support/harness.js";
 import { events } from "./support/mock-host.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 describe("permission gate: child asks settle", () => {

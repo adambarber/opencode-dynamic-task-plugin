@@ -8,9 +8,9 @@
 // three edges a cycle.
 
 //jscpd:ignore-start
-import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
-import type { PendingDelivery } from "./notify.js";
 import type { SessionId } from "./ids.js";
+import type { PendingDelivery } from "./notify.js";
+import type { ActiveTaskState, RetainedTaskState } from "./task-state.js";
 
 //jscpd:ignore-end
 /**

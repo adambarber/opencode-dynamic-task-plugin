@@ -20,24 +20,24 @@
 
 //jscpd:ignore-start
 import {
-  NOT_FOUND_REASON,
-  PROTOCOL_NOT_FOUND_TAG,
-  SESSION_NOT_FOUND_TAG,
-  SessionExistence,
-  UntrackedStatus,
   hostTurnInFlight,
   hostTurnRunning,
   isSessionMissing,
+  NOT_FOUND_REASON,
+  PROTOCOL_NOT_FOUND_TAG,
   parentTurnStuck,
   readLiveness,
   readSessionPresence,
+  SESSION_NOT_FOUND_TAG,
+  SessionExistence,
   statusFromHostTurn,
+  UntrackedStatus,
 } from "../../dist/shared/liveness.js";
-import { assert, describe, it } from "./support/runner.js";
-import { clientErrorReasons, hostOutcomeWords } from "./support/sdk-contract.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { compareStrings } from "./support/assertions.js";
 import { opaqueHost } from "./support/opaque-host.js";
+import { assert, describe, it } from "./support/runner.js";
+import { clientErrorReasons, hostOutcomeWords } from "./support/sdk-contract.js";
 
 //jscpd:ignore-end
 // What each verdict the host DECLARES means here. The expectation is the claim; the

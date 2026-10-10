@@ -6,12 +6,13 @@
 // duplicate notice, which is visible, instead of a silent deafness, which is not.
 // At-least-once across a restart, exactly-once within a boot — deliberately.
 // (docs/tasks/11-durability.md, M2)
+
 //jscpd:ignore-start
-import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
-import { LogLevel, safeLog } from "./notify-log.js";
-import { NotifyKind } from "./notification-text.js";
-import type { ParentSession } from "./session-lifecycle.js";
 import type { SessionId } from "./ids.js";
+import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
+import { NotifyKind } from "./notification-text.js";
+import { LogLevel, safeLog } from "./notify-log.js";
+import type { ParentSession } from "./session-lifecycle.js";
 
 //jscpd:ignore-end
 /**

@@ -7,10 +7,11 @@
  * one is read from the dispatching parent's own session, and that the record holds what
  * was resolved rather than what was merely requested.
  */
+
 //jscpd:ignore-start
+import { resetAgentCache } from "../../dist/shared/admission.js";
 import { PARENT, setupHarness, sleep } from "./support/harness.js";
 import { assert, describe, it } from "./support/runner.js";
-import { resetAgentCache } from "../../dist/shared/admission.js";
 
 //jscpd:ignore-end
 const GLOBAL = { modelID: "global-model", providerID: "global-provider" };

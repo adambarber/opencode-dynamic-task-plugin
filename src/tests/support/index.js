@@ -9,13 +9,13 @@
  * twenty files, and a suite's import list stays short enough to read.
  */
 
-export * from "./runner.js";
 export * from "./assertions.js";
-export * from "./harness.js";
-export * from "./mock-host.js";
-export * from "./faults.js";
-export * from "./integration.js";
 export * from "./dispatch-wait-scenario.js";
+export * from "./faults.js";
 export * from "./gate-world.js";
-export * from "./stop-scenarios.js";
+export * from "./harness.js";
+export * from "./integration.js";
+export * from "./mock-host.js";
 export * from "./opaque-host.js";
+export * from "./runner.js";
+export * from "./stop-scenarios.js";

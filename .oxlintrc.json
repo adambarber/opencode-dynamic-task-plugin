@@ -13,6 +13,7 @@
     "restriction": "off"
   },
   "rules": {
+    "sort-imports": "off",
     "typescript/no-explicit-any": "deny",
     "typescript/no-unsafe-type-assertion": "deny",
     "typescript/no-unnecessary-type-assertion": "deny",

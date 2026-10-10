@@ -24,7 +24,7 @@
  */
 
 //jscpd:ignore-start
-import { assert } from "./support/runner.js";
+import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 
 import {
@@ -37,7 +37,7 @@ import {
   sleep,
   withChild,
 } from "./support/index.js";
-import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
+import { assert } from "./support/runner.js";
 
 //jscpd:ignore-end
 /**

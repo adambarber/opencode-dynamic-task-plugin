@@ -13,14 +13,14 @@
 // duplication of the code under test rather than of the fixture.
 
 //jscpd:ignore-start
-import { LEDGER_KEYS, createLedgerStore } from "../../../dist/shared/ledger-storage.js";
-import { afterEach, assert, beforeEach } from "./runner.js";
-import { createMockClient } from "./mock-host.js";
-import { createStateFacade } from "../../../dist/shared/state-facade.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
-import { createTaskStore } from "../../../dist/shared/task-state.js";
-import { opaqueHost } from "./opaque-host.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
+import { createLedgerStore, LEDGER_KEYS } from "../../../dist/shared/ledger-storage.js";
+import { createStateFacade } from "../../../dist/shared/state-facade.js";
+import { createTaskStore } from "../../../dist/shared/task-state.js";
+import { createMockClient } from "./mock-host.js";
+import { opaqueHost } from "./opaque-host.js";
+import { afterEach, assert, beforeEach } from "./runner.js";
 
 //jscpd:ignore-end
 /** Small enough that a hung host costs a case milliseconds rather than seconds. */

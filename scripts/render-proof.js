@@ -16,8 +16,8 @@
  */
 //jscpd:ignore-start
 import { RGBA, TextAttributes } from "@opentui/core";
-import { jsx } from "@opentui/solid/jsx-runtime";
 import { testRender } from "@opentui/solid";
+import { jsx } from "@opentui/solid/jsx-runtime";
 
 //jscpd:ignore-end
 /** The colours a dark terminal hands the host, which is where `theme.text` comes from. */

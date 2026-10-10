@@ -10,14 +10,15 @@
  * client reader. Only the host's key-value table is faked, because that is the one
  * boundary a test may own: it is the host's storage, not ours.
  */
+
 //jscpd:ignore-start
-import { assert, describe, it } from "./support/runner.js";
 import { liveAgentCaps, resetLiveAgentCaps } from "../../dist/shared/caps.js";
 import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
-import { createMockClient } from "./support/mock-host.js";
-import { overlayChannel } from "./support/overlay-channel.js";
 import { overlayKey } from "../../dist/shared/overlay-store.js";
 import { withTempDir } from "./support/fixtures.js";
+import { createMockClient } from "./support/mock-host.js";
+import { overlayChannel } from "./support/overlay-channel.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /** The base a bare boot would have in force: defaults, with nothing stated. */

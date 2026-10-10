@@ -16,13 +16,14 @@
  * --noEmit`, the authoritative gate, fails on the regression itself. That is the
  * opposite of `any`, which fails silently in the same situation.
  */
+
 //jscpd:ignore-start
-import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 import type { DependencyWait } from "../shared/dispatch-wait.js";
-import type { TaskStore } from "../shared/store.js";
-import { UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
-import { createTaskStore } from "../shared/store.js";
 import { sessionIdOf } from "../shared/ids.js";
+import { UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
+import type { TaskStore } from "../shared/store.js";
+import { createTaskStore } from "../shared/store.js";
+import type { ActiveTaskState, RetainedTaskState } from "../shared/task-state.js";
 
 //jscpd:ignore-end
 const store = createTaskStore();

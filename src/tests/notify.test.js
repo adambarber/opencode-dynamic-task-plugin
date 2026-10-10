@@ -1,11 +1,13 @@
+
 //jscpd:ignore-start
-import { answeredClient, boot, gate, heldWriteClient, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
-import { assert, describe, it } from "./support/runner.js";
 import { formatParentNotification, isParentNotification, notificationTag } from "../../dist/shared/notification-text.js";
 import { gateLedger, getLatestNotification, noticeDedupKey, notifyParent, truncateText } from "../../dist/shared/notify.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { bounded } from "./support/harness.js";
+import { answeredClient, boot, gate, heldWriteClient, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
 import { opaqueHost } from "./support/opaque-host.js";
+import { assert, describe, it } from "./support/runner.js";
+
 //jscpd:ignore-end
 describe("notify: the redelivery budget", () => {
   // The arrangement every case here is a variation of: one child, one owed

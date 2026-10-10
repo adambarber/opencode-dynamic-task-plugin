@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+//jscpd:ignore-start
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+//jscpd:ignore-end
 /**
  * Mark every import declaration as outside the duplicate-code gate, and PROVE that
  * nothing else is.
@@ -32,11 +35,8 @@
  *
  * Run with `--check` to verify, with no flag to apply.
  */
-//jscpd:ignore-start
 import { join, relative } from "node:path";
-import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
-//jscpd:ignore-end
 const START = "//jscpd:ignore-start";
 const END = "//jscpd:ignore-end";
 const ROOT = new URL("..", import.meta.url).pathname;

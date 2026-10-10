@@ -6,13 +6,12 @@
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
 //jscpd:ignore-start
-import { type FailureReporter, type OpaqueHost, callHost, fireAndForget } from "./client.js";
-import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
-import { hostPayload } from "./host-events.js";
-import { errorMessage } from "./host-shape.js";
-import { eventField, eventString, isEventRecord } from "./host-shape.js";
+import { callHost, type FailureReporter, fireAndForget, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
+import { hostPayload } from "./host-events.js";
+import { errorMessage, eventField, eventString, isEventRecord } from "./host-shape.js";
 import type { Verdict } from "./verdict.js";
+import { MAX_PROMPT_CHARS, promptTooLong } from "./voice.js";
 
 //jscpd:ignore-end
 // ─── invokePrompt ──────────────────────────────────────────────────

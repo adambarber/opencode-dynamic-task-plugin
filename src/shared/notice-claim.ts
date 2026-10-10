@@ -9,9 +9,9 @@
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
 //jscpd:ignore-start
-import type { ActiveTaskState } from "./task-state.js";
 import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
+import type { ActiveTaskState } from "./task-state.js";
 import { activeFor, annotateActive } from "./task-state.js";
 
 //jscpd:ignore-end

@@ -1,10 +1,9 @@
 //jscpd:ignore-start
 import assert from 'node:assert';
 import path from 'node:path';
-
-import { describe, it } from './support/runner.js';
-import { createMockClient } from './support/mock-host.js';
 import { hostCallSites } from './support/host-calls.js';
+import { createMockClient } from './support/mock-host.js';
+import { describe, it } from './support/runner.js';
 
 //jscpd:ignore-end
 /**

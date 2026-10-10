@@ -20,11 +20,11 @@
  */
 
 //jscpd:ignore-start
-import { answerMatches, assertNoticeCount } from "./support/assertions.js";
-import { assert, describe, it } from "./support/runner.js";
-import { promptsTo, sleep } from "./support/harness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
+import { answerMatches, assertNoticeCount } from "./support/assertions.js";
+import { promptsTo, sleep } from "./support/harness.js";
 import { childFailingWith } from "./support/integration.js";
+import { assert, describe, it } from "./support/runner.js";
 
 //jscpd:ignore-end
 /** The prompts sent TO a child, as text. The spawn prompt is always the first. */

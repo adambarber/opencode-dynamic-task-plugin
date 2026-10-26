@@ -46,8 +46,8 @@ export const bothCaps = (maxConcurrent, maxDepth) => ({ maxConcurrent, maxDepth 
  * once, so a test states its intent ("a second agent") instead of a field list
  * whose defaults could drift from the production param type.
  */
-export const childParams = ({ id, parent = "parent_1", agent = "explore", description = "test", lineage = [] } = {}) =>
-  ({ agentName: agent, childSessionId: id, description, lineage, parentSessionId: parent });
+export const childParams = ({ id, parent = "parent_1", agent = "explore", label, description = "test", lineage = [] } = {}) =>
+  ({ agentName: agent, childSessionId: id, description, lineage, parentSessionId: parent, ...(label === undefined ? {} : { agentLabel: label }) });
 
 /**
  * A fresh directory under the OS temp dir, for a case that needs a real path.

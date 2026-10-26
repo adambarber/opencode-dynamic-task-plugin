@@ -37,6 +37,8 @@ interface ValidLedgerEntry extends TaskIdentity {
   requestedModel?: unknown;
   abortError?: unknown;
   failureClass?: unknown;
+  /** Restored-but-unvalidated: the guard below narrows this to what it claims. */
+  transientResumes?: unknown;
 }
 
 function isValidLedgerEntry(value: unknown): value is ValidLedgerEntry {
@@ -135,8 +137,16 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
   const {dependsOn} = entry;
   const {dependsOnSettled} = entry;
   const {requestedModel} = entry;
+  const {transientResumes} = entry;
+  // Read as the unknown it may be — the record is untrusted even where its own
+  // interface names the field, so the narrowing guard decides, not the type.
+  const agentLabel: unknown = (entry as { agentLabel?: unknown }).agentLabel;
   return {
     agentName: entry.agentName,
+    // The display label snapshotted at dispatch, restored with the record: the
+    // durable reader is the only rebuild a restart performs, and a label it
+    // drops renders the agent's registry id to the operator.
+    ...(typeof agentLabel === "string" && agentLabel.length > 0 ? { agentLabel } : {}),
     childSessionId: entry.childSessionId,
     description: entry.description,
     // `agentName` above is the whole routing key now. A record written by an older
@@ -156,6 +166,15 @@ function hydratedBase(entry: ValidLedgerEntry): TaskRecordBase {
       && typeof requestedModel.providerID === "string"
       && typeof requestedModel.modelID === "string"
       ? { requestedModel: { modelID: requestedModel.modelID, providerID: requestedModel.providerID } }
+      : {}),
+    // The automatic-retry budget, restored with the record: it is durable ON
+    // PURPOSE (it is deliberately not an advisory field), because a budget that
+    // resets on boot is no budget at all — every restart would re-approve the
+    // full allowance and the revival loop would be unbounded across a restart
+    // storm. Validated like every other restored field: a count this build
+    // cannot speak is DROPPED rather than guessed.
+    ...(typeof transientResumes === "number" && Number.isInteger(transientResumes) && transientResumes >= 0
+      ? { transientResumes }
       : {}),
   };
 }

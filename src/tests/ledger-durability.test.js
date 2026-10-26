@@ -160,3 +160,34 @@ describe("durable ledger — what a restart would believe", () => {
     assert.equal(rebuilt.dropped > 0, true, "the contradiction is reported, not silently resolved");
   });
 });
+
+describe("hydration: the revival budget survives a restart", () => {
+  // `transientResumes` is deliberately not an advisory field: it is the ONLY
+  // bound on the automatic-retry loop, and a budget that resets on boot is no
+  // budget at all during the outage it exists for. `hydratedBase` rebuilt the
+  // record field by field and dropped it — every restart re-approved two more
+  // auto-revivals per child, which is the unbounded revival loop across a
+  // restart storm. `agentLabel` (the display name) was dropped the same way.
+
+  it("an active record's spent budget and display label read back after a restart", async () => {
+    const { world: durableWorld, store } = await durable.durableTask(async (taskWorld, taskStore) => {
+      // The registration the spawn tool hands the store: the registry id routes,
+      // the display label rides the record beside it.
+      registerActiveTask(taskStore, childParams({ agent: "reviewer", id: "ses_c1", label: "Reviewer" }), defaultConfig);
+      transitionState(taskStore, "ses_c1", "completed");
+      await taskWorld.settle(taskStore);
+      reviveRetainedTask(taskStore, "ses_c1");
+      await taskWorld.settle(taskStore);
+    });
+
+    assert.equal(store.activeTasks.get("ses_c1")?.transientResumes, 1, "one revival was spent in this process");
+
+    // A restart: the next process reads ONLY what the host holds. The budget it
+    // must see is the one that was spent — spent 1 + restart → still spent 1, so
+    // only 1 more auto-revive can ever be approved, not a fresh 2.
+    const restart = await durableWorld.read();
+    const restored = restart.active.get("ses_c1");
+    assert.equal(restored?.transientResumes, 1, "the budget SURVIVES the restart");
+    assert.equal(restored?.agentLabel, "Reviewer", "and the display label rides the restart too");
+  });
+});

@@ -36,18 +36,14 @@ import {
 import { isParentless } from "./session-lifecycle.js";
 import { type SettlementVerdict, TaskState } from "./task-state.js";
 
+export { configureDeliveryClaims, forgetChildDeliveryClaims, resetDeliveryClaims } from "./delivery-claim.js";
 export { NOTIFY_KINDS } from "./notification-text.js";
 export { gateLedger } from "./notify-gate.js";
-export { containFailure, safeLog } from "./notify-log.js";
-export { configureDeliveryClaims, forgetChildDeliveryClaims, resetDeliveryClaims } from "./delivery-claim.js";
+export { containFailure, LogLevel, safeLog } from "./notify-log.js";
+export type { PendingDelivery } from "./notify-queue.js";
 export { configurePendingPersistence, getPendingDeliveries, owedDelivery, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
 export type { NotificationRecord } from "./notify-records.js";
 export { getLatestNotification, getTurnNotification, notifyRecord, recordNotification } from "./notify-records.js";
-
-
-
-export { LogLevel } from "./notify-log.js";
-export type { PendingDelivery } from "./notify-queue.js";
 
 
 /**
@@ -333,9 +329,11 @@ export async function notifyParent(
   };
   const commit = (outcome: DeliveryOutcome) => {
     // A write that did NOT land is not a delivery, so its durable claim is freed and
-    // the queued debt may be offered again — here or in another process. This runs
+    // the queued debt may be offered again — here or in another process. A REVOKED
+    // claim held nothing (see `run`), so its failure frees nothing. This runs
     // first, so the two staleness exits below also free it.
-    if (!outcome.delivered && kind !== NotifyKind.Notice) releaseDeliveryClaim(opts.childSessionId, dedupKey);
+    if (!outcome.delivered && kind !== NotifyKind.Notice && !unreserved)
+      releaseDeliveryClaim(opts.childSessionId, dedupKey);
     // Three kinds of staleness, checked before anything is written.
     //
     // Retired: this debt spent its redelivery budget and has been written off.
@@ -362,6 +360,37 @@ export async function notifyParent(
     emit(outcome);
     return outcome.delivered;
   };
+  // A claim that was REVOKED mid-window (a revival cleared it — see ClaimOutcome)
+  // means this delivery dialed WITHOUT a durable reservation: nothing is held, so
+  // neither a failure nor a later success may write or free the key.
+  let unreserved = false;
+  // The refusal word the deferral arm reports; set at the one call site.
+  let refusalWord = "unavailable";
+  /** A revocation or a claim loss: this delivery stands down without paying the debt. */
+  const standDown = async () => {
+    gateLedger.release(claim);
+    dropPending({ ...owed, attempts: carried });
+    if (epoch === currentGateEpoch()) emit({ attempts: carried, delivered: false, suppressed: true });
+    return false;
+  };
+  /**
+   * The deferral arm: a debt the parent has ALREADY refused once is re-queued
+   * rather than written. The long comment living with the code is in `run`, at
+   * the one call site — this is its body, named so `run` stays one screen.
+   */
+  const deferDebt = async () => {
+    const dropped = queuePending({ ...owed, attempts: carried + 1 });
+    if (epoch === currentGateEpoch()) emit({ attempts: carried + 1, delivered: false, pending: true });
+    void safeLog(LogLevel.Warn, `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusalWord}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
+    announceDropped(dropped);
+    // The claim goes back, because nothing was written and the debt is still
+    // live: holding it would make every LATER obligation for this child and
+    // kind permanently unwritable, because this is a refusal rather than a
+    // delivery and no revival is coming to clear it.
+    if (epoch === currentGateEpoch()) gateLedger.release(claim);
+    if (kind !== NotifyKind.Notice && !unreserved) releaseDeliveryClaim(opts.childSessionId, dedupKey);
+    return false;
+  };
   const run = async (): Promise<boolean> => {
     // The CROSS-PROCESS claim, before any dial. Every opencode process on a project
     // receives the same terminal event and would each settle and dial the parent;
@@ -370,12 +399,9 @@ export async function notifyParent(
     // re-queued — it is paid, not owed. A notice is not claimed here: it is delivered
     // by the one process that serviced the child's tool call, so it is never broadcast,
     // and its finer per-text dedup stays in memory.
-    if (kind !== NotifyKind.Notice && !(await takeDeliveryClaim(opts.childSessionId, dedupKey))) {
-      gateLedger.release(claim);
-      dropPending({ ...owed, attempts: carried });
-      if (epoch === currentGateEpoch()) emit({ attempts: carried, delivered: false, suppressed: true });
-      return false;
-    }
+    const claimOutcome = kind === NotifyKind.Notice ? "own" : await takeDeliveryClaim(opts.childSessionId, dedupKey);
+    if (claimOutcome === "taken") return standDown();
+    unreserved = claimOutcome === "revoked";
     // A debt that has ALREADY been refused once, offered to a parent that is
     // mid-turn, is DEFERRED rather than written. Measured 2026-09-28: a parent
     // was admitted a turn that never reached the model and never exited, so the
@@ -411,17 +437,8 @@ export async function notifyParent(
         // window where a notification exists in memory and on no disk is the crash
         // the queue exists for, and a refusal is not a reason to lose it. The
         // re-armed count is the one this boot spent.
-        const dropped = queuePending({ ...owed, attempts: carried + 1 });
-        if (epoch === currentGateEpoch()) emit({ attempts: carried + 1, delivered: false, pending: true });
-        void safeLog(LogLevel.Warn, `Dynamic task plugin: ${parentSessionId} will not take this notification — it is ${refusal}. The write was not attempted, and the debt is still owed (attempt ${carried + 1} of ${maxAttempts}); it is written off when that bound is crossed.`);
-        announceDropped(dropped);
-        // The claim goes back, because nothing was written and the debt is still
-        // live: holding it would make every LATER obligation for this child and
-        // kind permanently unwritable, because this is a refusal rather than a
-        // delivery and no revival is coming to clear it.
-        if (epoch === currentGateEpoch()) gateLedger.release(claim);
-        if (kind !== NotifyKind.Notice) releaseDeliveryClaim(opts.childSessionId, dedupKey);
-        return false;
+        refusalWord = refusal;
+        return deferDebt();
       }
     }
     // The request is made ONCE and kept, because "slow" and "never" are the

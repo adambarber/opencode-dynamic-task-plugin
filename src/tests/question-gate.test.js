@@ -26,7 +26,7 @@ describe("permission gate: child asks settle", () => {
       { decision: "reject", requestID: "q1", sessionID: calls[0]?.sessionID },
       "v2 answers a whole request with one decision word, and deny is the only one this plugin grants",
     );
-    assertNoticeCount(h, 0, "a denied ask is settled, not a stall");
+    await assertNoticeCount(h, 0, "a denied ask is settled, not a stall");
   });
 
   // A refusal has no body in v2 — `permission.reply` carries a decision and nothing
@@ -53,7 +53,7 @@ describe("permission gate: child asks settle", () => {
     await h.fireEvent(events.permissionAsked(undefined, { action: "edit", id: "q1", resources: [] }));
     await h.fireEvent(events.ask("ses_stranger", "q9"));
     await h.fireEvent(events.permissionReplied({ requestID: "q1" }));
-    assertNoticeCount(h, 0, "no parent traffic for asks");
+    await assertNoticeCount(h, 0, "no parent traffic for asks");
     assert.strictEqual(h.permissionCalls().length, 0, "never touches foreign asks");
   });
 

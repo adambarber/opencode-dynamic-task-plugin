@@ -166,7 +166,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // than a file open — and `initPluginState` is async because of it. Nothing below
   // this line may still be waiting on a filesystem.
   const facade = createStateFacade(createStore(host, reportRefusal));
-  const ledger = createLedgerStore(facade);
+  const ledger = createLedgerStore(facade, directory);
   const read = await ledger.load();
 
   // The issued-but-unanswered create records ride the SAME store and therefore the
@@ -203,7 +203,7 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // The cross-process delivery claim rides the SAME facade, so a settlement this
   // process delivers is visible to every other opencode process on the project
   // before it dials — the half the in-memory gate cannot reach.
-  configureDeliveryClaims(createDeliveryClaimStore(facade));
+  configureDeliveryClaims(createDeliveryClaimStore(facade, directory));
 
   // Crash recovery: rehydrate retained tasks and the running set, and take
   // ownership of the notices the last boot owed.

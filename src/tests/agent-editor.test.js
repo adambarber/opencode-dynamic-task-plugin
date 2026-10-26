@@ -201,9 +201,10 @@ describe("the limits list", () => {
     assert.equal(namedCell(capCellOf(row, "maxDepth")), `${BASE.maxDepth} ${INHERITED}`);
   });
 
-  it("and the terse spelling, which is what the list prints, drops the annotation entirely", () =>
+  it("and the terse spelling, which is what the list prints, drops the annotation entirely", () => {
     const cell = capCellOf(oneStated(), "maxDepth");
-    assert.equal(terseCell(cell), `${BASE.maxDepth}`, "a figure, with no adjective beside it"));
+    assert.equal(terseCell(cell), `${BASE.maxDepth}`, "a figure, with no adjective beside it");
+  });
 
   it("still offers rows when the overlay is a shape it cannot read, because repair is why it was opened", () => {
     const { rows, problem } = agentDialogFrom({ agents: [1, 2, 3] }, BASE, AGENTS, false, "that is not an object");

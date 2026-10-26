@@ -133,7 +133,40 @@ export function answerOmits(answer, reason, note) {
  * one place, and the notice bodies ride in the failure, because "told twice" and
  * "told the wrong thing twice" are different bugs wearing the same symptom.
  */
-export function assertNoticeCount(h, count, why) {
+/**
+ * Wait until the notification stream has gone QUIESCENT — no new notice for two
+ * polls, longer than the durable claim's 20ms window plus its chain settle. The
+ * primitive beneath `assertNoticeCount`: a test that needs a BASELINE (not an
+ * assertion) calls this first, so whatever the arrangement legitimately delivered
+ * has landed before the count is snapshotted.
+ */
+export async function drainNotices(h) {
+  let stable = 0;
+  const deadline = Date.now() + 2000;
+  while (stable < 2 && Date.now() < deadline) {
+    const seen = h.notices().length;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    stable = h.notices().length === seen ? stable + 1 : 0;
+  }
+}
+
+export async function assertNoticeCount(h, count, why) {
+  await drainNotices(h);
+  // Delivery rides the durable claim's bounded window now, so a count read at
+  // time zero is the PREVIOUS settlements' total — it fails by arithmetic, not
+  // by behavior. The count is SETTLED, not read: wait until no new notice has
+  // arrived for two polls (longer than the claim's 20ms quiescence plus its
+  // chain settle), with a ceiling that fails rather than hangs. A quiescent
+  // read is honest in BOTH directions — "reached N" and "stayed N" — which a
+  // reach-only wait would not be: a once-only claim needs the late arrivals to
+  // have landed before it can say "exactly".
+  let stable = 0;
+  const deadline = Date.now() + 2000;
+  while (stable < 2 && Date.now() < deadline) {
+    const seen = h.notices().length;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    stable = h.notices().length === seen ? stable + 1 : 0;
+  }
   const notices = h.notices();
   const bodies = notices.map((n) => n.message.split("\n")[1] ?? n.message);
   assert.strictEqual(notices.length, count, `${why}. notices: ${bodies.join(" | ")}`);

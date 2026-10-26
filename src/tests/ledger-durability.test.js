@@ -17,10 +17,10 @@
 
 import assert from "node:assert/strict";
 import { FailureClass } from "../../dist/shared/failure-class.js";
-import { LEDGER_PREFIXES } from "../../dist/shared/ledger-storage.js";
+import { ledgerPrefixes } from "../../dist/shared/ledger-storage.js";
 import { TaskState } from "../../dist/shared/task-records.js";
 import { recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState } from "../../dist/shared/task-state.js";
-import { childParams, defaultConfig, describe, durable, it, ledgerSays } from "./support/index.js";
+import { childParams, defaultConfig, describe, durable, it, ledgerSays, WORLD_DIRECTORY } from "./support/index.js";
 
 /**
  * One child registered and settled to `failureClass`, so the durable table holds a
@@ -56,7 +56,7 @@ async function assertRestartBelieves(world, [field, value], why) {
  * remembered something, which is not what the ledger is for.
  */
 async function assertDurableAndReadBack(world, [field, value], why) {
-  assert.equal(ledgerSays(world.kv).tasks.ses_c1[field], value, `durable state — ${why}`);
+  assert.equal(ledgerSays(world.kv, WORLD_DIRECTORY).tasks.ses_c1[field], value, `durable state — ${why}`);
   return assertRestartBelieves(world, [field, value], `a restart reads it back — ${why}`);
 }
 
@@ -76,7 +76,7 @@ async function classRidesCorrection() {
 async function withAnUnknownClassWord() {
   const { world } = await afterOneSettledChild(FailureClass.Structural);
   renameToUnknownWord(world.kv);
-  assert.equal(ledgerSays(world.kv).tasks.ses_c1.failureClass, "flaky", "the word is in durable state, or the case proves nothing");
+  assert.equal(ledgerSays(world.kv, WORLD_DIRECTORY).tasks.ses_c1.failureClass, "flaky", "the word is in durable state, or the case proves nothing");
   return world;
 }
 
@@ -88,7 +88,7 @@ async function thatClassSurvives(failureClass) {
 
 /** Rewrites the settled class to a word this build does not speak. */
 const renameToUnknownWord = (kv) => {
-  const [key, value] = [...kv].find(([row]) => row.startsWith(`${LEDGER_PREFIXES.retained}/`));
+  const [key, value] = [...kv].find(([row]) => row.startsWith(`${ledgerPrefixes(WORLD_DIRECTORY).retained}/`));
   const edited = JSON.parse(value);
   edited.failureClass = "flaky";
   kv.set(key, JSON.stringify(edited));
@@ -97,7 +97,7 @@ const renameToUnknownWord = (kv) => {
 describe("durable ledger — what a restart would believe", () => {
   it("records a late error escalation as error, and a restart reads it as error", async () => {
     const { world, store } = await afterOneSettledChild();
-    assert.equal(ledgerSays(world.kv).tasks.ses_c1.state, "completed", "the seeded record starts as a recorded success");
+    assert.equal(ledgerSays(world.kv, WORLD_DIRECTORY).tasks.ses_c1.state, "completed", "the seeded record starts as a recorded success");
 
     recordSettledOutcome(store, "ses_c1", "error");
     await world.settle(store);
@@ -139,7 +139,7 @@ describe("durable ledger — what a restart would believe", () => {
     reviveRetainedTask(store, "ses_c1");
     await world.settle(store);
 
-    const held = ledgerSays(world.kv);
+    const held = ledgerSays(world.kv, WORLD_DIRECTORY);
     assert.equal(held.active.ses_c1?.state, TaskState.Active, "the revived child is running");
     assert.equal(held.tasks.ses_c1, undefined, "and is not ALSO still sitting in settled history");
 
@@ -152,7 +152,7 @@ describe("durable ledger — what a restart would believe", () => {
     // it — it stopped doing so in the fix above — but that any writer may: a regression,
     // a merge, an edit, a bug fixed in one place and reintroduced in another. The reader
     // is the only place that cannot regress, because it is where the question is asked.
-    world.kv.set(`${LEDGER_PREFIXES.retained}/ses_c1`, JSON.stringify({ ...held.active.ses_c1, retainedAt: 1, state: TaskState.Completed }));
+    world.kv.set(`${ledgerPrefixes(WORLD_DIRECTORY).retained}/ses_c1`, JSON.stringify({ ...held.active.ses_c1, retainedAt: 1, state: TaskState.Completed }));
 
     const rebuilt = await world.read();
     assert.equal(rebuilt.retained.has("ses_c1"), false, "the settled half does not survive state that also calls the child running");

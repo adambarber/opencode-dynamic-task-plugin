@@ -155,6 +155,18 @@ export function withBound<T, D>(
   });
 }
 
+/**
+ * A wall-clock sleep, as the bound funnels own it: a `withBound` whose work never
+ * finishes, so the ONLY way out is the deadline — and the deadline arm's value is
+ * undefined, because a sleep has no result to report. The caller waits exactly `ms`
+ * and cannot overrun: the same invariant `withBound` gives every other wait, applied
+ * to the one wait whose whole body IS time. This is the SECOND sanctioned timer in
+ * this file (withBound's own deadline is the first), and the gate pins that count.
+ */
+export function boundedSleep(ms: number): Promise<void> {
+  return withBound(ms, () => new Promise<void>(() => {}), undefined).then(() => undefined);
+}
+
 // A transcript read is one call to a local server. Generous enough to survive a
 // loaded machine, far short of the minutes a parent waits before assuming its
 // child is stuck.
@@ -236,38 +248,21 @@ export const WRITE_BOUNDS: {
  * The alternative is a suite that burns two seconds of wall clock per deadline
  * it wants to observe, which is not a test of the code, it is a test of the
  * runner. Nothing in production calls this, and the mechanism stays where it
- * was: a test may shorten a deadline, never substitute for one.
+ * was: a test may shorten a deadline, never substitute for one. Table-driven so
+ * a NEW bound is added to the table, not to three hand-written statement groups
+ * that can drift apart.
  */
+/** The read bounds whose patience a test may shrink, in one place. */
+const READ_KEYS = ["transcript", "agents", "presence", "storage"] as const;
+const WRITE_KEYS = ["parentPrompt", "abort", "create", "question", "storage"] as const;
+
 export function shrinkBoundsForTesting(ms: number): () => void {
-  const read = READ_BOUNDS.transcript;
-  const {agents} = READ_BOUNDS;
-  const {presence} = READ_BOUNDS;
-  const write = WRITE_BOUNDS.parentPrompt;
-  const {abort} = WRITE_BOUNDS;
-  const {create} = WRITE_BOUNDS;
-  const {question} = WRITE_BOUNDS;
-  const {storage} = WRITE_BOUNDS;
-  const {storage: storageRead} = READ_BOUNDS;
-  READ_BOUNDS.transcript = ms;
-  READ_BOUNDS.agents = ms;
-  // Shortened like every other read: the seam changes patience, not the
-  // production separation between the presence question and the transcript one.
-  READ_BOUNDS.presence = ms;
-  READ_BOUNDS.storage = ms;
-  WRITE_BOUNDS.parentPrompt = ms;
-  WRITE_BOUNDS.abort = ms;
-  WRITE_BOUNDS.create = ms;
-  WRITE_BOUNDS.question = ms;
-  WRITE_BOUNDS.storage = ms;
+  const readSaved = READ_KEYS.map((key) => [key, READ_BOUNDS[key]] as const);
+  const writeSaved = WRITE_KEYS.map((key) => [key, WRITE_BOUNDS[key]] as const);
+  for (const key of READ_KEYS) READ_BOUNDS[key] = ms;
+  for (const key of WRITE_KEYS) WRITE_BOUNDS[key] = ms;
   return () => {
-    READ_BOUNDS.transcript = read;
-    READ_BOUNDS.agents = agents;
-    READ_BOUNDS.presence = presence;
-    READ_BOUNDS.storage = storageRead;
-    WRITE_BOUNDS.parentPrompt = write;
-    WRITE_BOUNDS.abort = abort;
-    WRITE_BOUNDS.create = create;
-    WRITE_BOUNDS.question = question;
-    WRITE_BOUNDS.storage = storage;
+    for (const [key, was] of readSaved) READ_BOUNDS[key] = was;
+    for (const [key, was] of writeSaved) WRITE_BOUNDS[key] = was;
   };
 }

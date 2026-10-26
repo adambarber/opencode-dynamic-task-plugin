@@ -36,7 +36,7 @@ const childPrompts = (h, id) => promptsTo(h.client, id).map((p) => p.text ?? "")
 const noticesAfterSettle = async (h, id, expected, why, wait = 30) => {
   await h.settle(id);
   await sleep(wait);
-  assertNoticeCount(h, expected, why);
+  await assertNoticeCount(h, expected, why);
   return h.noticeBodies();
 };
 

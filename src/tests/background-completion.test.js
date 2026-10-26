@@ -9,7 +9,7 @@
  */
 
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { assert, beforeEach, describe, events, it, renderedAgeSeconds, setupHarness, sleep, textDeclaresKind } from "./support/index.js";
+import { assert, beforeEach, describe, events, it, renderedAgeSeconds, setupHarness, sleep, textDeclaresKind, waitFor } from "./support/index.js";
 
 describe("Background Task Settlement", () => {
   let harness = null;
@@ -31,9 +31,11 @@ describe("Background Task Settlement", () => {
    * failure message. The COUNT is the contract this file exists to check — a
    * settlement that notifies twice, or a duplicate that never got dialed, is
    * invisible in the text of any single notice — so it gets one assertion shape
-   * instead of a hand-written pair per test.
+   * instead of a hand-written pair per test. Delivery rides the durable claim's
+   * bounded window now, so a count is WAITED on, never read at time zero.
    */
-  const assertNotices = (expected, why) => {
+  const assertNotices = async (expected, why) => {
+    await waitFor(() => harness.noticeBodies().length === expected, why);
     const notes = harness.noticeBodies();
     assert.strictEqual(notes.length, expected, `${why}. got ${notes.length}: ${JSON.stringify(notes)}`);
   };
@@ -41,7 +43,7 @@ describe("Background Task Settlement", () => {
   async function expectSingleNotification({ parentId, description, buildEvent, kind, why: kindWhy }) {
     const childId = await spawn(parentId, description);
     await harness.fireEvent(buildEvent(childId));
-    assertNotices(1, "exactly 1 notification");
+    await assertNotices(1, "exactly 1 notification");
     const [note] = harness.noticeBodies();
     textDeclaresKind(note, kind, kindWhy);
     return childId;
@@ -57,7 +59,7 @@ describe("Background Task Settlement", () => {
       sleep(2000).then(() => false),
     ]);
     assert.ok(settled, "the event head must not serialize on the log round-trip");
-    assertNotices(1, "settlement still notifies");
+    await assertNotices(1, "settlement still notifies");
   });
 
   it("spawns return immediately with a session id", async () => {
@@ -95,7 +97,7 @@ describe("Background Task Settlement", () => {
       await harness.fireEvent(events.idle(child));
     }
 
-    assertNotices(3, "3 notifications for 3 completions");
+    await assertNotices(3, "3 notifications for 3 completions");
     for (const { parent, child } of children) {
       const note = harness.noticeFor(child);
       assert.ok(note, `notification must reference ${child}`);
@@ -120,14 +122,14 @@ describe("Background Task Settlement", () => {
     for (let i = 0; i < 3; i++) {
       await harness.fireEvent(events.idle(childId));
     }
-    assertNotices(1, "first event wins; later ones are no-ops");
+    await assertNotices(1, "first event wins; later ones are no-ops");
     assert.match(harness.noticeBodies()[0], /completed/i);
   });
 
   it("the plugin arms no timers: silence follows a spawn until an event arrives", async () => {
     const childId = await spawn("patient_parent", "No-timer test");
     await sleep(250);
-    assertNotices(0, "nothing settles without an event");
+    await assertNotices(0, "nothing settles without an event");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("active"), `task remains tracked and active. Got: ${detail}`);
   });
@@ -138,17 +140,17 @@ describe("Background Task Settlement", () => {
     // delivers it twice: the second time it must change nothing.
     const contradicts = () => harness.fireEvent(events.error(childId));
     await harness.fireEvent(events.idle(childId));
-    assertNotices(1, "success first");
+    await assertNotices(1, "success first");
 
     await contradicts();
-    assertNotices(2, "the contradicting failure is reported");
+    await assertNotices(2, "the contradicting failure is reported");
     textDeclaresKind(harness.noticeBodies()[1], "error", "the contradiction is reported as one");
     const detail = await harness.tool.task_status.execute({ session_id: childId });
     assert.ok(detail.includes("error"), `record escalates completed→error. Got: ${detail}`);
 
     // A second error event cannot re-notify or regress the record further.
     await contradicts();
-    assertNotices(2, "escalation happens once");
+    await assertNotices(2, "escalation happens once");
   });
 
   // WHICH kind of failure it was is the fact a parent most needs, and a failure
@@ -169,13 +171,13 @@ describe("Background Task Settlement", () => {
     it(`a late failure is recorded and announced as ${className}`, async () => {
       const childId = await spawn(`late_${className}_parent`, `late ${className}`);
       await harness.fireEvent(events.idle(childId));
-      assertNotices(1, "the success is notified first");
+      await assertNotices(1, "the success is notified first");
 
       harness.client.setTranscript(childId, [{ info: { error: { data: { message: detail } }, role: ASSISTANT_ROLE } }]);
-      await harness.fireEvent(events.error(childId));
+      const note = await harness.noticeAfter(events.error(childId));
 
       assert.match(
-        harness.noticeBodies()[1],
+        note.message,
         new RegExp(`Failure class: ${className}`),
         "the parent is told which kind of failure it is",
       );
@@ -202,8 +204,7 @@ describe("Background Task Settlement", () => {
     const childId = await spawn("late_clean_parent", "Late clean");
     await harness.settle(childId);
     const { error: terminal } = events;
-    await harness.fireEvent(terminal(childId));
-    const [, late] = harness.notices();
+    const late = await harness.noticeAfter(terminal(childId));
     textDeclaresKind(late.message, "error", "the late failure is reported as one");
     assert.doesNotMatch(late.message, /session vanished/, "the transcript was read: nothing vanished");
   });
@@ -239,6 +240,6 @@ describe("Background Task Settlement", () => {
 
     await harness.fireEvent(events.idle("nonexistent_session"));
 
-    assertNotices(before, "no notification for untracked session");
+    await assertNotices(before, "no notification for untracked session");
   });
 });

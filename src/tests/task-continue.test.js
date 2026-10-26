@@ -10,7 +10,7 @@
 
 import { ENV } from "../../dist/shared/config.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, bootOn, bounded, childFailingWith, deferred, describe, dialCount, eventHarness, events, it, promptsSaying, promptsToCarrying, promptText, promptTextsTo, retainedEntry, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, stateOf, statusOmits, statusSays, textDeclaresKind, wasAborted, withChild, withEnv, withSettledChild } from "./support/index.js";
+import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, bootOn, bounded, childFailingWith, deferred, describe, dialCount, drainNotices, eventHarness, events, it, promptsSaying, promptsToCarrying, promptText, promptTextsTo, retainedEntry, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, stateOf, statusOmits, statusSays, textDeclaresKind, waitFor, wasAborted, withChild, withEnv, withSettledChild } from "./support/index.js";
 
 /**
  * A steer that will lose a race to an interrupt, and the report it hands back.
@@ -48,13 +48,21 @@ async function steerLosingToInterrupt(gateOpts) {
  * owns no ending, so none of them may settle it — and the one notice the parent
  * should end up with is the replacement's own ending, once it has run.
  */
-async function echoesCannotSettle(h, c, id, arm) {
+async function echoesCannotSettle(child, arm) {
+  const { c, h, id } = child;
+  // The baseline must be QUIESCENT, not instant: a prior settle's delivery rides
+  // the claim window, and a `before` taken at time zero would count that late
+  // arrival as a premature notice — the count would be wrong in exactly the way
+  // this test exists to catch, for the wrong reason. Whatever the arrangement
+  // has legitimately delivered by now IS the baseline; the echoes under test
+  // must add nothing to it.
+  await drainNotices(h);
   const before = h.notices().length;
   await arm();
   await h.fireEvent(events.idle(id));
   await h.fireEvent(events.idle(id));
   assert.strictEqual(await stateOf(c), "State: active", "an echo is not the replacement turn's ending");
-  assertNoticeCount(h, before, "no premature completion is notified");
+  await assertNoticeCount(h, before, "no premature completion is notified");
   await h.fireEvent(events.working(id));
   const note = await h.settledNotice(id);
   textDeclaresKind(note.message, "completed", "the eventual ending is still a settlement");
@@ -98,7 +106,9 @@ async function reviveRacingAStaleRetry(order) {
 
 /** Two turns, two settlements, and no suppression of the second. */
 async function assertBothTurnsDelivered(h) {
-  await sleep(30);
+  // Waited on: delivery rides the durable claim's bounded window, so reading the
+  // count at time zero (or at a fixed sleep beside it) fails by arithmetic.
+  await waitFor(() => h.notices().length >= 2, "both turns' notices to arrive");
   const notes = h.notices();
   assert.strictEqual(notes.length, 2, `both turns deliver. got: ${notes.length}`);
   assert.ok(notes[0].message.includes("TURN-ONE-OUTPUT"), `turn order preserved. first: ${notes[0]?.message}`);
@@ -151,7 +161,7 @@ describe("task_continue branches", () => {
       await disturb(ctx);
       const status = await ctx.c.status();
       answerSays(status, "active", "a non-terminal signal must not settle");
-      assertNoticeCount(ctx.h, 0, "nothing is notified");
+      await assertNoticeCount(ctx.h, 0, "nothing is notified");
       const note = await ctx.h.settledNotice(ctx.id);
       textDeclaresKind(note.message, "completed", "the real event still settles");
     });
@@ -164,7 +174,7 @@ describe("task_continue branches", () => {
   // mid-work text as the latest output, and a ledger deaf to the real ending.
   it("a turn end that publishes several terminal events cannot settle a just-steered turn", async () => {
     const { h, c, id } = await withChild();
-    await echoesCannotSettle(h, c, id, () => c.steer("pivot"));
+    await echoesCannotSettle({ c, h, id }, () => c.steer("pivot"));
   });
 
   // A transcript the plugin cannot read cannot back a success, so the
@@ -194,8 +204,12 @@ describe("task_continue branches", () => {
       const h = await setupHarness({ hooks: { notifyTransport: { hang: held.promise } } });
       const { id, c } = await h.spawn({ prompt: "turn one" });
       await h.settle(id, "completed");
-      await sleep(40);
-      answerMatches(await c.status(), /PENDING/, "the parent can SEE that its child spoke and it has not arrived");
+      // The dial rides the claim window before it parks on the hang, so PENDING
+      // is waited on, not slept for.
+      await waitFor(async () => {
+        const status = await c.status();
+        return status.includes("PENDING");
+      }, "the held write to read as PENDING");
       assert.doesNotMatch(await c.status(), /FAILED/, "held is not failed — the host may still deliver it");
       held.resolve();
       await held.promise;
@@ -242,7 +256,7 @@ describe("task_continue branches", () => {
       await h.settle(c.id, "completed");
       await sleep(20);
       answerMatches(await c.status(), /State: completed/, "the revived turn settles on its own");
-      assertNoticeCount(h, 2, "the settlement the parent was told about, and the one that carries the outcome");
+      await assertNoticeCount(h, 2, "the settlement the parent was told about, and the one that carries the outcome");
     });
   }
 
@@ -278,12 +292,12 @@ describe("task_continue branches", () => {
     assert.strictEqual(promptsSaying(h.client, "pivot"), 0, "no competing prompt races the live turn");
     assert.strictEqual(await stateOf(c), "State: active", "stays settable");
     await h.settle(id);
-    assertNoticeCount(h, 1, "the live turn still settles");
+    await assertNoticeCount(h, 1, "the live turn still settles");
   });
 
   it("revives a settled task and the new turn settles again", async () => {
     const { h, c, id } = await withSettledChild();
-    assertNoticeCount(h, 1, "first turn settles");
+    await assertNoticeCount(h, 1, "first turn settles");
 
     const out = await c.steer("summarize");
     answerSays(out, "Follow-up sent");
@@ -295,13 +309,13 @@ describe("task_continue branches", () => {
     // its own events before it can end.
     await h.fireEvent(events.working(id));
     await h.settle(id);
-    assertNoticeCount(h, 2, "revival earns a fresh settlement");
+    await assertNoticeCount(h, 2, "revival earns a fresh settlement");
     textDeclaresKind(h.noticeBodies()[1], "completed", "and the notice says so");
   });
 
   it("a late echo from the turn a revival replaced cannot settle the revival", async () => {
     const { h, c, id } = await withSettledChild();
-    await echoesCannotSettle(h, c, id, () => c.steer("continue"));
+    await echoesCannotSettle({ c, h, id }, () => c.steer("continue"));
   });
 
   it("interrupted children are not revived — the guidance says spawn fresh", async () => {
@@ -364,7 +378,7 @@ describe("error settlement guidance", () => {
   it("fatal error settlements carry no resume hint", async () => {
     const { h, id } = await childFailingWith("permission denied for model");
     await h.fireEvent(events.error(id));
-    assertNoticeCount(h, 1, "error settles exactly once");
+    await assertNoticeCount(h, 1, "error settles exactly once");
     const [note] = h.noticeBodies();
     answerSays(note, "permission denied", "keeps the cause");
     answerOmits(note, "transient", "no resume hint for fatal");
@@ -412,11 +426,11 @@ describe("outcome correctness: failed turns never report success", () => {
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await eventHarness({ messages: () => [] });
     const { id } = await h.spawn({ description: "err evt" });
-    const notice = await h.noticeAfter(
+    const note = await h.noticeAfter(
       events.error(id, { data: { message: "Too Many Requests" }, name: "APIError" }),
-    )).message;
-    textDeclaresKind(note, "error", "the error event settles error");
-    });
+    );
+    textDeclaresKind(note.message, "error", "the error event settles error");
+  });
 
   it("a burst of terminal events notifies the parent exactly once", async () => {
     const h = await eventHarness({ messages: erroredMessages });
@@ -429,7 +443,7 @@ describe("outcome correctness: failed turns never report success", () => {
     ]);
     await sleep(30);
 
-    assertNoticeCount(h, 1, "single winner must notify once");
+    await assertNoticeCount(h, 1, "single winner must notify once");
     textDeclaresKind(h.noticeBodies()[0], "error", "the winner's notice says what happened");
     });
 

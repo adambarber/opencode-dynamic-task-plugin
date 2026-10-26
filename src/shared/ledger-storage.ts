@@ -19,9 +19,9 @@
 // rather than into a lost child.
 
 import { createHash } from "node:crypto";
+import { type DeliveryClaimStore, type DeliveryMark, isDeliveryMark, SETTLEMENT_DEDUP_KEYS } from "./delivery-claim.js";
 import { isEventRecord } from "./host-shape.js";
 import { type SessionId, sessionIdOf } from "./ids.js";
-import { type DeliveryClaimStore, type DeliveryMark, isDeliveryMark, SETTLEMENT_DEDUP_KEYS } from "./delivery-claim.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { owedIdentity, type PendingDelivery } from "./notify.js";
 import type { Read, StateFacade } from "./state-facade.js";
@@ -54,21 +54,49 @@ function stored(record: object): string {
  * cannot half-read this one — the property a version field inside a single document
  * had to earn, and which per-key storage gets from the key space instead.
  */
-export const LEDGER_VERSION = 3;
+export const LEDGER_VERSION = 4;
 
 const ROOT = `ledger/v${LEDGER_VERSION}`;
 
 /**
+ * The project dimension of every key. The host's storage namespace is scoped to
+ * the PLUGIN, not the project, and the host loads one plugin instance per project
+ * app-boot — so without a directory in the key, every project's boot restores every
+ * other project's fleet, counts it against this project's concurrency caps, and
+ * settles its children. The digest keeps a raw path out of the key: the host treats
+ * `/` as hierarchy and readers scan by prefix, so a path would split and over-match.
+ * Same directory, same digest — the merge contract between two processes on ONE
+ * project (#3085) is preserved, because the key is a pure function of the directory.
+ */
+const projectSegment = (directory: string): string => createHash("sha256").update(directory).digest("hex");
+
+/**
  * What each half is addressed under, asked for rather than spelled: a reader that
  * builds its own prefix from the key layout re-derives the layout, and then a bump to
- * the version is two changes instead of one.
+ * the version is two changes instead of one. Absolute, per project: a fixture that
+ * seeds a record must spell the key the WRITER spells it, which is this function.
+ *
+ * The v3 layout had NO project segment, so a v4 boot cannot see v3 records — they
+ * belong to the abandoned host-wide namespace and are never adopted, which is the
+ * migration: old cross-project ghosts age out of the retained TTL and the active
+ * half is re-derived by each project's own boot.
  */
-export const LEDGER_PREFIXES = {
-  active: `${ROOT}/active`,
-  delivered: `${ROOT}/delivered`,
-  pending: `${ROOT}/pending`,
-  retained: `${ROOT}/retained`,
+export const ledgerPrefixes = (directory: string): Record<"active" | "delivered" | "pending" | "retained", string> => {
+  const root = ledgerRoot(directory);
+  return {
+    active: `${root}/active`,
+    delivered: `${root}/delivered`,
+    pending: `${root}/pending`,
+    retained: `${root}/retained`,
+  };
 };
+
+/**
+ * The per-project roots the boot reads. One digest of the directory, shared by
+ * every half: a project's whole ledger is one subtree of the namespace, and a
+ * foreign project's subtree is unreachable from here by construction.
+ */
+export const ledgerRoot = (directory: string): string => `${ROOT}/${projectSegment(directory)}`;
 
 /** An owed notice as it is held: the record, plus the clock that orders the queue. */
 interface StoredNotice extends PendingDelivery {
@@ -84,28 +112,22 @@ function owedAtOf(value: PendingDelivery): unknown {
 }
 
 /**
- * A notice's key is a digest of its identity, because that identity carries the
- * exact text of a notice: two notices for one child are two debts, and a key built
- * from the child alone would collapse them into one and settle the other silently.
- */
-function noticeKey(identity: string): string {
-  return `${LEDGER_PREFIXES.pending}/${createHash("sha256").update(identity).digest("hex")}`;
-}
-
-/**
  * Every key the ledger addresses, in one place, because a test that seeds a record
  * must spell the key the WRITER spells it: a fixture written against its own idea of
  * the layout would pass against a writer that moved, and fail against a real host.
  */
 export const LEDGER_KEYS = {
-  active: (childSessionId: string): string => `${LEDGER_PREFIXES.active}/${childSessionId}`,
+  active: (directory: string, childSessionId: string): string =>
+    `${ledgerRoot(directory)}/active/${childSessionId}`,
   // A settlement claim, keyed by the child and the delivery's own key: the child
   // scopes it so a revival can clear it by construction, and the digest bounds the
   // key because a notice's key carries its whole text.
-  delivered: (childSessionId: string, dedupKey: string): string =>
-    `${LEDGER_PREFIXES.delivered}/${childSessionId}/${createHash("sha256").update(dedupKey).digest("hex")}`,
-  pending: (identity: string): string => noticeKey(identity),
-  retained: (childSessionId: string): string => `${LEDGER_PREFIXES.retained}/${childSessionId}`,
+  delivered: (directory: string, childSessionId: string, dedupKey: string): string =>
+    `${ledgerRoot(directory)}/delivered/${childSessionId}/${createHash("sha256").update(dedupKey).digest("hex")}`,
+  pending: (directory: string, identity: string): string =>
+    `${ledgerRoot(directory)}/pending/${createHash("sha256").update(identity).digest("hex")}`,
+  retained: (directory: string, childSessionId: string): string =>
+    `${ledgerRoot(directory)}/retained/${childSessionId}`,
 };
 
 /**
@@ -114,10 +136,11 @@ export const LEDGER_KEYS = {
  * A function of its own rather than a method on the ledger store because the
  * ledger's language is task changes and this is about deliveries — but it is the
  * SAME facade, so a claim rides the same write chain and the same bound as every
- * other durable write.
+ * other durable write, and the SAME project root: a claim is visible to every
+ * process of THIS project, and to no other project's instance.
  */
-export function createDeliveryClaimStore(facade: StateFacade): DeliveryClaimStore {
-  const keyAt = (childSessionId: SessionId, dedupKey: string): string => LEDGER_KEYS.delivered(childSessionId, dedupKey);
+export function createDeliveryClaimStore(facade: StateFacade, directory: string): DeliveryClaimStore {
+  const keyAt = (childSessionId: SessionId, dedupKey: string): string => LEDGER_KEYS.delivered(directory, childSessionId, dedupKey);
   return {
     drop: (childSessionId, dedupKey) => facade.drop(keyAt(childSessionId, dedupKey)),
     read: async (childSessionId, dedupKey) => {
@@ -157,34 +180,36 @@ function childOf(prefix: string, key: string, childSessionId: string): SessionId
 }
 
 /**
- * The ledger, over a validated facade. Refusals are NOT reported here: the store
- * underneath already reports every read and every write it refuses, and a second
- * reporter would put the same loss on two channels with two different wordings.
+ * The ledger, over a validated facade, for ONE project directory. Refusals are
+ * NOT reported here: the store underneath already reports every read and every
+ * write it refuses, and a second reporter would put the same loss on two channels
+ * with two different wordings.
  */
-export function createLedgerStore(facade: StateFacade): LedgerStore {
+export function createLedgerStore(facade: StateFacade, directory: string): LedgerStore {
   /** When each notice was first owed, so a retry does not reorder the queue. */
   const owedAges = new Map<string, number>();
   let clock = Date.now();
 
   const readAll = async <T>(prefix: string, guard: (value: unknown) => value is T): Promise<Read<T>> => facade.readAll(prefix, guard);
+  const prefixes = ledgerPrefixes(directory);
 
   return {
     load: async () => {
       const [active, retained, pending] = await Promise.all([
-        readAll(LEDGER_PREFIXES.active, isActiveEntry),
-        readAll(LEDGER_PREFIXES.retained, isRetainedEntry),
-        readAll(LEDGER_PREFIXES.pending, isStoredNotice),
+        readAll(prefixes.active, isActiveEntry),
+        readAll(prefixes.retained, isRetainedEntry),
+        readAll(prefixes.pending, isStoredNotice),
       ]);
       const running = new Map<SessionId, ActiveTaskState>();
       let dropped = 0;
       for (const [key, entry] of active.records) {
-        const child = childOf(LEDGER_PREFIXES.active, key, entry.childSessionId);
+        const child = childOf(prefixes.active, key, entry.childSessionId);
         if (child === null) dropped++;
         else running.set(child, activeFrom(entry));
       }
       const settled = new Map<SessionId, RetainedTaskState>();
       for (const [key, entry] of retained.records) {
-        const child = childOf(LEDGER_PREFIXES.retained, key, entry.childSessionId);
+        const child = childOf(prefixes.retained, key, entry.childSessionId);
         if (child === null) dropped++;
         else settled.set(child, retainedFrom(entry));
       }
@@ -215,39 +240,39 @@ export function createLedgerStore(facade: StateFacade): LedgerStore {
   function apply(change: LedgerChange): void {
     switch (change.kind) {
       case LedgerChangeKind.Running: {
-        facade.put(LEDGER_KEYS.active(change.id), stored(durableActiveTask(change.record)));
-        facade.drop(LEDGER_KEYS.retained(change.id));
+        facade.put(LEDGER_KEYS.active(directory, change.id), stored(durableActiveTask(change.record)));
+        facade.drop(LEDGER_KEYS.retained(directory, change.id));
         break;
       }
       case LedgerChangeKind.Stopped:
-        facade.drop(LEDGER_KEYS.active(change.id));
+        facade.drop(LEDGER_KEYS.active(directory, change.id));
         break;
       case LedgerChangeKind.Settled: {
-        facade.put(LEDGER_KEYS.retained(change.id), stored(change.record));
-        facade.drop(LEDGER_KEYS.active(change.id));
+        facade.put(LEDGER_KEYS.retained(directory, change.id), stored(change.record));
+        facade.drop(LEDGER_KEYS.active(directory, change.id));
         break;
       }
       case LedgerChangeKind.Forgotten: {
-        facade.drop(LEDGER_KEYS.retained(change.id));
+        facade.drop(LEDGER_KEYS.retained(directory, change.id));
         // A forgotten child takes its settlement claims with it, so the markers stay
         // bounded by the retained history rather than growing with every task ever run.
-        for (const dedupKey of SETTLEMENT_DEDUP_KEYS) facade.drop(LEDGER_KEYS.delivered(change.id, dedupKey));
+        for (const dedupKey of SETTLEMENT_DEDUP_KEYS) facade.drop(LEDGER_KEYS.delivered(directory, change.id, dedupKey));
         break;
       }
       // One lookup for both, because what makes two notices the SAME notice is
       // `owedIdentity`, and the two differ only in which way they answer it.
       case LedgerChangeKind.Owed: {
-        facade.put(LEDGER_KEYS.pending(owedIdentity(change.record)), stored({ ...change.record, owedAt: owedAt(change.record) }));
+        facade.put(LEDGER_KEYS.pending(directory, owedIdentity(change.record)), stored({ ...change.record, owedAt: owedAt(change.record) }));
         break;
       }
       case LedgerChangeKind.Delivered:
-        facade.drop(LEDGER_KEYS.pending(owedIdentity(change.record)));
+        facade.drop(LEDGER_KEYS.pending(directory, owedIdentity(change.record)));
         break;
     }
   }
 
   /** The age a notice keeps once it is owed again, so a retry cannot jump the queue. */
   function owedAt(record: PendingDelivery): number {
-    return owedAges.get(LEDGER_KEYS.pending(owedIdentity(record))) ?? clock;
+    return owedAges.get(LEDGER_KEYS.pending(directory, owedIdentity(record))) ?? clock;
   }
 }

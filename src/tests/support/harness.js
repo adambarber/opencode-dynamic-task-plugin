@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import nodePath, { join } from "node:path";
 import { DEBUG_DIR } from "../../../dist/debug-logger.js";
 import { resetAgentCache } from "../../../dist/shared/admission.js";
-import { CREATE_INTENT_PREFIX } from "../../../dist/shared/create-intent.js";
+import { intentPrefix } from "../../../dist/shared/create-intent.js";
 import { createStore } from "../../../dist/shared/durable-store.js";
 import { shrinkBoundsForTesting } from "../../../dist/shared/execution-bound.js";
 import { clearNotifyLedger } from "../../../dist/shared/notify.js";
@@ -299,9 +299,31 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     };
   };
   const oneNotice = async (action) => {
-    const fresh = await noticesAfter(action)();
-    await sleep(30);
-    const notes = fresh();
+    // Drain first: a PREVIOUS action's dial may still be inside the durable
+    // claim's bounded window, and a late notice from it would otherwise be
+    // counted as this action's notice — the count would be right and the notice
+    // wrong. Waiting for the count to go QUIESCENT (no arrival for two polls)
+    // before snapshotting makes the baseline mean "everything before me has
+    // landed" rather than "everything before me that was fast".
+    let stable = 0;
+    const drainDeadline = Date.now() + 2000;
+    while (stable < 2 && Date.now() < drainDeadline) {
+      const count = state.notifications.length;
+      await sleep(10);
+      stable = state.notifications.length === count ? stable + 1 : 0;
+    }
+    const before = state.notifications.length;
+    await action();
+    // Waited on, never slept for: a settlement's delivery rides the durable
+    // claim (a write, a chain settle, a quiescence bound, a re-read), so the dial
+    // is a BOUNDED WINDOW away, not a microtask — a fixed sleep under the claim's
+    // bound would be a flaky test by arithmetic. The wait is on the observable,
+    // with a ceiling that fails rather than hangs.
+    const deadline = Date.now() + 2000;
+    while (state.notifications.length === before && Date.now() < deadline) {
+      await sleep(5);
+    }
+    const notes = state.notifications.slice(before);
     assert.strictEqual(notes.length, 1, "a terminal event notifies exactly once");
     return notes;
   };
@@ -337,10 +359,11 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
     /** The host's own durable table, so a case can see what the plugin persisted. */
     kv: state.kv,
     /**
-     * What a RESTART would believe, read through the reader the plugin itself uses.
-     * A case that reads the rows instead is reading the writer's opinion of itself.
+     * What a RESTART would believe, read through the reader the plugin itself uses,
+     * scoped to THIS harness's project directory — the scoping is the claim, so the
+     * reader is handed the same directory the boot got.
      */
-    readLedger: () => ledgerOver(durable()).load(),
+    readLedger: () => ledgerOver(durable(), directory).load(),
     /**
    * The outstanding create intents, through the same reader. The lookup a parent
    * would perform after a refused dispatch: present means issued and never answered,
@@ -350,7 +373,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
    * chain is not yet a fact, and a lookup that ran ahead of it would report an answered
    * create as outstanding.
    */
-  readIntents: () => durable().load(CREATE_INTENT_PREFIX),
+    readIntents: () => durable().load(intentPrefix(directory)),
     tool: textTools(rawTools),
     rawTools,
     directory,

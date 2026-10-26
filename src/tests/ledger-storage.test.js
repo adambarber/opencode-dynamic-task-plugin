@@ -16,10 +16,17 @@ import { LEDGER_KEYS } from "../../dist/shared/ledger-storage.js";
 import { NotifyKind } from "../../dist/shared/notification-text.js";
 import { owedIdentity } from "../../dist/shared/notify-queue.js";
 import { TaskState } from "../../dist/shared/task-records.js";
-import { assert, describe, durable, it } from "./support/index.js";
+import { assert, describe, durable, it, WORLD_DIRECTORY } from "./support/index.js";
 
 /** A record as the ledger holds it: JSON text, because `Storage.set` has no undefined. */
 const stored = (record) => JSON.stringify(record);
+
+/**
+ * The project directory these worlds live under — the reader is scoped by one, so
+ * the keys a case spells must be the WRITER's keys for THIS directory, taken from
+ * the support world rather than spelled, so a fixture cannot address another project.
+ */
+const DIRECTORY = WORLD_DIRECTORY;
 
 const CHILD = "ses_ledger1";
 const OTHER = "ses_ledger2";
@@ -46,7 +53,7 @@ function owed(text, attempts = 0) {
 }
 
 /** One debt as a host row: the key the writer would use, and the value behind it. */
-const debt = (text, owedAt) => [LEDGER_KEYS.pending(owedIdentity(owed(text))), stored({ ...owed(text), owedAt })];
+const debt = (text, owedAt) => [LEDGER_KEYS.pending(DIRECTORY, owedIdentity(owed(text))), stored({ ...owed(text), owedAt })];
 
 /** The change that puts this child in that half — the one move every claim below is about. */
 const moveTo = (half) => (half === "settled" ? changes.settled(settled()) : changes.running(active()));
@@ -75,7 +82,7 @@ describe("durable ledger on host storage", () => {
   it("holds a record under a key that names the CHILD, not a collection", async () => {
     const world = await durable.ledgerAfter(changes.running(active()));
 
-    assert.deepEqual([...world.kv.keys()], [LEDGER_KEYS.active(CHILD)]);
+    assert.deepEqual([...world.kv.keys()], [LEDGER_KEYS.active(DIRECTORY, CHILD)]);
   });
 
   it("restores what it wrote, for both halves", async () => {
@@ -93,7 +100,7 @@ describe("durable ledger on host storage", () => {
     world.assertHalfGone("active", CHILD, "a settled child must not stay running");
     assert.deepEqual(
       world.client.storageWriteKeys().slice(-2),
-      [`set ${LEDGER_KEYS.retained(CHILD)}`, `del ${LEDGER_KEYS.active(CHILD)}`],
+      [`set ${LEDGER_KEYS.retained(DIRECTORY, CHILD)}`, `del ${LEDGER_KEYS.active(DIRECTORY, CHILD)}`],
       "the put must land before the drop, so a refused drop leaves the child in both halves",
     );
 
@@ -154,7 +161,7 @@ describe("durable ledger on host storage", () => {
   });
 
   it("refuses a record filed under ANOTHER child's key rather than restoring it", async () => {
-    const { read } = await durable.ledgerReading([LEDGER_KEYS.active(OTHER), stored(active(CHILD))]);
+    const { read } = await durable.ledgerReading([LEDGER_KEYS.active(DIRECTORY, OTHER), stored(active(CHILD))]);
 
     assert.equal(read.active.size, 0, "a record filed under someone else's id is corrupt");
     assert.equal(read.dropped, 1, "and it is counted, so the boot can say so");
@@ -162,8 +169,8 @@ describe("durable ledger on host storage", () => {
 
   it("resolves a child in both halves to RUNNING, and says it dropped one", async () => {
     const { read } = await durable.ledgerReading(
-      [LEDGER_KEYS.active(CHILD), stored(active())],
-      [LEDGER_KEYS.retained(CHILD), stored(settled())],
+      [LEDGER_KEYS.active(DIRECTORY, CHILD), stored(active())],
+      [LEDGER_KEYS.retained(DIRECTORY, CHILD), stored(settled())],
     );
 
     assert.equal(read.retained.has(CHILD), false, "the older settled fact must lose");
@@ -200,7 +207,7 @@ describe("durable ledger on host storage", () => {
 describe("a ledger value the reader cannot vouch for", () => {
   it("drops a field this build does not know, rather than carrying it forward", async () => {
     const { read } = await durable.ledgerReading([
-      LEDGER_KEYS.retained(CHILD),
+      LEDGER_KEYS.retained(DIRECTORY, CHILD),
       stored({ ...settled(), retiredByTheNextBuild: { at: 1 } }),
     ]);
 
@@ -211,7 +218,7 @@ describe("a ledger value the reader cannot vouch for", () => {
 
   it("refuses a running record missing ONE base field, whole rather than in part", async () => {
     const { startedAt: _absent, ...clockless } = active();
-    const { read } = await durable.ledgerReading([LEDGER_KEYS.active(CHILD), stored(clockless)]);
+    const { read } = await durable.ledgerReading([LEDGER_KEYS.active(DIRECTORY, CHILD), stored(clockless)]);
 
     assert.equal(read.active.size, 0, "half a record is not a running child");
     assert.equal(read.dropped, 1, "and the refusal is counted, so the boot can say so");
@@ -229,7 +236,7 @@ describe("a ledger value the reader cannot vouch for", () => {
       { ...owed("kept"), childSessionId: "not-a-session", owedAt: 5 },
     ];
     const { read } = await durable.ledgerReading(
-      ...broken.map((record, index) => [LEDGER_KEYS.pending(`broken-${index}`), stored(record)]),
+      ...broken.map((record, index) => [LEDGER_KEYS.pending(DIRECTORY, `broken-${index}`), stored(record)]),
       debt("intact", 6),
     );
 
@@ -239,8 +246,8 @@ describe("a ledger value the reader cannot vouch for", () => {
 
   it("refuses a clock of the wrong SHAPE, in either half", async () => {
     const { read } = await durable.ledgerReading(
-      [LEDGER_KEYS.active(OTHER), stored({ ...active(OTHER), startedAt: "1" })],
-      [LEDGER_KEYS.retained(CHILD), stored({ ...settled(), retainedAt: null })],
+      [LEDGER_KEYS.active(DIRECTORY, OTHER), stored({ ...active(OTHER), startedAt: "1" })],
+      [LEDGER_KEYS.retained(DIRECTORY, CHILD), stored({ ...settled(), retainedAt: null })],
     );
 
     assert.equal(read.active.size, 0, "a start that sorts lexically orders nothing");

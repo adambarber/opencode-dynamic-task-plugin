@@ -207,6 +207,12 @@ describe("invariant: settlement is event-driven, no per-call clocks (Task 09)", 
   rule({ name: "no bare wall-clock waits outside the bound funnels", ...WALL_CLOCK_WAIT });
   rule({ name: "each clock owner keeps exactly one timer-shaped call site", ...CLOCK_OWNER_COUNT, expect: 2, only: CLOCK_OWNERS });
 
+  // boundedSleep is the funnel's SECOND timer (inside withBound's file) and the
+  // claim store's ONLY clock: the quiescent pause routes through it, so no timer
+  // shape may appear in the delivery-claim module itself.
+  const CLAIM_CLOCK = gate([TIMER_PRIMITIVE], DOC_SETTLEMENT, "The claim store holds no timer of its own.");
+  rule({ name: "the delivery claim has no clock outside boundedSleep", ...CLAIM_CLOCK, expect: 0, only: ["delivery-claim.ts"] });
+
   // Tenet 9: create lives in the spawn executor — the ONLY site, because a
   // created session nobody registered runs unmonitored. Abort is funnelled
   // in session-abort: the await stays at the call site that orders it
@@ -360,7 +366,10 @@ describe("invariant: every durable ledger write is addressed through one key lay
   it("builds every key through LEDGER_KEYS, which ends in the record's own identity", () => {
     const writes = [...LEDGER.matchAll(/facade\.(put|drop)\((?<args>[^;]*?)\);/gs)]
       .map((match) => match.groups.args.trim())
-      .filter((args) => !args.startsWith("LEDGER_KEYS."));
+      // `keyAt` is the delivery-claim store's local alias, and it is sanctioned ONLY
+      // because the next assertion pins its body to LEDGER_KEYS — a second layout
+      // hiding behind the alias is exactly what this gate exists to catch.
+      .filter((args) => !args.startsWith("LEDGER_KEYS.") && !args.startsWith("keyAt("));
     assert.deepEqual(
       writes,
       [],
@@ -370,14 +379,37 @@ describe("invariant: every durable ledger write is addressed through one key lay
     );
   });
 
+  it("the delivery-claim's key alias is itself built through LEDGER_KEYS, per project", () => {
+    assert.match(
+      LEDGER,
+      /const keyAt = \(childSessionId: SessionId, dedupKey: string\): string => LEDGER_KEYS\.delivered\(directory, childSessionId, dedupKey\)/,
+      "the alias must be LEDGER_KEYS with the SAME directory the ledger was built for — a\n" +
+        "key spelled by hand there is a second layout, and it would name a claim another\n" +
+        "project's boot could not see",
+    );
+  });
+
   it("names no ledger key by anything but the child, or the notice's own digest", () => {
+    // The root has exactly TWO readers now: `ledgerPrefixes` (the four halves) and
+    // `ledgerRoot` (the project digest every other durable record — create intents
+    // included — hangs off). A third use means a key is being built outside the
+    // layout, and that is the drift this pin is for. The project segment is itself
+    // the isolation boundary: a key WITHOUT it puts every project's fleet in one
+    // namespace, which is the cross-project leak #1 closed.
     assert.equal(
       [...LEDGER.matchAll(/`\$\{ROOT\}/g)].length,
-      3,
-      "the root belongs to the three prefixes and nowhere else. A fourth use means a key is\n" +
-        "being built somewhere other than LEDGER_PREFIXES, and that is the drift this pin is for.",
+      1,
+      "the root belongs to ledgerRoot and nowhere else — every prefix and every other durable\n" +
+        "record derives from it, so a second use means a key is being built outside the layout,\n" +
+        "and that is the drift this pin is for.",
     );
     assert.match(LEDGER, /digest\("hex"\)/, "a notice key must be a digest of the notice itself, not of its child");
+    // The project dimension is not optional: the count of digest sites must include
+    // the directory segment, or a future edit could drop the project scoping while
+    // every test still passes (the tests build their keys through the same code).
+    assert.match(LEDGER, /projectSegment[\s\S]*?digest\("hex"\)/,
+      "the project segment must be a digest of the directory — a raw path in a key is the\n" +
+        "state-scoping defect the Task 06 amendment closed");
   });
 });
 

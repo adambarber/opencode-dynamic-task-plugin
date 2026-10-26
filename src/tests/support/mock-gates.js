@@ -26,6 +26,14 @@ export function recordingClient(respond) {
   const turns = new Map();
   return {
     calls,
+    // The same two facts the big fake keeps, written to the same place: a turn running
+    // is an assistant message with no `completed`, and its absence from the record is
+    // the one thing that reads as "open". A private map here would be a second copy
+    // of a fact production reads from the transcript.
+    setMessages: (id, list) => turns.set(id, list),
+    setStatus: (id, word) => {
+      turns.set(id, [word === "open" ? hostSaying("") : hostSaid("")]);
+    },
     client: {
       session: {
         context: async (args) => turns.get(args.sessionID) ?? [],
@@ -65,7 +73,15 @@ export function recordingClient(respond) {
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {
-  const pair = { promise: null, reject: null, resolve: null };
+  // Typed as what they HOLD, not as the initializer: `null` placeholders typed
+  // `null` made every `await pair.promise` an await of a non-Promise, which is
+  // exactly the class the await-thenable rule exists to catch — a gate whose
+  // promise cannot be awaited is a gate that answers nothing.
+  const pair = /** @type {{
+    promise: Promise<void> | null;
+    reject: ((e?: unknown) => void) | null;
+    resolve: (() => void) | null;
+  }} */ ({ promise: null, resolve: null, reject: null });
   pair.promise = new Promise((resolve, reject) => {
     pair.resolve = resolve;
     pair.reject = reject;

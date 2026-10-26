@@ -24,6 +24,13 @@ import { afterEach, assert, beforeEach } from "./runner.js";
 /** Small enough that a hung host costs a case milliseconds rather than seconds. */
 const PATIENCE_MS = 5;
 
+/**
+ * The project directory every durable world lives under. A world is not a real
+ * project, but the ledger is now scoped by one — so a world picks one stable
+ * directory and every key it addresses is inside that project's namespace.
+ */
+export const WORLD_DIRECTORY = "/durable-world";
+
 /** Nothing yet. Named, because a case reads it as "not yet" rather than as "broken". */
 const NOT_YET = () => {};
 
@@ -157,13 +164,13 @@ function everyShape() {
  */
 function ledger() {
   const world = build();
-  const store = world.ledger;
+  const store = ledgerOver(world.store);
   return {
     ...world,
     /** A child must be in exactly one half. Absence is asserted as absence, not as
      *  an undefined lookup — a record that merely reads as empty is a defect here. */
     assertHalfGone: (half, child, why) => {
-      assert.equal(world.kv.has(LEDGER_KEYS[half](child)), false, why);
+      assert.equal(world.kv.has(LEDGER_KEYS[half](WORLD_DIRECTORY, child)), false, why);
     },
     ledger: store,
     /** Persist, wait until the host has it, and report what is durable. A case that
@@ -246,10 +253,11 @@ async function ledgerReading(...rows) {
  * The production LEDGER reader over an existing bounded store: the real store, the
  * real facade, the real reader — layered over the chain the writes go into, never a
  * second one. Two chains over one host is a world the plugin never has, and a case
- * that awaits the empty one learns nothing about whether its write landed.
+ * that awaits the empty one learns nothing about whether its write landed. Scoped to
+ * ONE project directory, as production is: the caller's, or the world's own.
  */
-export function ledgerOver(store) {
-  return createLedgerStore(createStateFacade(store));
+export function ledgerOver(store, directory = WORLD_DIRECTORY) {
+  return createLedgerStore(createStateFacade(store), directory);
 }
 
 /**

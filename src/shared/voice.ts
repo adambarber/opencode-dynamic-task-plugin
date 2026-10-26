@@ -9,7 +9,7 @@
 // strings everywhere.
 
 import type { DependencyBlock } from "./admission.js";
-import { CREATE_INTENT_PREFIX, type CreateIntent, createIntentKey } from "./create-intent.js";
+import { type CreateIntent, createIntentKey, intentPrefix } from "./create-intent.js";
 import type { WaitRelease } from "./dispatch-wait.js";
 import type { SessionId } from "./ids.js";
 import { type AbortRefusal, AbortRefusalKind } from "./session-abort.js";
@@ -145,11 +145,12 @@ const CREATE_REFUSALS: Record<CreateRefusalReason, string> = {
  * the ledger. Telling the parent to go and search for a title it could have
  * duplicated is the manual version of a question the store already answers.
  */
-export function createFailed(response: unknown, intent: CreateIntent, reason: CreateRefusalReason): string {
+export function createFailed(input: { response: unknown; intent: CreateIntent; reason: CreateRefusalReason; directory: string }): string {
+  const { response, intent, reason, directory } = input;
   const at = intent.parentSessionId === null ? "" : ` under parent ${intent.parentSessionId}`;
   return textBlock(
     `ERROR: Failed to create session. Response: ${JSON.stringify(response)}`,
-    `${CREATE_REFUSALS[reason]} A session may exist that nobody is tracking: look for the title "${intent.title}"${at}, and stop it by hand if it is there. The issued-but-unanswered creates are listed under ${CREATE_INTENT_PREFIX}/${createIntentKey(intent).split("/").pop()}`,
+    `${CREATE_REFUSALS[reason]} A session may exist that nobody is tracking: look for the title "${intent.title}"${at}, and stop it by hand if it is there. The issued-but-unanswered creates are listed under ${intentPrefix(directory)}/${createIntentKey(intent, directory).split("/").pop()}`,
   );
 }
 

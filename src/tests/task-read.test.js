@@ -219,7 +219,7 @@ describe("task_result and task_interrupt paths", () => {
     // re-settle it — the synchronous claim happened BEFORE the abort.
     assert.strictEqual(await stateOf(c), "State: interrupted", "history preserved");
     await h.settle(id);
-    assertNoticeCount(h, 0, "the abort's own idle event must not notify");
+    await assertNoticeCount(h, 0, "the abort's own idle event must not notify");
   });
 
   it("task_interrupt requires a session id and refuses one it never dispatched", async () => {
@@ -250,7 +250,7 @@ describe("task_result and task_interrupt paths", () => {
     await stillActive(c, "speculative claim withdrawn");
     // The child's genuine terminal event still settles and notifies.
     await h.settle(id);
-    assertNoticeCount(h, 1, "natural completion delivers");
+    await assertNoticeCount(h, 1, "natural completion delivers");
     textDeclaresKind(h.noticeBodies()[0], "completed", "and the natural event settles completed");
   });
 

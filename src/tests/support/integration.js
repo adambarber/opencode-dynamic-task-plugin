@@ -11,7 +11,7 @@
  * document the boot will quietly ignore.
  */
 
-import { LEDGER_KEYS, LEDGER_PREFIXES } from "../../../dist/shared/ledger-storage.js";
+import { LEDGER_KEYS, ledgerPrefixes } from "../../../dist/shared/ledger-storage.js";
 import { owedIdentity } from "../../../dist/shared/notify-queue.js";
 import { ASSISTANT_ROLE } from "../../../dist/shared/prompt.js";
 import { setupHarness, sleep, tmpProjectDir } from "./harness.js";
@@ -43,6 +43,8 @@ export async function childFailingWith(detail) {
  * fixture that spelled these itself would be free to drift from the layout, so the
  * layout is asked for rather than remembered — and the `tasks` name is the file era's
  * word for the settled half, kept only so a case's document still reads like itself.
+ * Keys are the WRITER's, for ONE project directory — which is the point: a fixture
+ * seeded under another project's root is a record the boot must never read.
  */
 const HALVES = [
   ["active", LEDGER_KEYS.active],
@@ -56,20 +58,21 @@ const HALVES = [
  * writer does, which is why a fixture cannot hand the reader a shape production could
  * never have written and call the reader's rejection a bug.
  */
-const putLedger = (kv, document) => {
+const putLedger = (kv, document, directory) => {
   for (const [half, keyOf] of HALVES) {
     for (const [childSessionId, entry] of Object.entries(document[half] ?? {})) {
-      kv.set(keyOf(childSessionId), JSON.stringify(entry));
+      kv.set(keyOf(directory, childSessionId), JSON.stringify(entry));
     }
   }
   for (const notice of document.pending ?? []) {
-    kv.set(LEDGER_KEYS.pending(owedIdentity(notice)), JSON.stringify(notice));
+    kv.set(LEDGER_KEYS.pending(directory, owedIdentity(notice)), JSON.stringify(notice));
   }
   return kv;
 };
 
 /** The durable state as it stands, read back under the reader's own keys. */
-export const ledgerSays = (kv) => {
+export const ledgerSays = (kv, directory) => {
+  const prefixes = ledgerPrefixes(directory);
   const entries = (prefix) =>
     Object.fromEntries(
       [...kv]
@@ -77,11 +80,11 @@ export const ledgerSays = (kv) => {
         .map(([key, value]) => [key.slice(prefix.length + 1), JSON.parse(value)]),
     );
   return {
-    active: entries(LEDGER_PREFIXES.active),
+    active: entries(prefixes.active),
     pending: [...kv]
-      .filter(([key]) => key.startsWith(`${LEDGER_PREFIXES.pending}/`))
+      .filter(([key]) => key.startsWith(`${prefixes.pending}/`))
       .map(([, value]) => JSON.parse(value)),
-    tasks: entries(LEDGER_PREFIXES.retained),
+    tasks: entries(prefixes.retained),
   };
 };
 
@@ -102,12 +105,18 @@ export const bootOn = async (seed, { hooks = {}, raw = {} } = {}) => {
   // `raw` is the seam that can put something the WRITER would never write under a key
   // of its own: a torn record, a record from a past this build cannot read. Both are
   // reader questions, and a fixture that could only produce well-formed records could
-  // never ask one.
+  // never ask one. A raw may be a function OF THE DIRECTORY, because the project root
+  // is chosen here — the only moment a fixture can spell a key under THIS project's
+  // namespace rather than inventing one.
+  const rawRows = typeof raw === "function" ? raw(directory) : raw;
   const storage = (kv) => {
-    putLedger(kv, document);
-    for (const [key, value] of Object.entries(raw)) kv.set(key, value);
+    putLedger(kv, document, directory);
+    for (const [key, value] of Object.entries(rawRows)) kv.set(key, value);
   };
-  return { directory, ...(await setupHarness({ directory, hooks, storage })) };
+  const h = await setupHarness({ directory, hooks, storage });
+  // The harness itself carries the directory, so a reader helper that takes `h`
+  // can spell THIS project's keys — the scoping is the claim the fixture serves.
+  return { directory, ...h };
 };
 
 /**

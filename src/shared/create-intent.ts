@@ -23,10 +23,11 @@
  * It is named here because it is a limit and not an accident.
  */
 
+import { ledgerRoot } from "./ledger-storage.js";
 import { recordKey } from "./state-facade.js";
 
-/** The durable prefix every issued-but-unanswered create lives under. */
-export const CREATE_INTENT_PREFIX = "create-intent";
+/** The intent subtree of ONE project: the same root every durable record keeps. */
+export const intentPrefix = (directory: string): string => `${ledgerRoot(directory)}/intent`;
 
 /** What was asked for, and under what — the whole of what is knowable before the id. */
 export interface CreateIntent {
@@ -41,8 +42,8 @@ export interface CreateIntent {
  * spelled rather than dropped, because dropping it would put a root child in the same
  * bucket as a child whose parent id the caller never had.
  */
-export function createIntentKey(intent: CreateIntent): string {
-  return recordKey(CREATE_INTENT_PREFIX, intent.parentSessionId ?? "", intent.title);
+export function createIntentKey(intent: CreateIntent, directory: string): string {
+  return recordKey(intentPrefix(directory), intent.parentSessionId ?? "", intent.title);
 }
 
 
@@ -52,13 +53,13 @@ export function createIntentKey(intent: CreateIntent): string {
  * dispatch refused because its own bookkeeping could not be stored would be a worse
  * outcome than a dispatch nobody can look up afterwards.
  */
-export function issueCreateIntent(store: IntentStore, intent: CreateIntent): void {
-  store.put(createIntentKey(intent), JSON.stringify(intent));
+export function issueCreateIntent(store: IntentStore, intent: CreateIntent, directory: string): void {
+  store.put(createIntentKey(intent, directory), JSON.stringify(intent));
 }
 
 /** The create answered, one way or the other: the ledger now holds the child. */
-export function resolveCreateIntent(store: IntentStore, intent: CreateIntent): void {
-  store.drop(createIntentKey(intent));
+export function resolveCreateIntent(store: IntentStore, intent: CreateIntent, directory: string): void {
+  store.drop(createIntentKey(intent, directory));
 }
 
 /** The narrow write surface this needs, so a caller need not offer the whole store. */
@@ -68,11 +69,14 @@ export interface IntentStore {
 }
 
 /**
- * The writer, bound to the one durable chain.
+ * The writer, bound to the one durable chain and to ONE project directory.
  *
  * A facade, not the store: an intent is written and dropped on the dispatch path, and
  * handing a tool a second `createStore` would give it a second write chain that can
- * reorder against the ledger write the create precedes.
+ * reorder against the ledger write the create precedes. The DIRECTORY RIDES WITH THE
+ * INTENT, not with the writer: the callers pass it to `issue`/`resolve`, so the key
+ * is computed at the one place that knows the intent's shape, and a writer holds no
+ * second copy of a fact the dispatch path already carries.
  */
 export function createIntentWriter(store: IntentStore): IntentStore {
   return { drop: (key) => store.drop(key), put: (key, value) => store.put(key, value) };

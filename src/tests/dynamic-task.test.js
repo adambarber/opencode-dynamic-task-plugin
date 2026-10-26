@@ -6,7 +6,7 @@
  * return immediately, create nothing it cannot keep, and leave no orphan behind.
  */
 
-import { CREATE_INTENT_PREFIX, createIntentKey } from "../../dist/shared/create-intent.js";
+import { createIntentKey, intentPrefix } from "../../dist/shared/create-intent.js";
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { abortWasRequestedFor, announcedAbout, answerOmits, answerSays, assert, assertNoticeCount, confirmationFor, describe, dispatchArgs, eventHarness, events, failEdge, harnessThrowingPrompt, it, PARENT, promptsTo, promptTextsTo, refusedOnOneEdge, refusedOverEdges, sessionBody, sessionCount, setupHarness, sleep, statusSays, wasAborted, withChild, withRefusedSecondSpawn, withSingleSlot } from "./support/index.js";
 
@@ -141,11 +141,11 @@ describe("dynamic_task validation", () => {
   // OR over them would pass on any one of the three — which is exactly what the old
   // coverage did, and why this shape shipped untested.
   it("a create the host never answers says it may have landed, and names the record that proves it", async () => {
-    const { out } = await orphanCreatedButUnnamed("hung child", { createHangsAfterCreate: true });
+    const { h, out } = await orphanCreatedButUnnamed("hung child", { createHangsAfterCreate: true });
     answerSays(out, "did not answer", "the request was sent and never confirmed — not a refused command");
     answerSays(out, "may exist", "and the session may be running with nothing tracking it");
     answerSays(out, "can leave two", "because a parent told this failed can be trusted to try again");
-    answerSays(out, CREATE_INTENT_PREFIX, "and the record that says which creates are still outstanding");
+    answerSays(out, intentPrefix(h.directory), "and the record that says which creates are still outstanding");
 
     // The refusal must not read as a clean failure, because that is what invites the
     // retry: nothing here may claim nothing happened.
@@ -162,7 +162,7 @@ describe("dynamic_task validation", () => {
     const h = await setupHarness({ hooks: { createHangsAfterCreate: true } });
     await h.trySpawn({ description: "recorded child", prompt: "hi", subagent_type: "explore" });
 
-    const key = createIntentKey({ parentSessionId: PARENT, title: "recorded child" });
+    const key = createIntentKey({ parentSessionId: PARENT, title: "recorded child" }, h.directory);
     // The host's table, not a reader over a FRESH store: the plugin's write chain is
     // sealed inside its own store, so `settled()` here would wait an empty queue and
     // report a drop that has not left it. What a restart reads is this table.
@@ -182,7 +182,7 @@ describe("dynamic_task validation", () => {
     await h.trySpawn({ description: "settled child", prompt: "hi", subagent_type: "explore" });
 
     await sleep(20);
-    const intents = [...h.kv.keys()].filter((key) => key.startsWith(`${CREATE_INTENT_PREFIX}/`));
+    const intents = [...h.kv.keys()].filter((key) => key.startsWith(`${intentPrefix(h.directory)}/`));
     assert.deepStrictEqual(intents, [], "a tracked child is the ledger's to name, and only the ledger names it");
     });
 
@@ -195,7 +195,7 @@ describe("dynamic_task validation", () => {
     const { out, id } = await h.spawn();
     answerSays(out, "in background");
     assert.ok(id, "session id returned synchronously with the spawn line");
-    assertNoticeCount(h, 0, "nothing settles without an event");
+    await assertNoticeCount(h, 0, "nothing settles without an event");
     });
 });
 

@@ -9,7 +9,7 @@
  */
 
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, withChild, withSettledChild } from "./support/index.js";
+import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, waitFor, withChild, withSettledChild } from "./support/index.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 
@@ -28,7 +28,7 @@ describe("task_notify: the child-to-parent channel", () => {
     answerSays(status, "need DB credentials", "notice recorded on the task");
 
     await h.settle(id);
-    assertNoticeCount(h, 2, "settlement still reports");
+    await assertNoticeCount(h, 2, "settlement still reports");
   });
 
   it("distinct long notices sharing a prefix both deliver", async () => {
@@ -37,7 +37,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const second = await c.notify(`${"a".repeat(200)  }2`);
     answerSays(first, "Message sent to parent");
     answerSays(second, "Message sent to parent", "prefix collision must not suppress");
-    assertNoticeCount(h, 2, "two long notices sharing a prefix both deliver");
+    await assertNoticeCount(h, 2, "two long notices sharing a prefix both deliver");
   });
 
   // One hypothesis: a repeat of an identical notice never redelivers, and the
@@ -48,7 +48,7 @@ describe("task_notify: the child-to-parent channel", () => {
     const again = await c.notify("still working");
     answerSays(again, "duplicate suppressed", "keeps the kind");
     answerSays(again, "Say something new", "tells the child what to do");
-    assertNoticeCount(h, 1, "the parent hears it once");
+    await assertNoticeCount(h, 1, "the parent hears it once");
   });
 
   it("an unreachable parent is reported distinctly from a duplicate", async () => {
@@ -73,7 +73,7 @@ describe("task_notify: the child-to-parent channel", () => {
       harness: { hooks: { notifyTransport: { hold: new Promise(() => {}) } } },
     });
     const out = await bounded(20, () => c.notify("are you there?"));
-    assertNoticeCount(h, 1, "the host really did put it in the parent's context");
+    await assertNoticeCount(h, 1, "the host really did put it in the parent's context");
     answerOmits(out, "not sent", "a held write was dialed, not lost");
     assert.ok(!/retry/i.test(out), `retrying a delivered notice duplicates it. got: ${out}`);
   });
@@ -119,7 +119,11 @@ describe("a child that needs input is not a success", () => {
     assert.strictEqual(await stateOf(c), "State: blocked", "the record says what happened");
     // The LAST notice is the settlement: the declaration arrived first as a
     // mid-flight notice, and the case that used to read `notices[0]` matched
-    // that one, so a plugin which never settled at all would have passed.
+    // that one, so a plugin which never settled at all would have passed. The
+    // settlement's dial rides the claim window, so TWO notices are waited on —
+    // reading at time zero would take the mid-flight declaration for the
+    // settlement and pass a plugin that never settled.
+    await waitFor(() => h.noticeBodies().length >= 2, "the settlement's own notice to arrive");
     const body = h.noticeBodies().at(-1);
     textDeclaresKind(body, "blocked", "the settlement says the task is waiting");
     answerMatches(body, /task_continue/, "and how to answer it");

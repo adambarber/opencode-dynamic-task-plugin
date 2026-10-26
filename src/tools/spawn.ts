@@ -163,7 +163,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     // findable and it being one more untracked child, and it is the only fact worth
     // having when the answer never comes.
     const intent: CreateIntent = { parentSessionId, title: sessionBody.title };
-    issueCreateIntent(deps.intent, intent);
+    issueCreateIntent(deps.intent, intent, deps.directory);
 
     // Bounded like every other outbound call: this one is awaited by the CALLER'S
     // turn, so a create the host never answers is not a slow dispatch — it is a
@@ -183,7 +183,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       // have duplicated.
       const refused = created.phase === ExpiryPhase.Sent;
       if (refused) adoptLateAnswer(created.finished, intent);
-      return createFailed(created.value, intent, refused ? CreateRefusalReason.Unanswered : CreateRefusalReason.Unsent);
+      return createFailed({ directory: deps.directory, intent, reason: refused ? CreateRefusalReason.Unanswered : CreateRefusalReason.Unsent, response: created.value });
     }
     const sessionResult = created.value;
 
@@ -196,12 +196,12 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       //
       // The record STAYS for this one: the host answered, so the late-answer hook is
       // not there, and the session may still exist with nobody holding its id.
-      return createFailed(sessionResult, intent, CreateRefusalReason.Idless);
+      return createFailed({ directory: deps.directory, intent, reason: CreateRefusalReason.Idless, response: sessionResult });
     }
     createdSessionId = childSessionId;
     // The create answered, so the child is the ledger's to name and this record has
     // done its only job.
-    resolveCreateIntent(deps.intent, intent);
+    resolveCreateIntent(deps.intent, intent, deps.directory);
 
     // Register in active state via the admission gate.
     const activeTask = registerAdmittedTask(store, { ...registration, childSessionId }, config);

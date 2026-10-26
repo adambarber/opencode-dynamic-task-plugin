@@ -223,7 +223,10 @@ export const PROTOCOL_NOT_FOUND_TAG = "SessionNotFoundError";
 export function isSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
   // The SDK's tag field, read computed because its underscore is theirs; the
-  // local tag spelling stays out of the repo's vocabulary.
+  // local tag spelling stays out of the repo's vocabulary. The two rules
+  // disagree on this spelling (dot-notation wants a dot, no-underscore-dangle
+  // forbids the underscore), so the deliberate form is pinned by name.
+  // eslint-disable-next-line typescript/dot-notation
   const tag = error["_tag"];
   if (tag === SESSION_NOT_FOUND_TAG || tag === PROTOCOL_NOT_FOUND_TAG) return true;
   if (error.type === SESSION_NOT_FOUND_TAG || error.type === PROTOCOL_NOT_FOUND_TAG) return true;

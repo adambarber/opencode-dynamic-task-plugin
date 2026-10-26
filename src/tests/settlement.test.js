@@ -7,7 +7,7 @@
  * still owed — rather than about any one tool.
  */
 
-import { abortedSessions, answerMatches, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
+import { abortedSessions, answerMatches, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
 
 describe("settlement: the notification layer owns outcomes", () => {
   // The head that sees EVERY event is the most-executed code in the plugin, so
@@ -55,7 +55,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.ok(loser, "loser session was created");
     assert.ok(wasAborted(h.client, loser), `loser aborted, no orphan. aborted=${abortedSessions(h.client)}`);
     await sleep(50); // detached error-settlement delivery
-    assertNoticeCount(h, 1, "the error settlement notifies");
+    await assertNoticeCount(h, 1, "the error settlement notifies");
     const [note] = h.noticeBodies();
     textDeclaresKind(note, "error", "error kind");
     });
@@ -67,9 +67,15 @@ describe("settlement: the notification layer owns outcomes", () => {
     const settled = h.settle(id);
     const winner = await Promise.race([settled.then(() => "event"), sleep(500).then(() => "timeout")]);
     assert.strictEqual(winner, "event", "event handler must not wait for delivery transport");
+    // The dial is DETACHED from the event head — that is the claim — and it now
+    // also waits out the durable claim's window before it is made, so the fault
+    // is engaged by WAITING for the dial, never by hoping teardown is late
+    // enough. The harness's engagement rule is right: a fault that never fired
+    // proves nothing.
+    await waitFor(() => h.client.testState.notifyCalls.length > 0, "the dial to be attempted");
     gate.resolve();
     await settled;
-    });
+  });
 
   it("background prompt failure settles as error and notifies once", async () => {
     const failing = await harnessRejectingPrompt("ses_mock_1");
@@ -89,7 +95,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     const { h, id } = await withSettledChild();
     await h.settle(id);
     await h.fireEvent(events.idle(id));
-    assertNoticeCount(h, 1, "one settled turn, one notice");
+    await assertNoticeCount(h, 1, "one settled turn, one notice");
   });
 
   it("init guard disables the plugin without required client APIs", async () => {
@@ -108,7 +114,7 @@ describe("notification delivery records", () => {
     const h = await harnessRejectingPrompt("p1");
     const { id, c } = await h.spawn({ description: "doomed parent task" });
     await h.settle(id);
-    assertNoticeCount(h, 0, "nothing delivered");
+    await assertNoticeCount(h, 0, "nothing delivered");
     await sleep(600); // detached delivery runs the gate's 250ms retry cycle
     const summary = await c.result();
     answerSays(summary, "FAILED", "delivery failure surfaced");
@@ -120,7 +126,7 @@ describe("notification delivery records", () => {
   it("a failed delivery does not consume the settlement — redelivery can succeed", async () => {
     const { h, c } = await withSettledChild({ harness: { hooks: { notifyTransport: { failTimes: 1 } } } });
     await sleep(500); // one retry cycle at the gate's fixed backoff
-    assertNoticeCount(h, 1, "the retry delivered");
+    await assertNoticeCount(h, 1, "the retry delivered");
     const summary = await c.result();
     answerSays(summary, "completed", "final record is a success");
     });

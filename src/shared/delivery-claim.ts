@@ -20,6 +20,8 @@
 // redelivery — the claim is what makes two LIVE processes exactly-once.
 
 import { randomUUID } from "node:crypto";
+import { boundedSleep } from "./execution-bound.js";
+import { isPlainRecord } from "./host-shape.js";
 import type { SessionId } from "./ids.js";
 import { NotifyKind } from "./notification-text.js";
 
@@ -31,8 +33,11 @@ export interface DeliveryMark {
 
 export function isDeliveryMark(value: unknown): value is DeliveryMark {
   if (typeof value !== "object" || value === null) return false;
-  const mark = value as DeliveryMark;
-  return typeof mark.token === "string" && typeof mark.at === "number";
+  // Record-shape narrowing without an assertion to a KNOWN type: the fields are
+  // read off the plain-object view, so the guard compiles against what the value
+  // IS, not what it is claimed to be.
+  const record: Record<string, unknown> = isPlainRecord(value) ? value : {};
+  return typeof record.token === "string" && typeof record.at === "number";
 }
 
 /**
@@ -78,32 +83,47 @@ export const SETTLEMENT_DEDUP_KEYS: readonly string[] = [
  */
 const CLAIM_QUIESCENCE_MS = 20;
 
-const pause = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    globalThis.setTimeout(resolve, ms);
-  });
+/**
+ * The quiescent pause, through the ONE clock funnel: `boundedSleep` in
+ * execution-bound, the file that owns every wall-clock wait in production.
+ */
+const pause = (ms: number): Promise<void> => boundedSleep(ms);
+
+/**
+ * How a claim attempt ends. OWN: this instance holds the write and must leave the
+ * mark in place. TAKEN: another claimant already delivered — stand down. REVOKED:
+ * the mark we wrote was cleared UNDER US during the quiescence window — only a
+ * revival does that, and it means this delivery belongs to a generation the child
+ * has moved past. A revoked claimant still DIALS (the parent has not heard the old
+ * turn's outcome, and the revival's fresh settlement is for a different turn), but
+ * it must never write the mark back or release it: the key must stay free for the
+ * revival's own fresh claim. Collapsing REVOKED into TAKEN was the defect that
+ * silenced a whole settlement — dial, record and retry included — whenever a steer
+ * landed inside the claim's 20ms window.
+ */
+export type ClaimOutcome = "own" | "taken" | "revoked";
 
 /**
  * Take the durable claim on one parent-owed write.
  *
- * Returns true when this instance owns the write (it may dial) and false when
- * another instance already delivered it (it must stand down). With no store
- * configured it returns true, so a caller without durable state behaves exactly as
- * it did before this existed. The protocol, in order, is read → write → settle →
- * pause → re-read: the re-read is what makes the LAST committed claimant the single
- * winner, because two writers to one key cannot both see their own token last.
+ * Returns the outcome above; with no store configured it returns "own", so a
+ * caller without durable state behaves exactly as it did before this existed. The
+ * protocol, in order, is read → write → settle → pause → re-read: the re-read is
+ * what makes the LAST committed claimant the single winner, because two writers to
+ * one key cannot both see their own token last.
  */
-export async function takeDeliveryClaim(childSessionId: SessionId, dedupKey: string): Promise<boolean> {
+export async function takeDeliveryClaim(childSessionId: SessionId, dedupKey: string): Promise<ClaimOutcome> {
   const store = claimStore;
-  if (store === null) return true;
+  if (store === null) return "own";
   // Already delivered — by an earlier instance, or a boot that ran before this one.
-  if ((await store.read(childSessionId, dedupKey)) !== null) return false;
+  if ((await store.read(childSessionId, dedupKey)) !== null) return "taken";
   const mark: DeliveryMark = { at: Date.now(), token: randomUUID() };
   store.write(childSessionId, dedupKey, mark);
   await store.settled();
   await pause(CLAIM_QUIESCENCE_MS);
   const after = await store.read(childSessionId, dedupKey);
-  return after !== null && after.token === mark.token;
+  if (after === null) return "revoked";
+  return after.token === mark.token ? "own" : "taken";
 }
 
 /**

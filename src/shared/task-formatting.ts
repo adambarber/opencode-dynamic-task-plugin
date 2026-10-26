@@ -60,7 +60,7 @@ export function buildBackgroundPrompt(prompt: string, { canNotify = true }: { ca
     "Return a final, self-contained answer.",
     "Do not wait for parent follow-up.",
     "The parent may steer you mid-run: a parent message preempts your current turn — read it first, then continue.",
-    "Answer any question yourself with your best judgment, never wait.",
+    "Answer any question yourself with your best judgment — never wait passively for the parent. If you are genuinely blocked on something only the parent can provide, do not guess around it: declare it with task_notify instead.",
     canNotify
       ? "If blocked mid-task, call task_notify with what you need and kind:\"needs_input\" — the task then settles as blocked instead of as a success, and the parent may answer via task_continue."
       : "You have no task_notify tool, so there is no way to reach the parent mid-run. If something blocks you, say so plainly in your final message and name what you need — a task that settles without that will be read as a success.",

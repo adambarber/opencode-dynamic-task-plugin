@@ -22,7 +22,7 @@ export const DYNAMIC_TASK_DESCRIPTION =
   "Spawn a subagent task. Returns immediately — the task never blocks this session. Its outcome arrives exactly once as a [dynamic-task-notify] message when it settles; the child can also send mid-flight [dynamic-task-notice] notices with task_notify. Inspect with task_result/task_status/task_list; steer a running child or revive a settled one with task_continue; stop it with task_interrupt. Pass directory to create the child's session in a worktree instead of this project: the host must know it (unknown directories are refused by name) — use it for implementation work so the project's own checkout stays untouched.";
 
 export const TASK_CONTINUE_DESCRIPTION =
-  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. When the task settles mid-steer, the call revives it automatically unless interrupted; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers. A revived turn may override the model; steers keep the task's model.";
+  "Send a follow-up prompt to a tracked child session and return immediately. A running child is steered: its current turn is aborted and the message becomes its next turn, staying active. A settled child is revived for a fresh turn. Either way the next outcome arrives as a dynamic-task-notify message — after steering, wait for the next one before steering again; each steer aborts the turn it lands on. Interrupted tasks are never revived — spawn a fresh dynamic_task instead. When the task settles mid-steer, the call revives it automatically unless interrupted; a turn that stays active with no outcome may have stalled — task_status shows activity, task_interrupt recovers. A revived turn may override the model; steers keep the task's model.";
 
 export const TASK_NOTIFY_DESCRIPTION =
   "Send a message to the parent session while running: progress, findings, or a block needing parent input. This is a mid-flight notice, not a settlement — the task stays active and reports normally when it finishes. Pass kind:\"needs_input\" when this turn cannot finish without the parent: say exactly what would unblock you, and the task settles as blocked rather than as a success, and the parent can answer with task_continue. Notices arrive as [dynamic-task-notice], distinct from the [dynamic-task-notify] settlement tag. (Children spawned by dynamic_task only.)";
@@ -31,7 +31,7 @@ export const MODEL_ARG_DESCRIPTION =
   "Optional model override as providerID/modelID exactly as spelled in opencode.jsonc (e.g. \"nvidia/z-ai/glm-5.3\"). Bare ids are rejected at admission.";
 
 export const TASK_RESULT_DESCRIPTION =
-  "Fetch latest known child session result/status without sending a new prompt.";
+  "Fetch latest known child session result/status without sending a new prompt. The output shown is the latest COMPLETED turn's final message: a child still working mid-turn shows no new output, so do not read a frozen view as a stalled child — check task_list or wait for the next notification before concluding anything.";
 
 export const TASK_INTERRUPT_DESCRIPTION =
   "Stop a child session by request, and by default everything it spawned below it: the whole subtree is settled as interrupted synchronously, before any abort is sent, and the report names each task it acted on. Pass scope:\"self\" to stop that one session. Histories are preserved, and an interrupted child is not revived by task_continue — spawn a fresh dynamic_task instead.";
@@ -40,7 +40,7 @@ export const TASK_LIST_DESCRIPTION =
   "List all tracked tasks with their lifecycle states. Running tasks are shown as the tree they are — each indented under the task that spawned it — so a runaway child is recognizable as a grandchild; a task whose parent is no longer tracked says so instead of reading as a root.";
 
 export const TASK_STATUS_DESCRIPTION =
-  "Detailed tracked state for one task without calling the API.";
+  "Detailed tracked state for one task without calling the API. Two sources, named as they answer: the store's state is the plugin's own bookkeeping, and the host's live turn status is rendered beside it when the host answers — the two can disagree, and the view says which word came from where.";
 
 // ─── Shared validation ───────────────────────────────────────────────────
 

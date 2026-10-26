@@ -73,6 +73,18 @@ describe("buildBackgroundPrompt", () => {
     assert.match(result, /never wait/);
     assert.match(result, /Return COMPLETED_OK when done\./);
   });
+
+  it("draws the line between never waiting passively and declaring a block actively", () => {
+    // The old text said "never wait" AND "if blocked, call task_notify" — a literal
+    // child resolves the tension toward silence and fakes a success. The repaired
+    // text separates the two: questions get best judgment NOW; a genuine block on
+    // something only the parent can provide is DECLARED, not guessed around.
+    const result = buildBackgroundPrompt("work");
+    assert.match(result, /never wait passively/);
+    assert.match(result, /genuinely blocked/);
+    assert.match(result, /task_notify/);
+    assert.ok(!/never wait\.\s*\n/.test(result), "the bare 'never wait.' order is gone");
+  });
 });
 
 // A parent inspecting a settled child minutes later asks one question the

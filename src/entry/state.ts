@@ -4,11 +4,12 @@
 import type { PluginOptions } from "@opencode/plugin";
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
-import type { OpaqueHost } from "../shared/client.js";
+import { type OpaqueHost, probeHost } from "../shared/client.js";
 import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
 import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
 import { createStore } from "../shared/durable-store.js";
 import { LifecycleStatus } from "../shared/host-events.js";
+import { hasInboxSupport, installInboxSupport } from "../shared/inbox.js";
 import { type LedgerChange, LedgerChangeKind } from "../shared/ledger-change.js";
 import { createDeliveryClaimStore, createLedgerStore } from "../shared/ledger-storage.js";
 import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
@@ -156,6 +157,12 @@ export async function initPluginState(directory: string, options: PluginOptions 
   // dispatch is judged against cannot come from two different places.
   const config = readDynamicTaskPolicy(directory, options ?? null);
   const store = createTaskStore();
+
+  // The Session Inbox capability verdict, read ONCE from the host's shape and
+  // installed for this process (see `hasInboxSupport`). Every inbox-gated path
+  // branches here, so the verdict is decided before any tool or event can run —
+  // and a host without the surface boots exactly as it always did.
+  installInboxSupport(probeHost(host, hasInboxSupport));
 
   // State is scoped to the project directory the host provides (the same
   // root as the config file above) — never the process CWD, which for

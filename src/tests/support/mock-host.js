@@ -25,8 +25,9 @@ import { armedFlag, armedHostFault, armFault, armHookFaults, fault, forId, never
 import { captureNotice, noticeRecord } from "./mock-events.js";
 import { armGate } from "./mock-gates.js";
 import { permissionEndpoint } from "./mock-permission.js";
+import { mockState, seedHostTurns } from "./mock-state.js";
 import { createMockStorage } from "./mock-storage.js";
-import { closeHostTurn, hostSaid, openHostTurn, setHostTurn, stampHostTurn } from "./mock-transcript.js";
+import { closeHostTurn, hostSaid, setHostTurn, stampHostTurn } from "./mock-transcript.js";
 import { missingSessionError } from "./sdk-contract.js";
 
 
@@ -162,76 +163,7 @@ const silence = (state, hooks, value, ns = "") =>
  * does not.
  */
 export function createMockClient(hooks = {}, domain = {}) {
-  const state = {
-    // Every abort the plugin ASKED for, refused ones included. `aborted` below
-    // records what the host actually did, which is the wrong question for an
-    // ownership suite: a plugin that must never stop a session it did not
-    // dispatch is caught by the request reaching the server at all, and against a
-    // host that would 404 the target the two records diverge exactly where the
-    // bug lives.
-    abortAttempts: [],
-    abortGate: null,
-    // The host's status map, shaped as the server holds it: every live
-    // session, with the host's own three words. Derived from the events a test
-    // delivers (a spawned session is busy, a turn's ending makes it idle, a
-    // deletion removes it), so a read that consults it exercises the same
-    // sequence the server would have produced. `at` is when the status last
-    // changed — the clock behind the child's last-message time.
-      // Ids whose first abort was lost, so a "loses once" fixture is spent.
-    abortThrown: false,
-    aborted: [],
-    abortsLost: new Set(),
-    agentListReads: 0,
-    armed: new Set(),
-    childPromptFailed: false,
-    createThrown: false,
-    // Every fault application, counted by name, and every fault a test asked
-    // for. See `FAULTS`.
-    faults: new Map(),
-    // Sessions the host HAS but did not create in this run — a restore. Kept apart
-    // from `sessions` so a case can say "this session predates the test" without
-    // pretending the plugin's own dispatch created it.
-    foreignSessions: new Set(),
-    // The host's durable plugin table. A Map here stands in for the host's SQLite
-    // `kv`, and it is the ONLY place in the fake that pretends to be a disk.
-    kv: domain.kv ?? new Map(),
-    logs: [],
-    // Faults a case knowingly may not reach — the only way out of the teardown
-    // rule, so "the host was hostile" is always a claim somebody made on purpose.
-    maybe: new Set(),
-    messageReadGate: null,
-    notifications: [],
-    notifyAttempts: 0,
-    // Every notification the plugin DIALS, held or not — the count that proves
-    // a held write was never retried behind the parent's back.
-    notifyCalls: [],
-    permissionCalls: [],
-    presenceReads: 0,
-    promptBodies: [],
-    promptGate: null,
-    // Where each session is currently routed, as the two flat v2 calls set it.
-    routed: new Map(),
-    sessionBodies: new Map(),
-    // The model each session is currently running, as the host's projector holds it.
-    sessionModels: new Map(),
-    sessions: new Set(),
-    // How many times the host's status channel was read. Views that already
-    // know what they need must not spend a read per row.
-    statusReads: 0,
-    storageGate: null,
-    transcriptReads: 0,
-    // Per-session transcript overrides — see `setTranscript` below. A Map, not a
-    // field on the setup hook, because a case needs to change what ONE child
-    // says between two settlements of that same child.
-    transcripts: new Map(),
-    // The host's TURN record per session — the verdict on the last completed
-    // execution, absent while a turn is open. Separate from the transcript on
-    // purpose: in v2 those are different facts.
-    turns: new Map(),
-    // Sessions whose transcript refuses to be read.
-    unreadable: new Set(),
-    unreadableError: new Map(),
-  };
+  const state = mockState(domain);
 
   // The registry when a case seeds no agents: the same two the live host publishes,
   // named once so the list reader and the routing guard cannot disagree.
@@ -244,11 +176,7 @@ export function createMockClient(hooks = {}, domain = {}) {
   // work that must ask the host BEFORE any event has been delivered (reconciling
   // what the last process left running). The seed is the host's TURN RECORD: a
   // verdict means the host has closed that turn, its absence means one is open.
-  for (const [id, verdict] of Object.entries(hooks.hostTurnSeed ?? {})) {
-    state.sessions.add(id);
-    if (verdict === undefined) openHostTurn(state, id);
-    else closeHostTurn(state, id, verdict);
-  }
+  seedHostTurns(state, hooks.hostTurnSeed);
   armHookFaults(state, hooks);
   const {
     askedWrites: storageAskedWrites,
@@ -430,11 +358,61 @@ export function createMockClient(hooks = {}, domain = {}) {
         closeHostTurn(state, sessionID, "interrupted");
         return { ok: true };
       },
+      // The Session Inbox namespace (v2.1.4+), presented only when a case arms
+      // it: `hooks.inboxHost` is the verdict the boot's shape probe reads, and
+      // a fake without it is a below-inbox host by construction. The three
+      // methods are the ones the installed client declares; the fake answers
+      // their shapes but no case has needed real list/cancel semantics yet —
+      // what the plugin asks for is the DELIVERY verdict on prompt, modelled
+      // below.
+      ...(hooks.inboxHost
+        ? {
+            inbox: {
+              cancel: async () => undefined,
+              list: async () => [],
+              update: async () => undefined,
+            },
+          }
+        : {}),
       // session.prompt routes by marker: parent notifications carry the tag
       // production's own isParentNotification recognises; everything else is
       // child work.
       prompt: (args) => {
         const { sessionID, text } = args;
+        // The Session Inbox verdict (v2.1.4+), when the fake presents the
+        // surface. Recorded on every delivery-capable prompt, whatever it
+        // carried, so a suite can assert WHAT was asked for rather than infer
+        // it from where the text landed.
+        const { delivery } = args;
+        if (delivery !== undefined) state.promptDeliveries.push({ delivery, to: sessionID });
+        if (delivery === "queue") {
+          // "queue" parks in the host's inbox table until the turn ends, then
+          // becomes the next turn on its own — so the fake parks the text and
+          // `closeHostTurn` flushes it. The text is NOT yet a prompt the child
+          // is working through, and a suite reading promptBodies must not see
+          // it until the simulated turn actually ends.
+          const parked = state.inboxQueue.get(sessionID) ?? [];
+          parked.push({ delivery, text });
+          state.inboxQueue.set(sessionID, parked);
+          return Promise.resolve({ parts: [{ text: "QUEUED_OK", type: "text" }] });
+        }
+        if (delivery === "steer") {
+          // "steer" is promoted at the next step boundary of the running
+          // turn: the prompt JOINS the turn — recorded like any other prompt —
+          // and nothing about the turn is disturbed. No abort, no close, no
+          // park: the whole point of the native steer is that the in-flight
+          // step completes first. The prompt gate still applies (a steer can
+          // be raced against its own delivery failing), unchanged.
+          if (state.promptGate && !state.promptGate.used) {
+            fault(state, "promptGate");
+            state.promptGate.used = true;
+            return state.promptGate.promise.then(() => {
+              throw new Error("prompt rejected by the provider");
+            });
+          }
+          state.promptBodies.push({ text, to: sessionID });
+          return Promise.resolve({ parts: [{ text: "STEER_OK", type: "text" }] });
+        }
         // The prompt gate: the next child prompt parks here until the test
         // releases it, then fails non-retryably. A turn's own prompt delivery
         // failing is the one settlement that can still land while a steer
@@ -538,13 +516,16 @@ export function createMockClient(hooks = {}, domain = {}) {
         return { ok: true };
       },
       switchModel: async ({ sessionID, model }) => {
-        state.routed.set(sessionID, { ...state.routed.get(sessionID), modelID: model?.id, providerID: model?.providerID });
         // The host's projector side: the switch lands on the session row, so a later
         // `session.get` reads the model the host was asked to run. Without it the
         // inheritance layer could never observe a parent that switched models.
         if (model?.providerID !== undefined && model?.id !== undefined) {
           state.sessionModels.set(sessionID, { id: model.id, providerID: model.providerID });
         }
+        state.routed.set(sessionID, { ...state.routed.get(sessionID), modelID: model?.id, providerID: model?.providerID });
+        // The host's projector side: the switch lands on the session row, so a later
+        // `session.get` reads the model the host was asked to run. Without it the
+        // inheritance layer could never observe a parent that switched models.
         return { ok: true };
       },
     },

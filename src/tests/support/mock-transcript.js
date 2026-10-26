@@ -123,6 +123,18 @@ export const closeHostTurn = (state, id, outcome) => {
   // report the finished work as interrupted.
   if (state.turns.get(id)?.outcome !== undefined) return;
   state.turns.set(id, { idle: Date.now(), outcome });
+  // The inbox's queue semantics (v2.1.4+): a delivery parked under "queue"
+  // becomes the next turn when THIS one ends. Flushing here — the one funnel
+  // for turn endings, an abort included — is what makes the fake's park
+  // observable through the same promptBodies every prompt query reads. A
+  // parked text that flushes does not re-open the turn: the host runs the
+  // next turn for its own reasons, and a test that needs that turn open says
+  // so by delivering an execution-started event.
+  const parked = state.inboxQueue?.get(id);
+  if (parked?.length) {
+    for (const item of parked) state.promptBodies.push({ text: item.text, to: id });
+    state.inboxQueue.delete(id);
+  }
 };
 
 /** The verdict a closing idle implies, read off the transcript it is closing. */

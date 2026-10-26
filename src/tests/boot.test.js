@@ -24,6 +24,7 @@ import { answerMatches, answerOmits, answerSays, assert, bootOn, describe, it, l
  * fire-and-forget write.
  */
 
+import { inboxSupported } from "../../dist/shared/inbox.js";
 import { LEDGER_VERSION, ledgerPrefixes } from "../../dist/shared/ledger-storage.js";
 
 /**
@@ -290,6 +291,35 @@ describe("durable state names records, never a path", () => {
       assert.equal(key.includes(dir), false, `a durable key must not carry a directory: ${key}`);
       assert.equal(key.includes(process.cwd()), false, "and above all never the process cwd");
     }
+  });
+});
+
+// --- The Session Inbox capability verdict (v2.1.4+) -------------------------
+// Every inbox-gated path branches on the verdict the boot read from the host's
+// shape, so the verdict itself is pinned at both ends: a host without the
+// surface is a below-inbox host and must boot exactly as it always did; a host
+// that presents the namespace arms the verdict. The probe is a SHAPE read —
+// synchronous, no request — so the boot pays nothing for it, and that too is
+// pinned by counting presence reads.
+describe("the boot reads the Session Inbox capability once from the host's shape", () => {
+  it("arms the verdict when the host presents the inbox surface", async () => {
+    await setupHarness({ hooks: { inboxHost: true } });
+    assert.strictEqual(inboxSupported(), true, "an inbox host boots inbox-capable");
+  });
+
+  it("keeps the verdict off for a below-inbox host, which boots exactly as today", async () => {
+    const h = await setupHarness({});
+    assert.strictEqual(inboxSupported(), false, "no inbox surface, no capability");
+    assert.ok(h.tool.task_continue, "the tools registered exactly as they always did");
+    const status = await h.tool.task_status.execute({ session_id: "ses_absent" });
+    assert.match(status, /Status: unknown/, "the legacy boot answers as it always did");
+  });
+
+  it("probes the shape without dialling the host", async () => {
+    const h = await setupHarness({ hooks: { inboxHost: true } });
+    const atBoot = h.client.testState.presenceReads;
+    assert.strictEqual(inboxSupported(), true);
+    assert.strictEqual(h.client.testState.presenceReads, atBoot, "the probe is a shape read, not a request");
   });
 });
 

@@ -391,6 +391,19 @@ export function createMockClient(hooks = {}, domain = {}) {
           // `closeHostTurn` flushes it. The text is NOT yet a prompt the child
           // is working through, and a suite reading promptBodies must not see
           // it until the simulated turn actually ends.
+          //
+          // A parent notification parked here is DELIVERED — the write is the
+          // delivery; the host now owns when the parent reads it — so the
+          // notice is captured at the park, exactly as a non-queue write to a
+          // mid-turn parent is captured on landing (line 469's hold does the
+          // same). Otherwise every queue-delivered settlement would look
+          // silent to a suite reading `notifications`, and "delivered" would
+          // read as "vanished".
+          if (isParentNotification(text)) {
+            fault(state, "notifyTransport");
+            state.notifyCalls.push(text);
+            captureNotice(state, noticeRecord(sessionID, text));
+          }
           const parked = state.inboxQueue.get(sessionID) ?? [];
           parked.push({ delivery, text });
           state.inboxQueue.set(sessionID, parked);

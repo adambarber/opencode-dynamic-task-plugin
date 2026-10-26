@@ -115,6 +115,14 @@ async function assertBothTurnsDelivered(h) {
   assert.ok(notes[1].message.includes("TURN-TWO-OUTPUT"), `second: ${notes[1]?.message}`);
 }
 
+/**
+ * A child on an INBOX-CAPABLE host. The verdict is installed BY THE BOOT from
+ * the mock's shape — arming a global around the boot would be overwritten the
+ * moment setup probed a non-inbox fake — so the hook is the seam, and the
+ * fixture names the arrangement every native-steer case starts from.
+ */
+const withInboxChild = () => withChild({ harness: { hooks: { inboxHost: true } } });
+
 describe("task_continue branches", () => {
 
   it("rejects missing args and oversized prompts", async () => {
@@ -242,6 +250,40 @@ describe("task_continue branches", () => {
       textDeclaresKind(note.message, "completed", "the real event still settles");
     });
   }
+
+  // The NATIVE steer (an inbox-capable host) is not an abort: the message is
+  // promoted at the running turn's next step boundary, so no work is discarded
+  // and no replacement turn exists. The abort-echo cases above are LEGACY
+  // semantics; on a capable host a bare terminal event after a steer IS the
+  // genuine ending — no stamp may suppress it — and no abort may reach the
+  // transport at all.
+  describe("a native steer on an inbox-capable host", () => {
+    it("steers without ordering an abort — the turn keeps running", async () => {
+      const { c, h } = await withInboxChild();
+      const out = await c.steer("pivot");
+      answerSays(out, "Steer sent", "the steer is reported");
+      answerOmits(out, "no abort is claimed", "abort");
+      assert.deepStrictEqual(h.client.testState.abortAttempts, [], "no interrupt was ordered");
+      assert.strictEqual(await stateOf(c), "State: active", "the task stays active");
+    });
+
+    it("carries the message into the child's context as a promoted prompt, not a replacement turn", async () => {
+      const { c, h, id } = await withInboxChild();
+      await c.steer("pivot");
+      const deliveries = h.client.testState.promptDeliveries.filter((d) => d.to === id);
+      assert.ok(deliveries.length >= 1, "the delivery was recorded");
+      assert.deepStrictEqual(deliveries[deliveries.length - 1].delivery, "steer", "the steer verdict rode the prompt");
+    });
+
+    it("arms no echo suppression — a bare terminal event after the steer is the genuine ending", async () => {
+      const { c, h, id } = await withInboxChild();
+      await c.steer("pivot");
+      await h.fireEvent(events.idle(id));
+      await waitFor(() => h.notices().length >= 1, "the settlement to arrive");
+      const note = h.noticeFor(id);
+      textDeclaresKind(note?.message ?? "", "completed", "the terminal event settles normally — nothing to suppress");
+    });
+  });
 
   // A turn end is published more than once: the host's status channel and the
   // idle event each say the turn ended. The one-shot steer claim consumed the

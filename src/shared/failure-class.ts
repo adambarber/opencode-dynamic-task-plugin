@@ -88,9 +88,27 @@ const PROVIDER_STATUS = [/\b429\b/, /\b500\b/, /\b502\b/, /\b503\b/];
  * `Model tried to call unavailable tool 'invalid'`. That is a model that will
  * never call that tool, so every revival of it fails identically and forever.
  * "temporar" covers the honest phrasings ("temporarily unavailable") without
- * the substring that swept in the fatal ones.
+ * the substring that swept in the fatal ones. Model unavailability itself is
+ * named below, by MODEL_UNAVAILABLE, under a boundary that cannot match that
+ * same sentence.
  */
 const PROVIDER_FRAGMENTS = ["rate limit", "overload", "temporar"];
+
+/**
+ * The host's word for a provider whose model is down — the #33 outage, which
+ * retried through every time. Word boundaries for the same reason
+ * PROVIDER_STATUS's are load bearing, and one pattern per spelling because the
+ * exception name arrives in CamelCase, where no space exists to match:
+ *
+ *   - the exception class: SessionRunnerModel.ModelUnavailableError;
+ *   - the prose after its colon: "Model unavailable: coda/coda".
+ *
+ * Neither can reach `Model tried to call unavailable tool` — "model" is
+ * followed by " tried", not the space the second pattern needs, and the name
+ * is not present at all — so the sweep the old bare "unavailable" caused
+ * stays impossible.
+ */
+const MODEL_UNAVAILABLE = [/\bmodelunavailableerror\b/, /\bmodel unavailable\b/];
 
 /**
  * Classify a settlement. The VERDICT is an input, not a detail: a child that
@@ -105,6 +123,7 @@ export function classifyFailure(verdict: TaskState, detail: unknown): FailureCla
   const transient =
     TRANSPORT_FRAGMENTS.some((fragment) => lowered.includes(fragment)) ||
     PROVIDER_FRAGMENTS.some((fragment) => lowered.includes(fragment)) ||
+    MODEL_UNAVAILABLE.some((pattern) => pattern.test(lowered)) ||
     PROVIDER_STATUS.some((pattern) => pattern.test(lowered));
   return transient ? FailureClass.Transient : FailureClass.Structural;
 }

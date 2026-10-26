@@ -66,6 +66,19 @@ describe("classifyFailure: transient means the network, not the work", () => {
       "temporarily unavailable",
     ], FailureClass.Transient);
   });
+
+  // #33's outage, in the host's own words: a provider whose model is down
+  // for everyone. Retry works — the field evidence is a child revived three
+  // times that made progress each time — so the words naming it belong to
+  // the network's class, not the work's. Pinned with the full exception
+  // spelling and the bare prose, because both arrive.
+  it("names the host's model-unavailability, the outage retries get through", () => {
+    assertClassOf([
+      "SessionRunnerModel.ModelUnavailableError: Model unavailable: coda/coda",
+      "ModelUnavailableError",
+      "model unavailable: coda/coda",
+    ], FailureClass.Transient);
+  });
 });
 
 describe("classifyFailure: structural means retrying changes nothing", () => {

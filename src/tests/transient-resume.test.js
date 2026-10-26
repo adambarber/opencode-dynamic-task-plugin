@@ -68,6 +68,21 @@ describe("a transient failure is resumed, not reported", () => {
     await noticesAfterSettle(h, id, 1, "an interrupt is reported, not resumed");
     assert.strictEqual(childPrompts(h, id).length, 1, "no resume prompt");
   });
+
+  // #33: the host names a downed model ModelUnavailableError — the same
+  // failure this file was written for, seen live when a provider's model went
+  // away and three manual revives of the child all made progress. The
+  // classifier's word for it changes here at the SETTLEMENT, not only in the
+  // classifier's table, so the machinery this file pins — silence, one resume
+  // prompt, no parent notice — cannot lose the new vocabulary.
+  it("resumes a child a downed model cut off", async () => {
+    const { h, id } = await childFailingWith("SessionRunnerModel.ModelUnavailableError: Model unavailable: coda/coda");
+    await noticesAfterSettle(h, id, 0, "the parent is told nothing about a downed model");
+
+    const prompts = childPrompts(h, id);
+    assert.strictEqual(prompts.length, 2, "the spawn prompt, then the resume");
+    assert.match(prompts[1], /Resumed/, "the resume says what it is");
+  });
 });
 
 describe("the budget is what makes silence honest", () => {

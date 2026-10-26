@@ -123,36 +123,58 @@ const stream = (path) => {
     .map((t) => ({ key: `${t.type}:${t.value}`, line: t.loc.start.line }));
 };
 
-/** Maximal runs shared by two streams, found by window hash then extension. */
-const sharedRuns = (a, b, window) => {
-  const windowsOf = (s) => {
-    const index = new Map();
-    for (let i = 0; i + window <= s.length; i++) {
-      const k = s.slice(i, i + window).map((t) => t.key).join(" ");
-      if (!index.has(k)) index.set(k, []);
-      index.get(k).push(i);
-    }
-    return index;
-  };
-  const inA = windowsOf(a);
-  const inB = windowsOf(b);
-  const runs = [];
-  const claimed = new Set();
+/** The shared-window index: hash of `window` consecutive keys → every start that carries it. */
+const windowsOf = (s, window) => {
+  const index = new Map();
+  for (let i = 0; i + window <= s.length; i++) {
+    const k = s.slice(i, i + window).map((t) => t.key).join(" ");
+    if (!index.has(k)) index.set(k, []);
+    index.get(k).push(i);
+  }
+  return index;
+};
+
+/** Extend one window pair rightward while both streams agree. */
+const extendRun = ({ pair, startA, startB }, window) => {
+  const [a, b] = pair;
+  let n = window;
+  while (startA + n < a.length && startB + n < b.length && a[startA + n].key === b[startB + n].key) n++;
+  return n;
+};
+
+/** One maximal shared run, as the report's finding shape spells it. */
+const runOf = ({ pair, startA, startB }, window) => {
+  const [a, b] = pair;
+  const n = extendRun({ pair, startA, startB }, window);
+  const lines = new Set();
+  for (let k = startA; k < startA + n; k++) lines.add(a[k].line);
+  return { lineA: a[startA].line, lineB: b[startB].line, lines: lines.size, startA, startB, tokens: n };
+};
+
+/** Every window pair one shared hash carries — the cross product the run finder walks. */
+const pairStarts = (a, b, window) => {
+  const inA = windowsOf(a, window);
+  const inB = windowsOf(b, window);
+  const pairs = [];
   for (const [key, startsA] of inA) {
     const startsB = inB.get(key);
     if (!startsB) continue;
     for (const startA of startsA) {
-      for (const startB of startsB) {
-        const id = `${startA}:${startB}`;
-        if (claimed.has(id)) continue;
-        let n = window;
-        while (startA + n < a.length && startB + n < b.length && a[startA + n].key === b[startB + n].key) n++;
-        claimed.add(id);
-        const lines = new Set();
-        for (let k = startA; k < startA + n; k++) lines.add(a[k].line);
-        runs.push({ lineA: a[startA].line, lineB: b[startB].line, lines: lines.size, startA, startB, tokens: n });
-      }
+      for (const startB of startsB) pairs.push({ pair: [a, b], startA, startB });
     }
+  }
+  return pairs;
+};
+
+/** Maximal runs shared by two streams, found by window hash then extension. */
+const sharedRuns = (a, b, window) => {
+  const runs = [];
+  const claimed = new Set();
+  for (const at of pairStarts(a, b, window)) {
+    const id = `${at.startA}:${at.startB}`;
+    if (claimed.has(id)) continue;
+    claimed.add(id);
+    runs.push(runOf(at, window));
   }
   return runs;
 };

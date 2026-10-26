@@ -82,12 +82,21 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
   // write to every key fails with it and the plugin's view of durability becomes a lie
   // told to nobody. The refusal is therefore taken INSIDE the bound — one key, one
   // reason, given up rather than retried into the same answer.
-  const apply = async (key: string): Promise<void> => {
-    // This execution has consumed its own count: what is left is what a refusal
-    // may still find when it asks whether anyone else carries the obligation.
+  /** The give-up arm: the key is yielded only when no queued apply still serves its intent. */
+  const refused = (key: string, why: string, queuedKeyLeft: boolean): void => {
+    if (!queuedKeyLeft) intent.delete(key);
+    onRefusal(`refused the write to ${key}: ${why}`);
+  };
+
+  /** This execution consumes its own count; the remainder is what a refusal may still find. */
+  const consumeCount = (key: string): void => {
     const stillQueued = (queued.get(key) ?? 1) - 1;
     if (stillQueued > 0) queued.set(key, stillQueued);
     else queued.delete(key);
+  };
+
+  const apply = async (key: string): Promise<void> => {
+    consumeCount(key);
     const wanted = intent.get(key) ?? null;
     const refusal = { why: null as string | null };
     const answer = await callHost(
@@ -111,8 +120,7 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
       // would delete a NEWER write's intent, which is durable data lost in
       // silence. So the key is given up only when no queued apply is left to
       // serve the intent.
-      if (!queued.has(key)) intent.delete(key);
-      onRefusal(`refused the write to ${key}: ${refusal.why}`);
+      refused(key, refusal.why, queued.has(key));
       return;
     }
     if (!answer.timedOut) return;

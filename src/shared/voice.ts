@@ -302,8 +302,14 @@ export function steerSent({ sessionId, agentName, turn, generation = "legacy" }:
  * inside the window: the first replacement turn never got to run, so the storm
  * signature is named instead of silently discarding another turn.
  */
-export function steerRepeatWarning(): string {
-  return "This is a repeat steer — the previous steer's replacement turn was aborted before it could do its work. Consider waiting for the next completed turn before steering again.";
+export function steerRepeatWarning(generation: "legacy" | "steer" = "legacy"): string {
+  // The two generations discard different things: a legacy steer aborted the
+  // previous steer's replacement turn; a native steer pre-empted it at the next
+  // boundary, so no work was lost — but two identical messages in a row are
+  // still a storm signature either way, and the parent is told so.
+  return generation === "legacy"
+    ? "This is a repeat steer — the previous steer's replacement turn was aborted before it could do its work. Consider waiting for the next completed turn before steering again."
+    : "This is a repeat steer — the same message was already sent to this task. Consider waiting for the next completed turn before steering again.";
 }
 
 export function descriptionTooLong(length: number): string {

@@ -109,7 +109,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
           sessionId,
           turn: turnFact,
         }) +
-        (repeated ? ` ${steerRepeatWarning()}` : "")
+        (repeated ? ` ${steerRepeatWarning("steer")}` : "")
       );
     }
 

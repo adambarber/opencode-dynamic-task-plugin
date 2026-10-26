@@ -6,6 +6,7 @@ import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { errorMessage } from "../shared/host-shape.js";
+import { inboxSupported } from "../shared/inbox.js";
 import { hostTurnRunning, readSessionTurn, type SessionTurn } from "../shared/liveness.js";
 import { clearTurnReplacement, markSteerRepeat, markTurnReplacement, steerWasRepeat } from "../shared/notice-claim.js";
 import { NotifyKind } from "../shared/notification-text.js";
@@ -27,6 +28,21 @@ export type { ContinueArgs } from "./args.js";
 function steerTurnFact(turn: SessionTurn): SteerTurnFact {
   if (!turn.statusAnswered) return "unanswered";
   return hostTurnRunning(turn) ? "in flight" : "idle";
+}
+
+/**
+ * The parent's words, framed for a child whose running turn is about to end so
+ * the message can replace it. Shared by both steer generations: the framing is
+ * honest on each — the legacy turn ends by abort, the native one at the step
+ * boundary.
+ */
+function steerTextFor(prompt: string): string {
+  return textBlock(
+    "[Parent steer — read before continuing.]",
+    "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
+    "",
+    prompt,
+  );
 }
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
@@ -54,8 +70,48 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // turn and then wait forever for a replacement turn that the refusal just said
     // would not be sent: the child reads `active` and the store reads mid-steer, and
     // neither fact points at the tool call that caused it.
+    //
+    // On an inbox-capable host the steer is NOT an abort (below): no stamp is
+    // armed, so there is no echo to suppress — but the self-steer refusal must
+    // still come first, because a child that prompts itself pre-empts its own
+    // turn at the next boundary either way.
     const selfSteer = stopPlan({ callerSessionId, store }, sessionId, false).refusal;
     if (selfSteer !== undefined) return steerSelfRefused(sessionId, selfSteer);
+
+    // Native steer: the host presents the Session Inbox, so the parent's message
+    // rides ONE prompt with delivery "steer" — the host promotes it at the
+    // running turn's next step boundary, with no abort and no discarded work.
+    // Everything the legacy path needs below is therefore unnecessary here: no
+    // turn-replacement stamp (nothing is aborted, so no terminal echo exists to
+    // suppress), no server-gone or abort-failed arms (no abort is ordered), and
+    // no settled-midway races (the running turn is never killed). The liveness
+    // read stays only because the result still says which steer happened — and
+    // its wording is the native truth, per the voice.
+    if (inboxSupported()) {
+      const turnFact = steerTurnFact(await readSessionTurn(host, sessionId));
+      fireChildPrompt(host, store, {
+        agentName: active.agentName,
+        childSessionId: sessionId,
+        delivery: "steer",
+        description: active.description,
+        parentSessionId: active.parentSessionId,
+        ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
+      }, steerTextFor(admitted.prompt));
+      // The storm stamp rides here too: a repeat of the same message inside the
+      // window is recognisable on this path exactly as on the legacy one — the
+      // parent is told either way.
+      markSteerRepeat(store, sessionId, admitted.prompt);
+      const repeated = steerWasRepeat(store, sessionId);
+      return (
+        steerSent({
+          agentName: active.agentLabel ?? active.agentName,
+          generation: "steer",
+          sessionId,
+          turn: turnFact,
+        }) +
+        (repeated ? ` ${steerRepeatWarning()}` : "")
+      );
+    }
 
     // Steer: the parent speaks to a running child as a turn
     // replacement — stop, append, re-submit. Turn attribution is armed
@@ -128,19 +184,13 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // The turn is dead: fire the parent message as the next user turn.
       // Fire-and-forget like every prompt — the lifecycle event owns
       // settlement, and the prompt-failure path owns delivery failure.
-      const steerText = textBlock(
-        "[Parent steer — read before continuing.]",
-        "The parent sent the following while you were running. Read it first, then continue your task with it in mind.",
-        "",
-        admitted.prompt,
-      );
       fireChildPrompt(host, store, {
         agentName: active.agentName,
         childSessionId: sessionId,
         description: active.description,
         parentSessionId: active.parentSessionId,
         ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
-      }, steerText);
+      }, steerTextFor(admitted.prompt));
       // The storm stamp rides the same arm the replacement did, so a repeat of
       // the same message inside the window is recognisable here and in the
       // views. The warning rides on the REPEAT fact, not the turn fact: a second
@@ -150,7 +200,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       markSteerRepeat(store, sessionId, admitted.prompt);
       const repeated = steerWasRepeat(store, sessionId);
       return (
-        steerSent(sessionId, active.agentLabel ?? active.agentName, turnFact) +
+        steerSent({ agentName: active.agentLabel ?? active.agentName, sessionId, turn: turnFact }) +
         (repeated ? ` ${steerRepeatWarning()}` : "")
       );
     }

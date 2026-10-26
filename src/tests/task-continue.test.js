@@ -10,7 +10,7 @@
 
 import { ENV } from "../../dist/shared/config.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, bootOn, bounded, childFailingWith, deferred, describe, dialCount, drainNotices, eventHarness, events, it, promptsSaying, promptsToCarrying, promptText, promptTextsTo, retainedEntry, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, stateOf, statusOmits, statusSays, textDeclaresKind, waitFor, wasAborted, withChild, withEnv, withSettledChild } from "./support/index.js";
+import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, bootOn, bounded, childFailingWith, deferred, deliveriesTo, describe, dialCount, drainNotices, eventHarness, events, it, promptsSaying, promptsToCarrying, promptText, promptTextsTo, retainedEntry, sentPrompts, setupHarness, setupTwoTurnHarness, sleep, stateOf, statusOmits, statusSays, textDeclaresKind, waitFor, wasAborted, withChild, withEnv, withSettledChild } from "./support/index.js";
 
 /**
  * A steer that will lose a race to an interrupt, and the report it hands back.
@@ -194,6 +194,26 @@ describe("task_continue branches", () => {
     const out = await c.steer("other direction");
     answerSays(out, "no turn was running", "the second steer's own truth");
     answerOmits(out, "repeat steer", "a different message is a fresh instruction, not a storm");
+  });
+
+  // --- The native steer (Session Inbox host, v2.1.4+) ------------------------
+  // On a host that presents the inbox surface, steering a running child is one
+  // prompt with delivery "steer": the host promotes it at the child's next step
+  // boundary. No abort is ordered, so no work is discarded — and the machinery
+  // that existed to police the abort (the turn-replacement stamp, the echo
+  // suppression) is dead weight on this path. The liveness read stays, because
+  // the result still says WHICH steer happened, but its wording is the native
+  // truth: steered, not aborted.
+  it("steering a running child on an inbox host sends the prompt with delivery steer and aborts nothing", async () => {
+    const { h, c, id } = await withChild({ harness: { hooks: { inboxHost: true } } });
+    const out = await c.steer("follow up");
+    answerSays(out, "Steer sent", "the steer is confirmed");
+    answerSays(out, "next step boundary", "the native cost is named: none");
+    answerOmits(out, "aborted", "nothing was aborted");
+    assert.ok(!wasAborted(h.client, id), "no interrupt is ordered");
+    assert.deepStrictEqual(deliveriesTo(h.client, id), ["steer"], "the prompt carried the native delivery");
+    assert.strictEqual(promptsToCarrying(h.client, id, "follow up").length, 1, "the message is the parent's words");
+    assert.strictEqual(await stateOf(c), "State: active", "a steer never settles");
   });
 
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo

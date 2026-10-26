@@ -28,6 +28,8 @@ export interface ModelOverride {
 export interface PromptRouting {
   agent?: string;
   model?: ModelOverride;
+  /** The host's inbox delivery verdict, on a caller that means to set one. */
+  delivery?: "steer" | "queue";
 }
 
 // The input gate for every prompt-carrying tool. One place decides the ORDER
@@ -101,7 +103,11 @@ export function invokePrompt(
           model: { id: routing.model.modelID, providerID: routing.model.providerID },
           sessionID: sessionId,
         });
-      return client.session.prompt({ sessionID: sessionId, text });
+      // The delivery verdict rides the prompt payload only when the caller set
+      // one: the host routes "steer" at the next step boundary of a running
+      // turn and parks "queue" until the turn ends. A prompt without one keeps
+      // the host's own default, which is what every legacy call site wants.
+      return client.session.prompt({ sessionID: sessionId, text, ...(routing.delivery !== undefined ? { delivery: routing.delivery } : {}) });
     },
     onFailure,
   );

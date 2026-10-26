@@ -108,6 +108,8 @@ async function deliverOrContain(
 
 export interface ChildRef extends TaskIdentity {
   requestedModel?: TaskRecordBase["requestedModel"];
+  /** The inbox delivery verdict this prompt asks the host for, if any. */
+  delivery?: "steer" | "queue";
 }
 
 // Fire a child prompt and own its failure path. The prompt resolving is NOT
@@ -116,8 +118,9 @@ export interface ChildRef extends TaskIdentity {
 // transport rejected): without it a fired prompt leaves the ledger active
 // and the parent silently deaf.
 export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildRef, prompt: string): void {
-  const routing: { agent: string; model?: { providerID: string; modelID: string } } = {
+  const routing: { agent: string; delivery?: "steer" | "queue"; model?: { providerID: string; modelID: string } } = {
     agent: task.agentName,
+    ...(task.delivery !== undefined ? { delivery: task.delivery } : {}),
     ...(task.requestedModel !== undefined ? { model: task.requestedModel } : {}),
   };
   // A delivery failure settles exactly once through the same gate the async

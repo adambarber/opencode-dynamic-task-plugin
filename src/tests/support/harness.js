@@ -48,6 +48,7 @@ export {
   sentPrompts,
   sessionBody,
   sessionCount,
+  deliveriesTo,
   sessionIds,
   wasAborted,
 } from "./client-queries.js";

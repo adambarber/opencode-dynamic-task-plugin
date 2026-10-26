@@ -63,6 +63,10 @@ export const abortRequests = (client) => client.testState.abortAttempts;
 /** Every session the host has been asked to create. */
 export const sessionIds = (client) => [...client.testState.sessions];
 
+/** The delivery verdicts recorded for prompts to one session, in order. */
+export const deliveriesTo = (client, sessionId) =>
+  client.testState.promptDeliveries.filter((p) => p.to === sessionId).map((p) => p.delivery);
+
 /** How many sessions the host has been asked to create. */
 export const sessionCount = (client) => client.testState.sessions.size;
 

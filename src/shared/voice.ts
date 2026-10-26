@@ -275,8 +275,26 @@ const STEER_TURN_SENTENCE: Record<SteerTurnFact, string> = {
   unanswered: "the host did not answer whether a turn was in flight, so the cost is unknown; the message was sent as the next turn",
 };
 
-export function steerSent(sessionId: string, agentName: string, turn: SteerTurnFact): string {
-  return `Steer sent to ${sessionId} (@${agentName}): ${STEER_TURN_SENTENCE[turn]}. The task stays active; its outcome arrives as a dynamic-task-notify message. If no outcome arrives, the turn stalled: check task_status, recover with task_interrupt.`;
+// The native host promotes the steer at the running turn's next step boundary —
+// no abort, so no discarded work to name. The idle arm is shared with the legacy
+// table: an idle task's truth is the same either way.
+const STEER_TURN_SENTENCE_NATIVE: Record<SteerTurnFact, string> = {
+  idle: STEER_TURN_SENTENCE.idle,
+  "in flight": "steered at the next step boundary — no work discarded; the running turn finishes its step and reads the message there",
+  unanswered: "the host did not answer whether a turn is in flight; the message will be promoted at the next step boundary of whatever is running",
+};
+
+/** What a steer result sentence needs: the ids, the turn fact, and the host generation. */
+export interface SteerSentFact {
+  sessionId: string;
+  agentName: string;
+  turn: SteerTurnFact;
+  generation?: "legacy" | "steer";
+}
+
+export function steerSent({ sessionId, agentName, turn, generation = "legacy" }: SteerSentFact): string {
+  const sentences: Record<SteerTurnFact, string> = generation === "steer" ? STEER_TURN_SENTENCE_NATIVE : STEER_TURN_SENTENCE;
+  return `Steer sent to ${sessionId} (@${agentName}): ${sentences[turn]}. The task stays active; its outcome arrives as a dynamic-task-notify message. If no outcome arrives, the turn stalled: check task_status, recover with task_interrupt.`;
 }
 
 /**

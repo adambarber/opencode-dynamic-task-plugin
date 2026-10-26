@@ -44,8 +44,10 @@ describe("question gate: denial", () => {
   }
 
   it("refuses an ask with no id or no session, without dialling", async () => {
-    assertIs((await denyAsk(okClient(), "ses_child", "")).succeeded, false, "no ask id");
-    assertIs((await denyAsk(okClient(), "", "q1")).succeeded, false, "no session id");
+    const noId = await denyAsk(okClient(), "ses_child", "");
+    assertIs(noId.succeeded, false, "no ask id");
+    const noSession = await denyAsk(okClient(), "", "q1");
+    assertIs(noSession.succeeded, false, "no session id");
   });
 
   // The permission domain is a load-bearing premise, and a premise that is

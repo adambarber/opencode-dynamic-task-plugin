@@ -15,6 +15,7 @@ import type { SessionId } from "../shared/ids.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import {
+  forgetChildDeliveryClaims,
   gateLedger,
   LogLevel,
   notifyParent,
@@ -23,12 +24,12 @@ import {
   safeLog,
   settlementKind,
 } from "../shared/notify.js";
-import type { ModelOverride } from "../shared/prompt.js";
 import {
   classifyPromptError,
   type HydratedOutcome,
   hydrateLatestOutcome,
   invokePrompt,
+  type ModelOverride,
 } from "../shared/prompt.js";
 import { isParentless, type ParentSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import {
@@ -136,9 +137,11 @@ export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildR
  *      re-claims the child's concurrency slot (so a revival cannot exceed a cap,
  *      and cannot skip the check by coming from the automatic path), spends one
  *      unit of the child's resume budget, and publishes the new running record.
- *   2. `gateLedger.forgetChild` — a revived task is a FRESH settlement subject.
- *      Without this the child's next real outcome is deduplicated against the
- *      turn that already settled, and a child that recovers from a blip and then
+ *   2. `gateLedger.forgetChild` and `forgetChildDeliveryClaims` — a revived task
+ *      is a FRESH settlement subject, in this process and in any other sharing the
+ *      project. Without this the child's next real outcome is deduplicated against
+ *      the turn that already settled — in memory against the gate, on disk against
+ *      the durable claim — and a child that recovers from a blip and then
  *      genuinely fails reports nothing, forever. That is the one failure this
  *      feature must be structurally unable to cause.
  *   3. `fireChildPrompt` — the child's new turn, carrying whatever asked for it.
@@ -162,6 +165,7 @@ export function reviveWithPrompt(
 ): ActiveTaskState {
   const revived = reviveRetainedTask(store, childSessionId, capSource, model);
   gateLedger.forgetChild(childSessionId);
+  forgetChildDeliveryClaims(childSessionId);
   fireChildPrompt(host, store, revived, prompt);
   return revived;
 }
@@ -328,7 +332,7 @@ export async function settleRunningChild(
   // ended `idle` over an errored stream.
   const {failure} = settled;
   if (settled.verdict !== verdict) {
-    verdict = settled.verdict;
+    ({ verdict } = settled);
     if (!recordSettledOutcome(store, childSessionId, TaskState.Error, failure)) {
       void safeLog(LogLevel.Info, `Late error already recorded for ${childSessionId}`);
     }

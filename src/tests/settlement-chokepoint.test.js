@@ -28,9 +28,9 @@ import { announcementAfterKill, assert, describe, failEdge, it } from "./support
  * and the same promise to the parent, so the words are written once and each case
  * only says HOW its edge died — otherwise the assertion drifts with the copy.
  */
-const DEAD_EDGE = (hint) => assert.match(hint.message, /never run/i, "a dead edge is dead, not ready");
+const deadEdge = (hint) => assert.match(hint.message, /never run/i, "a dead edge is dead, not ready");
 /** A steer is the only kill here that needs a session id and a prompt. */
-const STEER = (ready, id) => ready.tool.task_continue.execute({ prompt: "keep going", session_id: id }, { sessionID: "p1" });
+const steer = (ready, id) => ready.tool.task_continue.execute({ prompt: "keep going", session_id: id }, { sessionID: "p1" });
 
 describe("a held wait survives every way a child can end", () => {
   it("a child that completes releases the parent", async () => {
@@ -52,7 +52,7 @@ describe("a held wait survives every way a child can end", () => {
       kill: (ready, id) => ready.tool.task_interrupt.execute({ session_id: id }, { sessionID: "p1" }),
     });
 
-    DEAD_EDGE(hint);
+    deadEdge(hint);
   });
 
   // The same steer under two server failures: an abort the server cannot perform
@@ -63,9 +63,9 @@ describe("a held wait survives every way a child can end", () => {
     ["promptFailIds", "prompt the server rejects"],
   ]) {
     it(`a child whose ${story} releases the parent`, async () => {
-      const { hint } = await announcementAfterKill({ fault, kill: STEER });
+      const { hint } = await announcementAfterKill({ fault, kill: steer });
 
-      DEAD_EDGE(hint);
+      deadEdge(hint);
     });
   }
 
@@ -76,6 +76,6 @@ describe("a held wait survives every way a child can end", () => {
     // plugin contradicting itself in one message.
     const { hint } = await announcementAfterKill({ kill: (ready, id) => failEdge(ready, id) });
 
-    DEAD_EDGE(hint);
+    deadEdge(hint);
   });
 });

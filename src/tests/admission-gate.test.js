@@ -276,7 +276,7 @@ describe("agentCanNotify walks the host's ruleset, not a map", () => {
     assert.strictEqual(agentCanNotify(dot, "taskXnotify"), true, "a dot is not any-char");
   });
   it("absent permissions arrive already denied; an explicit empty list stays open", () => {
-    const absent = toAgentRecords([{ id: "g", mode: "subagent", name: "G" }])[0],
+    const [absent] = toAgentRecords([{ id: "g", mode: "subagent", name: "G" }]),
      empty = record([]);
     assert.strictEqual(agentCanNotify(absent, NOTIFY_TOOL), false, "the host denies what it was never given");
     assert.strictEqual(agentCanNotify(empty, NOTIFY_TOOL), true, "no rule matches, and no match is ask");

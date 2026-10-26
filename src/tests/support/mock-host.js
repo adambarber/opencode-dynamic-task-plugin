@@ -58,8 +58,8 @@ const sessionObject = (id, state) => {
   return {
     id,
     ...(model === undefined ? {} : { model }),
-    projectID: "ses_project_mock",
     directory: "/mock/project",
+    projectID: "ses_project_mock",
     title: `mock ${id}`,
     // The turn record, spelled as v2 spells it: `outcome` and `time.idle` appear
     // only once an execution has reached a terminal transition, so a session with
@@ -163,18 +163,63 @@ const silence = (state, hooks, value, ns = "") =>
  */
 export function createMockClient(hooks = {}, domain = {}) {
   const state = {
-    sessions: new Set(),
+    // Every abort the plugin ASKED for, refused ones included. `aborted` below
+    // records what the host actually did, which is the wrong question for an
+    // ownership suite: a plugin that must never stop a session it did not
+    // dispatch is caught by the request reaching the server at all, and against a
+    // host that would 404 the target the two records diverge exactly where the
+    // bug lives.
+    abortAttempts: [],
+    abortGate: null,
+    // The host's status map, shaped as the server holds it: every live
+    // session, with the host's own three words. Derived from the events a test
+    // delivers (a spawned session is busy, a turn's ending makes it idle, a
+    // deletion removes it), so a read that consults it exercises the same
+    // sequence the server would have produced. `at` is when the status last
+    // changed — the clock behind the child's last-message time.
+      // Ids whose first abort was lost, so a "loses once" fixture is spent.
+    abortThrown: false,
+    aborted: [],
+    abortsLost: new Set(),
+    agentListReads: 0,
+    armed: new Set(),
+    childPromptFailed: false,
+    createThrown: false,
+    // Every fault application, counted by name, and every fault a test asked
+    // for. See `FAULTS`.
+    faults: new Map(),
     // Sessions the host HAS but did not create in this run — a restore. Kept apart
     // from `sessions` so a case can say "this session predates the test" without
     // pretending the plugin's own dispatch created it.
     foreignSessions: new Set(),
+    // The host's durable plugin table. A Map here stands in for the host's SQLite
+    // `kv`, and it is the ONLY place in the fake that pretends to be a disk.
+    kv: domain.kv ?? new Map(),
+    logs: [],
+    // Faults a case knowingly may not reach — the only way out of the teardown
+    // rule, so "the host was hostile" is always a claim somebody made on purpose.
+    maybe: new Set(),
+    messageReadGate: null,
     notifications: [],
+    notifyAttempts: 0,
     // Every notification the plugin DIALS, held or not — the count that proves
     // a held write was never retried behind the parent's back.
     notifyCalls: [],
-    // Sessions whose transcript refuses to be read.
-    unreadable: new Set(),
-    unreadableError: new Map(),
+    permissionCalls: [],
+    presenceReads: 0,
+    promptBodies: [],
+    promptGate: null,
+    // Where each session is currently routed, as the two flat v2 calls set it.
+    routed: new Map(),
+    sessionBodies: new Map(),
+    // The model each session is currently running, as the host's projector holds it.
+    sessionModels: new Map(),
+    sessions: new Set(),
+    // How many times the host's status channel was read. Views that already
+    // know what they need must not spend a read per row.
+    statusReads: 0,
+    storageGate: null,
+    transcriptReads: 0,
     // Per-session transcript overrides — see `setTranscript` below. A Map, not a
     // field on the setup hook, because a case needs to change what ONE child
     // says between two settlements of that same child.
@@ -183,54 +228,9 @@ export function createMockClient(hooks = {}, domain = {}) {
     // execution, absent while a turn is open. Separate from the transcript on
     // purpose: in v2 those are different facts.
     turns: new Map(),
-    logs: [],
-    aborted: [],
-    // Every fault application, counted by name, and every fault a test asked
-    // for. See `FAULTS`.
-    faults: new Map(),
-    armed: new Set(),
-    // Faults a case knowingly may not reach — the only way out of the teardown
-    // rule, so "the host was hostile" is always a claim somebody made on purpose.
-    maybe: new Set(),
-    // Every abort the plugin ASKED for, refused ones included. `aborted` above
-    // records what the host actually did, which is the wrong question for an
-    // ownership suite: a plugin that must never stop a session it did not
-    // dispatch is caught by the request reaching the server at all, and against a
-    // host that would 404 the target the two records diverge exactly where the
-    // bug lives.
-    abortAttempts: [],
-    permissionCalls: [],
-    // Where each session is currently routed, as the two flat v2 calls set it.
-    routed: new Map(),
-    transcriptReads: 0,
-    agentListReads: 0,
-    promptBodies: [],
-    sessionBodies: new Map(),
-    // The model each session is currently running, as the host's projector holds it.
-    sessionModels: new Map(),
-    createThrown: false,
-    // How many times the host's status channel was read. Views that already
-    // know what they need must not spend a read per row.
-    statusReads: 0,
-    presenceReads: 0,
-    abortThrown: false,
-    notifyAttempts: 0,
-    childPromptFailed: false,
-    abortGate: null,
-    promptGate: null,
-    messageReadGate: null,
-    // The host's durable plugin table. A Map here stands in for the host's SQLite
-    // `kv`, and it is the ONLY place in the fake that pretends to be a disk.
-    kv: domain.kv ?? new Map(),
-    storageGate: null,
-    // The host's status map, shaped as the server holds it: every live
-    // session, with the host's own three words. Derived from the events a test
-    // delivers (a spawned session is busy, a turn's ending makes it idle, a
-    // deletion removes it), so a read that consults it exercises the same
-    // sequence the server would have produced. `at` is when the status last
-    // changed — the clock behind the child's last-message time.
-      // Ids whose first abort was lost, so a "loses once" fixture is spent.
-    abortsLost: new Set(),
+    // Sessions whose transcript refuses to be read.
+    unreadable: new Set(),
+    unreadableError: new Map(),
   };
 
   // The registry when a case seeds no agents: the same two the live host publishes,
@@ -259,7 +259,6 @@ export function createMockClient(hooks = {}, domain = {}) {
   } = createMockStorage(state, hooks);
 
   const endpoints = {
-    testState: state,
     // v2 names this domain `agent` and its reader `list`, and the answer is a bare
     // array: there is no envelope to unwrap, so a reader reaching for `.data` now
     // fails on an array rather than quietly finding nothing.
@@ -290,8 +289,32 @@ export function createMockClient(hooks = {}, domain = {}) {
     permission: {
       reply: permissionEndpoint(state, hooks),
     },
-    storage,
     session: {
+      // v2 gives a plugin NO status channel, so the fake does not serve one: keeping
+      // a map here would keep a v1 belief alive that production has already given up.
+      context: async ({ sessionID }) => {
+        state.transcriptReads += 1;
+        if (state.messageReadGate && !state.messageReadGate.used) {
+          fault(state, "messageReadGate");
+          state.messageReadGate.used = true;
+          await state.messageReadGate.promise;
+        }
+        if (state.unreadable.has(sessionID)) {
+          fault(state, "unreadableTranscript");
+          throw state.unreadableError.get(sessionID) ?? Object.assign(
+            new Error(`Session "${sessionID}" transcript unavailable.`),
+            { cause: { status: 500 }, reason: "UnexpectedStatus" },
+          );
+        }
+        if (state.transcripts.has(sessionID)) {
+          return state.transcripts.get(sessionID);
+        }
+        if (hooks.messages) return hooks.messages({ sessionID });
+        if (!state.sessions.has(sessionID)) {
+          throw missingSessionError();
+        }
+        return [hostSaid("COMPLETED_OK")];
+      },
       create: async ({ title, parentID }) => {
         if (armedFlag(state, hooks, "createThrowsOnce") && !state.createThrown) {
           fault(state, "createThrowsOnce");
@@ -329,6 +352,83 @@ export function createMockClient(hooks = {}, domain = {}) {
           return new Promise(() => {});
         }
         return { id };
+      },
+      // Does the host still HAVE this session — the only endpoint whose contract
+      // answers that. The status map cannot: "nothing running" and "never existed"
+      // are the same absence there, and reading one as the other is what made a
+      // restart invent errors for children the host still had. So the fake answers
+      // it, refusing with the host's OWN declared not-found.
+      get: async ({ sessionID }) => {
+        state.presenceReads += 1;
+        const hostile = armedHostFault(state, hooks, "presenceHang", "presenceThrows");
+        if (hostile) return hostile();
+        if (state.sessions.has(sessionID) || state.foreignSessions.has(sessionID)) {
+          return sessionObject(sessionID, state);
+        }
+        throw missingSessionError();
+      },
+      interrupt: async ({ sessionID }) => {
+        state.abortAttempts.push(sessionID);
+        // v2 records what a turn ENDED as. An interrupt closes an open turn as
+        // `interrupted` — a real verdict, and the one that distinguishes a steer
+        // (interrupted, replacement pending) from a turn that simply has nothing
+        // on it yet. A turn already closed keeps the verdict it was given.
+        closeHostTurn(state, sessionID, "interrupted");
+        // A transport that never answers. The plugin bounds every other host
+        // call, so a hang here is the one shape a caller cannot survive unless
+        // the abort path carries its own deadline.
+        const abortHung = forId(state, "abortHang", hooks.abortHangIds, sessionID, neverAnswers);
+        if (abortHung) return abortHung;
+        // The lost packet: ONE abort per id never comes back, and every later one
+        // is answered normally. `abortHangIds` is the wrong shape for a deadline
+        // test — a hang that never lifts also hangs the harness's teardown, so the
+        // suite would stop reporting anything after the case it was written for.
+        // This is the shape a real network failure has: the request is lost once,
+        // and a retry gets through.
+        if (!state.abortsLost.has(sessionID)) {
+          const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, sessionID, () => {
+            state.abortsLost.add(sessionID);
+            return neverAnswers();
+          });
+          if (lost) return lost;
+        }
+        if (armedFlag(state, hooks, "abortThrowsOnce") && !state.abortThrown) {
+          fault(state, "abortThrowsOnce");
+          state.abortThrown = true;
+          throw new Error("abort failed");
+        }
+        if (armedFlag(state, hooks, "abortThrows")) {
+          fault(state, "abortThrows");
+          // The message is what a test will assert it saw, so the plan carries
+          // it rather than the test reaching in to normalize it.
+          throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
+        }
+        // "The server has no such session" has two causes here, and the host
+        // cannot tell them apart: an id the harness never created, and an id whose
+        // abort is scripted to come back that way. One predicate, so a case that
+        // scripts a failing abort gets the same 404 shape as a case that names a
+        // session that was never there.
+        const serverLostIt = (id) => !state.sessions.has(id) || Boolean(hooks.abortFailIds?.has(id));
+        if (serverLostIt(sessionID)) {
+          if (hooks.abortFailIds?.has(sessionID)) fault(state, "abortFail");
+          throw sessionNotFound(sessionID);
+        }
+        // The abort gate: the first abort parks here until the test releases
+        // it, so a racing call can be arranged without monkey-patching. With
+        // `fails`, the released abort reports the session as gone — the race
+        // outcome the settlement path must survive.
+        if (state.abortGate && !state.abortGate.used) {
+          fault(state, "abortGate");
+          state.abortGate.used = true;
+          await state.abortGate.promise;
+          if (state.abortGate.fails) {
+            throw sessionNotFound(sessionID);
+          }
+        }
+        state.aborted.push(sessionID);
+        stampHostTurn(state, sessionID, {});
+        closeHostTurn(state, sessionID, "interrupted");
+        return { ok: true };
       },
       // session.prompt routes by marker: parent notifications carry the tag
       // production's own isParentNotification recognises; everything else is
@@ -418,45 +518,6 @@ export function createMockClient(hooks = {}, domain = {}) {
         }
         return Promise.resolve({ parts: [{ text: "PROMPT_OK", type: "text" }] });
       },
-      // v2 gives a plugin NO status channel, so the fake does not serve one: keeping
-      // a map here would keep a v1 belief alive that production has already given up.
-      context: async ({ sessionID }) => {
-        state.transcriptReads += 1;
-        if (state.messageReadGate && !state.messageReadGate.used) {
-          fault(state, "messageReadGate");
-          state.messageReadGate.used = true;
-          await state.messageReadGate.promise;
-        }
-        if (state.unreadable.has(sessionID)) {
-          fault(state, "unreadableTranscript");
-          throw state.unreadableError.get(sessionID) ?? Object.assign(
-            new Error(`Session "${sessionID}" transcript unavailable.`),
-            { cause: { status: 500 }, reason: "UnexpectedStatus" },
-          );
-        }
-        if (state.transcripts.has(sessionID)) {
-          return state.transcripts.get(sessionID);
-        }
-        if (hooks.messages) return hooks.messages({ sessionID });
-        if (!state.sessions.has(sessionID)) {
-          throw missingSessionError();
-        }
-        return [hostSaid("COMPLETED_OK")];
-      },
-      // Does the host still HAVE this session — the only endpoint whose contract
-      // answers that. The status map cannot: "nothing running" and "never existed"
-      // are the same absence there, and reading one as the other is what made a
-      // restart invent errors for children the host still had. So the fake answers
-      // it, refusing with the host's OWN declared not-found.
-      get: async ({ sessionID }) => {
-        state.presenceReads += 1;
-        const hostile = armedHostFault(state, hooks, "presenceHang", "presenceThrows");
-        if (hostile) return hostile();
-        if (state.sessions.has(sessionID) || state.foreignSessions.has(sessionID)) {
-          return sessionObject(sessionID, state);
-        }
-        throw missingSessionError();
-      },
       // v2 routes a turn by setting the session's agent and model, both flat calls
       // on the same domain. A turn is not dispatched against a model until the
       // prompt goes out with `parts` alone, so an unset route is a real failure
@@ -484,69 +545,6 @@ export function createMockClient(hooks = {}, domain = {}) {
         if (model?.providerID !== undefined && model?.id !== undefined) {
           state.sessionModels.set(sessionID, { id: model.id, providerID: model.providerID });
         }
-        return { ok: true };
-      },
-      interrupt: async ({ sessionID }) => {
-        state.abortAttempts.push(sessionID);
-        // v2 records what a turn ENDED as. An interrupt closes an open turn as
-        // `interrupted` — a real verdict, and the one that distinguishes a steer
-        // (interrupted, replacement pending) from a turn that simply has nothing
-        // on it yet. A turn already closed keeps the verdict it was given.
-        closeHostTurn(state, sessionID, "interrupted");
-        // A transport that never answers. The plugin bounds every other host
-        // call, so a hang here is the one shape a caller cannot survive unless
-        // the abort path carries its own deadline.
-        const abortHung = forId(state, "abortHang", hooks.abortHangIds, sessionID, neverAnswers);
-        if (abortHung) return abortHung;
-        // The lost packet: ONE abort per id never comes back, and every later one
-        // is answered normally. `abortHangIds` is the wrong shape for a deadline
-        // test — a hang that never lifts also hangs the harness's teardown, so the
-        // suite would stop reporting anything after the case it was written for.
-        // This is the shape a real network failure has: the request is lost once,
-        // and a retry gets through.
-        if (!state.abortsLost.has(sessionID)) {
-          const lost = forId(state, "abortLoseOnce", hooks.abortLoseOnceIds, sessionID, () => {
-            state.abortsLost.add(sessionID);
-            return neverAnswers();
-          });
-          if (lost) return lost;
-        }
-        if (armedFlag(state, hooks, "abortThrowsOnce") && !state.abortThrown) {
-          fault(state, "abortThrowsOnce");
-          state.abortThrown = true;
-          throw new Error("abort failed");
-        }
-        if (armedFlag(state, hooks, "abortThrows")) {
-          fault(state, "abortThrows");
-          // The message is what a test will assert it saw, so the plan carries
-          // it rather than the test reaching in to normalize it.
-          throw new Error(hooks.abortThrows === true ? "abort transport is down" : hooks.abortThrows);
-        }
-        // "The server has no such session" has two causes here, and the host
-        // cannot tell them apart: an id the harness never created, and an id whose
-        // abort is scripted to come back that way. One predicate, so a case that
-        // scripts a failing abort gets the same 404 shape as a case that names a
-        // session that was never there.
-        const serverLostIt = (id) => !state.sessions.has(id) || Boolean(hooks.abortFailIds?.has(id));
-        if (serverLostIt(sessionID)) {
-          if (hooks.abortFailIds?.has(sessionID)) fault(state, "abortFail");
-          throw sessionNotFound(sessionID);
-        }
-        // The abort gate: the first abort parks here until the test releases
-        // it, so a racing call can be arranged without monkey-patching. With
-        // `fails`, the released abort reports the session as gone — the race
-        // outcome the settlement path must survive.
-        if (state.abortGate && !state.abortGate.used) {
-          fault(state, "abortGate");
-          state.abortGate.used = true;
-          await state.abortGate.promise;
-          if (state.abortGate.fails) {
-            throw sessionNotFound(sessionID);
-          }
-        }
-        state.aborted.push(sessionID);
-        stampHostTurn(state, sessionID, {});
-        closeHostTurn(state, sessionID, "interrupted");
         return { ok: true };
       },
     },
@@ -619,6 +617,8 @@ export function createMockClient(hooks = {}, domain = {}) {
       armFault(state, "silentHost");
       return { release: () => (hooks.silentHost = false) };
     },
+    storage,
+    testState: state,
   };
   // Only the three namespaces the plugin dials are silenced; the helpers above are
   // how a case ARMS the silence, so silencing them would leave nothing to arm with.

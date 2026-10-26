@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import { isEventRecord } from "./host-shape.js";
 import { type SessionId, sessionIdOf } from "./ids.js";
+import { type DeliveryClaimStore, type DeliveryMark, isDeliveryMark, SETTLEMENT_DEDUP_KEYS } from "./delivery-claim.js";
 import { type LedgerChange, LedgerChangeKind } from "./ledger-change.js";
 import { owedIdentity, type PendingDelivery } from "./notify.js";
 import type { Read, StateFacade } from "./state-facade.js";
@@ -64,6 +65,7 @@ const ROOT = `ledger/v${LEDGER_VERSION}`;
  */
 export const LEDGER_PREFIXES = {
   active: `${ROOT}/active`,
+  delivered: `${ROOT}/delivered`,
   pending: `${ROOT}/pending`,
   retained: `${ROOT}/retained`,
 };
@@ -97,9 +99,35 @@ function noticeKey(identity: string): string {
  */
 export const LEDGER_KEYS = {
   active: (childSessionId: string): string => `${LEDGER_PREFIXES.active}/${childSessionId}`,
+  // A settlement claim, keyed by the child and the delivery's own key: the child
+  // scopes it so a revival can clear it by construction, and the digest bounds the
+  // key because a notice's key carries its whole text.
+  delivered: (childSessionId: string, dedupKey: string): string =>
+    `${LEDGER_PREFIXES.delivered}/${childSessionId}/${createHash("sha256").update(dedupKey).digest("hex")}`,
   pending: (identity: string): string => noticeKey(identity),
   retained: (childSessionId: string): string => `${LEDGER_PREFIXES.retained}/${childSessionId}`,
 };
+
+/**
+ * The durable claim store, over the same validated facade the ledger uses.
+ *
+ * A function of its own rather than a method on the ledger store because the
+ * ledger's language is task changes and this is about deliveries — but it is the
+ * SAME facade, so a claim rides the same write chain and the same bound as every
+ * other durable write.
+ */
+export function createDeliveryClaimStore(facade: StateFacade): DeliveryClaimStore {
+  const keyAt = (childSessionId: SessionId, dedupKey: string): string => LEDGER_KEYS.delivered(childSessionId, dedupKey);
+  return {
+    drop: (childSessionId, dedupKey) => facade.drop(keyAt(childSessionId, dedupKey)),
+    read: async (childSessionId, dedupKey) => {
+      const one = await facade.readOne(keyAt(childSessionId, dedupKey), isDeliveryMark);
+      return one.present ? one.value : null;
+    },
+    settled: () => facade.settled(),
+    write: (childSessionId, dedupKey, mark: DeliveryMark) => facade.put(keyAt(childSessionId, dedupKey), stored(mark)),
+  };
+}
 
 /** What a boot read: the records, and what it could not say about them. */
 interface LoadedLedger {
@@ -199,9 +227,13 @@ export function createLedgerStore(facade: StateFacade): LedgerStore {
         facade.drop(LEDGER_KEYS.active(change.id));
         break;
       }
-      case LedgerChangeKind.Forgotten:
+      case LedgerChangeKind.Forgotten: {
         facade.drop(LEDGER_KEYS.retained(change.id));
+        // A forgotten child takes its settlement claims with it, so the markers stay
+        // bounded by the retained history rather than growing with every task ever run.
+        for (const dedupKey of SETTLEMENT_DEDUP_KEYS) facade.drop(LEDGER_KEYS.delivered(change.id, dedupKey));
         break;
+      }
       // One lookup for both, because what makes two notices the SAME notice is
       // `owedIdentity`, and the two differ only in which way they answer it.
       case LedgerChangeKind.Owed: {

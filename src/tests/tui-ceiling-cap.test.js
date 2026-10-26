@@ -102,7 +102,8 @@ describe("the cross-agent total is a cap the operator can set", () => {
 
   it("writes the total where the dispatch path reads it", () =>
     withCeilingWritten(async (host, directory) => {
-      assert.equal((await readOverlay(directory)).maxConcurrent, 12,
+      const overlay = await readOverlay(directory);
+      assert.equal(overlay.maxConcurrent, 12,
         "the overlay states the total, so the next dispatch is judged against it");
       assert.ok(host.seen.toasts.some((toast) => toast.variant === "success" && /total ceiling set to 12/.test(toast.message)),
         "and the operator is told what changed, in the total's own words");
@@ -114,7 +115,8 @@ describe("the cross-agent total is a cap the operator can set", () => {
       // clear it — the same two round trips any cap takes.
       await pressRowOn(host, CEILING_LABEL);
       await choose(host, clearRow(host));
-      assert.equal((await readOverlay(directory)).maxConcurrent, undefined,
+      const cleared = await readOverlay(directory);
+      assert.equal(cleared.maxConcurrent, undefined,
         "the key is gone rather than null, so the reader stops treating it as stated");
     }));
 

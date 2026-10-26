@@ -19,7 +19,7 @@ const assistantMessage = (text, time, extra) => ({
   type: "assistant",
   ...extra,
 });
-export const hostSaid = (text, at = Date.now(), extra) => assistantMessage(text, { completed: at, created: at }, extra);
+export const hostSaid = (text, at, extra) => assistantMessage(text, { completed: at ?? Date.now(), created: at ?? Date.now() }, extra);
 
 /** The same turn carrying no clock at all — what a plugin booted mid-turn sees. */
 export const unclockedSaid = (text = "go", role = "user") => ({

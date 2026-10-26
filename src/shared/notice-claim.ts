@@ -10,8 +10,7 @@
 
 import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
-import type { ActiveTaskState } from "./task-state.js";
-import { activeFor, annotateActive } from "./task-state.js";
+import { type ActiveTaskState, activeFor, annotateActive } from "./task-state.js";
 
 /**
  * What a mid-flight notice CLAIMS about the child's own state. It rides the ONE

@@ -244,7 +244,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     const constants = boundValues();
     assert.ok(constants.size > 20, `only ${constants.size} bound string values found — the extractor is not reading them`);
     const findings = [];
-    for (const file of listTestFiles().concat([path.join(TESTS_DIR, "support", "harness.js"), path.join(TESTS_DIR, "support", "records.js")])) {
+    for (const file of [...listTestFiles(), path.join(TESTS_DIR, "support", "harness.js"), path.join(TESTS_DIR, "support", "records.js")]) {
       for (const finding of retypeFindings(readSource(file).text, constants)) {
         findings.push(`${siteOf(file)}: ${finding}`);
       }
@@ -273,7 +273,7 @@ describe("invariant: a test never retypes a bound production value (Tenet 12)", 
     const { constants, reported } = probe();
     // A wire string the gate must be able to name, taken from the vocabulary
     // rather than retyped here, so this probe cannot go stale with the enums.
-    const vocabularyMember = DISCRIMINANT_VALUES[0];
+    const [vocabularyMember] = DISCRIMINANT_VALUES;
     // The probe values are DERIVED from what the extractor found, by the form that
     // found them — hardcoding them here would restate the very values this rule
     // exists to keep single, and a probe that copies its subject proves nothing.

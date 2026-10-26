@@ -88,7 +88,7 @@ export function notificationTag(kind: NotifyKind): string {
  * message states its own kind, and every reader (a host orchestrator, a parent
  * agent, and the tests) classifies on that field instead of guessing from wording.
  */
-const KIND_FIELD = (kind: NotifyKind) => `Kind: ${kind}`;
+const kindField = (kind: NotifyKind) => `Kind: ${kind}`;
 
 // The kinds TEXT can answer, named once: iterating the enum's keys would
 // need a cast, and a second spelling of the set would drift from TEXT.
@@ -100,7 +100,7 @@ export const NOTIFY_KINDS: readonly NotifyKind[] = [
 ];
 export function notificationKindOf(text: string): NotifyKind | undefined {
   for (const kind of NOTIFY_KINDS) {
-    if (text.includes(KIND_FIELD(kind))) return kind;
+    if (text.includes(kindField(kind))) return kind;
   }
   return undefined;
 }
@@ -132,14 +132,15 @@ export function formatParentNotification(
   // placeholder's clothes.
   const quoted = resultText.trim();
   const read = `task_result(session_id=${state.childSessionId})`;
-  const body = quoted
-    ? (shape.bodyLabel
+  let body = `No text was captured from that turn. ${read} reads what the child actually said.`;
+  if (quoted) {
+    body = shape.bodyLabel
       ? `${shape.bodyLabel}: ${truncatedForParent(quoted, state.childSessionId)}`
-      : truncatedForParent(quoted, state.childSessionId))
-    : `No text was captured from that turn. ${read} reads what the child actually said.`;
+      : truncatedForParent(quoted, state.childSessionId);
+  }
   return textBlock(
     shape.tag,
-    KIND_FIELD(kind),
+    kindField(kind),
     shape.header,
     `Session: ${state.childSessionId}`,
     `Description: ${state.description}`,

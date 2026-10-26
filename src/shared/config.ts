@@ -64,12 +64,15 @@ export interface DynamicTaskConfig {
  */
 function buildDefaultConfig(): DynamicTaskConfig {
   return {
-    maxDepth: 2,
-    maxConcurrent: 4,
-    agents: {},
     agentCacheTtlMs: 300_000,
-    retainedTaskTtlMs: 3_600_000,
-    retainedTaskMaxEntries: 100,
+    agents: {},
+    allowSameAgentRecursion: false,
+    // Any agent dispatches by default — lineage, depth, and recursion policy
+    // bound the real hazards (self-spawning loops), not the agent name.
+    // Operators who want names barred keep the blocklist as policy.
+    blockedAgents: [],
+    maxConcurrent: 4,
+    maxDepth: 2,
     // An owed notice is re-offered at every boot, and redelivering it IS
     // `session.prompt` — a real user turn in the parent's session. So an
     // unbounded retry is not a notice that arrives late, it is a parent that can
@@ -79,11 +82,8 @@ function buildDefaultConfig(): DynamicTaskConfig {
     // forever. The gate has its own smaller backstop for a caller that names no
     // bound; that is a funnel safety and is deliberately not this number.
     pendingMaxAttempts: 3,
-    // Any agent dispatches by default — lineage, depth, and recursion policy
-    // bound the real hazards (self-spawning loops), not the agent name.
-    // Operators who want names barred keep the blocklist as policy.
-    blockedAgents: [],
-    allowSameAgentRecursion: false,
+    retainedTaskMaxEntries: 100,
+    retainedTaskTtlMs: 3_600_000,
   };
 }
 

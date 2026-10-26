@@ -222,7 +222,10 @@ export const PROTOCOL_NOT_FOUND_TAG = "SessionNotFoundError";
  */
 export function isSessionMissing(error: unknown): error is HostSessionMissing {
   if (!isPlainRecord(error)) return false;
-  if (error._tag === SESSION_NOT_FOUND_TAG || error._tag === PROTOCOL_NOT_FOUND_TAG) return true;
+  // The SDK's tag field, read computed because its underscore is theirs; the
+  // local tag spelling stays out of the repo's vocabulary.
+  const tag = error["_tag"];
+  if (tag === SESSION_NOT_FOUND_TAG || tag === PROTOCOL_NOT_FOUND_TAG) return true;
   if (error.type === SESSION_NOT_FOUND_TAG || error.type === PROTOCOL_NOT_FOUND_TAG) return true;
   if (error.reason === NOT_FOUND_REASON) {
     const {cause} = error;

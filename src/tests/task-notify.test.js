@@ -99,7 +99,8 @@ describe("task_notify: the child-to-parent channel", () => {
 
   it("validates message shape and length", async () => {
     const { c } = await withChild();
-    assert.ok((await c.notify("  ")).includes("required"));
+    const refused = await c.notify("  ");
+    assert.ok(refused.includes("required"));
     const long = await c.notify("x".repeat(4001));
     answerSays(long, "too long");
   });

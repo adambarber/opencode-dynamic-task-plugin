@@ -251,10 +251,8 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         // change is published and then overwritten in the same pending write, so the
         // ledger ends holding the settled record and nothing ever read the transient
         // state — it exists to reach the funnel, not to be observed.
-        notifyRunning(store, store.markRunning(
-          failedChildSessionId,
-          activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now()),
-        ));
+        const failedRecord = activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now());
+        notifyRunning(store, store.markRunning(failedChildSessionId, failedRecord));
         try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* settled concurrently */ }
         await abortSession({ callerSessionId: parentSessionId || undefined, host, store }, failedChildSessionId);
       }

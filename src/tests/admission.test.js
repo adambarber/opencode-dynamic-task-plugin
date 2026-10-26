@@ -74,7 +74,10 @@ describe("fetchAgents", () => {
    * (`result.length`, `result[0].name`, `result.map(...)`), so which of those
    * was the actual contract was ambiguous; now it is names, always.
    */
-  const agentNames = async (client) => (await fetchAgents({ host: opaqueHost(client) })).map((a) => a.name);
+  const agentNames = async (client) => {
+    const agents = await fetchAgents({ host: opaqueHost(client) });
+    return agents.map((a) => a.name);
+  };
 
   it("dispatches subagent and all modes, rejects primary", async () => {
     const mockClient = clientWith([
@@ -84,8 +87,9 @@ describe("fetchAgents", () => {
       { mode: "primary", name: "build", permissions: [] },
     ]);
 
+    const fetched = await agentNames(mockClient);
     assert.deepStrictEqual(
-      (await agentNames(mockClient)).toSorted(),
+      fetched.toSorted(),
       ["architect", "explore", "unannotated"]
     );
   });
@@ -167,7 +171,8 @@ describe("fetchAgents", () => {
       [hostA, ["alpha"]],
     ];
     for (const [host, expected] of timeline) {
-      assert.deepStrictEqual((await fetchAgents({ host })).map((a) => a.name), expected);
+      const agents = await fetchAgents({ host });
+      assert.deepStrictEqual(agents.map((a) => a.name), expected);
     }
     assert.strictEqual(clientA.agentCalls, 1, "client A's second read is served from its own cache");
     assert.strictEqual(clientB.agentCalls, 1, "client B's fetch never touched client A's cache");
@@ -179,8 +184,10 @@ describe("fetchAgents", () => {
         ? [{ mode: "subagent", name: "first", permissions: [] }]
         : [{ mode: "subagent", name: "second", permissions: [] }]);
 
-    assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 60_000))[0].name, "first");
-    assert.strictEqual((await fetchAgents({ host: opaqueHost(mockClient) }, 0))[0].name, "second", "expired TTL forces a fresh fetch");
+    const firstFetch = await fetchAgents({ host: opaqueHost(mockClient) }, 60_000);
+    assert.strictEqual(firstFetch[0].name, "first");
+    const freshFetch = await fetchAgents({ host: opaqueHost(mockClient) }, 0);
+    assert.strictEqual(freshFetch[0].name, "second", "expired TTL forces a fresh fetch");
     assert.strictEqual(mockClient.agentCalls, 2);
   });
 

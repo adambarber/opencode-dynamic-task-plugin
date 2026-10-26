@@ -508,10 +508,6 @@ export function overlayFrom(raw: unknown): AgentOverlay {
 export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): EditOutcome {
   return editOutcome({
     before: current.maxConcurrent,
-    choice,
-    label: CEILING_LABEL,
-    fallback: "falls back to the config file",
-    refuse: (value) => refuseCap("maxConcurrent", CEILING_LABEL, value),
     // Spread-then-delete rather than a conditional object, so clearing the ceiling
     // leaves the agents exactly as they were. The key is absent, not `undefined`:
     // `exactOptionalPropertyTypes` is on, and a file carrying `null` where a reader
@@ -520,6 +516,10 @@ export function applyCeilingEdit(current: AgentOverlay, choice: CeilingChoice): 
       const { maxConcurrent: _dropped, ...rest } = current;
       return value === null ? rest : { ...rest, maxConcurrent: value };
     },
+    choice,
+    fallback: "falls back to the config file",
+    label: CEILING_LABEL,
+    refuse: (value) => refuseCap("maxConcurrent", CEILING_LABEL, value),
   });
 }
 

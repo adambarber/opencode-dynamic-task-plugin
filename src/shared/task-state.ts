@@ -428,14 +428,14 @@ export function reviveRetainedTask(
   // how a capped agent gets filled by its own recovered children.
   claimSlot(store, retained, config);
   const revived = reclaimAsActive(store, childSessionId, retained, {
-    // A revival REPLACES the turn, so the clock restarts: this is a new turn of
-    // the same child, not the continuation of the one that ended.
-    startedAt: Date.now(),
     // A revival replaces the turn that just ended, and a turn end is published
     // more than once — a copy can still be in flight when the new prompt fires.
     // Stamped here, in the one place a revival happens, so that copy cannot
     // settle the revival and report it completed before it has begun.
     replacedAt: Date.now(),
+    // A revival REPLACES the turn, so the clock restarts: this is a new turn of
+    // the same child, not the continuation of the one that ended.
+    startedAt: Date.now(),
     // Bringing a child back spends the automatic-retry budget, whoever asked
     // for the revival. It rides on THIS record rather than on a second write so
     // it is published by the same `Running` change that publishes the revival —

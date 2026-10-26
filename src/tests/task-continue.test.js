@@ -365,7 +365,7 @@ describe("error settlement guidance", () => {
     const { h, id } = await childFailingWith("permission denied for model");
     await h.fireEvent(events.error(id));
     assertNoticeCount(h, 1, "error settles exactly once");
-    const note = h.noticeBodies()[0];
+    const [note] = h.noticeBodies();
     answerSays(note, "permission denied", "keeps the cause");
     answerOmits(note, "transient", "no resume hint for fatal");
   });
@@ -400,17 +400,19 @@ describe("outcome correctness: failed turns never report success", () => {
     it(name, async () => {
       const h = await setupHarness({ hooks });
       const { id, c } = await h.spawn({ description: "unvouchable child" });
-      const note = (await h.noticeAfter(terminal(id))).message;
+      const notice = await h.noticeAfter(terminal(id));
+      const note = notice.message;
       textDeclaresKind(note, "error", "must report error");
       if (detail) assert.ok(note.includes(detail), `must carry provider detail. got: ${note}`);
-      assert.ok((await c.status()).includes("error"), `state settles error. got: ${await c.status()}`);
+      const state = await c.status();
+      assert.ok(state.includes("error"), `state settles error. got: ${state}`);
     });
   }
 
   it("session.error event notifies error even when hydration finds nothing", async () => {
     const h = await eventHarness({ messages: () => [] });
     const { id } = await h.spawn({ description: "err evt" });
-    const note = (await h.noticeAfter(
+    const notice = await h.noticeAfter(
       events.error(id, { data: { message: "Too Many Requests" }, name: "APIError" }),
     )).message;
     textDeclaresKind(note, "error", "the error event settles error");
@@ -488,7 +490,8 @@ describe("outcome correctness: failed turns never report success", () => {
   it("a deleted session settles as error, never as success", async () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ description: "deleted child" });
-    const note = (await h.noticeAfter(events.deleted(id))).message;
+    const notice = await h.noticeAfter(events.deleted(id));
+    const note = notice.message;
     textDeclaresKind(note, "error", "deletion is a failure");
     });
 });

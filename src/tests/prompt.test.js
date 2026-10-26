@@ -138,8 +138,9 @@ describe("messageErrorDetail", () => {
   });
 
   it("returns empty for a clean assistant message", () => {
+    const doneTurn = assistantTurn(undefined, [textPart("done")]);
     assert.strictEqual(
-      messageErrorDetail(assistantTurn(undefined, [textPart("done")])),
+      messageErrorDetail(doneTurn),
       "",
     );
   });
@@ -171,7 +172,7 @@ describe("prompt dance: invokePrompt", () => {
   const clientAnswering = (respond) => opaqueHost({ session: { prompt: async (args) => respond(args) } });
 
   it("sends the single payload shape and resolves with the client result", async () => {
-    let captured;
+    let captured = null;
     const client = clientAnswering((args) => {
       captured = args;
       return { parts: [{ text: "hi", type: "text" }] };

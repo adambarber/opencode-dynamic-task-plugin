@@ -368,7 +368,7 @@ describe("prompt routing contract", () => {
     const h = await setupHarness();
     const { id } = await h.spawn({ prompt: "Review for bugs" });
     await sleep(0);
-    const text = promptTextsTo(h.client, id)[0];
+    const [text] = promptTextsTo(h.client, id);
     answerSays(text, "background child task", "wrapped");
     answerSays(text, NOTIFY_TOOL, "teaches the notify channel");
     answerSays(text, "Review for bugs", "carries the payload");

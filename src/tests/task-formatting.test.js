@@ -192,12 +192,13 @@ describe("formatTaskResultSummary", () => {
   });
 
   it("renders the store state for active tasks with the sourced liveness beside it", () => {
+    const openTurn = reading(undefined, Date.now() - 1000);
     const result = formatTaskResultSummary(resultRecord({
-      status: "active",
-      task: taskRecord(),
       // A turn in progress is the host recording NO verdict — the outcome belongs
       // to a COMPLETED execution, so an open turn has nothing on the session yet.
-      liveness: reading(undefined, Date.now() - 1000),
+      liveness: openTurn,
+      status: "active",
+      task: taskRecord(),
     }));
     assert.match(result, /Status: active/);
     assert.match(result, /Server turn: in progress/);
@@ -225,7 +226,8 @@ describe("formatTaskResultSummary", () => {
   // saying opposite things, and the view that hides it is the view an operator
   // consults precisely when the two disagree.
   it("surfaces a settled record the host still calls a running turn", () => {
-    const result = formatTaskResultSummary(settledRecord(reading(undefined, Date.now() - 1000)));
+    const openTurn = reading(undefined, Date.now() - 1000);
+    const result = formatTaskResultSummary(settledRecord(openTurn));
     assert.match(result, /Server turn: in progress/,
       "the host's open turn is stated even though the store says the task is done");
     assert.match(result, /Status: completed/, "and the store's own state is not overwritten by it");

@@ -5,16 +5,15 @@ import type { PluginOptions } from "@opencode/plugin";
 import { configureDebugRoot, debugLog } from "../debug-logger.js";
 import { applyAgentOverlay, installLiveAgentCaps, retiredLaneOverlayPath, retiredOverlayPresent } from "../shared/caps.js";
 import type { OpaqueHost } from "../shared/client.js";
-import type { DynamicTaskConfig } from "../shared/config.js";
-import { readDynamicTaskPolicy } from "../shared/config.js";
+import { type DynamicTaskConfig, readDynamicTaskPolicy } from "../shared/config.js";
 import { createIntentWriter, type IntentStore } from "../shared/create-intent.js";
 import { createStore } from "../shared/durable-store.js";
 import { LifecycleStatus } from "../shared/host-events.js";
-import type { LedgerChange } from "../shared/ledger-change.js";
-import { LedgerChangeKind } from "../shared/ledger-change.js";
-import { createLedgerStore } from "../shared/ledger-storage.js";
+import { type LedgerChange, LedgerChangeKind } from "../shared/ledger-change.js";
+import { createDeliveryClaimStore, createLedgerStore } from "../shared/ledger-storage.js";
 import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
 import {
+  configureDeliveryClaims,
   configurePendingPersistence,
   containFailure,
   getPendingDeliveries,
@@ -23,14 +22,11 @@ import {
   restorePendingDeliveries,
   safeLog,
 } from "../shared/notify.js";
-import type { OverlayHandlers } from "../shared/overlay-rpc.js";
-import { readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
-import type { OverlayRead, OverlayStore } from "../shared/overlay-store.js";
-import { createOverlayStore } from "../shared/overlay-store.js";
+import { type OverlayHandlers, readOverlayWrite, readWirePayload } from "../shared/overlay-rpc.js";
+import { createOverlayStore, type OverlayRead, type OverlayStore } from "../shared/overlay-store.js";
 import { createStateFacade } from "../shared/state-facade.js";
 import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
-import type { TaskStore } from "../shared/task-state.js";
-import { createTaskStore, pruneRetainedTasks } from "../shared/task-state.js";
+import { createTaskStore, pruneRetainedTasks, type TaskStore } from "../shared/task-state.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
 
 // Plugin-level state store (ephemeral — lost on restart)
@@ -204,6 +200,10 @@ export async function initPluginState(directory: string, options: PluginOptions 
   };
   store.onActiveChange = ledger.persist;
   configurePendingPersistence(ledger.persist);
+  // The cross-process delivery claim rides the SAME facade, so a settlement this
+  // process delivers is visible to every other opencode process on the project
+  // before it dials — the half the in-memory gate cannot reach.
+  configureDeliveryClaims(createDeliveryClaimStore(facade));
 
   // Crash recovery: rehydrate retained tasks and the running set, and take
   // ownership of the notices the last boot owed.

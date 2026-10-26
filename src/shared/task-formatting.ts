@@ -567,12 +567,12 @@ export function formatTaskResultSummary(input: TaskResultRecord): string {
   // task_status is the settleability authority (it renders the same liveness
   // block beside the store's own state), so a running child is pointed there
   // rather than back at this tool, which cannot answer the question.
-  const action =
-    running
-      ? "Recommended next action: use task_status for settleability, or task_result again later."
-      : (input.status === TaskState.Error
-        ? "Recommended next action: inspect latest output, then use task_continue if recovery is possible."
-        : "Recommended next action: no follow-up needed unless you want to continue the child session.");
+  let action = "Recommended next action: no follow-up needed unless you want to continue the child session.";
+  if (running) {
+    action = "Recommended next action: use task_status for settleability, or task_result again later.";
+  } else if (input.status === TaskState.Error) {
+    action = "Recommended next action: inspect latest output, then use task_continue if recovery is possible.";
+  }
 
   const lines = [
     "## Task Result",

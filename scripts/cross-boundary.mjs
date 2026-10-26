@@ -62,7 +62,8 @@ const { tokenize } = require("@jscpd/tokenizer");
 const walk = (dir) =>
   readdirSync(dir).flatMap((entry) => {
     const path = join(dir, entry);
-    return statSync(path).isDirectory() ? walk(path) : (path.endsWith(".ts") || path.endsWith(".js") ? [path] : []);
+    if (statSync(path).isDirectory()) return walk(path);
+    return path.endsWith(".ts") || path.endsWith(".js") ? [path] : [];
   });
 
 /**

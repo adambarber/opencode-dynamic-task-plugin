@@ -56,7 +56,7 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.ok(wasAborted(h.client, loser), `loser aborted, no orphan. aborted=${abortedSessions(h.client)}`);
     await sleep(50); // detached error-settlement delivery
     assertNoticeCount(h, 1, "the error settlement notifies");
-    const note = h.noticeBodies()[0];
+    const [note] = h.noticeBodies();
     textDeclaresKind(note, "error", "error kind");
     });
 

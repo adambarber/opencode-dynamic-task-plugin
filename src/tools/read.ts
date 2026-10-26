@@ -50,17 +50,16 @@ export async function executeTaskResult(scope: ResolvedSessionScope): Promise<st
     const liveness = await readLivenessSafely(host, sessionId, messages);
     return formatTaskResultSummary(
       taskResultRecord({
+        latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
+        liveness,
+        notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
         sessionId,
         status: task ? task.state : statusFromHostTurn(liveness),
-        messageCount: messages.length,
-        latestText: getLatestAssistantText(messages) || NO_ASSISTANT_TEXT,
+        task: task ?? null,
         // Free: the transcript this already read for the count and the latest text
         // is the only place "what did this child change" can be answered honestly.
         touchedFiles: touchedFiles(messages),
         tracked: task !== undefined,
-        notification: task ? getTurnNotification(sessionId, task.startedAt) : getLatestNotification(sessionId),
-        task: task ?? null,
-        liveness,
       }),
     );
   } catch (error: unknown) {
@@ -141,15 +140,15 @@ async function readLivenessSafely(...args: Parameters<typeof readLiveness>): Pro
 // Module scope because it captures nothing from the call.
 function toRow(t: TaskRecord): FleetRow {
   return {
-    childSessionId: t.childSessionId,
     agentName: agentDisplayName(t),
+    childSessionId: t.childSessionId,
     description: t.description,
-    state: t.state,
-    startedAt: t.startedAt,
     // Present on a settled row and absent on a running one, which is what the
     // roll-up counts. Reading it through the store's own accessor rather than
     // off the record keeps the "settled-only" knowledge in one place.
     failureClass: failureClassOf(t),
+    startedAt: t.startedAt,
+    state: t.state,
   };
 }
 

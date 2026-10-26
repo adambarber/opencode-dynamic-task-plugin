@@ -26,14 +26,6 @@ export function recordingClient(respond) {
   const turns = new Map();
   return {
     calls,
-    // The same two facts the big fake keeps, written to the same place: a turn running
-    // is an assistant message with no `completed`, and its absence from the record is
-    // the one thing that reads as "open". A private map here would be a second copy
-    // of a fact production reads from the transcript.
-    setStatus: (id, word) => {
-      turns.set(id, [word === "open" ? hostSaying("") : hostSaid("")]);
-    },
-    setMessages: (id, list) => turns.set(id, list),
     client: {
       session: {
         context: async (args) => turns.get(args.sessionID) ?? [],
@@ -73,13 +65,12 @@ export function recordingClient(respond) {
 
 /** A promise plus its resolver — the gate tests use to hold a reply open. */
 export function deferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((res, rej) => {
-    resolve = res;
-    reject = rej;
+  const pair = { promise: null, reject: null, resolve: null };
+  pair.promise = new Promise((resolve, reject) => {
+    pair.resolve = resolve;
+    pair.reject = reject;
   });
-  return { promise, reject, resolve };
+  return pair;
 }
 
 /**

@@ -139,7 +139,7 @@ describe("task-state: registerActiveTask", () => {
 });
 
 describe("task-state: transitionState", () => {
-  let store;
+  let store = null;
 
   beforeEach(() => {
     store = createTaskStore();

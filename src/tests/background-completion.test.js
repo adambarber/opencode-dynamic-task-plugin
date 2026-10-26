@@ -12,7 +12,7 @@ import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { assert, beforeEach, describe, events, it, renderedAgeSeconds, setupHarness, sleep, textDeclaresKind } from "./support/index.js";
 
 describe("Background Task Settlement", () => {
-  let harness;
+  let harness = null;
 
   beforeEach(async () => {
     harness = await setupHarness();
@@ -203,7 +203,7 @@ describe("Background Task Settlement", () => {
     await harness.settle(childId);
     const { error: terminal } = events;
     await harness.fireEvent(terminal(childId));
-    const late = harness.notices()[1];
+    const [, late] = harness.notices();
     textDeclaresKind(late.message, "error", "the late failure is reported as one");
     assert.doesNotMatch(late.message, /session vanished/, "the transcript was read: nothing vanished");
   });

@@ -178,7 +178,9 @@ export const tmpFilePath = (label = "dt") =>
  * path — see the ledger-scoping regression suite.
  */
 export function tmpProjectDir() {
-  return mkdtempSync(join(tmpdir(), `dt-harness-${Date.now()}-${Math.floor(Math.random() * 1e6)}-`));
+  const stamp = Date.now();
+  const salt = Math.floor(Math.random() * 1e6);
+  return mkdtempSync(join(tmpdir(), `dt-harness-${stamp}-${salt}-`));
 }
 
 /** Parse the child id out of the same line the parent reads. */
@@ -565,7 +567,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
  * not exist yet (a steer that revives a settled turn, a list) — the binding is
  * lazy so the handle is usable either way.
  */
-function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: PARENT }) {
+function bindChild(harness, id, spawnArgs, ctx) {
   const tool = (name) => (args = {}, callCtx) =>
     harness.tool[name].execute({ session_id: id, ...args }, callCtx ?? ctx);
   return {
@@ -575,7 +577,7 @@ function bindChild(harness, id, spawnArgs = {}, ctx = { sessionID: PARENT }) {
     /** Spawn this child and keep the handle's id in sync. */
     async spawn(args = {}) {
       const out = await harness.spawn({ ...spawnArgs, ...args }, ctx);
-      id = out.id;
+      ({ id } = out);
       return out;
     },
     steer: (prompt) => tool("task_continue")({ prompt }),

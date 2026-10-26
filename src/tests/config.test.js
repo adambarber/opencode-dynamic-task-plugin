@@ -164,7 +164,7 @@ const assertJsoncRejected = async (contents) => {
  * second temp-file idiom the rest of the file does not clean up after.
  */
 const jsoncRead = async (contents) => {
-  let parsed;
+  let parsed = null;
   await inTempFile(async (file) => {
     writeFileSync(file, contents);
     parsed = parseDynamicTaskJsonc(file);

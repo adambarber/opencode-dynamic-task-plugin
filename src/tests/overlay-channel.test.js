@@ -53,7 +53,8 @@ describe("the caps channel", () => {
         const shared = createMockClient();
         await overlayChannel(here, BASE, { table: shared }).seed({ agents: { general: { maxConcurrent: 2 } } });
         const other = overlayChannel(there, BASE, { table: shared });
-        assert.equal((await other.read()).present, false, "another project has no caps merely because this one does");
+        const state = await other.read();
+        assert.equal(state.present, false, "another project has no caps merely because this one does");
         assert.notEqual(overlayKey(here), overlayKey(there), "and the two are not even stored at the same address");
       });
     });

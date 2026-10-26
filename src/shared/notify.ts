@@ -11,6 +11,7 @@
 // "never" are the same call from inside the gate.
 
 import { callHost, type OpaqueHost } from "./client.js";
+import { releaseDeliveryClaim, takeDeliveryClaim } from "./delivery-claim.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import type { SessionId } from "./ids.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
@@ -19,6 +20,7 @@ import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-ga
 import { LogLevel, safeLog } from "./notify-log.js";
 import {
   announceDropped,
+  type DeliverableDebt,
   dropPending,
   getPendingDeliveries,
   owedDelivery,
@@ -37,11 +39,12 @@ import { type SettlementVerdict, TaskState } from "./task-state.js";
 export { NOTIFY_KINDS } from "./notification-text.js";
 export { gateLedger } from "./notify-gate.js";
 export { containFailure, safeLog } from "./notify-log.js";
+export { configureDeliveryClaims, forgetChildDeliveryClaims, resetDeliveryClaims } from "./delivery-claim.js";
 export { configurePendingPersistence, getPendingDeliveries, owedDelivery, owedIdentity, restorePendingDeliveries } from "./notify-queue.js";
 export type { NotificationRecord } from "./notify-records.js";
 export { getLatestNotification, getTurnNotification, notifyRecord, recordNotification } from "./notify-records.js";
 
-import type { DeliverableDebt } from "./notify-queue.js";
+
 
 export { LogLevel } from "./notify-log.js";
 export type { PendingDelivery } from "./notify-queue.js";
@@ -258,7 +261,7 @@ export async function notifyParent(
     // answered yet", never "will it answer" — so a hold needs the unbounded promise
     // to learn the answer when it lands, and the bound is what stops the caller
     // waiting for it.
-    let inFlight: Promise<unknown> | undefined;
+    let inFlight: Promise<unknown> | undefined = undefined;
     const request = callHost(host, WRITE_BOUNDS.parentPrompt, (client) => {
       inFlight = client.session.prompt({ sessionID: parentSessionId, text: message });
       return inFlight;
@@ -329,6 +332,10 @@ export async function notifyParent(
     return attempt();
   };
   const commit = (outcome: DeliveryOutcome) => {
+    // A write that did NOT land is not a delivery, so its durable claim is freed and
+    // the queued debt may be offered again — here or in another process. This runs
+    // first, so the two staleness exits below also free it.
+    if (!outcome.delivered && kind !== NotifyKind.Notice) releaseDeliveryClaim(opts.childSessionId, dedupKey);
     // Three kinds of staleness, checked before anything is written.
     //
     // Retired: this debt spent its redelivery budget and has been written off.
@@ -356,6 +363,19 @@ export async function notifyParent(
     return outcome.delivered;
   };
   const run = async (): Promise<boolean> => {
+    // The CROSS-PROCESS claim, before any dial. Every opencode process on a project
+    // receives the same terminal event and would each settle and dial the parent;
+    // the durable marker is read before the write and left in place when it lands, so
+    // a second instance reads it and stands down. The debt is DROPPED rather than
+    // re-queued — it is paid, not owed. A notice is not claimed here: it is delivered
+    // by the one process that serviced the child's tool call, so it is never broadcast,
+    // and its finer per-text dedup stays in memory.
+    if (kind !== NotifyKind.Notice && !(await takeDeliveryClaim(opts.childSessionId, dedupKey))) {
+      gateLedger.release(claim);
+      dropPending({ ...owed, attempts: carried });
+      if (epoch === currentGateEpoch()) emit({ attempts: carried, delivered: false, suppressed: true });
+      return false;
+    }
     // A debt that has ALREADY been refused once, offered to a parent that is
     // mid-turn, is DEFERRED rather than written. Measured 2026-09-28: a parent
     // was admitted a turn that never reached the model and never exited, so the
@@ -400,16 +420,15 @@ export async function notifyParent(
         // kind permanently unwritable, because this is a refusal rather than a
         // delivery and no revival is coming to clear it.
         if (epoch === currentGateEpoch()) gateLedger.release(claim);
+        if (kind !== NotifyKind.Notice) releaseDeliveryClaim(opts.childSessionId, dedupKey);
         return false;
       }
     }
     // The request is made ONCE and kept, because "slow" and "never" are the
     // same call from here: its answer may arrive long after this returns, and
     // the ledger must be able to say so rather than guess which it was.
-    let outcome: Attempt;
-    try {
-      outcome = await dial(1);
-    } catch {
+    const outcome = await dial(1).catch(() => null);
+    if (outcome === null) {
       // A REFUSED write — the caller is told the attempt failed and the gate's
       // one retry is the answer, which is what this has always done.
       await sleep(NOTIFY_RETRY_DELAY_MS);

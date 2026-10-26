@@ -23,7 +23,7 @@ const gate = (childSessionId, kind, extra = {}) => ({
 });
 
 describe("a parent owed the same notice twice", () => {
-  let h;
+  let h = null;
 
   beforeEach(async () => {
     h = await setupHarness();

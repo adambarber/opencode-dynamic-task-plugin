@@ -133,7 +133,7 @@ export function missingSessionError(sessionID = "ses_missing") {
   // The tag is imported, not retyped: the suite forbids test-side copies of
   // bound production values, and this is one. Its spelling is owned by
   // liveness.ts with the host source cited there.
-  return Object.assign(new Error(""), {
+  return Object.assign(new Error(`session not found: ${sessionID}`), {
     _tag: SESSION_NOT_FOUND_TAG,
     sessionID,
   });

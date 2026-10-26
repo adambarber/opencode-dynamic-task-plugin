@@ -126,7 +126,8 @@ describe("notify gate: what the gate refuses to deliver twice", () => {
     await new Promise((r) => setTimeout(r, 10)); // chained transport runs async; claims are sync
     assert.strictEqual(calls.length, 1, "the second in-flight write must never dial");
     parked.resolve();
-    assert.deepStrictEqual((await Promise.all([first, second])).toSorted(), [false, true]);
+    const outcomes = await Promise.all([first, second]);
+    assert.deepStrictEqual(outcomes.toSorted(), [false, true]);
   });
 
   it("settles deliver exactly once per kind", async () => {

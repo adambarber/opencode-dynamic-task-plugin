@@ -278,8 +278,9 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     for (const member of [child, grandchild]) {
-      answerSays(out, member.id, "the report names ${member.id}");
-      assert.ok((await stateOfMember(h, member.id)).includes("interrupted"), `${member.id} is stopped`);
+      answerSays(out, member.id, `the report names ${member.id}`);
+      const memberState = await stateOfMember(h, member.id);
+      assert.ok(memberState.includes("interrupted"), `${member.id} is stopped`);
     }
   });
 
@@ -287,8 +288,10 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const { h, child, grandchild } = await withDispatchTree();
     const out = await h.tool.task_interrupt.execute({ scope: "self", session_id: child.id });
     answerOmits(out, grandchild.id, "a descendant was not acted on, so it is not named");
-    assert.ok((await stateOfMember(h, child.id)).includes("interrupted"), "the handed session is stopped");
-    assert.ok((await stateOfMember(h, grandchild.id)).includes("active"), "the descendant is still running");
+    const childState = await stateOfMember(h, child.id);
+    assert.ok(childState.includes("interrupted"), "the handed session is stopped");
+    const grandchildState = await stateOfMember(h, grandchild.id);
+    assert.ok(grandchildState.includes("active"), "the descendant is still running");
   });
 
   it("an unrecognized scope is refused, never silently widened or narrowed", async () => {
@@ -296,7 +299,8 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const out = await h.tool.task_interrupt.execute({ scope: "everything", session_id: child.id });
     answerSays(out, "everything", "the rejected value is quoted back");
     answerSays(out, "subtree", "the choices are named");
-    assert.ok((await stateOfMember(h, grandchild.id)).includes("active"), "nothing was stopped");
+    const grandchildState = await stateOfMember(h, grandchild.id);
+    assert.ok(grandchildState.includes("active"), "nothing was stopped");
   });
 
   it("a settled descendant is not named: there was nothing to stop there", async () => {
@@ -315,7 +319,8 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const out = await h.tool.task_interrupt.execute({ session_id: child.id });
     answerSays(out, "already settled as completed", "the root's own truth");
     answerSays(out, grandchild.id, "the live child below it is named");
-    assert.ok((await stateOfMember(h, grandchild.id)).includes("interrupted"), "the grandchild is stopped");
+    const grandchildState = await stateOfMember(h, grandchild.id);
+    assert.ok(grandchildState.includes("interrupted"), "the grandchild is stopped");
   });
 
   // The claim is what orders the echoes: a terminal event for a task whose
@@ -329,8 +334,10 @@ describe("subtree interrupt: stopping a task stops everything under it", () => {
     const gate = h.client.gateAbort();
     const pass = h.tool.task_interrupt.execute({ session_id: child.id });
     await sleep(30);
-    assert.ok((await stateOfMember(h, child.id)).includes("interrupted"), "the root is claimed");
-    assert.ok((await stateOfMember(h, grandchild.id)).includes("interrupted"), "the descendant is claimed too, before any abort returned");
+    const rootState = await stateOfMember(h, child.id);
+    assert.ok(rootState.includes("interrupted"), "the root is claimed");
+    const grandchildState = await stateOfMember(h, grandchild.id);
+    assert.ok(grandchildState.includes("interrupted"), "the descendant is claimed too, before any abort returned");
     gate.release();
     await pass;
   });

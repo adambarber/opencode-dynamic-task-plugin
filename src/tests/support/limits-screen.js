@@ -127,7 +127,10 @@ function hostApi(directory, { agents = REGISTERED, channel, models = CATALOG } =
 }
 
 /** The caps in force for this project, read the way the dialog reads them. */
-export const readOverlay = async (directory) => (await overlayChannel(directory, BASE).read()).caps;
+export const readOverlay = async (directory) => {
+  const overlay = await overlayChannel(directory, BASE).read();
+  return overlay.caps;
+};
 
 /** The overlay as the operator stated it, through the channel rather than the table. */
 async function withCaps(directory, overlay, hostHooks) {

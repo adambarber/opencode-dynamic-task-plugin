@@ -172,8 +172,10 @@ export function textDeclaresKind(text, kind, note) {
  * cannot tell a state claim from a mention of one. One reader, because every
  * settlement test asks the same question of the same view.
  */
-export const stateOf = async (child) =>
-  (await child.status()).split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
+export const stateOf = async (child) => {
+  const text = await child.status();
+  return text.split("\n").find((line) => line.startsWith("State: ")) ?? "(no state line)";
+};
 
 /**
  * The claim a child's status view makes, and the view itself handed back.

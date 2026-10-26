@@ -53,13 +53,15 @@ if (process.argv.includes("--screen")) {
   const option = (o, current) => {
     const marked = isSame(o.value, current);
     const head = o.title + (o.description ? ` ${o.description}` : "");
+    const footerBox = o.footer === undefined ? null
+      : jsx("box", { children: jsx("text", { children: o.footer, fg: context }), flexShrink: 0 });
     return jsx("box", {
       children: [
         jsx("box", {
           children: [
             ...(marked ? [jsx("text", { children: "\u25cf", fg: primary, flexShrink: 0 })] : []),
             jsx("text", { children: head, flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" }),
-            ...(o.footer === undefined ? [] : [jsx("box", { children: jsx("text", { children: o.footer, fg: context }), flexShrink: 0 })]),
+            ...(footerBox === null ? [] : [footerBox]),
           ], flexDirection: "row", gap: 1, paddingLeft: marked ? 1 : 3, paddingRight: 3,
         }),
       ],
@@ -96,23 +98,23 @@ if (process.argv.includes("--screen")) {
    * the host draws a `Search` input — which was on every one of these screens, including
    * the pickers whose entire option set is ten numbers.
    */
-  const hostDialog = (title, children, filtered) =>
-    jsx("box", { children: [
-      jsx("box", { children:
-        jsx("box", { children: [
-          jsx("text", { attributes: TextAttributes.BOLD, children: title, fg: value }),
-          jsx("text", { children: "esc", fg: context }),
-        ], flexDirection: "row", justifyContent: "space-between" }), paddingLeft: 4, paddingRight: 4 }),
-      ...(filtered
-        ? [jsx("box", { children: jsx("text", { children: "Search", fg: context }), paddingTop: 1 })]
-        : []),
+  const hostDialog = (title, children, filtered) => {
+    const titleText = jsx("text", { attributes: TextAttributes.BOLD, children: title, fg: value });
+    const escText = jsx("text", { children: "esc", fg: context });
+    const header = jsx("box", { children: [titleText, escText], flexDirection: "row", justifyContent: "space-between" });
+    const filterBox = jsx("box", { children: jsx("text", { children: "Search", fg: context }), paddingTop: 1 });
+    return jsx("box", { children: [
+      jsx("box", { children: header, paddingLeft: 4, paddingRight: 4 }),
+      ...(filtered ? [filterBox] : []),
       jsx("scrollbox", { children, paddingLeft: 1, paddingRight: 1, scrollbarOptions: { visible: false } }),
     ], flexDirection: "column", flexGrow: 1, gap: 1, paddingBottom: 1 });
+  };
 
   for (const [heading, d] of screens) {
+    const rows = jsx("box", { children: withHeadings(d.options, d.current), flexDirection: "column" });
+    const body = hostDialog(d.title, rows, d.renderFilter !== false);
     const shot = await testRender(
-      () => jsx("box", { backgroundColor: RGBA.fromInts(0, 0, 0), children:
-        hostDialog(d.title, jsx("box", { children: withHeadings(d.options, d.current), flexDirection: "column" }), d.renderFilter !== false), width: DIALOG }),
+      () => jsx("box", { backgroundColor: RGBA.fromInts(0, 0, 0), children: body, width: DIALOG }),
       { height: 40, width: 80 },
     );
     await shot.renderOnce();
@@ -135,8 +137,10 @@ if (process.argv.includes("--screen")) {
   // missed the gap, the second missed the `scrollbox` the rows sit in, and both were
   // confident. A measurement is not.
   const fits = async (makeRow, probe) => {
+    const rows = jsx("box", { children: [makeRow(probe)], flexDirection: "column" });
+    const body = hostDialog("T", rows, false);
     const shot = await testRender(
-      () => jsx("box", { children: hostDialog("T", jsx("box", { children: [makeRow(probe)], flexDirection: "column" }), false), width: DIALOG }),
+      () => jsx("box", { children: body, width: DIALOG }),
       { height: 8, width: 80 },
     );
     await shot.renderOnce();
@@ -155,14 +159,18 @@ if (process.argv.includes("--screen")) {
   const withFooter = () => (n) => jsx("box", { children:
     [jsx("text", { children: "|".repeat(n), flexGrow: 1, overflow: "hidden", paddingLeft: 3, wrapMode: "none" }),
      jsx("box", { children: jsx("text", { children: "in force" }), flexShrink: 0 })], flexDirection: "row", gap: 1, paddingLeft: 3, paddingRight: 3 });
-  const detailLine = () => (n) => jsx("box", { children: [
-    jsx("box", { children: jsx("text", { children: "|".repeat(n), fg: context, wrapMode: "none" }), paddingLeft: 3, paddingRight: 3 })], flexDirection: "column" });
+  const detailLine = () => (n) => {
+    const bar = jsx("text", { children: "|".repeat(n), fg: context, wrapMode: "none" });
+    return jsx("box", { children: [jsx("box", { children: bar, paddingLeft: 3, paddingRight: 3 })], flexDirection: "column" });
+  };
   // Where the text STARTS, which is the claim the docstrings lean on hardest: "the row
   // spends ten columns before any content". A `<text paddingLeft={3}>` is the only
   // reason to believe in a third indent, and the frame does not show one.
   const indent = async (makeRow) => {
+    const rows = jsx("box", { children: [makeRow(1)], flexDirection: "column" });
+    const body = hostDialog("T", rows);
     const shot = await testRender(
-      () => jsx("box", { children: hostDialog("T", jsx("box", { children: [makeRow(1)], flexDirection: "column" })), width: DIALOG }),
+      () => jsx("box", { children: body, width: DIALOG }),
       { height: 8, width: 80 },
     );
     await shot.renderOnce();

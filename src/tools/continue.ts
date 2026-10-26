@@ -50,7 +50,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // The state a revival was auto-triggered from, or undefined when the parent
   // simply followed up on a settled task. Set by the M9 arm below and read by
   // the shared revival, so the two paths cannot drift in what they do.
-  let autoRevivedFrom: SettledTaskState | undefined;
+  let autoRevivedFrom: SettledTaskState | undefined = undefined;
 
   const active = activeFor(store, sessionId);
   if (active) {
@@ -149,7 +149,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
   // does the settlement that resumes a child after a network blip — all three
   // go through `reviveWithPrompt`, which owns the three steps that must not be
   // spelled twice (revive, clear the settle-dedup, prompt).
-  let task;
+  let task: { agentLabel?: string; agentName: string; childSessionId: string } | undefined = undefined;
   try {
     task = reviveWithPrompt(host, store, sessionId, admitted.prompt, config, admitted.modelOverride);
   } catch (error: unknown) {

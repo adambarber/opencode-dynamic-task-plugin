@@ -255,7 +255,10 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
       // The gate's own question, at the coordinates jscpd chose — which is the
       // Whole claim, because a clone is only ever caught if the reported box
       // Still contains it once the stream policy has had its say.
-      const read = (file) => stream(readFileSync(path.join(dir, path.basename(file.name)), "utf8")),
+      const read = (file) => {
+        const text = readFileSync(path.join(dir, path.basename(file.name)), "utf8");
+        return stream(text);
+      },
        missed = found
         .map((d) => ({
           at: `${d.firstFile.name}:${d.firstFile.start}-${d.firstFile.end} vs ${d.secondFile.name}:${d.secondFile.start}-${d.secondFile.end}`,
@@ -302,19 +305,20 @@ describe("invariant: the duplicate gate measures what it claims to measure", () 
       keys
         .filter((k) => NAMES.some((name) => k.endsWith(`:${name}`)))
         .map((k) => k.slice(k.lastIndexOf(":") + 1))
-        .join(",");
+        .join(","),
+     linesNamed = (from, to) => namesIn(tokensInRange(stream(SOURCE), from, to));
 
-    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 1, 1)), "MARK", "one line is that line and no other");
-    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 2, 3)), "OTHER,THIRD", "a closed range includes both ends");
-    assert.strictEqual(namesIn(tokensInRange(stream(SOURCE), 3, 4)), "THIRD,FOURTH", "and the last line named is included");
+    assert.strictEqual(linesNamed(1, 1), "MARK", "one line is that line and no other");
+    assert.strictEqual(linesNamed(2, 3), "OTHER,THIRD", "a closed range includes both ends");
+    assert.strictEqual(linesNamed(3, 4), "THIRD,FOURTH", "and the last line named is included");
 
     // The off-by-one a range is actually prone to, in both directions. A gate
     // That shifted its window by one would silently drop a match's leading
     // Tokens, and the coarse case above has too much slack to notice.
-    const all = namesIn(tokensInRange(stream(SOURCE), 1, 4));
+    const all = linesNamed(1, 4);
     assert.strictEqual(all, "MARK,OTHER,THIRD,FOURTH", `the whole range, all four: got ${all}`);
-    assert.notStrictEqual(namesIn(tokensInRange(stream(SOURCE), 2, 4)), all, "an exclusive start drops a name, and must be visible");
-    assert.notStrictEqual(namesIn(tokensInRange(stream(SOURCE), 1, 3)), all, "an exclusive end drops a name, and must be visible");
+    assert.notStrictEqual(linesNamed(2, 4), all, "an exclusive start drops a name, and must be visible");
+    assert.notStrictEqual(linesNamed(1, 3), all, "an exclusive end drops a name, and must be visible");
   });
 
   it("discards a near-miss decisively rather than reporting everything", () => {

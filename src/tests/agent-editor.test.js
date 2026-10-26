@@ -174,7 +174,8 @@ describe("the limits list", () => {
     // quantities and a table reads its numbers first. The label-before-figure order it
     // replaced (`at once 1`) is the same fact in the register used inside sentences, and
     // on a row it made the reader hold a label while they found a number, twice per row.
-    assert.equal(plainSummary(exploreRow(bothCaps(1, 2))), `1 concurrency${BETWEEN}2 depth`);
+    const row = exploreRow(bothCaps(1, 2));
+    assert.equal(plainSummary(row), `1 concurrency${BETWEEN}2 depth`);
   });
 
   /**
@@ -201,7 +202,8 @@ describe("the limits list", () => {
   });
 
   it("and the terse spelling, which is what the list prints, drops the annotation entirely", () =>
-    assert.equal(terseCell(capCellOf(oneStated(), "maxDepth")), `${BASE.maxDepth}`, "a figure, with no adjective beside it"));
+    const cell = capCellOf(oneStated(), "maxDepth");
+    assert.equal(terseCell(cell), `${BASE.maxDepth}`, "a figure, with no adjective beside it"));
 
   it("still offers rows when the overlay is a shape it cannot read, because repair is why it was opened", () => {
     const { rows, problem } = agentDialogFrom({ agents: [1, 2, 3] }, BASE, AGENTS, false, "that is not an object");

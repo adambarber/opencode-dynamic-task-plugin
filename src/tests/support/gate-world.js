@@ -10,7 +10,7 @@
  * the world it hands back is a live view, so a case cannot capture a stale one.
  */
 
-import { clearNotifyLedger, configurePendingPersistence, restorePendingDeliveries } from "../../../dist/shared/notify.js";
+import { clearNotifyLedger, configurePendingPersistence, resetDeliveryClaims, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { PARENT } from "./harness.js";
 import { recordingClient } from "./mock-gates.js";
 import { afterEach, beforeEach } from "./runner.js";
@@ -24,6 +24,9 @@ export const cleanNotifyState = () => {
   clearNotifyLedger();
   restorePendingDeliveries([]);
   configurePendingPersistence(null);
+  // The durable claim store is a boot-installed singleton; a suite that never boots
+  // (the gate's own) must not inherit the last one, so it is dropped with the rest.
+  resetDeliveryClaims();
 };
 
 /**

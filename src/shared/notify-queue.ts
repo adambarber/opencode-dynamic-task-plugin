@@ -103,7 +103,7 @@ function indexOfOwedEntry(entry: PendingDelivery): number {
 function evictDebtRoomFor(entry: PendingDelivery): PendingDelivery | null {
   if (pendingDeliveries.length < NOTIFY_LEDGER_MAX) return null;
   let worstAt = 0;
-  let worst = pendingDeliveries[0];
+  let [worst] = pendingDeliveries;
   for (let i = 1; i < pendingDeliveries.length; i++) {
     const candidate = pendingDeliveries[i];
     if (candidate !== undefined && worst !== undefined && candidate.attempts > worst.attempts) {

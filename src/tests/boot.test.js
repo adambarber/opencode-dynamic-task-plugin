@@ -26,8 +26,9 @@ import { answerMatches, answerOmits, answerSays, assert, bootOn, compareStrings,
 const noticeArrives = (notices, why) => waitFor(() => notices().length > 0, why);
 
 import { ENV } from "../../dist/shared/config.js";
-import { LEDGER_PREFIXES, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
+import { LEDGER_KEYS, LEDGER_PREFIXES, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
+import { clearNotifyLedger } from "../../dist/shared/notify.js";
 
 /**
  * A v3 file that reads, with one record inside it that does not.
@@ -648,13 +649,72 @@ describe("two plugin instances sharing one project", () => {
     );
   });
 
-  // There is deliberately NO settlement case here, and its absence is the
-  // finding rather than an omission. Settling owes a notice, and the owed
-  // queue is a module-level singleton — one per process in production, and
-  // one per process in a test too. So the second harness installs its own
-  // writer over the first one's, and the LAST write of a settlement comes
-  // from the wrong instance. A case written there passes for that reason and
-  // would have read as proof that a settlement is safe. It was written, it
-  // passed, and it proved nothing; the merge is pinned directly instead, where
-  // it is a pure function and nothing is hijacked (session-lifecycle.test.js).
+  /**
+   * Two instances, one project, one child BOTH of them saw running.
+   *
+   * The active record is the one durable fact a second process reads at boot, and
+   * the host is told the turn is open so each instance's reconciliation leaves the
+   * child running rather than inventing a vanished-child error. `sessionPrefix`
+   * tells the two fake hosts apart; the KV is SHARED, which is what the host gives
+   * two windows on one repo.
+   */
+  const twoInstancesSeeing = async (child) => {
+    const directory = tmpProjectDir();
+    const kv = new Map();
+    kv.set(LEDGER_KEYS.active(child), JSON.stringify(runningEntry(child)));
+    const turnOpen = { hostTurnSeed: { [child]: undefined } };
+    const a = await setupHarness({ directory, domain: { kv }, hooks: { sessionPrefix: "a", ...turnOpen } });
+    const b = await setupHarness({ directory, domain: { kv }, hooks: { sessionPrefix: "b", ...turnOpen } });
+    return { a, b };
+  };
+
+  /**
+   * B is a DIFFERENT process, so its claim memory is its own. Clearing the
+   * process-global gate is how that boundary is modelled — the same move `boot()`
+   * makes — and it is exactly the singleton that hid this case: without the reset
+   * the second instance's settlement is suppressed IN PROCESS and the case proves
+   * nothing. With it, the second delivery is decided by the SHARED store or not at
+   * all, which is the question a second window actually asks.
+   */
+  const settleAsSecondProcess = async (h, child) => {
+    clearNotifyLedger();
+    await h.settle(child);
+    await sleep(50);
+  };
+
+  // The case whose absence the comment here used to record as the finding. Two
+  // windows, one child, one settlement each: the parent must hear it once.
+  it("delivers a settlement both instances saw exactly once", async () => {
+    const child = "ses_shared";
+    const { a, b } = await twoInstancesSeeing(child);
+
+    await a.settle(child);
+    await waitFor(() => a.notices().length === 1, "the first instance's settlement to reach the parent");
+    await settleAsSecondProcess(b, child);
+
+    assert.strictEqual(
+      a.notices().length + b.notices().length,
+      1,
+      `one settlement, one notice, across two instances — got: ${JSON.stringify([...a.notices(), ...b.notices()].map((n) => n.message))}`,
+    );
+  });
+
+  // The complement, and the reason the second instance cannot simply be silenced:
+  // a settlement and a mid-flight notice are DIFFERENT facts about one child, and
+  // collapsing them would swallow one. This is the guard against over-suppression.
+  it("still delivers a distinct notice for the same child", async () => {
+    const child = "ses_shared";
+    const { a, b } = await twoInstancesSeeing(child);
+
+    await a.child(child).notify("first words");
+    await waitFor(() => a.notices().length === 1, "the mid-flight notice");
+    await settleAsSecondProcess(b, child);
+    await waitFor(() => a.notices().length + b.notices().length >= 2, "the settlement beside the notice");
+
+    assert.strictEqual(
+      a.notices().length + b.notices().length,
+      2,
+      "a notice and a settlement are two facts, delivered independently",
+    );
+  });
 });

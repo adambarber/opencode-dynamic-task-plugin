@@ -69,7 +69,7 @@ export async function withAskedChild(requestId) {
  * derivation belongs next to the debug writer that creates the path, not in
  * each of its readers.
  */
-export async function withLoggedChild({ hooks = {} } = {}, body) {
+export async function withLoggedChild({ hooks = {} }, body) {
   const directory = tmpProjectDir();
   return withEnv("DYNAMIC_TASK_DEBUG", "1", async () => {
     const { h, c, id, out } = await withSettledChild({ harness: { directory, hooks } });

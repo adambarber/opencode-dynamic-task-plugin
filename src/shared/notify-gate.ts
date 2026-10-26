@@ -21,32 +21,32 @@ export interface Claim {
 }
 
 export interface GateLedger {
-  record(claim: Claim): boolean;
+  record: (claim: Claim) => boolean;
   /**
    * Write off a debt whose redelivery budget is spent. Idempotent, and takes the
    * generation it retires AT, so every claim up to and including that one is dead.
    */
-  retire(claim: Claim): void;
+  retire: (claim: Claim) => void;
   /**
    * Whether a claim is dead because its debt was written off. Separate from `retire`
    * because a commit can arrive long after the write-off and asks only this question.
    */
-  isRetired(claim: Claim): boolean;
+  isRetired: (claim: Claim) => boolean;
   /**
    * Revival resets settle-dedup: a continued task is a fresh settlement subject. The
    * generation bump is what makes that safe against claims still in flight.
    */
-  forgetChild(childSessionId: string): void;
+  forgetChild: (childSessionId: string) => void;
   /**
    * In-flight claim: closes the check-then-act race between concurrent same-key
    * writers. Synchronous; the winner dials, losers are suppressed before transport.
    * Returns the generation bound (null = refused), or null when the key is taken.
    */
-  claim(childSessionId: string, dedupKey: string): number | null;
+  claim: (childSessionId: string, dedupKey: string) => number | null;
   /** Released on delivery failure so a failed settlement stays redeliverable. */
-  release(claim: Claim): void;
+  release: (claim: Claim) => void;
   /** Test-only isolation: the gate is process-global by design. */
-  clear(): void;
+  clear: () => void;
 }
 
 const GATE_MAX_CHILDREN = 1000;

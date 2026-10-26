@@ -88,7 +88,10 @@ const minTokens = readMinTokens(join(REPO, ".jscpd.json"));
 // decisions this file used to own privately are how it was wrong twice.
 const streams = new Map();
 const tokensIn = (repoPath, from, to) => {
-  if (!streams.has(repoPath)) streams.set(repoPath, stream(readFileSync(join(REPO, "src", repoPath), "utf8")));
+  if (!streams.has(repoPath)) {
+    const text = readFileSync(join(REPO, "src", repoPath), "utf8");
+    streams.set(repoPath, stream(text));
+  }
   return tokensInRange(streams.get(repoPath), from, to);
 };
 
@@ -107,13 +110,14 @@ const tokensIn = (repoPath, from, to) => {
  * anything, because no two counts are being compared.
  */
 const reproduces = (first, second) => {
-  let a, b;
+  const read = () => [tokensIn(first.name, first.start, first.end), tokensIn(second.name, second.start, second.end)];
+  let pair = null;
   try {
-    a = tokensIn(first.name, first.start, first.end);
-    b = tokensIn(second.name, second.start, second.end);
+    pair = read();
   } catch {
     return null;
   }
+  const [a, b] = pair;
   if (a.length === 0 || b.length === 0) return null;
   return longestSharedRun(a, b) >= minTokens;
 };
@@ -126,7 +130,7 @@ const reproduces = (first, second) => {
 // hatch is gone, so there is nothing left to stretch over real logic.
 
 const out = mkdtempSync(join(tmpdir(), "dt-jscpd-"));
-let report;
+let report = null;
 try {
   const run = spawnSync(
     "npx",

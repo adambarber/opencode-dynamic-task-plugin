@@ -53,14 +53,6 @@ const optionalStringList = (description: string) =>
 const registeredTool = <S, A>(resolve: (raw: unknown, ctx: ToolContext) => Verdict<{ scope: S; args: A }>) =>
   (input: InputSchema, description: string, execute: (scope: S, args: A, ctx: ToolContext) => Promise<string>) => ({
     description,
-    input,
-    // Direct tools, not Code-Mode-catalog tools. Without this the host files
-    // every one of the seven under `execute`, and a model that calls one
-    // directly hears `No tool named "task_notify" is currently available` —
-    // observed live in a child that then stayed silent. The child's voice is
-    // the one call this plugin cannot afford to route through an indirection
-    // a small model may not take.
-    options: { codemode: false },
     async execute(raw: unknown, ctx: ToolContext) {
       // ctx goes to the resolver because the resolved scope is how a
       // session-scoped tool learns who is calling it — a fact the arguments
@@ -71,6 +63,14 @@ const registeredTool = <S, A>(resolve: (raw: unknown, ctx: ToolContext) => Verdi
       if (!verdict.ok) return { content: verdict.error };
       return { content: await execute(verdict.input.scope, verdict.input.args, ctx) };
     },
+    input,
+    // Direct tools, not Code-Mode-catalog tools. Without this the host files
+    // every one of the seven under `execute`, and a model that calls one
+    // directly hears `No tool named "task_notify" is currently available` —
+    // observed live in a child that then stayed silent. The child's voice is
+    // the one call this plugin cannot afford to route through an indirection
+    // a small model may not take.
+    options: { codemode: false },
   });
 
 // One schema for the one argument every child-scoped tool takes. Four tools
@@ -79,25 +79,25 @@ const registeredTool = <S, A>(resolve: (raw: unknown, ctx: ToolContext) => Verdi
 // had three descriptions and one absence. The word "background" was also wrong
 // for three of the four: a settled FOREGROUND task is continued, read and
 // stopped through this argument too.
-const SESSION_ID = string("Child session ID from dynamic_task (ses_...)");
+const sessionIdDescription = string("Child session ID from dynamic_task (ses_...)");
 // One builder for the two dependency arguments. They are the same schema with the
 // same meaning — a list of child session ids — and differ only in what
 // waiting for them MEANS, which is the sentence, not the type.
-const SESSION_ID_LIST = (description: string) => optionalStringList(description);
+const sessionIdList = (description: string) => optionalStringList(description);
 // Likewise the prompt and the model override: the two arguments every
 // prompt-bearing tool takes, each with its own sentence but the same shape. The
 // model's base contract is MODEL_ARG_DESCRIPTION (providerID/modelID as spelled
 // in the host's own config, bare ids refused) — a tool that restates that
 // sentence restates it wrong sooner or later, so a tool adds a clause instead.
-const PROMPT = (description: string) => string(description);
+const promptText = (description: string) => string(description);
 // One wrapper for the object schema every session-scoped tool shares: the same
 // session_id plus whatever else that tool takes. Spelled twice it drifts.
-const SESSION_SCHEMA = (properties: Record<string, unknown>, required: string[]) => ({
-  properties: { session_id: SESSION_ID, ...properties },
+const sessionSchema = (properties: Record<string, unknown>, required: string[]) => ({
+  properties: { session_id: sessionIdDescription, ...properties },
   required,
   type: "object",
 });
-const MODEL = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
+const modelSchema = (clause = "") => optionalString(`${MODEL_ARG_DESCRIPTION}${clause}`);
 // The identity reader for tools that take no arguments: the resolver contract
 // still returns scope AND args, so a no-arg tool reads its input as itself.
 const passThrough = (raw: unknown): unknown => raw;
@@ -121,15 +121,15 @@ export function buildToolMap(deps: ToolDeps) {
     dynamic_task: pluginTool(readSpawnArgs)(
       {
         properties: {
-          depends_on: SESSION_ID_LIST(
+          depends_on: sessionIdList(
             "Task dependencies — session IDs this task depends on. Each must have completed.",
           ),
-          depends_on_settled: SESSION_ID_LIST(
+          depends_on_settled: sessionIdList(
             "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
           ),
           description: string("Short human-readable task label"),
-          model: MODEL(),
-          prompt: PROMPT("Instructions for the child session"),
+          model: modelSchema(),
+          prompt: promptText("Instructions for the child session"),
           subagent_type: string("Agent to invoke"),
         },
         required: ["description", "subagent_type", "prompt"],
@@ -140,10 +140,10 @@ export function buildToolMap(deps: ToolDeps) {
     ),
 
     task_continue: scopedTool(readContinueArgs)(
-      SESSION_SCHEMA(
+      sessionSchema(
         {
-          model: MODEL(" Applies when reviving a settled task; steers keep the task's model."),
-          prompt: PROMPT("Follow-up instructions"),
+          model: modelSchema(" Applies when reviving a settled task; steers keep the task's model."),
+          prompt: promptText("Follow-up instructions"),
         },
         ["session_id", "prompt"],
       ),
@@ -170,7 +170,7 @@ export function buildToolMap(deps: ToolDeps) {
     ),
 
     task_interrupt: scopedTool(passThrough)(
-      SESSION_SCHEMA(
+      sessionSchema(
         {
           scope: {
             description:
@@ -195,13 +195,13 @@ export function buildToolMap(deps: ToolDeps) {
     ),
 
     task_result: scopedTool(passThrough)(
-      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
+      { properties: { session_id: sessionIdDescription }, required: ["session_id"], type: "object" },
       TASK_RESULT_DESCRIPTION,
       executeTaskResult,
     ),
 
     task_status: scopedTool(passThrough)(
-      { properties: { session_id: SESSION_ID }, required: ["session_id"], type: "object" },
+      { properties: { session_id: sessionIdDescription }, required: ["session_id"], type: "object" },
       TASK_STATUS_DESCRIPTION,
       executeTaskStatus,
     ),

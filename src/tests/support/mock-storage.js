@@ -45,13 +45,18 @@ function byKey([left], [right]) {
   return left < right ? -1 : 1;
 }
 
-/** The gate a case arms to hold the FIRST call: a write accepted and never stored. */
+/** The gate a case arms to hold the FIRST call: a write accepted, then stored — or, with `fails`, refused when released. */
 async function passGate(state) {
   const gate = state.storageGate;
   if (!gate || gate.used) return;
   fault(state, "storageGate");
   gate.used = true;
   await gate.promise;
+  // The abort gate spells this same shape out: a released gate with `fails` set
+  // REFUSES the call it parked, which is how a case arranges a refusal that only
+  // exists AFTER the write reached the host — the shape a queued second write is
+  // waiting behind.
+  if (gate.fails) throw new Error("storage unavailable");
 }
 
 /**

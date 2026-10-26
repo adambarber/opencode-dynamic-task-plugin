@@ -19,7 +19,6 @@ const FINISHED_PAGE: StorageScanResult = { entries: [] };
 // The host clamps a scan to 1..1000 and defaults to 100. Boot reads every record
 // it is entitled to, so ask for the ceiling and pay one round trip per thousand.
 const SCAN_PAGE = 1_000;
-
 /** What a scan found, and whether it reached the end. An unreadable scan is not an empty one. */
 interface Scan {
   entries: ReadonlyMap<string, StoredValue>;
@@ -43,6 +42,11 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
   // earlier record land after a later removal, and the stale one would survive.
   let tail: Promise<void> = Promise.resolve();
 
+  // Applies enqueued for a key but not yet executed, timeout retries included:
+  // each enqueue counts one and each execution spends its own. The count is what
+  // a refusal consults before it gives a key up — see `apply`.
+  const queued = new Map<string, number>();
+
   // What each key must END UP holding, kept because a bound reports without
   // cancelling: a write the plugin gave up on can still land later, and it would
   // restore a value the plugin has already moved past. One small entry per key,
@@ -57,9 +61,16 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
     });
   };
 
+  // One more attempt at a key goes on the chain. Counted, because the intent is
+  // the obligation and the count is who is left holding it.
+  const enqueueApply = (key: string): void => {
+    queued.set(key, (queued.get(key) ?? 0) + 1);
+    enqueue(() => apply(key));
+  };
+
   const write = (key: string, value: StoredValue | null): void => {
     intent.set(key, value);
-    enqueue(() => apply(key));
+    enqueueApply(key);
   };
 
   // The whole point of `apply`: the chain advances on the DEADLINE so a host that
@@ -72,6 +83,11 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
   // told to nobody. The refusal is therefore taken INSIDE the bound — one key, one
   // reason, given up rather than retried into the same answer.
   const apply = async (key: string): Promise<void> => {
+    // This execution has consumed its own count: what is left is what a refusal
+    // may still find when it asks whether anyone else carries the obligation.
+    const stillQueued = (queued.get(key) ?? 1) - 1;
+    if (stillQueued > 0) queued.set(key, stillQueued);
+    else queued.delete(key);
     const wanted = intent.get(key) ?? null;
     const refusal = { why: null as string | null };
     const answer = await callHost(
@@ -88,13 +104,20 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
       null,
     );
     if (refusal.why !== null) {
-      intent.delete(key);
+      // The refusal gives up on THIS attempt, not on the key's obligation: the
+      // intent is what the caller last asked the key to hold, and a newer write
+      // queued behind this one re-attempts it on the next apply. Clearing the
+      // intent here would turn that queued SET into a REMOVE — the refused write
+      // would delete a NEWER write's intent, which is durable data lost in
+      // silence. So the key is given up only when no queued apply is left to
+      // serve the intent.
+      if (!queued.has(key)) intent.delete(key);
       onRefusal(`refused the write to ${key}: ${refusal.why}`);
       return;
     }
     if (!answer.timedOut) return;
     onRefusal(`refused the write to ${key}: no answer in ${WRITE_BOUNDS.storage}ms`);
-    void answer.finished.catch(() => {}).then(() => enqueue(() => apply(key)));
+    void answer.finished.catch(() => {}).then(() => enqueueApply(key));
   };
 
   return {

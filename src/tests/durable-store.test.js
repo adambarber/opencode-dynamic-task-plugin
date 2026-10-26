@@ -93,3 +93,35 @@ describe("durable state facade", () => {
     assert.equal(world.kv.size, 3, "the refused call lands once the host answers, and the facade waits on all three");
   });
 });
+describe("durable store: a refused write and the writes queued behind it", () => {
+  durable.tightBounds();
+
+  it("a refused SET does not turn the NEXT queued SET into a REMOVE", async () => {
+    // The interleaving that lost data: two writes to one key, the first refused.
+    // The refusal must give up on ITS attempt only — the newer write is queued
+    // behind it on the same chain, its intent is still owed, and a refusal that
+    // cleared that intent would make the second apply read "remove" and delete
+    // the key the caller's last request was to SET.
+    const world = durable.build();
+    const refusedFirstWrite = world.client.gateStorage({ fails: true });
+
+    world.store.put(durable.key("ses_pair"), { n: 1 });
+    // Arming is observable only once the host HAS the call: the first apply is
+    // parked here, not merely delayed.
+    await new Promise((resolve) => setImmediate(resolve));
+    world.store.put(durable.key("ses_pair"), { n: 2 });
+    refusedFirstWrite.release();
+    await world.store.settled();
+
+    world.assertDurable("ses_pair", { n: 2 });
+  });
+
+  it("a refusal with nothing queued behind it still gives the key up", async () => {
+    // The bound on the fix above: clearing the refused key's intent is correct
+    // when no later apply carries it — the write is abandoned, said so once, and
+    // the key's intent does not linger as an obligation nothing will serve.
+    const world = await durable.refusing("ses_alone", { n: 1 });
+    assert.equal(world.kv.has(durable.key("ses_alone")), false, "the refused write landed nothing");
+    world.assertRefused(/refused the write to .*ses_alone/);
+  });
+});

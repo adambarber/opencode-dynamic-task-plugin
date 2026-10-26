@@ -27,6 +27,7 @@ import {
   SESSION_IDLE,
 } from "../../../dist/shared/host-events.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
+import { armedFlag, fault } from "./faults.js";
 
 /**
  * A host event envelope: the type the server names, the session it is about, and
@@ -85,6 +86,36 @@ export const events = {
  * throws inside a mock instead of reporting the prompt as not-a-notification.
  */
 export const promptText = (args) => args?.text || "";
+
+/**
+ * The host's event stream, as the v2 manifest serves it: `subscribe` returns an
+ * async iterable the plugin pulls forever. The two faults are the stream's own
+ * fates — a rejection (the transport died) and a clean end (the host closed it).
+ * Both are reached only on the NEXT pull after arming, so a stream dies mid-life,
+ * the way a real one does, and not before its first event. The stream's plumbing
+ * (`queue`, `parked`, `waiting`) rides as one object because it is one mechanism:
+ * the three lists only work together.
+ */
+export const eventStreamEndpoint = (state, hooks, { parked, queue, waiting }) => ({
+  async *[Symbol.asyncIterator]() {
+    for (;;) {
+      if (armedFlag(state, hooks, "eventStreamThrows")) {
+        fault(state, "eventStreamThrows");
+        throw hooks.eventStreamThrows ?? new Error("event stream failed");
+      }
+      if (armedFlag(state, hooks, "eventStreamEnd")) {
+        fault(state, "eventStreamEnd");
+        return;
+      }
+      if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
+      while (queue.length > 0) {
+        yield queue.shift();
+        // the loop body has run for this event; release its own delivery
+        waiting.shift()?.();
+      }
+    }
+  },
+});
 
 /**
  * One funnel for "the parent has now been sent this", and it classifies.

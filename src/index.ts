@@ -21,12 +21,12 @@ import { debugLog } from "./debug-logger.js";
 import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { initPluginState, overlayHandlers } from "./entry/state.js";
-import { asOpaqueHost, hasCoreApis, probeHost } from "./shared/client.js";
+import { asOpaqueHost, hasCoreApis, type OpaqueHost, probeHost } from "./shared/client.js";
 import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { containFailure, LogLevel, safeLog } from "./shared/notify.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
-import { noteActivity } from "./shared/task-state.js";
+import { noteActivity, type TaskStore } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
 async function setup(context: Context): Promise<void> {
@@ -73,28 +73,28 @@ async function setup(context: Context): Promise<void> {
   });
   await context.tool.reload();
 
-  const onEvent = async (event: unknown): Promise<void> => {
-    const eventType = eventString(event, "type") ?? "(none)";
-    const eventName = eventString(event, "name") ?? "(none)";
-    const evtSessionId = getSessionIdFromEvent(event);
+  const onEvent = makeEventHandler({ config, host, store });
 
-    // NO plugin log on this path, and the absence is the design. This head is
-    // the only code in the plugin that sees every event, and the host emits one
-    // per message AND per part — so a session with 5,399 parts pays this line
-    // 5,399 times inside a single turn. `debugLog` below is where per-event
-    // observability belongs: it returns before allocating anything unless
-    // DYNAMIC_TASK_DEBUG=1, so it costs nothing when nobody is watching.
-    debugLog("event-handler", "event-handler", "event-received", {
-      name: eventName,
-      sessionId: evtSessionId,
-      type: eventType,
-    });
+  void runEventPump(context, onEvent);
+}
 
-    // --- Activity heartbeat: this head is the ONLY place that sees every
-    // host event, so it is where "the child's turn is moving" is observed.
-    // Terminality is decided once, here, and handed to both consumers.
-    const terminal = isTerminalSessionEvent(event);
-    noteActivity(store, evtSessionId, terminal);
+/**
+ * The event head, built once at boot: every event flows through here, so the
+ * heartbeat, the ask gate and the lifecycle settlement all read the SAME fact.
+ * The head takes the boot's pieces as one object — the file's idiom (deps rides
+ * to the tools the same way) — because its arguments are state, not parameters.
+ */
+function makeEventHandler(deps: {
+  config: Awaited<ReturnType<typeof initPluginState>>["config"];
+  host: OpaqueHost;
+  store: TaskStore;
+}): (event: unknown) => Promise<void> {
+  const { config, host, store } = deps;
+  return async (event: unknown): Promise<void> => {
+    // The observation half, named: the log line and the heartbeat ride together
+    // because both are "this event was seen" facts. It hands back the two facts
+    // the gates below read.
+    const { eventType, terminal } = observeEvent(store, event);
 
     // --- Ask gate: attribute through the gate, then deny.
     try {
@@ -112,12 +112,49 @@ async function setup(context: Context): Promise<void> {
       debugLog("event-handler", "event-handler", "event-handler-error", { error: errorMessage(error) });
     }
   };
+}
 
-  void (async () => {
+/**
+ * The head's observation half. NO plugin log on this path, and the absence is
+ * the design: the host emits one event per message AND per part — a session
+ * with 5,399 parts pays this line 5,399 times inside a single turn — so
+ * `debugLog` below is where per-event observability belongs (it returns before
+ * allocating anything unless DYNAMIC_TASK_DEBUG=1). This is also the ONLY place
+ * that sees every host event, so it is where "the child's turn is moving" is
+ * observed; terminality is decided once, here, and handed to the gates.
+ */
+function observeEvent(store: TaskStore, event: unknown): { eventType: string; terminal: boolean } {
+  const eventType = eventString(event, "type") ?? "(none)";
+  const evtSessionId = getSessionIdFromEvent(event);
+  debugLog("event-handler", "event-handler", "event-received", {
+    name: eventString(event, "name") ?? "(none)",
+    sessionId: evtSessionId,
+    type: eventType,
+  });
+  const terminal = isTerminalSessionEvent(event);
+  noteActivity(store, evtSessionId, terminal);
+  return { eventType, terminal };
+}
+
+/**
+ * The event pump: the one loop every settlement, notification and gate rides.
+ * Per-event errors are contained INSIDE onEvent; this owns the stream itself.
+ * A rejection from the iterator is contained (containFailure + the operator's
+ * log) rather than left as an unhandled rejection — Node >= 15 answers one by
+ * killing the whole host process. And when the iterator ENDS without failing,
+ * the plugin keeps running but can never see another event — no settlements, no
+ * notifications — so deafness is named rather than silent. The host exposes no
+ * re-subscription, so the honest deliverable is the log, not a retry.
+ */
+async function runEventPump(context: Context, onEvent: (event: unknown) => Promise<void>): Promise<void> {
+  try {
     for await (const event of context.event.subscribe()) {
       void onEvent(event);
     }
-  })();
+    void safeLog(LogLevel.Warn, "Dynamic task plugin: the plugin's event subscription ended; the plugin is deaf until the host restarts. No task will settle or notify until then.");
+  } catch (error: unknown) {
+    containFailure("event stream failed", error, "the plugin is deaf until the host restarts");
+  }
 }
 
 export default {

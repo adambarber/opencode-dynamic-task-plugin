@@ -1,5 +1,6 @@
 
 
+import { eventStreamEndpoint } from "./mock-events.js";
 import { createRpc } from "./mock-rpc.js";
 import { assert } from "./runner.js";
 import { sleep } from "./timing.js";
@@ -12,7 +13,7 @@ import { sleep } from "./timing.js";
  * `tool.transform` and reads events off an async iterable, so the only honest
  * fake is one that serves those two surfaces and lets the plugin take them.
  */
-export function v2Context(client, directory, options = {}) {
+export function v2Context(client, directory, { hooks = {}, options = {} } = {}) {
   const tools = new Map();
   const queue = [];
   const rpc = createRpc();
@@ -26,18 +27,7 @@ export function v2Context(client, directory, options = {}) {
   const context = {
     ...client,
     event: {
-      subscribe: () => ({
-        async *[Symbol.asyncIterator]() {
-          for (;;) {
-            if (queue.length === 0) await new Promise((resolve) => parked.push(resolve));
-            while (queue.length > 0) {
-              yield queue.shift();
-              // the loop body has run for this event; release its own delivery
-              waiting.shift()?.();
-            }
-          }
-        },
-      }),
+      subscribe: () => eventStreamEndpoint(client.testState, hooks, { parked, queue, waiting }),
     },
     location: { directory },
     options,

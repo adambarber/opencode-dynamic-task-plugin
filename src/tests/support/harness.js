@@ -336,7 +336,7 @@ export async function setupHarness({ hooks = {}, options = {}, directory = tmpPr
   // editor transform, events by an async iterable. The fake drives those two
   // surfaces for real rather than reaching past them, so a plugin that
   // registered wrongly would fail here instead of in production.
-  const { context, rawTools, deliverEvent, rpc } = v2Context(client, directory, options);
+  const { context, rawTools, deliverEvent, rpc } = v2Context(client, directory, { hooks, options });
   // Options ride on the context itself (`context.options`) — the loader calls
   // `setup(context)` with one argument, so a harness passing them positionally
   // would exercise defaults while believing otherwise.

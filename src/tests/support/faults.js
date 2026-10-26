@@ -49,6 +49,8 @@ export const FAULTS = Object.freeze([
   "storageThrows",
   "storageWriteThrows",
   "unreadableTranscript",
+  "eventStreamThrows",
+  "eventStreamEnd",
 ]);
 
 /**

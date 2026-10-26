@@ -347,3 +347,32 @@ describe("notify: dedup key and truncation", () => {
     assert.strictEqual(truncateText("short"), "short");
   });
 });
+
+describe("notify: the write-off does not poison the next notice", () => {
+  const CHILD = "ses_after_writeoff";
+  // The write-off stamped the gate's CURRENT generation and nothing moved it
+  // after. The next genuine notice for the same child claimed that same
+  // generation, `isRetired` answered yes, and its commit returned early — no
+  // receipt, no debt retired, re-dialed on every boot until the budget expired.
+  // A written-off obligation must end ITS generation: the next claim for the
+  // child lands in a fresh one.
+
+  it("a NEW notice for the same child delivers after an earlier debt was written off", async () => {
+    // Write off: the budget spent, the parent never answered. No dial — the
+    // write-off is the branch that ends a debt without asking the host.
+    const { client, calls } = answeredClient([]);
+    await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gateOpts(CHILD, "error"), carriedAttempts: 3, maxAttempts: 3 });
+    assert.strictEqual(calls.length, 0, "the write-off dialed nothing");
+    assert.strictEqual(getLatestNotification(CHILD).expired, true, "recorded as expired");
+
+    // A genuinely new notice — a new subject the child has to voice — must not
+    // inherit the write-off: it delivers, it records, it drops nothing.
+    const second = await notifyParent(opaqueHost(client), "parent_1", "a different thing went wrong", gateOpts(CHILD, "error"));
+    assert.strictEqual(second, true, "the new notice delivers");
+    assert.strictEqual(writesTo(calls, "a different thing went wrong").length, 1, "one write reached the parent");
+    const record = getLatestNotification(CHILD);
+    assert.strictEqual(record.delivered, true, "and the receipt is written, not swallowed by the old write-off");
+    assert.strictEqual(record.expired, undefined, "the new notice is not the expired one");
+    assert.deepStrictEqual(queuedFor(CHILD), [], "nothing owed afterwards");
+  });
+});

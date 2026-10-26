@@ -305,7 +305,8 @@ export async function notifyParent(
     // notice for this child is not suppressed by a write-off, and the record
     // says EXPIRED so the parent is not told a failure that will be retried.
     gateLedger.retire(claim);
-    gateLedger.release(claim);
+    // The gate's retire now frees the claim's own key and ends the generation;
+    // an explicit release here would arrive after the bump and recognize nothing.
     dropPending(owed);
     if (epoch === currentGateEpoch()) emit({ attempts: carried, delivered: false, expired: true });
     // The host log, for the same reason every other durable-state loss goes

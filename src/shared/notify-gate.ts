@@ -24,7 +24,10 @@ export interface GateLedger {
   record: (claim: Claim) => boolean;
   /**
    * Write off a debt whose redelivery budget is spent. Idempotent, and takes the
-   * generation it retires AT, so every claim up to and including that one is dead.
+   * generation it retires AT, so every claim up to and including that one is dead —
+   * and it ENDS that generation: the next genuine claim for the child is issued in
+   * a fresh one, so a new notice can neither inherit the retirement nor have its
+   * commit swallowed by it.
    */
   retire: (claim: Claim) => void;
   /**
@@ -120,9 +123,21 @@ function createGateLedger(): GateLedger {
       drop(inFlight, childSessionId, dedupKey);
     },
     retire({ childSessionId, dedupKey, generation }) {
+      // The claim being retired holds this key in flight; it goes NOW, while its
+      // generation is still current — after the bump below, a release would no
+      // longer recognize it and the key would be reserved forever.
+      drop(inFlight, childSessionId, dedupKey);
       const keys = retired.get(childSessionId) ?? new Map<string, number>();
       keys.set(dedupKey, generation);
       retired.set(childSessionId, keys);
+      // The written-off obligation ends its own generation. Stamping the
+      // retirement at the CURRENT generation and leaving it there claimed every
+      // future notice at that generation as retired: a genuinely new notice for
+      // the child dialed, and its commit was then swallowed by isRetired — never
+      // recorded, never dropped, re-dialed on every boot. The next claim must
+      // land in a generation the retirement does not cover.
+      const next = currentGeneration(generations, childSessionId) + 1;
+      generations.set(childSessionId, next);
     },
   };
 }

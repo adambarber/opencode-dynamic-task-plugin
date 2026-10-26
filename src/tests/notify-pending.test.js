@@ -1,7 +1,7 @@
 
 import { configurePendingPersistence, getLatestNotification, getPendingDeliveries, notifyParent, restorePendingDeliveries } from "../../dist/shared/notify.js";
 import { assert, describe, it, opaqueHost, recordingClient } from "./support/index.js";
-import { accepted, answeredClient, gateOpts, queuedFor, withHeldWrites } from "./support/notify-setup.js";
+import { accepted, answeredClient, boot, gateOpts, queuedFor, withHeldWrites } from "./support/notify-setup.js";
 
 describe("durable pending delivery: the queue IS the crash window", () => {
   // Two cases in this block are the same ARRANGEMENT — a completed delivery, with
@@ -57,14 +57,19 @@ describe("durable pending delivery: the queue IS the crash window", () => {
     });
   });
 
-  it("a delivered write leaves nothing owed, a failed one neither", async () => {
+  it("a delivered write leaves nothing owed, a refused one stays owed", async () => {
+    // A delivery settles the debt; a refusal does not — the debt is the only
+    // evidence the notice was never told, so only a genuine delivery (or the
+    // redelivery budget) may retire it. This case used to assert the refusal
+    // dropped the debt too, which is the defect: two transient refusals lost
+    // the notification forever behind a queue that looked paid.
     const { client } = answeredClient([]);
     await notifyParent(opaqueHost(client), "parent_1", "ok", gateOpts("ses_okq", "completed"));
     assert.deepStrictEqual(queuedFor("ses_okq"), [], "delivered: the debt is settled");
 
     const failing = answeredClient([new Error("down"), new Error("still down")]);
     await notifyParent(opaqueHost(failing.client), "parent_1", "no", gateOpts("ses_noq", "error"));
-    assert.deepStrictEqual(queuedFor("ses_noq"), [], "a known failure is a known outcome, not a debt");
+    assert.deepStrictEqual(queuedFor("ses_noq").map((debt) => debt.attempts), [2], "refused: the debt stays owed, at the count spent");
     assert.strictEqual(getLatestNotification("ses_noq").delivered, false);
   });
 
@@ -103,3 +108,27 @@ describe("durable pending delivery: the queue IS the crash window", () => {
   });
 });
 
+
+describe("durable pending delivery: a non-delivery is not a settlement", () => {
+  // The commit a refusal reaches is the same commit a delivery reaches, and it
+  // used to retire the debt on both. Two transient refusals ~250ms apart — a host
+  // restarting, say — permanently lost the notification with a durable record
+  // that said the parent had been told. The debt is the crash window's whole
+  // subject: only a genuine delivery (or the budget) may end it.
+
+  it("two refused writes keep the debt owed, with the attempts actually spent", async () => {
+    const failing = answeredClient([new Error("down"), new Error("still down")]);
+    await notifyParent(opaqueHost(failing.client), "parent_1", "lost", gateOpts("ses_kept", "completed"));
+    const after = queuedFor("ses_kept");
+    assert.strictEqual(after.length, 1, "a refused write is still owed");
+    assert.strictEqual(after[0].attempts, 2, "at both attempts' count");
+    assert.strictEqual(getLatestNotification("ses_kept").delivered, false, "and the record says not delivered");
+
+    // And the debt that survived is still deliverable: the next boot offers it,
+    // the parent answers this time, and the debt retires as paid.
+    const { client } = answeredClient([]);
+    await boot(client, 3);
+    const delivered = queuedFor("ses_kept");
+    assert.deepStrictEqual(delivered, [], "a debt that survives its refusals is settled by the delivery that lands");
+  });
+});

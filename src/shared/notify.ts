@@ -358,7 +358,13 @@ export async function notifyParent(
     if (outcome.delivered) gateLedger.record(claim);
     // Retire the debt, then write the receipt: a crash in between costs a
     // redelivery the operator can see, never a record with no notice behind it.
-    dropPending({ ...owed, attempts: outcome.attempts });
+    // A non-delivery KEEPS the debt rather than retiring it — the queue is
+    // at-least-once and only the budget (or this delivery) terminates one — so
+    // the debt is re-persisted at the count this boot actually spent, and the
+    // next boot offers it again. A commit that dropped a refused debt would
+    // lose the notification forever behind a ledger that said nothing was owed.
+    if (outcome.delivered) dropPending({ ...owed, attempts: outcome.attempts });
+    else queuePending({ ...owed, attempts: outcome.attempts });
     emit(outcome);
     return outcome.delivered;
   };

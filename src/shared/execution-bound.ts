@@ -207,8 +207,12 @@ const STORAGE_WRITE_BOUND_MS = 2_000;
 // distinct failure mode: it is the ONLY read whose answer can be a refusal, and
 // reusing the transcript's bound would let a slow transcript be mistaken for an
 // unanswered existence question.
-export const READ_BOUNDS: { transcript: number; agents: number; presence: number; storage: number } = {
+export const READ_BOUNDS: { agents: number; git: number; presence: number; storage: number; transcript: number } = {
   agents: READ_BOUND_MS,
+  // The worktree enumeration (`git worktree list`) behind the directory argument:
+  // a local exec, but a subprocess with the same failure shape as a host read —
+  // it can hang — so it is bounded like one.
+  git: READ_BOUND_MS,
   presence: READ_BOUND_MS,
   storage: READ_BOUND_MS,
   transcript: READ_BOUND_MS,

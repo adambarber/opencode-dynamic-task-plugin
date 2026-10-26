@@ -17,7 +17,7 @@ import { notifyRunning } from "../shared/change-sinks.js";
 import { callHost } from "../shared/client.js";
 import { type CreateIntent, issueCreateIntent, resolveCreateIntent } from "../shared/create-intent.js";
 import { holdDispatchWait } from "../shared/dispatch-wait.js";
-import { ExpiryPhase, WRITE_BOUNDS } from "../shared/execution-bound.js";
+import { ExpiryPhase, READ_BOUNDS, WRITE_BOUNDS } from "../shared/execution-bound.js";
 import { errorMessage } from "../shared/host-shape.js";
 import { isSessionMissing } from "../shared/liveness.js";
 import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
@@ -45,10 +45,44 @@ import {
   sessionLost,
   spawnConfirmation,
 } from "../shared/voice.js";
+import { listWorktrees, resolvePath, worktreeListForRefusal } from "../shared/worktrees.js";
 
 
 // Labels ride every notification verbatim — bound them like prompts.
 const MAX_DESCRIPTION_CHARS = 2000;
+
+/**
+ * The directory argument, judged against the repository's OWN worktree list —
+ * never free-form. Git is the one vouching source (see worktrees.ts): a
+ * directory not on the list is refused by name with the known entries beside
+ * it; an unreadable repository refuses too, because an admission decision must
+ * not fall back to "allowed" when the evidence is missing (the same fail-closed
+ * rule the capacity judgment keeps). Absent means the plugin's own context —
+ * today's behavior, unchanged.
+ */
+function resolveDispatchDirectory(
+  requested: string | undefined,
+  directory: string,
+): { ok: true } | { ok: false; refusal: string } {
+  if (requested === undefined) return { ok: true };
+  // Both sides are resolved before comparison: macOS tmpdirs (and bind mounts)
+  // answer git's resolved path, and a caller spelling the symlinked form must
+  // not be refused for the filesystem's own aliasing. A path that cannot be
+  // resolved (it does not exist yet) is compared as spelled — git will not
+  // vouch for it, and the refusal says so.
+  const resolved = (() => {
+    try {
+      return resolvePath(requested);
+    } catch {
+      return requested;
+    }
+  })();
+  const entries = listWorktrees(directory, READ_BOUNDS.git);
+  if (!entries?.some((entry) => entry.path === resolved)) {
+    return { ok: false, refusal: `ERROR: Directory "${requested}" is not a worktree of this project's repository.\n\nKnown worktrees: ${worktreeListForRefusal(entries)}\n\nPass one of those, or dispatch without a directory to use this project's own context.` };
+  }
+  return { ok: true };
+}
 
 import type { SessionId } from "../shared/ids.js";
 import type { SpawnArgs } from "./args.js";
@@ -80,6 +114,11 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   if (typeof args.description === "string" && args.description.length > MAX_DESCRIPTION_CHARS) {
     return descriptionTooLong(args.description.length);
   }
+
+  // The directory argument, judged at admission like every other claim about
+  // where work happens: against the repository's own worktree list, fail-closed.
+  const directoryAdmission = resolveDispatchDirectory(args.directory, deps.directory);
+  if (!directoryAdmission.ok) return directoryAdmission.refusal;
 
   // Dependency readiness (temporal — after all static validation).
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
@@ -149,12 +188,19 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   try {
     // 1.18 contract: sessions carry title/parentID only — agent and
     // model ride on each prompt via PromptRouting.
-    const sessionBody: { title: string; parentID?: string } = {
+    const sessionBody: { title: string; parentID?: string; location?: { directory: string } } = {
       title: registration.description,
     };
 
     if (parentSessionId) {
       sessionBody.parentID = parentSessionId;
+    }
+
+    // The host creates the child where admission vouched for: the caller's
+    // directory (a worktree it knows), as the create contract spells placement —
+    // `location.directory`, the generated input's own field.
+    if (args.directory !== undefined) {
+      sessionBody.location = { directory: args.directory };
     }
 
     // The create is about to be issued and cannot be un-issued, so the record of

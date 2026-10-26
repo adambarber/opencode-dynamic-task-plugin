@@ -210,7 +210,6 @@ describe("liveness: a turn is not a message", () => {
     },
     parts: [{ text: `step ${seq}`, type: "text" }],
   });
-
   it("calls a RUNNING turn running while every one of its messages has completed", async () => {
     // The live shape: seven finished steps, an eighth in flight, no verdict recorded.
     const messages = [...Array.from({ length: 7 }, (_, i) => step(i, i * 30)), step(7)];

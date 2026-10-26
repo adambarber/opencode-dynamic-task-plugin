@@ -47,9 +47,9 @@ describe("cross-project isolation", () => {
   // production signature that blocked dispatches on 2026-10-26.
   const second = await setupHarness({
     directory: `${first.directory}-sibling`,
-    options: { maxConcurrent: 1 },
     domain: { kv: shared },
     hooks: { hostTurnSeed: { [childA]: undefined } },
+    options: { maxConcurrent: 1 },
   });
 
   const listB = await second.tool.task_list.execute({});

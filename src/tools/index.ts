@@ -128,6 +128,7 @@ export function buildToolMap(deps: ToolDeps) {
             "Task dependencies that only need to settle (completed, error, or interrupted) before this task runs. Strict ordering still uses depends_on.",
           ),
           description: string("Short human-readable task label"),
+          directory: string("Project directory to create the child's session in — a worktree the host knows (refused by name otherwise). Use for implementation work so this project's checkout stays untouched. Omit to use this project."),
           model: modelSchema(),
           prompt: promptText("Instructions for the child session"),
           subagent_type: string("Agent to invoke"),

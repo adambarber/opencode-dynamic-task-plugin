@@ -27,6 +27,8 @@ export interface SpawnArgs extends PromptToolArgs {
   subagent_type?: string | undefined;
   depends_on?: string[] | undefined;
   depends_on_settled?: string[] | undefined;
+  /** Where the child session is created — a worktree the host knows, not free-form. */
+  directory?: string | undefined;
 }
 
 /** Following up on a task takes the shared three and nothing more. */
@@ -59,6 +61,7 @@ export function readSpawnArgs(raw: unknown): SpawnArgs {
     depends_on: optionalStringList(raw.depends_on),
     depends_on_settled: optionalStringList(raw.depends_on_settled),
     description: optionalString(raw.description),
+    directory: optionalString(raw.directory),
     subagent_type: optionalString(raw.subagent_type),
   };
 }

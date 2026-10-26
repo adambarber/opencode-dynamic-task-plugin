@@ -315,7 +315,7 @@ export function createMockClient(hooks = {}, domain = {}) {
         }
         return [hostSaid("COMPLETED_OK")];
       },
-      create: async ({ title, parentID }) => {
+      create: async ({ title, parentID, location }) => {
         if (armedFlag(state, hooks, "createThrowsOnce") && !state.createThrown) {
           fault(state, "createThrowsOnce");
           state.createThrown = true;
@@ -335,7 +335,7 @@ export function createMockClient(hooks = {}, domain = {}) {
         const id = `${prefix}${state.sessions.size + 1}`;
         state.sessions.add(id);
         setHostTurn(state, id, "open");
-        state.sessionBodies.set(id, { parentID, title });
+        state.sessionBodies.set(id, { parentID, title, location });
         // The host created the session and then answered with something no id can
         // be read out of. The session is real — it is in `state.sessions`, so
         // `sessionCount` counts it and nothing ever aborts it — which is the whole

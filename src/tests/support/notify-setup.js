@@ -4,6 +4,7 @@
 // big preamble. Each importer inherits the before/after clean state.
 
 import { gateLedger, getPendingDeliveries, notifyChainCount, redeliverOwedNotifications, restorePendingDeliveries } from "../../../dist/shared/notify.js";
+import { installInboxSupport } from "../../../dist/shared/inbox.js";
 import { cleanNotifyState } from "./gate-world.js";
 import { bounded, drain } from "./harness.js";
 import { deferred, recordingClient } from "./mock-gates.js";
@@ -62,6 +63,13 @@ export function gatedClient(gate, options = {}) {
   };
 }
 
+
+/** Run one case with the inbox verdict armed, restored to legacy afterwards. */
+export async function onInboxHost(case_)
+{
+  installInboxSupport(true);
+  try { return await case_(); } finally { installInboxSupport(false); }
+}
 
 /** The transport that answers at once — the default, and a script of outcomes when asked for one. */
 export function answeredClient(script = []) {

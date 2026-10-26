@@ -15,6 +15,7 @@ import { releaseDeliveryClaim, takeDeliveryClaim } from "./delivery-claim.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
 import { errorMessage } from "./host-shape.js";
 import type { SessionId } from "./ids.js";
+import { inboxSupported } from "./inbox.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
 import { NotifyKind } from "./notification-text.js";
 import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
@@ -261,7 +262,12 @@ export async function notifyParent(
     // waiting for it.
     let inFlight: Promise<unknown> | undefined = undefined;
     const request = callHost(host, WRITE_BOUNDS.parentPrompt, (client) => {
-      inFlight = client.session.prompt({ sessionID: parentSessionId, text: message });
+      // The delivery verdict rides only on a capable host: "queue" parks the
+      // notice in the host's inbox table until the parent's turn ends, which is
+      // exactly what the legacy path defers for. Without the surface, no field —
+      // the host's default applies.
+      const delivery = inboxSupported() ? "queue" as const : undefined;
+      inFlight = client.session.prompt({ sessionID: parentSessionId, text: message, ...(delivery !== undefined ? { delivery } : {}) });
       return inFlight;
     }, undefined);
     return request.then((bounded) => {
@@ -439,7 +445,14 @@ export async function notifyParent(
     // (attempts 6→7 across six boots) and made it un-typeable. The bound is the
     // only thing standing between one wedged parent and an infinite retry, so
     // every path that does not deliver spends toward it — including this one.
-    if (carried > 0) {
+    //
+    // LEGACY ONLY. On an inbox-capable host this whole arm is unnecessary: the
+    // write itself is delivery — one prompt with delivery "queue" lands in the
+    // host's inbox table and the host presents it as the parent's next turn when
+    // the current one ends — so there is nothing to defer and nothing to spend.
+    // The refusal read (a full transcript walk) runs only where a write can be
+    // REJECTED rather than parked.
+    if (carried > 0 && !inboxSupported()) {
       const refusal = await parentRefusal(host, parentSessionId);
       if (refusal !== null) {
         // Still queued, because the debt must outlive this process either way: the

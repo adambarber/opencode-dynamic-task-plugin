@@ -3,7 +3,7 @@ import { formatParentNotification, isParentNotification, notificationTag } from 
 import { gateLedger, getLatestNotification, noticeDedupKey, notifyParent, truncateText } from "../../dist/shared/notify.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
 import { assert, bounded, describe, it, opaqueHost } from "./support/index.js";
-import { answeredClient, boot, gateOpts, heldWriteClient, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
+import { answeredClient, boot, gateOpts, heldWriteClient, onInboxHost, queuedFor, withUnansweredWrite, writesTo } from "./support/notify-setup.js";
 
 describe("notify: the redelivery budget", () => {
   // The arrangement every case here is a variation of: one child, one owed
@@ -198,6 +198,23 @@ describe("notify: the redelivery budget", () => {
     assert.strictEqual(getLatestNotification(CHILD).pending, true, "and the record says pending rather than delivered");
   });
 
+  // --- The native deferral (Session Inbox host) ------------------------------
+  // On a host that presents the inbox surface, "the parent is mid-turn" is no
+  // longer a reason to keep the debt parked: one prompt with delivery "queue"
+  // lands in the host's inbox table and the host itself delivers it as the next
+  // turn when the parent's turn ends. The debt is paid at the dial; the deferral
+  // machinery (the per-debt full-transcript refusal read) is for hosts that can
+  // only reject or hold a write.
+  it("on an inbox host a redelivery into a mid-turn parent is WRITTEN as delivery queue, not deferred", () => onInboxHost(async () => {
+    const { calls, client, setStatus } = answeredClient([]);
+    setStatus("parent_1", "open");
+    const delivered = await notifyParent(opaqueHost(client), "parent_1", "owed", { ...gateOpts(CHILD, "error"), ...RE_OFFER });
+    assert.strictEqual(delivered, true, "the write IS the delivery on a capable host");
+    assert.deepStrictEqual(queuedFor(CHILD), [], "nothing stays owed");
+    assert.strictEqual(calls.length, 1, "one write, once");
+    assert.deepStrictEqual(calls[0].delivery, "queue", "the write carries the native queue verdict");
+    assert.strictEqual(getLatestNotification(CHILD).delivered, true, "recorded as delivered");
+  }));
   // One claim over two refusals, because it IS one claim: every path that
   // declines a re-offer must spend toward the bound, or the bound is unreachable
   // on that path. Mid-turn and wedged are the same sentence with different words,

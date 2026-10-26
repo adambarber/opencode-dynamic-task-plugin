@@ -153,7 +153,13 @@ export async function readLiveness(
   childSessionId: string,
   messages?: unknown[],
 ): Promise<LivenessReading> {
-  const turn = await readSessionTurn(host, childSessionId);
+  // The turn read is wrapped like its sibling below: a rejected read has said
+  // nothing about any session, so it answers the shrug rather than rejecting.
+  const turn = await readSessionTurn(host, childSessionId).catch(() => ({
+    existence: SessionExistence.Unread,
+    hostTurn: undefined,
+    statusAnswered: false,
+  }));
   if (!turn.statusAnswered) return UNANSWERED_LIVENESS;
   const read = messages === undefined ? await readSessionMessages(host, childSessionId).catch(() => null) : messages;
   if (read === null) return { ...UNANSWERED_LIVENESS, existence: turn.existence, statusAnswered: true };

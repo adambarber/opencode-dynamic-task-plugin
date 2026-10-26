@@ -13,6 +13,7 @@
 import { callHost, type OpaqueHost } from "./client.js";
 import { releaseDeliveryClaim, takeDeliveryClaim } from "./delivery-claim.js";
 import { WRITE_BOUNDS } from "./execution-bound.js";
+import { errorMessage } from "./host-shape.js";
 import type { SessionId } from "./ids.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
 import { NotifyKind } from "./notification-text.js";
@@ -184,7 +185,8 @@ export function redeliverOwedNotifications(host: OpaqueHost, maxAttempts: number
       childSessionId: debt.childSessionId,
       kind: debt.kind,
       maxAttempts,
-    });
+    }).catch((error: unknown) =>
+      void safeLog(LogLevel.Warn, `Dynamic task plugin: redelivering a ${debt.kind} notification to parent ${debt.parentSessionId} for task ${debt.childSessionId} failed: ${errorMessage(error)}. The debt stays owed and the next boot offers it again.`));
   }
   if (owed.length > offered.length) {
     const held = owed.length - offered.length;

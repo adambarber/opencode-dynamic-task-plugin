@@ -78,7 +78,32 @@ export function deliverParent(
     );
     return Promise.resolve(false);
   }
-  return notifyParent(host, parentSessionId, message, { childSessionId, kind });
+  return deliverOrContain(
+    host,
+    { childSessionId, kind, parentSessionId },
+    message,
+  );
+}
+
+// try/catch, not .then-only: the fire-and-forget contract above is true by
+// construction — a rejected delivery (a failed durable read inside the claim
+// walk, say) is recorded and logged, never a rejection the `.then`-only call
+// sites would leave unhandled, which Node >= 15 answers by killing the host.
+async function deliverOrContain(
+  host: OpaqueHost,
+  target: { childSessionId: SessionId; kind: NotifyKind; parentSessionId: SessionId },
+  message: string,
+): Promise<boolean> {
+  try {
+    return await notifyParent(host, target.parentSessionId, message, target);
+  } catch (error: unknown) {
+    recordNotification(notifyRecord(target, message, { attempts: 0, delivered: false }));
+    void safeLog(
+      LogLevel.Warn,
+      `Dynamic task plugin: delivery of a ${target.kind} notification to parent ${target.parentSessionId} for task ${target.childSessionId} failed and was not retried: ${errorMessage(error)}`,
+    );
+    return false;
+  }
 }
 
 export interface ChildRef extends TaskIdentity {

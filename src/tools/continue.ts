@@ -6,35 +6,28 @@ import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt, reviveWithPrompt } from "../entry/lifecycle.js";
 import { admitToolPrompt } from "../shared/admission.js";
 import { errorMessage } from "../shared/host-shape.js";
-import { clearTurnReplacement, markTurnReplacement } from "../shared/notice-claim.js";
+import { hostTurnRunning, readSessionTurn, type SessionTurn } from "../shared/liveness.js";
+import { clearTurnReplacement, markSteerRepeat, markTurnReplacement, steerWasRepeat } from "../shared/notice-claim.js";
 import { NotifyKind } from "../shared/notification-text.js";
 import { abortSession, stopPlan } from "../shared/session-abort.js";
 import type { SettledTaskState } from "../shared/task-records.js";
-import {
-  activeFor,
-  isRunning,
-  retainedFor,
-  TaskState,
-  transitionState,
-} from "../shared/task-state.js";
+import { activeFor, isRunning, retainedFor, TaskState, transitionState } from "../shared/task-state.js";
 import { textBlock } from "../shared/text-block.js";
-import {
-  followupSent,
-  PROMPT_REQUIRED,
-  steerAbortFailed,
-  steerAutoRevived,
-  steerMissing,
-  steerSelfRefused,
-  steerSent,
-  steerSettledMidway,
-  steerStateUnknown,
-  steerWonBySettler,
-  untrackedSession,
-} from "../shared/voice.js";
+import { followupSent, PROMPT_REQUIRED, type SteerTurnFact, steerAbortFailed, steerAutoRevived, steerMissing, steerRepeatWarning, steerSelfRefused, steerSent, steerSettledMidway, steerStateUnknown, steerWonBySettler, untrackedSession } from "../shared/voice.js";
 import type { ContinueArgs } from "./args.js";
 import { type ResolvedSessionScope } from "./context.js";
 
 export type { ContinueArgs } from "./args.js";
+
+/**
+ * What the host's turn record says at steer time, as the result sentence needs
+ * it. Three words for three facts — the abort cost is real, absent, or unknown
+ * — and an unanswered read is its own answer, never "not running".
+ */
+function steerTurnFact(turn: SessionTurn): SteerTurnFact {
+  if (!turn.statusAnswered) return "unanswered";
+  return hostTurnRunning(turn) ? "in flight" : "idle";
+}
 
 export async function executeTaskContinue(scope: ResolvedSessionScope, args: ContinueArgs): Promise<string> {
   const { host, store, config, sessionId, callerSessionId } = scope;
@@ -73,6 +66,14 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // This path never settles: only the replacement turn's genuine
     // terminal event, or operator interruption, ends the task.
     markTurnReplacement(store, sessionId);
+    // Was a turn actually in flight? Asked BEFORE the abort — the abort is what
+    // closes the turn, so this is the last moment the fact exists, and it
+    // decides what the result SAYS: aborting real work, messaging an idle task,
+    // or replacing a turn nobody could vouch for. It does not change what the
+    // steer does. One bounded presence read; the residual race (the turn ending
+    // between this read and the abort) is covered by the settled-midway arms
+    // below, whose own sentences name what actually happened.
+    const turnFact = steerTurnFact(await readSessionTurn(host, sessionId));
     const { serverGone, transportError: abortError } = await abortSession(
       { callerSessionId, host, store },
       sessionId,
@@ -140,7 +141,18 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
         parentSessionId: active.parentSessionId,
         ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
       }, steerText);
-      return steerSent(sessionId, active.agentLabel ?? active.agentName);
+      // The storm stamp rides the same arm the replacement did, so a repeat of
+      // the same message inside the window is recognisable here and in the
+      // views. The warning rides on the REPEAT fact, not the turn fact: a second
+      // steer inside the window means the first replacement turn never got to
+      // produce work — aborted in flight or replaced before it started — and the
+      // parent is told either way.
+      markSteerRepeat(store, sessionId, admitted.prompt);
+      const repeated = steerWasRepeat(store, sessionId);
+      return (
+        steerSent(sessionId, active.agentLabel ?? active.agentName, turnFact) +
+        (repeated ? ` ${steerRepeatWarning()}` : "")
+      );
     }
   }
 

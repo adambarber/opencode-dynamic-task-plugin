@@ -294,8 +294,14 @@ export async function readSessionPresence(host: OpaqueHost, sessionId: string): 
   return readSessionState(host, sessionId);
 }
 
-/** Bounded, because this sits on the write and wedge paths. */
-async function readSessionTurn(host: OpaqueHost, sessionId: string): Promise<SessionTurn> {
+/**
+ * The host's TURN record alone — the question a steer asks at the moment it is
+ * about to abort ("was a turn actually in flight?"), where presence and the
+ * transcript answer nothing it needs. Bounded like the presence read it wraps;
+ * a host that does not answer comes back `statusAnswered: false` — the shrug,
+ * never "no turn running".
+ */
+export async function readSessionTurn(host: OpaqueHost, sessionId: string): Promise<SessionTurn> {
   const state = await readSessionState(host, sessionId);
   return { existence: state.existence, hostTurn: state.hostTurn, statusAnswered: state.statusAnswered };
 }

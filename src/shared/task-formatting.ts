@@ -349,6 +349,18 @@ function sourcedLivenessLines(task: TaskRecord, liveness: LivenessReading | null
 }
 
 /**
+ * The live fact beside the store's word, for an ACTIVE task: is a turn open at
+ * the host RIGHT NOW? This is the question a parent is really asking when it
+ * polls before steering, and the one the frozen latest-output block cannot
+ * answer. Two answers only — an unread channel is silence, not evidence, and
+ * the sourced line above already names it, so nothing is guessed here.
+ */
+function turnNowLine(liveness: LivenessReading): string | undefined {
+  if (liveness.existence !== SessionExistence.Present) return undefined;
+  return hostTurnRunning(liveness) ? "A turn is in flight now." : "Idle — no open turn at the host.";
+}
+
+/**
  * What the plugin's own clock says, for a task the store holds active: the last
  * moment any of this plugin's three clocks saw motion, then the one diagnosis
  * that reading earns. Display only — nothing branches on the staleness threshold.
@@ -370,6 +382,7 @@ function activeTurnLines(task: ActiveTaskState, liveness: LivenessReading | null
   // silence alone must not be dressed up as a diagnosis.
   const diagnosis = activeDiagnosis(task, answered, observed);
   return [
+    ...present(answered ? turnNowLine(answered) : undefined),
     `Last plugin event: ${formatAge(observed)} ago`,
     ...present(diagnosis),
   ];
@@ -400,7 +413,10 @@ function activeDiagnosis(
     return "Warning: the server reports no turn running, but the store says active and no turn replacement is outstanding — this plugin missed the ending, so nothing will settle it. Adopt the result with task_continue, or clear it with task_interrupt.";
   }
   if (Date.now() - observed > STALE_TURN_AFTER_MS) {
-    return `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — an outstanding steer may have stalled; task_continue again or task_interrupt to recover.`;
+    // The remedy leads with WAITING, deliberately: "task_continue again" was the
+    // advice that produced the hardstand steer-storm, each re-steer aborting a
+    // replacement turn nobody had let run (issue #36).
+    return `Warning: no child events in ${formatAge(observed)} (one long tool call is silent too) — the child may be stalled. Wait for the next completed turn before judging, and steer again only with new information; task_interrupt recovers a wedged child.`;
   }
   return undefined;
 }

@@ -8,6 +8,7 @@
 // outgrew the line cap. The writer funnel (`annotateActive`) stays where the
 // lifecycle lives; these writers borrow it, they do not own a second one.
 
+import { createHash } from "node:crypto";
 import type { SessionId } from "./ids.js";
 import type { TaskStore } from "./store.js";
 import { type ActiveTaskState, activeFor, annotateActive } from "./task-state.js";
@@ -83,6 +84,51 @@ export function markTurnReplacement(store: TaskStore, childSessionId: SessionId)
   return annotateActive(store, childSessionId, (active) => {
     active.replacedAt = Date.now();
   });
+}
+
+/**
+ * How close two steers must land to count as a storm. A parent correcting a
+ * child legitimately steers a few times in a row — but inside this window the
+ * first replacement turn cannot even have started, so every steer in it is
+ * discarding work nobody saw. Module-local: the window is a decision, not a
+ * surface — a caller that needed it from outside would be re-deriving the
+ * verdict `steerWasRepeat` already answers.
+ */
+const STEER_STORM_WINDOW_MS = 120_000;
+
+/**
+ * The one digest of a steer's message, so a repeat is recognisable. Not a
+ * security digest — a plain fingerprint of the text, enough to tell "the same
+ * message again" from a genuinely new instruction.
+ */
+function steerPromptDigest(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex");
+}
+
+/**
+ * Whether this steer is a REPEAT of the previous one: the same message, inside
+ * the storm window — the signature of a parent steering faster than the child
+ * can turn. Recorded whenever a turn replacement is armed, so the view and the
+ * next steer read one fact instead of re-deriving it.
+ */
+export function markSteerRepeat(store: TaskStore, childSessionId: SessionId, prompt: string): boolean {
+  const digest = steerPromptDigest(prompt);
+  return annotateActive(store, childSessionId, (active) => {
+    const was = active.lastSteer;
+    active.lastSteer = {
+      at: Date.now(),
+      digest,
+      repeated:
+        was !== undefined &&
+        was.digest === digest &&
+        Date.now() - was.at <= STEER_STORM_WINDOW_MS,
+    };
+  });
+}
+
+/** Was the last steer of this task a repeat inside the window? */
+export function steerWasRepeat(store: TaskStore, childSessionId: SessionId): boolean {
+  return activeFor(store, childSessionId)?.lastSteer?.repeated === true;
 }
 
 /**

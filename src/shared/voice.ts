@@ -259,8 +259,33 @@ export function steerSelfRefused(sessionId: string, refusal: AbortRefusal): stri
   return `Refused: ${sessionId} is not a session this plugin dispatched, so it is not ours to stop — nothing was stopped and no message was sent. task_continue takes a child session id from dynamic_task.`;
 }
 
-export function steerSent(sessionId: string, agentName: string): string {
-  return `Steer sent to ${sessionId} (@${agentName}): the running turn was stopped and the message was sent as the next turn. The task stays active; its outcome arrives as a dynamic-task-notify message. If no outcome arrives, the turn stalled: check task_status, recover with task_interrupt.`;
+/**
+ * What the steer's result says about the turn it replaced, from the one fact the
+ * executor read before the abort: was a turn in flight, was the task idle, or
+ * did the host not answer. Three answers, because the abort cost is real,
+ * absent, or unknown — and the unknown must not be dressed as either of the
+ * other two.
+ */
+export type SteerTurnFact = "idle" | "in flight" | "unanswered";
+
+/** The sentence that names the operation, per fact. A map so the three stay parallel. */
+const STEER_TURN_SENTENCE: Record<SteerTurnFact, string> = {
+  idle: "no turn was running (the host reports the task idle), so the message was sent to the task and it will read it on its next turn",
+  "in flight": "the in-flight turn was aborted and the message was sent as the next turn",
+  unanswered: "the host did not answer whether a turn was in flight, so the cost is unknown; the message was sent as the next turn",
+};
+
+export function steerSent(sessionId: string, agentName: string, turn: SteerTurnFact): string {
+  return `Steer sent to ${sessionId} (@${agentName}): ${STEER_TURN_SENTENCE[turn]}. The task stays active; its outcome arrives as a dynamic-task-notify message. If no outcome arrives, the turn stalled: check task_status, recover with task_interrupt.`;
+}
+
+/**
+ * The sentence a REPEAT steer earns, when the same message is steered twice
+ * inside the window: the first replacement turn never got to run, so the storm
+ * signature is named instead of silently discarding another turn.
+ */
+export function steerRepeatWarning(): string {
+  return "This is a repeat steer — the previous steer's replacement turn was aborted before it could do its work. Consider waiting for the next completed turn before steering again.";
 }
 
 export function descriptionTooLong(length: number): string {

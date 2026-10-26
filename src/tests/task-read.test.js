@@ -10,9 +10,31 @@
 
 import { isSessionMissing } from "../../dist/shared/liveness.js";
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { API_UNAVAILABLE, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
+import { API_UNAVAILABLE, formatTaskStatusDetail, NO_ASSISTANT_TEXT, SEE_ERROR_ABOVE } from "../../dist/shared/task-formatting.js";
 import { answerMatches, answerOmits, answerSays, assert, assertNeedsSessionId, assertNoticeCount, describe, eventHarness, hostSaid, it, resultForChild, resultForUnreadableChild, setupHarness, sleep, stateOf, statusSays, stillActive, textDeclaresKind, unclockedSaid, wasAborted, withChild, withDispatchTree, withSettledChild, withSettledDispatchTree, withSettledMiddleChild } from "./support/index.js";
 
+/**
+ * The active-task record the formatter reads, in the shape the formatting
+ * suite's own fixture uses — so a pure-render case here states the record it is
+ * about, never the transport that would carry it.
+ */
+function taskRecord(overrides = {}) {
+  return {
+    agentName: "a",
+    childSessionId: "ses_1",
+    description: "d",
+    lineage: [],
+    parentSessionId: "p",
+    startedAt: Date.now(),
+    state: "active",
+    ...overrides,
+  };
+}
+
+/**
+ * A child whose abort transport is down, settled — the arrangement behind both
+ * "the gap is recorded" and "success is not annotated by a failed abort".
+ */
 /**
  * A child whose abort transport is down, settled — the arrangement behind both
  * "the gap is recorded" and "success is not annotated by a failed abort".
@@ -89,6 +111,20 @@ describe("task_result and task_interrupt paths", () => {
         const out = await c.status();
         return [out, [[/Server turn: in progress/, true], [/still working/i, true]]];
       }],
+    // Issue #36, gap 2: the in-flight fact beside the store's word, in the
+    // plugin's OWN words — the fact a parent needs BEFORE steering, not only
+    // in the steer's post-hoc report.
+    ["an active task with a turn in flight says so in the plugin's own words",
+      async ({ c }) => {
+        const out = await c.result();
+        return [out, [[/turn is in flight now/, true], [/no open turn at the host/, false]]];
+      }],
+    ["an active task whose turn has closed reads idle, not working",
+      async ({ h, c }) => {
+        h.setHostStatus(c.id, "succeeded");
+        const out = await c.status();
+        return [out, [[/no open turn at the host/, true], [/turn is in flight now/, false]]];
+      }],
   ];
   for (const [name, read] of liveness) {
     it(name, async () => {
@@ -102,6 +138,28 @@ describe("task_result and task_interrupt paths", () => {
       }
     });
   }
+
+  // Issue #36, gap 2, the no-guess pin: a channel that did not answer says only
+  // that — neither of the two live verdicts may stand in for silence.
+  it("an active task the host will not answer about is never dressed as in flight or idle", async () => {
+    const { c } = await withChild({ harness: { hooks: { presenceThrows: new Error("status down") } } });
+    const status = await statusSays(c, "the host did not answer", "the unanswered fact is the whole fact");
+    answerOmits(status, "turn is in flight now", "no reading, no in-flight claim");
+    answerOmits(status, "no open turn at the host", "and no idle claim either");
+  });
+
+  // Issue #36, gap 2: the diagnosis must not feed the storm. The remedy for a
+  // stalled child leads with WAITING for the next completed turn; re-steering
+  // is what killed productive children in the hardstand incident. This is a
+  // PURE formatter case (the suite's existing idiom for this view — no clock
+  // seam needed): the staleness threshold is crossed by a record whose last
+  // event genuinely predates it, which is what a stalled child IS.
+  it("the stall remedy leads with waiting, and never says task_continue again", async () => {
+    const stale = formatTaskStatusDetail(taskRecord({ lastActivityAt: Date.now() - 20 * 60 * 1000, startedAt: Date.now() - 21 * 60 * 1000 }));
+    assert.ok(stale.includes("no child events in"), `the stall line renders. got: ${stale}`);
+    assert.ok(stale.includes("Wait for the next completed turn"), `the remedy leads with waiting. got: ${stale}`);
+    assert.ok(!stale.includes("task_continue again"), `the storm-generating advice is gone. got: ${stale}`);
+  });
 
   it("task_result maps API 404 to unknown, in the same markdown voice", async () => {
     const h = await setupHarness();

@@ -140,6 +140,62 @@ describe("task_continue branches", () => {
     assert.strictEqual(await stateOf(c), "State: active", "a steer never settles");
   });
 
+  // The steer-storm contract (issue #36): the two ways a steer can land on an
+  // active task are DIFFERENT operations with different costs, and the result
+  // must say which happened. An in-flight turn makes the steer an abort of real
+  // work; an idle one makes it a plain message. A host that did not answer the
+  // presence read must not be dressed as either.
+  const steerResults = [
+    ["steering a child whose turn is in flight names the abort at the call",
+      {}, async ({ c, h, id }) => {
+        const out = await c.steer("pivot");
+        answerSays(out, "the in-flight turn was aborted", "the abort cost is named at the call");
+        answerOmits(out, "no turn was running", "an in-flight turn is not an idle one");
+        assert.ok(wasAborted(h.client, id), "the running turn is stopped first");
+      }],
+    ["steering an active-idle task says the message was sent, not that work died",
+      {}, async ({ c, h, id }) => {
+        h.setHostStatus(id, "succeeded");
+        const out = await c.steer("pivot");
+        answerSays(out, "no turn was running", "the truth: nothing was aborted");
+        answerSays(out, "it will read it on its next turn", "the idle wording");
+        answerOmits(out, "aborted", "an idle task cost nothing");
+        assert.strictEqual(promptsToCarrying(h.client, id, "pivot").length, 1, "the message still fires");
+      }],
+    ["an unanswered presence read is named as unknown, never dressed as either",
+      { hooks: { presenceThrows: new Error("status down") } }, async ({ c }) => {
+        const out = await c.steer("pivot");
+        answerSays(out, "did not answer", "the gap is named as a gap");
+        answerOmits(out, "was aborted", "no abort claim without a reading");
+        answerOmits(out, "no turn was running", "and no idle claim either");
+      }],
+  ];
+  for (const [name, harness, expect] of steerResults) {
+    it(name, async () => {
+      const ctx = await withChild({ harness });
+      await expect(ctx);
+    });
+  }
+
+  // The storm signature (issue #36): a SECOND steer of the same message inside
+  // the window means the first steer's replacement turn was never allowed to
+  // run, so the repeat must say so — in the same voice, once.
+  it("a repeat steer of the same message inside the window names the discarded turn", async () => {
+    const { c } = await withChild();
+    await c.steer("pivot");
+    const out = await c.steer("pivot");
+    answerSays(out, "This is a repeat steer", "the storm signature is named");
+    answerSays(out, "before it could do its work", "the discarded turn is named");
+  });
+
+  it("a steer with a different message is not marked as a repeat", async () => {
+    const { c } = await withChild();
+    await c.steer("pivot");
+    const out = await c.steer("other direction");
+    answerSays(out, "no turn was running", "the second steer's own truth");
+    answerOmits(out, "repeat steer", "a different message is a fresh instruction, not a storm");
+  });
+
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo
   // from a steer, a retryable transport blip — leaves the task active and
   // silent, so nothing is deafened and the child's own terminal event settles it.

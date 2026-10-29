@@ -39,6 +39,7 @@ export const FORM_CANCELLED = "form.cancelled" satisfies HostEventType;
 
 // The turn-ending events, spelled here for the same reason: a lifecycle branch
 // that names a session event nobody publishes would be equally invisible.
+export const SESSION_RETRY_SCHEDULED = "session.retry.scheduled" satisfies HostEventType;
 export const SESSION_IDLE = "session.idle" satisfies HostEventType;
 export const SESSION_ERROR = "session.execution.failed" satisfies HostEventType;
 export const SESSION_DELETED = "session.deleted" satisfies HostEventType;

@@ -109,6 +109,15 @@ describe("classifyFailure: structural means retrying changes nothing", () => {
     // the same reason: no evidence it was the network's fault.
     assertClassOf(["Aborted", "MessageAbortedError: Aborted", "", undefined, 42], FailureClass.Structural);
   });
+  it("treats retryAfterMs as an affirmative transient signal even without matching prose", () => {
+    // The host's own retryAfterMs says this error is retryable. The plugin
+    // must not override that with a Structural verdict just because the
+    // message text doesn't match a known fragment.
+    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", 5000), FailureClass.Transient);
+    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", 0), FailureClass.Structural);
+    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error"), FailureClass.Structural);
+  });
+
 });
 
 describe("failureNote: the parent is told which kind it is, in the same words", () => {

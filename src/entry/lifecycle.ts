@@ -9,7 +9,7 @@ import type { AgentCapSource } from "../shared/caps.js";
 import type { OpaqueHost } from "../shared/client.js";
 import { type DependencyWait, releaseWaitsFor } from "../shared/dispatch-wait.js";
 import { classifyFailure, FailureClass, failureNote } from "../shared/failure-class.js";
-import { classifyLifecycleStatus, endedBadly, eventLooksDeleted, getEventLifecycleStatus, getSessionIdFromEvent, type LifecycleStatus } from "../shared/host-events.js";
+import { classifyLifecycleStatus, endedBadly, eventLooksDeleted, getEventLifecycleStatus, getSessionIdFromEvent, LifecycleStatus } from "../shared/host-events.js";
 import { errorMessage } from "../shared/host-shape.js";
 import type { SessionId } from "../shared/ids.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
@@ -34,6 +34,7 @@ import {
 import { isParentless, type ParentSession, UNKNOWN_PARENT } from "../shared/session-lifecycle.js";
 import {
   type ActiveTaskState,
+  activeFor,
   findTask,
   isRunning,
   recordSettledOutcome,
@@ -283,7 +284,7 @@ function settleOutcome(input: SettlementFacts & {
     base === TaskState.Completed && (input.outcome.errorDetail || input.outcome.unreadable || input.outcome.text === "")
       ? TaskState.Error
       : base;
-  const failure = classifyFailure(verdict, input.outcome.errorDetail);
+  const failure = classifyFailure(verdict, input.outcome.errorDetail, input.outcome.retryAfterMs);
   const quote = input.outcome.text || input.outcome.errorDetail || "";
   const causeNote = input.cause ? `\n\n${input.cause}` : "";
   const classNote = failureNote(failure, input.resumesSpent);
@@ -335,6 +336,18 @@ export async function settleRunningChild(
     status,
   };
   let verdict = settlementVerdict(facts);
+
+  // A host-initiated retry is pending: the turn is not over, and an idle
+  // event must not settle it as Completed. Defer until a terminal
+  // execution event (succeeded/failed/interrupted) arrives.
+  if (status === LifecycleStatus.Idle) {
+    const active = activeFor(store, childSessionId);
+    if (active?.retryScheduledAt) {
+      void safeLog(LogLevel.Info, `Deferred settlement for ${childSessionId}: retry pending`);
+      return false;
+    }
+  }
+
   try {
     transitionState(store, childSessionId, verdict);
   } catch {
@@ -384,7 +397,7 @@ export async function settleRunningChild(
   // that recovers tells the parent its real outcome, because the revival cleared
   // the settle-dedup (reviveWithPrompt) — a resume that left it in place would
   // swallow the next outcome too.
-  if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource)) {
+  if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource, outcome.retryAfterMs)) {
     const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
     if (resumeAfterBlip(host, store, childSessionId, capSource)) {
       void safeLog(LogLevel.Info, `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);

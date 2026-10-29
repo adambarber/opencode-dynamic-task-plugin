@@ -487,11 +487,43 @@ export function messageErrorDetail(message: unknown): string {
 
 // The newest message decides — walking past it would resurface stale errors
 // from earlier (retried) turns.
-function latestMessageErrorDetail(messages: unknown): string {
-  for (const message of newestFirst(messages)) {
-    if (isMessage(message)) return messageErrorDetail(message);
+
+
+/**
+ * Read the host's own retryAfterMs from a message's structured error.
+ * The host sets this when it considers an error retryable; the plugin must
+ * honor it rather than re-deriving retryability from message prose alone.
+ * Returns undefined when the message carries no retryable signal.
+ */
+function messageRetryAfterMs(message: unknown): number | undefined {
+  if (!isMessage(message) || !isEventRecord(message)) return undefined;
+  const info = isEventRecord(message.info) ? message.info : undefined;
+  const error = info?.error ?? message.error;
+  if (isEventRecord(error)) {
+    const value = error.retryAfterMs;
+    return typeof value === "number" ? value : undefined;
   }
-  return "";
+  return undefined;
+}
+
+interface ErrorDetail {
+  detail: string;
+  retryAfterMs?: number | undefined;
+}
+
+function latestMessageErrorDetail(messages: unknown): ErrorDetail {
+  for (const message of newestFirst(messages)) {
+    if (isMessage(message)) {
+      const role = branchedRoleOf(message);
+      if (role === ASSISTANT_ROLE || role === ERROR_ROLE) {
+        return {
+          detail: messageErrorDetail(message),
+          retryAfterMs: messageRetryAfterMs(message),
+        };
+      }
+    }
+  }
+  return { detail: "" };
 }
 
 // One read of the message stream supplies BOTH the latest assistant text and
@@ -503,8 +535,9 @@ function latestMessageErrorDetail(messages: unknown): string {
 // prevent. `unreadable` is the honest report of that: no fields because the
 // transcript could not be read, not because the child said nothing.
 export interface HydratedOutcome {
-  text: string;
   errorDetail: string;
+  retryAfterMs?: number | undefined;
+  text: string;
   unreadable: boolean;
 }
 
@@ -512,14 +545,15 @@ export async function hydrateLatestOutcome(
   host: OpaqueHost,
   sessionId: string,
 ): Promise<HydratedOutcome> {
-  const blank: HydratedOutcome = { errorDetail: "", text: "", unreadable: true };
+  const blank: HydratedOutcome = { errorDetail: "", retryAfterMs: undefined, text: "", unreadable: true };
   try {
     // Through the shared transcript read, which is where the bound lives. It used
     // to be a second chokepoint with its own deadline, so the two could disagree
     // about how long a child gets to describe itself.
     const messages = await readSessionMessages(host, sessionId);
     return {
-      errorDetail: latestMessageErrorDetail(messages),
+      errorDetail: latestMessageErrorDetail(messages).detail,
+      retryAfterMs: latestMessageErrorDetail(messages).retryAfterMs,
       text: getLatestAssistantText(messages),
       unreadable: false,
     };

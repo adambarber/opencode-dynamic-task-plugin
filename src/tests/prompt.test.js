@@ -351,7 +351,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // every site, any of which could disagree about what "empty" means.
   const assertHydrated = async (read, expected) => assert.deepStrictEqual(
     await hydrateLatestOutcome(clientReading(read), "ses_1"),
-    { errorDetail: "", text: "", unreadable: false, ...expected },
+    { errorDetail: "", retryAfterMs: undefined, text: "", unreadable: false, ...expected },
   );
 
   it("reads the latest assistant text from the session", async () => {
@@ -379,6 +379,14 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   it("an aborted turn with nothing said before it is still a failure, not (completed)", async () => {
     await assertHydrated(() => [abortedTurn()], { errorDetail: "Aborted", text: "" });
   });
+  it("surfaces an error on an assistant message behind a newer user message", async () => {
+    const stream = [
+      { info: { error: { data: { message: "rate limited" }, name: "APIError" } }, parts: [{ text: "said something", type: "text" }], role: ASSISTANT_ROLE },
+      turn("user", "next question"),
+    ];
+    await assertHydrated(() => stream, { errorDetail: "rate limited", text: "said something" });
+  });
+
 
   // A read that could not be made is not a read that found nothing, and the
   // notification has to be able to say which one it is quoting.

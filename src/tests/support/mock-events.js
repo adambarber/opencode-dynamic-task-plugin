@@ -25,6 +25,7 @@ import {
   SESSION_EXECUTION_STARTED,
   SESSION_EXECUTION_SUCCEEDED,
   SESSION_IDLE,
+  SESSION_RETRY_SCHEDULED,
 } from "../../../dist/shared/host-events.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 import { armedFlag, fault } from "./faults.js";
@@ -44,6 +45,7 @@ const hostEvent = (type, id, properties) => ({ data: { sessionID: id, ...propert
  */
 export const events = {
   idle: (id, properties = {}) => hostEvent(SESSION_IDLE, id, properties),
+  retryScheduled: (id, properties = {}) => hostEvent(SESSION_RETRY_SCHEDULED, id, properties),
   /**
    * A turn at work: the host saying this session is running. It is the first
    * fact a replacement turn produces, and therefore the life sign that lets that

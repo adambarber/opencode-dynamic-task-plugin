@@ -22,11 +22,11 @@ import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { initPluginState, overlayHandlers } from "./entry/state.js";
 import { asOpaqueHost, hasCoreApis, type OpaqueHost, probeHost } from "./shared/client.js";
-import { getSessionIdFromEvent, isTerminalSessionEvent } from "./shared/host-events.js";
+import { getSessionIdFromEvent, isTerminalSessionEvent, SESSION_RETRY_SCHEDULED } from "./shared/host-events.js";
 import { errorMessage, eventString } from "./shared/host-shape.js";
 import { containFailure, LogLevel, safeLog } from "./shared/notify.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
-import { noteActivity, type TaskStore } from "./shared/task-state.js";
+import { markRetryScheduled, noteActivity, type TaskStore } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
 async function setup(context: Context): Promise<void> {
@@ -133,6 +133,16 @@ function observeEvent(store: TaskStore, event: unknown): { eventType: string; te
   });
   const terminal = isTerminalSessionEvent(event);
   noteActivity(store, evtSessionId, terminal);
+  // Host-initiated retry: mark the turn as retry-pending, do not settle.
+  // A retry scheduled means the turn is not over — a terminal execution
+  // event settles it later. An idle event while a retry is pending must not
+  // settle as Completed.
+  if (eventType === SESSION_RETRY_SCHEDULED) {
+    const childSessionId = getSessionIdFromEvent(event);
+    if (childSessionId) {
+        markRetryScheduled(store, childSessionId);
+    }
+  }
   return { eventType, terminal };
 }
 

@@ -66,9 +66,10 @@ export function transientResumeAvailable(
   verdict: TaskState,
   errorDetail: unknown,
   capSource: AgentCapSource | undefined,
+  retryAfterMs?: number,
 ): boolean {
   if (capSource === undefined) return false;
-  if (classifyFailure(verdict, errorDetail) !== FailureClass.Transient) return false;
+  if (classifyFailure(verdict, errorDetail, retryAfterMs) !== FailureClass.Transient) return false;
   const spent = retainedFor(store, childSessionId)?.transientResumes ?? 0;
   return spent < TRANSIENT_RESUME_BUDGET;
 }

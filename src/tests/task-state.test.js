@@ -12,7 +12,7 @@ import { normalizeDynamicTaskConfig } from "../../dist/shared/config.js";
 import { LedgerChangeKind } from "../../dist/shared/ledger-change.js";
 import { annotateNotice, markSteerRepeat, markTurnReplacement } from "../../dist/shared/notice-claim.js";
 import { restoreActive, restoreRetained } from "../../dist/shared/task-ledger.js";
-import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
+import { ADVISORY_FIELDS, createTaskStore, findTask, listTasks, markRetryScheduled, noteActivity, oldestRetainedId, pruneRetainedTasks, recordAbortError, recordSettledOutcome, registerActiveTask, reviveRetainedTask, transitionState, withdrawInterruptClaim } from "../../dist/shared/task-state.js";
 import { activeEntry, assert, assertEmpty, assertIs, assertNothing, beforeEach, childParams, defaultConfig, describe, it, retainedEntry, singleSlotConfig } from "./support/index.js";
 
 /** A store holding one running child named ses_active — where most state cases start. */
@@ -181,6 +181,7 @@ describe("task-state: transitionState", () => {
       lastNotice: annotateNotice(store, "ses_active", "interim", "progress"),
       lastSteer: markSteerRepeat(store, "ses_active", "same message twice"),
       replacedAt: markTurnReplacement(store, "ses_active"),
+      retryScheduledAt: markRetryScheduled(store, "ses_active"),
       turnLiveAt: noteActivity(store, "ses_active", false),
     };
     for (const field of ADVISORY_FIELDS) {

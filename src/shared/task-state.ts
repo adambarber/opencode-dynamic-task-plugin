@@ -491,7 +491,21 @@ export function noteActivity(
  * a lookup: a turn that replaced another cannot be said to have ended until it
  * has been seen doing something. A fresh spawn answers false, because nothing
  * precedes it.
+
+/**
+ * Mark that a host-initiated retry is pending for this child's turn.
+ * While a retry is scheduled, the turn is not over and an idle event
+ * must not settle it as Completed — the retry may still succeed.
  */
+export function markRetryScheduled(
+  store: TaskStore,
+  childSessionId: SessionId,
+): boolean {
+  return annotateActive(store, childSessionId, (active) => {
+    active.retryScheduledAt = Date.now();
+  });
+}
+
 export function turnReplacementPending(
   task: Pick<ActiveTaskState, "replacedAt" | "turnLiveAt"> | undefined,
 ): boolean {

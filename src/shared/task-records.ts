@@ -144,7 +144,7 @@ export type NewTaskRegistration = Omit<TaskRecordBase, "startedAt">;
  * both places — while the tests, which named their advisories one case at a time,
  * would not have covered the fifth at all.
  */
-export const ADVISORY_FIELDS = ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt", "lastSteer"] as const;
+export const ADVISORY_FIELDS = ["lastNotice", "lastActivityAt", "turnLiveAt", "replacedAt", "lastSteer", "retryScheduledAt"] as const;
 // The tuple above is the whole advisory set: a fifth advisory stops being
 // `never` here, so the build fails until the list names it.
 type UnlistedAdvisory = Exclude<keyof ActiveTaskState, "state" | keyof TaskRecordBase | (typeof ADVISORY_FIELDS)[number]>;
@@ -153,7 +153,7 @@ void everyAdvisoryIsListed;
 export function withoutAdvisory(record: ActiveTaskState): TaskRecordBase {
   // The advisory half, dropped by name: a fifth advisory field fails the
   // return type below, so the drop set cannot silently go stale.
-  const { lastNotice, lastActivityAt, turnLiveAt, replacedAt, lastSteer, ...base } = record;
+  const { lastNotice, lastActivityAt, turnLiveAt, replacedAt, lastSteer, retryScheduledAt, ...base } = record;
   return base;
 }
 
@@ -198,6 +198,14 @@ export interface ActiveTaskState extends TaskRecordBase {
    * process that observed the steers, and settlement strips it.
    */
   lastSteer?: { at: number; digest: string; repeated: boolean } | undefined;
+
+  /**
+   * A host-initiated retry is pending for this turn: `session.retry.scheduled`
+   * was seen and the turn is not over until a terminal execution event arrives.
+   * Advisory: belongs to the process that observed the retry event, stripped at
+   * settlement like the other advisory fields.
+   */
+  retryScheduledAt?: number | undefined;
   // Parent steer in flight: set synchronously by task_continue before aborting
   // the running turn, consumed by the lifecycle handler to suppress that
   // turn's terminal echo. Advisory, never a lifecycle mutation — the task

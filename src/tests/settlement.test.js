@@ -108,6 +108,18 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.ok(!rawTools.has("dynamic_task"), "no tools registered without the core APIs");
     });
 
+  it("defers settlement when a retry is scheduled", async () => {
+    const h = await setupHarness();
+    const { id } = await h.spawn({ description: "retry task" });
+    // A retry scheduled means the turn is not over — no settlement yet.
+    await h.fireEvent(events.retryScheduled(id, { at: Date.now(), attempt: 1, error: { message: "rate limited", retryAfterMs: 5000, type: "provider" } }));
+    await assertNoticeCount(h, 0, "retry scheduled does not settle");
+    // Idle after retry should not settle as Completed — defer until execution event.
+    await h.fireEvent(events.idle(id));
+    await assertNoticeCount(h, 0, "idle after retry does not settle as completed");
+  });
+
+
   it("an empty-content terminal turn settles as error, not completed with stale words", async () => {
     const stale = "Reading the three target tests...";
     const h = await setupHarness({

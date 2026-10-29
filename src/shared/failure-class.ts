@@ -116,8 +116,15 @@ const MODEL_UNAVAILABLE = [/\bmodelunavailableerror\b/, /\bmodel unavailable\b/]
  * a child that declared it was blocked is asking a question rather than
  * reporting a fault.
  */
-export function classifyFailure(verdict: TaskState, detail: unknown): FailureClass {
+export function classifyFailure(verdict: TaskState, detail: unknown, retryAfterMs?: number): FailureClass {
   if (verdict !== TaskState.Error) return FailureClass.None;
+
+  // The host's own retryAfterMs is an affirmative transient signal: the host
+  // itself considers this error retryable. The plugin must not override that
+  // with a Structural verdict just because the message text doesn't match a
+  // known fragment.
+  if (typeof retryAfterMs === "number" && retryAfterMs > 0) return FailureClass.Transient;
+
   if (typeof detail !== "string" || !detail.trim()) return FailureClass.Structural;
   const lowered = detail.toLowerCase();
   const transient =

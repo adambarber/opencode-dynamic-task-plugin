@@ -7,7 +7,7 @@
  * still owed — rather than about any one tool.
  */
 
-import { abortedSessions, answerMatches, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
+import { abortedSessions, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
 
 describe("settlement: the notification layer owns outcomes", () => {
   // The head that sees EVERY event is the most-executed code in the plugin, so
@@ -107,6 +107,25 @@ describe("settlement: the notification layer owns outcomes", () => {
     await mod.default.setup(context);
     assert.ok(!rawTools.has("dynamic_task"), "no tools registered without the core APIs");
     });
+
+  it("an empty-content terminal turn settles as error, not completed with stale words", async () => {
+    const stale = "Reading the three target tests...";
+    const h = await setupHarness({
+      hooks: {
+        messages: () => [
+          { content: [{ text: stale, type: "text" }], time: { completed: Date.now() - 10000, created: Date.now() - 10000 }, type: "assistant" },
+          { content: [], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
+        ],
+      },
+    });
+    const { id } = await h.spawn({ description: "empty stop task" });
+    const note = await h.settledNotice(id);
+    textDeclaresKind(note.message, "error", "empty-content turn is an error, not completed");
+    answerSays(note.message, "The turn ended with no content", "honest empty-content note");
+    answerOmits(note.message, stale, "stale last words are not quoted");
+    const summary = await h.child(id).result();
+    answerSays(summary, "error", "task retained as error");
+  });
 });
 
 describe("notification delivery records", () => {

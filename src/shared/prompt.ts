@@ -450,7 +450,7 @@ export function getLatestAssistantText(messages: unknown): string {
     if (branchedRoleOf(msg) !== ASSISTANT_ROLE) continue;
 
     const text = extractTextFromParts(contentPartsOf(msg));
-    if (text.trim()) return text;
+    return text;
   }
 
   return "";

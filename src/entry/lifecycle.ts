@@ -280,7 +280,7 @@ function settleOutcome(input: SettlementFacts & {
 }): { verdict: SettlementVerdict; failure: FailureClass; text: string } {
   const base = settlementVerdict(input);
   const verdict =
-    base === TaskState.Completed && (input.outcome.errorDetail || input.outcome.unreadable)
+    base === TaskState.Completed && (input.outcome.errorDetail || input.outcome.unreadable || input.outcome.text === "")
       ? TaskState.Error
       : base;
   const failure = classifyFailure(verdict, input.outcome.errorDetail);
@@ -290,7 +290,10 @@ function settleOutcome(input: SettlementFacts & {
   const unreadableNote = input.outcome.unreadable
     ? "\n\n(The child's transcript could not be read; read it with task_result.)"
     : "";
-  return { failure, text: `${quote}${causeNote}${classNote}${unreadableNote}`, verdict };
+  const emptyNote = input.outcome.text === "" && !input.outcome.errorDetail && !input.outcome.unreadable
+    ? "\n\nThe turn ended with no content — the child said nothing."
+    : "";
+  return { failure, text: `${quote}${causeNote}${classNote}${unreadableNote}${emptyNote}`, verdict };
 }
 
 export async function settleRunningChild(

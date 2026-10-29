@@ -295,7 +295,7 @@ describe("message/part family guards (Task 08)", () => {
     const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
     assert.strictEqual(messageErrorDetail(stream[1]), "Aborted");
     assert.strictEqual(messageErrorDetail(stream[0]), "");
-    assert.strictEqual(getLatestAssistantText(stream), "the child's real last words");
+    assert.strictEqual(getLatestAssistantText(stream), "");
   });
 
   it("messageRoleOf reads nested info first, falls back to top level, empty when neither", () => {
@@ -329,6 +329,13 @@ describe("prompt dance: getLatestAssistantText", () => {
     assert.strictEqual(getLatestAssistantText([turn(ASSISTANT_ROLE, ""), turn("user", "q")]), "");
     assert.strictEqual(getLatestAssistantText([]), "");
     assertEmpty(getLatestAssistantText(null), "no message at all");
+  });
+
+  it("an empty newest assistant message ends the walk instead of quoting stale words", () => {
+    assert.strictEqual(
+      getLatestAssistantText([turn(ASSISTANT_ROLE, "Reading the three target tests..."), { content: [], role: ASSISTANT_ROLE }]),
+      ""
+    );
   });
 });
 
@@ -366,7 +373,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // lost error is — so the outcome keeps both and the kind becomes `error`.
   it("reports an aborted turn as the failure it is, not the turn before it", async () => {
     const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
-    await assertHydrated(() => stream, { errorDetail: "Aborted", text: "the child's real last words" });
+    await assertHydrated(() => stream, { errorDetail: "Aborted", text: "" });
   });
 
   it("an aborted turn with nothing said before it is still a failure, not (completed)", async () => {

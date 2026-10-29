@@ -12,7 +12,7 @@
  * nothing about a namespace it did not read, and never writes into one.
  */
 
-import { answerMatches, answerOmits, answerSays, assert, bootOn, describe, it, ledgerSays, retainedEntry, runningEntry, settledOnDisk, setupHarness, tmpProjectDir } from "./support/index.js";
+import { anEmptyLedger, answerMatches, answerOmits, answerSays, assert, bootOn, bootWithLedger, describe, it, ledgerSays, retainedEntry, runningEntry, settledOnDisk, setupHarness, tmpProjectDir } from "./support/index.js";
 
 /**
  * Wait for a notice to land, because boot deliberately does not block on
@@ -194,13 +194,6 @@ describe("a ledger that cannot be read is reported, not silently replaced", () =
   });
 });
 
-/** The empty document: a case that omits a half produces a DIFFERENT ledger, silently. */
-const anEmptyLedger = () => ({ active: {}, pending: [], tasks: {} });
-
-/** A plugin booted on a ledger the case wrote: one door for the document shape. */
-const bootWithLedger = (halves, hooks) =>
-  bootOn(() => ({ ...anEmptyLedger(), ...halves }), hooks);
-
 /**
  * The host log's account of records a READABLE ledger could not keep.
  *
@@ -261,8 +254,7 @@ describe("a ledger claiming one task is both running and finished", () => {
     // unseeded host settles the restored row as gone whenever reconcile wins — which is
     // a scheduling accident, not the overlap case. The seed states what the host
     // corroborates, and the case is about the file, not the race.
-    const h = await bootWithLedger(
-      {
+    const h = await bootWithLedger(bootOn, {
         active: { ses_both: runningEntry("ses_both") },
         tasks: { ses_both: retainedEntry({ childSessionId: "ses_both", state: "completed" }) },
       },

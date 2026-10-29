@@ -470,6 +470,7 @@ export function getLatestAssistantText(messages: unknown): string {
 export function messageErrorDetail(message: unknown): string {
   if (!isMessage(message) || !isEventRecord(message)) return "";
   const info = isEventRecord(message.info) ? message.info : undefined;
+  // error may be nested under info or at the top level
   const error = info?.error ?? message.error;
   if (isEventRecord(error)) {
     const data = isEventRecord(error.data) ? error.data : undefined;
@@ -499,11 +500,9 @@ function messageRetryAfterMs(message: unknown): number | undefined {
   if (!isMessage(message) || !isEventRecord(message)) return undefined;
   const info = isEventRecord(message.info) ? message.info : undefined;
   const error = info?.error ?? message.error;
-  if (isEventRecord(error)) {
-    const value = error.retryAfterMs;
-    return typeof value === "number" ? value : undefined;
-  }
-  return undefined;
+  if (!isEventRecord(error)) return undefined;
+  const value = error.retryAfterMs;
+  return typeof value === "number" ? value : undefined;
 }
 
 interface ErrorDetail {

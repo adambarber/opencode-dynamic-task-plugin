@@ -19,12 +19,11 @@ const owedDebt = (childSessionId) =>
 
 describe("a delivery whose durable read fails is contained, never fatal", () => {
   it("a settlement whose delivery-claim read fails records the non-delivery and leaves the host alive", async () => {
-    const hooks = {};
-    const h = await setupHarness({ hooks });
+    const hb = {};
+    const h = await setupHarness({ hooks: hb });
+    // spawn first so the boot's own read is unaffected, then arm the fault
     const { c } = await h.spawn();
-    // Armed AFTER the boot and spawn, so the case asks only about the settlement's
-    // own read — the boot's read is a different subject with its own suite.
-    hooks.storageThrows = true;
+    hb.storageThrows = true;
     await c.settle();
     await waitFor(() => getLatestNotification(c.id) !== null, "the settlement's delivery record");
     assert.strictEqual(
@@ -36,9 +35,9 @@ describe("a delivery whose durable read fails is contained, never fatal", () => 
   });
 
   it("deliverParent resolves false when the durable claim read fails", async () => {
-    const hooks = {};
-    const h = await setupHarness({ hooks });
-    hooks.storageThrows = true;
+    const hb2 = {};
+    const h = await setupHarness({ hooks: hb2 });
+    hb2.storageThrows = true;
     const verdict = await deliverParent(opaqueHost(h.client), PARENT, "ses_child", "bg task", NotifyKind.Error, "the text");
     assert.strictEqual(verdict, false, "a failed delivery resolves false instead of rejecting");
     assert.strictEqual(getLatestNotification("ses_child").delivered, false, "and the non-delivery is recorded");
@@ -46,10 +45,10 @@ describe("a delivery whose durable read fails is contained, never fatal", () => 
   });
 
   it("a boot that redelivers an owed notice survives a failing durable read", async () => {
-    const hooks = {};
-    const h = await setupHarness({ hooks });
+    const hookBag3 = {};
+    const h = await setupHarness({ hooks: hookBag3 });
     restorePendingDeliveries([owedDebt("ses_owed")]);
-    hooks.storageThrows = true;
+    hookBag3.storageThrows = true;
     redeliverOwedNotifications(opaqueHost(h.client), 3);
     await waitFor(() => h.prose().includes("storage unavailable"), "the redelivery's failure on the log");
     restorePendingDeliveries([]);

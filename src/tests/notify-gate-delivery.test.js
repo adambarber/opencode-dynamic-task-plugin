@@ -144,8 +144,9 @@ describe("notify gate: what the gate refuses to deliver twice", () => {
     assert.strictEqual(record.suppressed, true, "suppression is visible, distinct from failure");
   });
 
-  it("a distinct error can follow a delivered completion", async () => {
-    const { client, calls } = answeredClient([]);
+  it("an escalated error follows a delivered completion", async () => {
+    const clientCalls = answeredClient([]);
+    const { client, calls } = clientCalls;
     await notifyParent(opaqueHost(client), "parent_1", "done", gateOpts("ses_e1", "completed"));
     const escalated = await notifyParent(opaqueHost(client), "parent_1", "actually failed", gateOpts("ses_e1", "error"));
     assertDelivered(escalated, calls, 2);

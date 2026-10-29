@@ -31,6 +31,16 @@ function withWorktree(directory, name) {
   return realpathSync(`${directory}/workspaces/${name}`);
 }
 
+/** Spawn with the standard directory-arg shape: prompt + subagent_type are the same in every case. */
+const spawnDir = async (h, description, directory) =>
+  h.trySpawn({ description, directory, prompt: "work", subagent_type: "general" });
+
+/** A refused dispatch: the output names an error and no session body was created. */
+const assertSpawnRefused = (out, h, message) => {
+  assert.ok(out.includes("ERROR"), message);
+  assert.equal(h.client.testState.sessionBodies.size, 0);
+};
+
 describe("the directory argument", () => {
   it("is read from the raw args and absent when not sent", () => {
     assert.equal(readSpawnArgs({ directory: "/somewhere/worktree" }).directory, "/somewhere/worktree");
@@ -42,12 +52,7 @@ describe("the directory argument", () => {
   it("travels on the create body the host receives", async () => {
     const h = await setupHarness();
     const worktree = withWorktree(h.directory, "workspace-a");
-    const out = await h.trySpawn({
-      description: "in the worktree",
-      directory: worktree,
-      prompt: "work",
-      subagent_type: "general",
-    });
+    const out = await spawnDir(h, "in the worktree", worktree);
     assert.ok(!out.includes("ERROR"), out.slice(0, 200));
     const body = h.client.testState.sessionBodies.get(worktree) ??
       [...h.client.testState.sessionBodies.values()].find((b) => b.title === "in the worktree");
@@ -58,40 +63,24 @@ describe("the directory argument", () => {
   it("an unknown directory is refused by name and no session is created", async () => {
     const h = await setupHarness();
     withWorktree(h.directory, "workspace-a");
-    const out = await h.trySpawn({
-      description: "elsewhere",
-      directory: "/not/a/worktree/of-this-repo",
-      prompt: "work",
-      subagent_type: "general",
-    });
-    assert.ok(out.includes("ERROR"), "the refusal names itself an error");
+    const out = await spawnDir(h, "elsewhere", "/not/a/worktree/of-this-repo");
+    assertSpawnRefused(out, h, "the refusal names itself an error");
     answerOmits(
       out,
       "the refusal names the directory it refused",
       "/not/a/worktree/of-this-repo",
     );
-    assert.equal(h.client.testState.sessionBodies.size, 0);
   });
 
   it("a repository git cannot read refuses the dispatch — unknown must not fall back to allowed", async () => {
     const h = await setupHarness();
-    const out = await h.trySpawn({
-      description: "unvouched",
-      directory: `${h.directory}/nowhere`,
-      prompt: "work",
-      subagent_type: "general",
-    });
-    assert.ok(out.includes("ERROR"), "fail-closed: no readable repository, no dispatch");
-    assert.equal(h.client.testState.sessionBodies.size, 0);
+    const out = await spawnDir(h, "unvouched", `${h.directory}/nowhere`);
+    assertSpawnRefused(out, h, "fail-closed: no readable repository, no dispatch");
   });
 
   it("an absent directory changes nothing — the plugin's own context", async () => {
     const h = await setupHarness();
-    const out = await h.trySpawn({
-      description: "plain",
-      prompt: "work",
-      subagent_type: "general",
-    });
+    const out = await spawnDir(h, "plain", undefined);
     assert.ok(!out.includes("ERROR"), out.slice(0, 200));
     const body = [...h.client.testState.sessionBodies.values()].find((b) => b.title === "plain");
     assert.ok(body, "the create happened");

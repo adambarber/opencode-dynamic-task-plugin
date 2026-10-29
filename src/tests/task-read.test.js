@@ -121,9 +121,11 @@ describe("task_result and task_interrupt paths", () => {
       }],
     ["an active task whose turn has closed reads idle, not working",
       async ({ h, c }) => {
+        const sentinel = "closed";
+        void sentinel;
         h.setHostStatus(c.id, "succeeded");
-        const out = await c.status();
-        return [out, [[/no open turn at the host/, true], [/turn is in flight now/, false]]];
+        const mark = await c.status();
+        return [mark, [[/no open turn at the host/, true], [/turn is in flight now/, false]]];
       }],
   ];
   for (const [name, read] of liveness) {

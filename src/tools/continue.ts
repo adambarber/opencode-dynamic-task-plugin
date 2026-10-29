@@ -87,19 +87,20 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
     // no settled-midway races (the running turn is never killed). The liveness
     // read stays only because the result still says which steer happened — and
     // its wording is the native truth, per the voice.
+    const steerPromptArgs = {
+      agentName: active.agentName,
+      childSessionId: sessionId,
+      description: active.description,
+      parentSessionId: active.parentSessionId,
+      ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
+    };
     if (inboxSupported()) {
       const turnFact = steerTurnFact(await readSessionTurn(host, sessionId));
-      fireChildPrompt(host, store, {
-        agentName: active.agentName,
-        childSessionId: sessionId,
-        delivery: "steer",
-        description: active.description,
-        parentSessionId: active.parentSessionId,
-        ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
-      }, steerTextFor(admitted.prompt));
+      fireChildPrompt(host, store, { ...steerPromptArgs, delivery: "steer" }, steerTextFor(admitted.prompt));
       // The storm stamp rides here too: a repeat of the same message inside the
       // window is recognisable on this path exactly as on the legacy one — the
       // parent is told either way.
+
       markSteerRepeat(store, sessionId, admitted.prompt);
       const repeated = steerWasRepeat(store, sessionId);
       return (
@@ -184,13 +185,7 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // The turn is dead: fire the parent message as the next user turn.
       // Fire-and-forget like every prompt — the lifecycle event owns
       // settlement, and the prompt-failure path owns delivery failure.
-      fireChildPrompt(host, store, {
-        agentName: active.agentName,
-        childSessionId: sessionId,
-        description: active.description,
-        parentSessionId: active.parentSessionId,
-        ...(active.requestedModel !== undefined ? { requestedModel: active.requestedModel } : {}),
-      }, steerTextFor(admitted.prompt));
+      fireChildPrompt(host, store, steerPromptArgs, steerTextFor(admitted.prompt));
       // The storm stamp rides the same arm the replacement did, so a repeat of
       // the same message inside the window is recognisable here and in the
       // views. The warning rides on the REPEAT fact, not the turn fact: a second
@@ -198,10 +193,11 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // produce work — aborted in flight or replaced before it started — and the
       // parent is told either way.
       markSteerRepeat(store, sessionId, admitted.prompt);
-      const repeated = steerWasRepeat(store, sessionId);
+      const isRepeat = steerWasRepeat(store, sessionId);
+      // legacy steer: no generation tag on the verdict
       return (
         steerSent({ agentName: active.agentLabel ?? active.agentName, sessionId, turn: turnFact }) +
-        (repeated ? ` ${steerRepeatWarning()}` : "")
+        (isRepeat ? ` ${steerRepeatWarning()}` : "")
       );
     }
   }

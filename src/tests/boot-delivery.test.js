@@ -11,7 +11,7 @@ import { ENV } from "../../dist/shared/config.js";
 import { LEDGER_KEYS, LEDGER_VERSION } from "../../dist/shared/ledger-storage.js";
 import { formatParentNotification } from "../../dist/shared/notification-text.js";
 import { clearNotifyLedger } from "../../dist/shared/notify.js";
-import { answerMatches, answerSays, assert, bootOn, compareStrings, describe, dialCount, it, ledgerSays, owedEntry, retainedEntry, runningEntry, settledOnDisk, setupHarness, sleep, textDeclaresKind, tmpProjectDir, waitFor, withEnv } from "./support/index.js";
+import { anEmptyLedger, answerMatches, answerSays, assert, bootOn, bootWithLedger, compareStrings, describe, dialCount, it, ledgerSays, owedEntry, retainedEntry, runningEntry, settledOnDisk, setupHarness, sleep, textDeclaresKind, tmpProjectDir, waitFor, withEnv } from "./support/index.js";
 
 /** A record under a version this build does not read — the key space, not a field. */
 const aPastLedger = (childSessionId = "ses_old") => `ledger/v${LEDGER_VERSION - 1}/retained/${childSessionId}`;
@@ -24,20 +24,6 @@ const bootedOn = async (shape, hooks) => {
   // reads would silently scan the whole namespace again.
   return { directory, h: { ...rest, directory }, ...rest };
 };
-
-/** The empty document: a case that omits a half produces a DIFFERENT ledger, silently. */
-const anEmptyLedger = () => ({ active: {}, pending: [], tasks: {} });
-
-/**
- * A plugin booted on a ledger the case wrote.
- *
- * The document SHAPE is this helper's, not a case's. It was being spelled at three
- * sites — `tasks`, `active`, `pending`, and in one of them `version` — and a case
- * that forgot `pending` produced a document the reader treats as a different thing,
- * silently. The shape belongs to one door; what belongs in the two halves is the
- * case's own decision.
- */
-const bootWithLedger = (halves, hooks) => bootedOn(() => ({ ...anEmptyLedger(), ...halves }), hooks);
 
 /**
  * Wait for a notice to land, because boot deliberately does not block on
@@ -211,7 +197,7 @@ describe("boot reconciles what the last boot was still running", () => {
    * of this — a status map the host deletes on idle — is gone, and a fixture that
    * still seeds it proves nothing: the map nothing reads cannot fail a case.
    */
-  const bootWithRunners = (actives, hostTurnSeed) => bootWithLedger({ active: actives }, { hooks: { hostTurnSeed } });
+  const bootWithRunners = (actives, hostTurnSeed) => bootWithLedger(bootedOn, { active: actives }, { hooks: { hostTurnSeed } });
 
   // A record file is a document a person can edit and a crash can tear, and
   // admission cannot produce a parent link that points back up the tree — but
@@ -265,8 +251,7 @@ describe("boot reconciles what the last boot was still running", () => {
   // reported per child — and that both were left running, since a child's own
   // terminal event is what settles it and nothing else may.
   it("a status channel that is down leaves every restored child active, and attempts each one", async () => {
-    const { h, notices, pluginLog } = await bootWithLedger(
-      { active: { ses_first: runningEntry("ses_first"), ses_second: runningEntry("ses_second") } },
+    const { h, notices, pluginLog } = await bootWithLedger(bootedOn, { active: { ses_first: runningEntry("ses_first"), ses_second: runningEntry("ses_second") } },
       { hooks: { presenceThrows: true } },
     );
     await sleep(150);
@@ -421,20 +406,33 @@ describe("two plugin instances sharing one project", () => {
     await sleep(50);
   };
 
+  /**
+   * Two instances, one project, one child both saw. Runs `beforeSettle(a, child)`
+   * on the first instance, then settles as the second process. Returns both
+   * harnesses and the shared child id — the setup every two-instance case
+   * repeats.
+   */
+  const twoInstancesOneSettlement = async (beforeSettle) => {
+    const child = "ses_shared";
+    const { a, b } = await twoInstancesSeeing(child);
+    if (beforeSettle) await beforeSettle(a, child);
+    await settleAsSecondProcess(b, child);
+    return { a, b, child };
+  };
+
   // The case whose absence the comment here used to record as the finding. Two
   // windows, one child, one settlement each: the parent must hear it once.
   it("delivers a settlement both instances saw exactly once", async () => {
-    const child = "ses_shared";
-    const { a, b } = await twoInstancesSeeing(child);
-
-    await a.settle(child);
-    await waitFor(() => a.notices().length === 1, "the first instance's settlement to reach the parent");
-    await settleAsSecondProcess(b, child);
+    const { a: fa, b: fb } = await twoInstancesOneSettlement(async (a, child) => {
+      // first instance settles the child
+      await a.settle(child);
+      await waitFor(() => a.notices().length === 1, "the first instance's settlement to reach the parent");
+    });
 
     assert.strictEqual(
-      a.notices().length + b.notices().length,
+      fa.notices().length + fb.notices().length,
       1,
-      `one settlement, one notice, across two instances — got: ${JSON.stringify([...a.notices(), ...b.notices()].map((n) => n.message))}`,
+      `one settlement, one notice, across two instances — got: ${JSON.stringify([...fa.notices(), ...fb.notices()].map((n) => n.message))}`,
     );
   });
 
@@ -444,16 +442,12 @@ describe("two plugin instances sharing one project", () => {
   it("still delivers a distinct notice for the same child", async () => {
     const child = "ses_shared";
     const { a, b } = await twoInstancesSeeing(child);
-
     await a.child(child).notify("first words");
     await waitFor(() => a.notices().length === 1, "the mid-flight notice");
     await settleAsSecondProcess(b, child);
     await waitFor(() => a.notices().length + b.notices().length >= 2, "the settlement beside the notice");
 
-    assert.strictEqual(
-      a.notices().length + b.notices().length,
-      2,
-      "a notice and a settlement are two facts, delivered independently",
-    );
+    assert.deepStrictEqual([a.notices().length + b.notices().length], [2],
+      "a notice and a settlement are two facts, delivered independently");
   });
 });

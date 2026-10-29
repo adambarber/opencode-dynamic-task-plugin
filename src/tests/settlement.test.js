@@ -122,12 +122,13 @@ describe("settlement: the notification layer owns outcomes", () => {
 
   it("an empty-content terminal turn settles as error, not completed with stale words", async () => {
     const stale = "Reading the three target tests...";
+    const staleMsgs = [
+      { content: [{ text: stale, type: "text" }], time: { completed: Date.now() - 10000, created: Date.now() - 10000 }, type: "assistant" },
+      { content: [], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
+    ];
     const h = await setupHarness({
       hooks: {
-        messages: () => [
-          { content: [{ text: stale, type: "text" }], time: { completed: Date.now() - 10000, created: Date.now() - 10000 }, type: "assistant" },
-          { content: [], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
-        ],
+        messages: () => staleMsgs,
       },
     });
     const { id } = await h.spawn({ description: "empty stop task" });
@@ -142,8 +143,9 @@ describe("settlement: the notification layer owns outcomes", () => {
     const real = "The task produced real output.";
     const h = await setupHarness({
       hooks: {
+        // single message with real content
         messages: () => [
-          { content: [{ text: real, type: "text" }], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
+          { content: [{ text: real, type: "text" }], type: "assistant" },
         ],
       },
     });

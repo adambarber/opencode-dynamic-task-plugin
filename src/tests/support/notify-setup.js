@@ -3,8 +3,8 @@
 // suite shares, so three files can hold three subjects instead of one
 // big preamble. Each importer inherits the before/after clean state.
 
-import { gateLedger, getPendingDeliveries, notifyChainCount, redeliverOwedNotifications, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { installInboxSupport } from "../../../dist/shared/inbox.js";
+import { gateLedger, getPendingDeliveries, notifyChainCount, redeliverOwedNotifications, restorePendingDeliveries } from "../../../dist/shared/notify.js";
 import { cleanNotifyState } from "./gate-world.js";
 import { bounded, drain } from "./harness.js";
 import { deferred, recordingClient } from "./mock-gates.js";

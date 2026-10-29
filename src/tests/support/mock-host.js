@@ -409,6 +409,15 @@ export function createMockClient(hooks = {}, domain = {}) {
           state.inboxQueue.set(sessionID, parked);
           return Promise.resolve({ parts: [{ text: "QUEUED_OK", type: "text" }] });
         }
+        // promptGate: the first prompt parks here until the test releases it;
+        // the gate then fails non-retryably. Shared by steer and plain-prompt paths.
+        const rejectPromptGate = () => {
+          fault(state, "promptGate");
+          state.promptGate.used = true;
+          return state.promptGate.promise.then(() => {
+            throw new Error("prompt rejected by the provider");
+          });
+        };
         if (delivery === "steer") {
           // "steer" is promoted at the next step boundary of the running
           // turn: the prompt JOINS the turn — recorded like any other prompt —
@@ -417,11 +426,7 @@ export function createMockClient(hooks = {}, domain = {}) {
           // step completes first. The prompt gate still applies (a steer can
           // be raced against its own delivery failing), unchanged.
           if (state.promptGate && !state.promptGate.used) {
-            fault(state, "promptGate");
-            state.promptGate.used = true;
-            return state.promptGate.promise.then(() => {
-              throw new Error("prompt rejected by the provider");
-            });
+            return rejectPromptGate();
           }
           state.promptBodies.push({ text, to: sessionID });
           return Promise.resolve({ parts: [{ text: "STEER_OK", type: "text" }] });
@@ -431,11 +436,7 @@ export function createMockClient(hooks = {}, domain = {}) {
         // failing is the one settlement that can still land while a steer
         // waits on its abort, so this is how a steer is raced against it.
         if (state.promptGate && !state.promptGate.used) {
-          fault(state, "promptGate");
-          state.promptGate.used = true;
-          return state.promptGate.promise.then(() => {
-            throw new Error("prompt rejected by the provider");
-          });
+          return rejectPromptGate();
         }
         const syncDead = forId(state, "promptSyncThrow", hooks.promptSyncThrowIds, sessionID, () => {
           throw new Error(`prompt sync-dead for ${sessionID}`);

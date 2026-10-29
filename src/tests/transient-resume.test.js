@@ -80,8 +80,8 @@ describe("a transient failure is resumed, not reported", () => {
     await noticesAfterSettle(h, id, 0, "the parent is told nothing about a downed model");
 
     const prompts = childPrompts(h, id);
-    assert.strictEqual(prompts.length, 2, "the spawn prompt, then the resume");
     assert.match(prompts[1], /Resumed/, "the resume says what it is");
+    assert.strictEqual(prompts.length, 2, "the spawn prompt, then the resume");
   });
 });
 

@@ -15,6 +15,7 @@
  */
 
 export * from "./assertions.js";
+export * from "./boot-world.js";
 export * from "./child-fixtures.js";
 export * from "./client-queries.js";
 export * from "./corpus.js";

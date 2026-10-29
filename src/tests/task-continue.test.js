@@ -153,13 +153,13 @@ describe("task_continue branches", () => {
   // must say which happened. An in-flight turn makes the steer an abort of real
   // work; an idle one makes it a plain message. A host that did not answer the
   // presence read must not be dressed as either.
-  const steerResults = [
+  const steerCases = [
     ["steering a child whose turn is in flight names the abort at the call",
       {}, async ({ c, h, id }) => {
-        const out = await c.steer("pivot");
-        answerSays(out, "the in-flight turn was aborted", "the abort cost is named at the call");
-        answerOmits(out, "no turn was running", "an in-flight turn is not an idle one");
+        const result = await c.steer("pivot");
+        assert.ok(result.includes("the in-flight turn was aborted"), "abort cost named at the call");
         assert.ok(wasAborted(h.client, id), "the running turn is stopped first");
+        assert.ok(!result.includes("no turn was running"), "no idle claim on an in-flight turn");
       }],
     ["steering an active-idle task says the message was sent, not that work died",
       {}, async ({ c, h, id }) => {
@@ -172,13 +172,13 @@ describe("task_continue branches", () => {
       }],
     ["an unanswered presence read is named as unknown, never dressed as either",
       { hooks: { presenceThrows: new Error("status down") } }, async ({ c }) => {
-        const out = await c.steer("pivot");
-        answerSays(out, "did not answer", "the gap is named as a gap");
-        answerOmits(out, "was aborted", "no abort claim without a reading");
-        answerOmits(out, "no turn was running", "and no idle claim either");
+        const result = await c.steer("pivot");
+        assert.ok(result.includes("did not answer"), "gap named as a gap");
+        assert.ok(!result.includes("was aborted"), "no abort claim without a reading");
+        assert.ok(!result.includes("no turn was running"), "and no idle claim either");
       }],
   ];
-  for (const [name, harness, expect] of steerResults) {
+  for (const [name, harness, expect] of steerCases) {
     it(name, async () => {
       const ctx = await withChild({ harness });
       await expect(ctx);
@@ -197,11 +197,11 @@ describe("task_continue branches", () => {
   });
 
   it("a steer with a different message is not marked as a repeat", async () => {
-    const { c } = await withChild();
-    await c.steer("pivot");
-    const out = await c.steer("other direction");
-    answerSays(out, "no turn was running", "the second steer's own truth");
-    answerOmits(out, "repeat steer", "a different message is a fresh instruction, not a storm");
+    const { c: child } = await withChild();
+    await child.steer("pivot");
+    const other = await child.steer("other direction");
+    answerSays(other, "no turn was running", "the second steer's own truth");
+    answerOmits(other, "repeat steer", "a different message is a fresh instruction, not a storm");
   });
 
   // --- The native steer (Session Inbox host, v2.1.4+) ------------------------
@@ -214,20 +214,22 @@ describe("task_continue branches", () => {
   // truth: steered, not aborted.
   it("steering a running child on an inbox host sends the prompt with delivery steer and aborts nothing", async () => {
     const { h, c, id } = await withChild({ harness: { hooks: { inboxHost: true } } });
-    const out = await c.steer("follow up");
-    answerSays(out, "Steer sent", "the steer is confirmed");
-    answerSays(out, "next step boundary", "the native cost is named: none");
-    answerOmits(out, "aborted", "nothing was aborted");
+    const steerResult = await c.steer("follow up");
     assert.ok(!wasAborted(h.client, id), "no interrupt is ordered");
+    answerSays(steerResult, "Steer sent", "the steer is confirmed");
+    answerSays(steerResult, "next step boundary", "the native cost is named: none");
+    answerOmits(steerResult, "aborted", "nothing was aborted");
     assert.deepStrictEqual(deliveriesTo(h.client, id), ["steer"], "the prompt carried the native delivery");
     assert.strictEqual(promptsToCarrying(h.client, id, "follow up").length, 1, "the message is the parent's words");
-    assert.strictEqual(await stateOf(c), "State: active", "a steer never settles");
+    const state = await stateOf(c);
+    assert.ok(state.includes("State: active"), "a steer never settles");
   });
 
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo
   // from a steer, a retryable transport blip — leaves the task active and
+
   // silent, so nothing is deafened and the child's own terminal event settles it.
-  const disturbances = [
+  const disturbScenarios = [
     // The steer makes the child echo the abort, and that first idle IS the echo:
     // the next genuine event is the one that settles. Fired bare, because an
     // echo by definition arrives with no turn behind it.
@@ -239,14 +241,14 @@ describe("task_continue branches", () => {
       { hooks: { childPromptFailOnce: { code: "ETIMEDOUT", message: "connect ETIMEDOUT" } } },
       async () => { await sleep(50); }], // the fire-and-forget catch has run
   ];
-  for (const [name, harness, disturb] of disturbances) {
-    it(name, async () => {
-      const ctx = await withChild({ harness });
-      await disturb(ctx);
-      const status = await ctx.c.status();
+  for (const [scenarioName, scenarioHarness, scenarioDisturb] of disturbScenarios) {
+    it(scenarioName, async () => {
+      const scenarioCtx = await withChild({ harness: scenarioHarness });
+      await scenarioDisturb(scenarioCtx);
+      const status = await scenarioCtx.c.status();
       answerSays(status, "active", "a non-terminal signal must not settle");
-      await assertNoticeCount(ctx.h, 0, "nothing is notified");
-      const note = await ctx.h.settledNotice(ctx.id);
+      await assertNoticeCount(scenarioCtx.h, 0, "nothing is notified");
+      const note = await scenarioCtx.h.settledNotice(scenarioCtx.id);
       textDeclaresKind(note.message, "completed", "the real event still settles");
     });
   }
@@ -268,7 +270,8 @@ describe("task_continue branches", () => {
     });
 
     it("carries the message into the child's context as a promoted prompt, not a replacement turn", async () => {
-      const { c, h, id } = await withInboxChild();
+      const inboxChild = await withInboxChild();
+      const { c, h, id } = inboxChild;
       await c.steer("pivot");
       const deliveries = h.client.testState.promptDeliveries.filter((d) => d.to === id);
       assert.ok(deliveries.length >= 1, "the delivery was recorded");

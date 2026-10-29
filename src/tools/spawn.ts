@@ -1,6 +1,7 @@
 // dynamic_task executor: spawn admission — resolve, policy-check, create,
 // register, fire. The ONLY session.create site (funnel test pins this).
 
+import type { SessionCreateInput } from "@opencode/client/promise";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { debugLog } from "../debug-logger.js";
 import { deliverParent, fireChildPrompt } from "../entry/lifecycle.js";
@@ -63,8 +64,8 @@ const MAX_DESCRIPTION_CHARS = 2000;
 function resolveDispatchDirectory(
   requested: string | undefined,
   directory: string,
-): { ok: true } | { ok: false; refusal: string } {
-  if (requested === undefined) return { ok: true };
+): { ok: true; directory: string } | { ok: false; refusal: string } {
+  if (requested === undefined) return { directory, ok: true };
   // Both sides are resolved before comparison: macOS tmpdirs (and bind mounts)
   // answer git's resolved path, and a caller spelling the symlinked form must
   // not be refused for the filesystem's own aliasing. A path that cannot be
@@ -81,7 +82,7 @@ function resolveDispatchDirectory(
   if (!entries?.some((entry) => entry.path === resolved)) {
     return { ok: false, refusal: `ERROR: Directory "${requested}" is not a worktree of this project's repository.\n\nKnown worktrees: ${worktreeListForRefusal(entries)}\n\nPass one of those, or dispatch without a directory to use this project's own context.` };
   }
-  return { ok: true };
+  return { directory: resolved, ok: true };
 }
 
 import type { SessionId } from "../shared/ids.js";
@@ -119,6 +120,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
   // where work happens: against the repository's own worktree list, fail-closed.
   const directoryAdmission = resolveDispatchDirectory(args.directory, deps.directory);
   if (!directoryAdmission.ok) return directoryAdmission.refusal;
+  const resolvedDirectory = directoryAdmission.directory;
 
   // Dependency readiness (temporal — after all static validation).
   const readiness = resolveDependencies(store, args.depends_on, args.depends_on_settled);
@@ -186,29 +188,24 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     ...(args.depends_on_settled !== undefined ? { dependsOnSettled: args.depends_on_settled } : {}),
   } satisfies Omit<NewTaskRegistration, "childSessionId">;
   try {
-    // 1.18 contract: sessions carry title/parentID only — agent and
-    // model ride on each prompt via PromptRouting.
-    const sessionBody: { title: string; parentID?: string; location?: { directory: string } } = {
+    // SessionCreateInput carries title/parentID on the body; agent and model
+    // ride on each prompt via PromptRouting. location.directory is the
+    // generated input's own field for placement.
+    // SessionCreateInput carries title/parentID/location on the body; agent and
+    // model ride on each prompt via PromptRouting. All properties are readonly,
+    // so build the object in one shot.
+    const sessionBody: SessionCreateInput = {
       title: registration.description,
+      ...(parentSessionId ? { parentID: parentSessionId } : {}),
+      ...(args.directory !== undefined ? { location: { directory: resolvedDirectory } } : {}),
     };
-
-    if (parentSessionId) {
-      sessionBody.parentID = parentSessionId;
-    }
-
-    // The host creates the child where admission vouched for: the caller's
-    // directory (a worktree it knows), as the create contract spells placement —
-    // `location.directory`, the generated input's own field.
-    if (args.directory !== undefined) {
-      sessionBody.location = { directory: args.directory };
-    }
 
     // The create is about to be issued and cannot be un-issued, so the record of
     // WHAT WAS ISSUED goes down first. A bound that fires leaves a session that may
     // exist and an id nobody holds; this is the difference between that session being
     // findable and it being one more untracked child, and it is the only fact worth
     // having when the answer never comes.
-    const intent: CreateIntent = { parentSessionId, title: sessionBody.title };
+    const intent: CreateIntent = { parentSessionId, title: registration.description };
     issueCreateIntent(deps.intent, intent, deps.directory);
 
     // Bounded like every other outbound call: this one is awaited by the CALLER'S
@@ -245,6 +242,22 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
       return createFailed({ directory: deps.directory, intent, reason: CreateRefusalReason.Idless, response: sessionResult });
     }
     createdSessionId = childSessionId;
+    // Post-create verification: confirm the host placed the child at the
+    // directory admission vouched for. A mismatch means the verified path
+    // and the received path diverged — log it so it is observable.
+    void callHost(
+      host,
+      READ_BOUNDS.transcript,
+      (client) => client.session.get({ sessionID: childSessionId }),
+      null,
+    ).then((got) => {
+      if (!got.timedOut && got.value?.location?.directory !== resolvedDirectory) {
+        void debugLog(parentSessionId || UNKNOWN_PARENT, childSessionId, "directory-mismatch", {
+          expected: resolvedDirectory,
+          received: got.value?.location?.directory,
+        });
+      }
+    });
     // The create answered, so the child is the ledger's to name and this record has
     // done its only job.
     resolveCreateIntent(deps.intent, intent, deps.directory);

@@ -7,16 +7,21 @@
 
 import { assert, describe, events, it, setupHarness, waitFor } from "./support/index.js";
 
+// Common setup: arm a fault hook, fire a warmup event, return the harness.
+async function pumpCase(hookKey, hookValue) {
+  const hooks = {};
+  const h = await setupHarness({ hooks });
+  hooks[hookKey] = hookValue;
+  await h.fireEvent(events.working("pump-warmup"));
+  return h;
+}
+
 describe("the event pump", () => {
   it("survives a rejecting event stream and names the failure on the operator's log", async () => {
-    const hooks = {};
-    const h = await setupHarness({ hooks });
-    hooks.eventStreamThrows = true;
+    const h = await pumpCase("eventStreamThrows", true);
     // The generator is parked between events, so the fault is reached only on the
     // next pull — a live event wakes it and the NEXT iteration fails, the way a
     // real stream dies mid-life rather than before its first event.
-    await h.fireEvent(events.working("pump-warmup"));
-
     // The pump must NOT die as an unhandled rejection: this process IS the case,
     // and an unhandled rejection ends it. Surviving to the log assertion is the
     // process-liveness claim; the prose is the observability one.
@@ -25,12 +30,8 @@ describe("the event pump", () => {
   });
 
   it("a stream that ends cleanly is named, because deafness must be observable", async () => {
-    const hooks = {};
-    const h = await setupHarness({ hooks });
-    hooks.eventStreamEnd = true;
-    await h.fireEvent(events.working("pump-warmup"));
-
-    // The iterator RETURNS rather than throws — the plugin keeps running but can
+    const h = await pumpCase("eventStreamEnd", true);
+    // The iterator RETURNS rather than throws — the pump keeps running but can
     // never see another event. Silence here is the defect: the log is the only
     // place an operator learns the plugin stopped listening.
     await waitFor(() => h.prose().includes("deaf"), "the end-of-stream warning on the operator's log");

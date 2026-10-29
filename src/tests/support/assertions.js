@@ -140,7 +140,8 @@ export function answerOmits(answer, reason, note) {
  * assertion) calls this first, so whatever the arrangement legitimately delivered
  * has landed before the count is snapshotted.
  */
-export async function drainNotices(h) {
+/** Wait for the notice count to go quiet (two polls, same value), up to 2s. */
+export async function awaitQuiescent(h) {
   let stable = 0;
   const deadline = Date.now() + 2000;
   while (stable < 2 && Date.now() < deadline) {
@@ -150,23 +151,17 @@ export async function drainNotices(h) {
   }
 }
 
+export async function drainNotices(h) {
+  await awaitQuiescent(h);
+}
+
 export async function assertNoticeCount(h, count, why) {
   await drainNotices(h);
+  await awaitQuiescent(h);
   // Delivery rides the durable claim's bounded window now, so a count read at
   // time zero is the PREVIOUS settlements' total — it fails by arithmetic, not
-  // by behavior. The count is SETTLED, not read: wait until no new notice has
-  // arrived for two polls (longer than the claim's 20ms quiescence plus its
-  // chain settle), with a ceiling that fails rather than hangs. A quiescent
-  // read is honest in BOTH directions — "reached N" and "stayed N" — which a
-  // reach-only wait would not be: a once-only claim needs the late arrivals to
-  // have landed before it can say "exactly".
-  let stable = 0;
-  const deadline = Date.now() + 2000;
-  while (stable < 2 && Date.now() < deadline) {
-    const seen = h.notices().length;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    stable = h.notices().length === seen ? stable + 1 : 0;
-  }
+  // by behavior. The count is SETTLED, not read: two quiescence waits give
+  // late-arriving notices time to land before the count is snapshotted.
   const notices = h.notices();
   const bodies = notices.map((n) => n.message.split("\n")[1] ?? n.message);
   assert.strictEqual(notices.length, count, `${why}. notices: ${bodies.join(" | ")}`);

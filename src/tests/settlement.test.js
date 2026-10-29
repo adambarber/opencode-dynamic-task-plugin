@@ -138,6 +138,24 @@ describe("settlement: the notification layer owns outcomes", () => {
     const summary = await h.child(id).result();
     answerSays(summary, "error", "task retained as error");
   });
+  it("a genuine completion notifies completed with real content", async () => {
+    const real = "The task produced real output.";
+    const h = await setupHarness({
+      hooks: {
+        messages: () => [
+          { content: [{ text: real, type: "text" }], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
+        ],
+      },
+    });
+    const { id } = await h.spawn({ description: "real completion task" });
+    const note = await h.settledNotice(id);
+    textDeclaresKind(note.message, "completed", "genuine completion is completed, not error");
+    answerSays(note.message, real, "notification quotes real content");
+    answerOmits(note.message, "No text was captured from that turn", "no empty-content marker");
+    const summary = await h.child(id).result();
+    answerSays(summary, "completed", "task retained as completed");
+  });
+
 });
 
 describe("notification delivery records", () => {

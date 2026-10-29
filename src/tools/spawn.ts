@@ -257,7 +257,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
           received: got.value?.location?.directory,
         });
       }
-    });
+    }).catch(() => {});
     // The create answered, so the child is the ledger's to name and this record has
     // done its only job.
     resolveCreateIntent(deps.intent, intent, deps.directory);

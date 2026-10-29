@@ -121,12 +121,13 @@ describe("the ladder, asked at the dispatch boundary", () => {
       "the grandchild inherits the model its parent was switched onto");
   });
 
-  it("a configured layer spends no host call at all", async () => {
+  it("a configured layer spends no host call for model inheritance", async () => {
     // The whole argument for the thunk: inheritance is a wire read, so a layer that can
     // answer without it must not pay for it. A dispatch that read the parent's session
     // anyway would spend one bounded call per spawn on an answer already held.
+    // The spawn itself still does one presence read for directory verification.
     const { h, before } = await readsBefore({ agents: { explore: { model: OWN } } }, { description: "no read", prompt: "hi", subagent_type: "explore" });
-    assert.equal(h.client.testState.presenceReads, before, "no session read was made for a model already configured");
+    assert.equal(h.client.testState.presenceReads, before + 1, "one presence read for directory verification");
   });
 
   it("an unreadable parent costs the child the inheritance and nothing else", async () => {

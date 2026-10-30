@@ -20,7 +20,7 @@
  */
 
 import { ASSISTANT_ROLE } from "../../dist/shared/prompt.js";
-import { answerMatches, assert, assertNoticeCount, childFailingWith, describe, it, promptsTo, sleep } from "./support/index.js";
+import { answerMatches, assert, assertNoticeCount, childFailingWith, describe, it, ledgerSays, promptsTo, sleep } from "./support/index.js";
 
 /** The prompts sent TO a child, as text. The spawn prompt is always the first. */
 const childPrompts = (h, id) => promptsTo(h.client, id).map((p) => p.text ?? "");
@@ -54,6 +54,18 @@ describe("a transient failure is resumed, not reported", () => {
   // feature must never swallow. Pinned at the settlement and not only in the
   // classifier's table, so a change to the SETTLEMENT cannot lose the distinction
   // the classifier still makes correctly.
+  // The debt #51 introduced is written when the settlement claim lands, so this
+  // suite must pin its complement: a child that is RESUMED is not going to be
+  // reported, and the placeholder it left on disk must not survive as a stale
+  // debt the next boot redelivers as a bogus "settled" notice for a task that
+  // is running again.
+  it("a resumed child leaves no durable debt for the next boot to pay", async () => {
+    const { h, id } = await childFailingWith("fetch failed: socket hang up");
+    await noticesAfterSettle(h, id, 0, "the blip is resumed, not reported");
+    const stillDebted = ledgerSays(h.kv, h.directory).pending.filter((debt) => debt.childSessionId === id);
+    assert.strictEqual(stillDebted.length, 0, "a resumed child is owed nothing on the next boot");
+  });
+
   it("still reports a failure the parent has to act on", async () => {
     const { h, id } = await childFailingWith("Provider auth failed: invalid API key");
     const notices = await noticesAfterSettle(h, id, 1, "a structural failure is reported");

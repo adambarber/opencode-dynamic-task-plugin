@@ -22,11 +22,11 @@ import { handleChildLifecycleEvent } from "./entry/lifecycle.js";
 import { handleAskEvent } from "./entry/questions.js";
 import { initPluginState, overlayHandlers } from "./entry/state.js";
 import { asOpaqueHost, hasCoreApis, type OpaqueHost, probeHost } from "./shared/client.js";
-import { getSessionIdFromEvent, isTerminalSessionEvent, SESSION_RETRY_SCHEDULED } from "./shared/host-events.js";
-import { errorMessage, eventString } from "./shared/host-shape.js";
+import { getSessionIdFromEvent, isTerminalSessionEvent, SESSION_EXECUTION_STARTED, SESSION_RETRY_SCHEDULED, SESSION_STATUS } from "./shared/host-events.js";
+import { errorMessage, eventField, eventString } from "./shared/host-shape.js";
 import { containFailure, LogLevel, safeLog } from "./shared/notify.js";
 import { OverlayRpc } from "./shared/overlay-rpc.js";
-import { markRetryScheduled, noteActivity, type TaskStore } from "./shared/task-state.js";
+import { clearRetryScheduled, markRetryScheduled, noteActivity, type TaskStore } from "./shared/task-state.js";
 import { buildToolMap } from "./tools/index.js";
 
 async function setup(context: Context): Promise<void> {
@@ -134,18 +134,30 @@ function observeEvent(store: TaskStore, event: unknown): { eventType: string; te
   const terminal = isTerminalSessionEvent(event);
   noteActivity(store, evtSessionId, terminal);
   // Host-initiated retry: mark the turn as retry-pending, do not settle.
-  // A retry scheduled means the turn is not over — a terminal execution
-  // event settles it later. An idle event while a retry is pending must not
-  // settle as Completed.
-  if (eventType === SESSION_RETRY_SCHEDULED) {
-    const childSessionId = getSessionIdFromEvent(event);
-    if (childSessionId) {
-        markRetryScheduled(store, childSessionId);
-    }
-  }
+  // A retry announced by either channel — session.retry.scheduled, or the
+  // ongoing session.status {type: "retry"} — means the turn is not over; a
+  // terminal execution event settles it later, and an idle event while a retry
+  // is pending must not settle as Completed. The recovery window closes at the
+  // first sign the turn is alive again (execution.started, or status busy),
+  // which clears the marker so a later idle settles instead of deferring
+  // forever.
+  observeRetryAnnouncement(store, eventType, event);
   return { eventType, terminal };
 }
 
+
+// The retry window, observed at the head: an announcement (either channel) sets
+// the pending marker, a turn-alive signal clears it. One funnel each way.
+function observeRetryAnnouncement(store: TaskStore, eventType: string, event: unknown): void {
+  const word = eventField(event, "data", "status", "type");
+  const statusWord = typeof word === "string" ? word : "";
+  const retryAnnounced = eventType === SESSION_RETRY_SCHEDULED || (eventType === SESSION_STATUS && statusWord === "retry");
+  const turnAlive = eventType === SESSION_EXECUTION_STARTED || (eventType === SESSION_STATUS && statusWord === "busy");
+  const childSessionId = getSessionIdFromEvent(event);
+  if (childSessionId === null) return;
+  if (retryAnnounced) markRetryScheduled(store, childSessionId);
+  else if (turnAlive) clearRetryScheduled(store, childSessionId);
+}
 /**
  * The event pump: the one loop every settlement, notification and gate rides.
  * Per-event errors are contained INSIDE onEvent; this owns the stream itself.

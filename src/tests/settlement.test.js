@@ -9,6 +9,21 @@
 
 import { abortedSessions, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, promptsTo, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
 
+// A retry announcement defers the idle that follows it: the turn is not over.
+const assertIdleDeferredDuringRetry = async (h, id, announce) => {
+  await h.fireEvent(announce(id));
+  await h.fireEvent(events.idle(id));
+  await assertNoticeCount(h, 0, "idle during a declared retry does not settle");
+};
+
+// A deferred turn settles once its replacement turn finishes (working + succeeded).
+const settleThenRace = async (h, id) => {
+  await h.fireEvent(events.working(id));
+  await h.fireEvent(events.succeeded(id));
+  await sleep(50);
+  return h.noticeKinds().length;
+};
+
 const settleRepeat = async (h, id, times) => {
   for (let spent = 0; spent < times; spent += 1) {
     await h.settle(id);
@@ -140,32 +155,6 @@ describe("settlement: the notification layer owns outcomes", () => {
     assert.ok(!rawTools.has("dynamic_task"), "no tools registered without the core APIs");
     });
 
-  it("defers settlement when a retry is scheduled", async () => {
-    const h = await setupHarness();
-    const { id } = await h.spawn({ description: "retry task" });
-    // A retry scheduled means the turn is not over — no settlement yet.
-    await h.fireEvent(events.retryScheduled(id, { at: Date.now(), attempt: 1, error: { message: "rate limited", retryAfterMs: 5000, type: "provider" } }));
-    await assertNoticeCount(h, 0, "retry scheduled does not settle");
-    // Idle after retry should not settle as Completed — defer until execution event.
-    await h.fireEvent(events.idle(id));
-    await assertNoticeCount(h, 0, "idle after retry does not settle as completed");
-  });
-
-
-  it("an empty-content terminal turn resumes silently, then reports transient when the budget is spent", async () => {
-    const { h, id, stale } = await emptyTurnHarness();
-    const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
-    // Silence within the budget: an empty turn-end is the interruption signature,
-    // and the parent is not woken for what the child recovers from.
-    await settleRepeat(h, id, TRANSIENT_RESUME_BUDGET);
-    await assertNoticeCount(h, 0, "empty-content blips are resumed, not reported");
-    assert.strictEqual(promptsTo(h.client, id).length, 1 + TRANSIENT_RESUME_BUDGET, "one resume prompt per budgeted blip");
-    // Budget spent: the parent is told, honestly labeled transient.
-    await settleOnce(h, id);
-    await assertNoticeCount(h, 1, "the budget's end is reported");
-    const [note] = h.notices();
-    await assertsTransientReport(note, stale, id, h);
-  });
   it("a genuine completion notifies completed with real content", async () => {
     const real = "The task produced real output.";
     const h = await setupHarness({
@@ -185,6 +174,57 @@ describe("settlement: the notification layer owns outcomes", () => {
     answerSays(summary, "completed", "task retained as completed");
   });
 
+});
+
+describe("settlement defers around host retries and empty-turn blips", () => {
+// A retry announced by EITHER host channel defers settlement: the static
+// session.retry.scheduled, or the in-flight session.status {type: "retry"}.
+// The payload shapes differ, the deferral must not.
+it("defers settlement when a retry is announced — session.retry.scheduled or session.status", async () => {
+  for (const announce of [
+    (sid) => events.retryScheduled(sid, { at: Date.now(), attempt: 1, error: { message: "rate limited", retryAfterMs: 5000, type: "provider" } }),
+    (sid) => events.statusRetry(sid, 1),
+  ]) {
+    const h = await setupHarness();
+    const { id } = await h.spawn({ description: "retry task" });
+    await assertIdleDeferredDuringRetry(h, id, announce);
+    // The retry's own turn settles it once it finishes.
+    const race = await settleThenRace(h, id);
+    assert.strictEqual(race, 1, "one notice from the retry's own outcome");
+  }
+});
+
+// The retry-pending marker is not a one-way latch: the first sign the turn is
+// alive again (status busy / execution.started) clears it, so the idle that
+// ends a LATER turn settles instead of being deferred forever.
+it("a turn that is alive again clears the retry-pending marker", async () => {
+  const h = await setupHarness();
+  const { id } = await h.spawn({ description: "recovered retry task" });
+  await assertIdleDeferredDuringRetry(h, id, (sid) => events.statusRetry(sid, 1));
+  // The retry begins running: the recovery window is over.
+  await h.fireEvent(events.statusBusy(id));
+  await h.fireEvent(events.working(id));
+  await h.fireEvent(events.idle(id));
+  await waitFor(() => h.noticeKinds().length > 0, "the recovered turn's idle settles it");
+  const [note] = h.notices();
+  textDeclaresKind(note.message, "completed", "not deferred: the retry window closed when the turn ran");
+});
+
+
+it("an empty-content terminal turn resumes silently, then reports transient when the budget is spent", async () => {
+  const { h, id, stale } = await emptyTurnHarness();
+  const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
+  // Silence within the budget: an empty turn-end is the interruption signature,
+  // and the parent is not woken for what the child recovers from.
+  await settleRepeat(h, id, TRANSIENT_RESUME_BUDGET);
+  await assertNoticeCount(h, 0, "empty-content blips are resumed, not reported");
+  assert.strictEqual(promptsTo(h.client, id).length, 1 + TRANSIENT_RESUME_BUDGET, "one resume prompt per budgeted blip");
+  // Budget spent: the parent is told, honestly labeled transient.
+  await settleOnce(h, id);
+  await assertNoticeCount(h, 1, "the budget's end is reported");
+  const [note] = h.notices();
+  await assertsTransientReport(note, stale, id, h);
+});
 });
 
 describe("notification delivery records", () => {

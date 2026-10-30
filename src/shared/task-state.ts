@@ -497,14 +497,20 @@ export function noteActivity(
  * While a retry is scheduled, the turn is not over and an idle event
  * must not settle it as Completed — the retry may still succeed.
  */
-export function markRetryScheduled(
-  store: TaskStore,
-  childSessionId: SessionId,
-): boolean {
-  return annotateActive(store, childSessionId, (active) => {
-    active.retryScheduledAt = Date.now();
+// One funnel both ways: setting the marker (announce) and clearing it (the turn
+// is alive again) are the same annotate call with a different value, so a
+// one-way latch is a build artifact no one wrote, never a silent stall.
+const writeRetryScheduled = (store: TaskStore, childSessionId: SessionId, retryScheduledAt: number | undefined): boolean =>
+  annotateActive(store, childSessionId, (active) => {
+    active.retryScheduledAt = retryScheduledAt;
   });
-}
+
+export const markRetryScheduled = (store: TaskStore, childSessionId: SessionId): boolean =>
+  writeRetryScheduled(store, childSessionId, Date.now());
+
+/** The first sign the turn is alive again closes the recovery window. */
+export const clearRetryScheduled = (store: TaskStore, childSessionId: SessionId): boolean =>
+  writeRetryScheduled(store, childSessionId, undefined);
 
 export function turnReplacementPending(
   task: Pick<ActiveTaskState, "replacedAt" | "turnLiveAt"> | undefined,

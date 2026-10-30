@@ -26,6 +26,7 @@ import {
   SESSION_EXECUTION_SUCCEEDED,
   SESSION_IDLE,
   SESSION_RETRY_SCHEDULED,
+  SESSION_STATUS,
 } from "../../../dist/shared/host-events.js";
 import { notificationKindOf } from "../../../dist/shared/notification-text.js";
 import { armedFlag, fault } from "./faults.js";
@@ -46,6 +47,12 @@ const hostEvent = (type, id, properties) => ({ data: { sessionID: id, ...propert
 export const events = {
   idle: (id, properties = {}) => hostEvent(SESSION_IDLE, id, properties),
   retryScheduled: (id, properties = {}) => hostEvent(SESSION_RETRY_SCHEDULED, id, properties),
+  // The host's ongoing retry channel: session.status events carry the retry in
+  // flight ({type: "retry", attempt, next}) and the turn coming back to life
+  // ({type: "busy"}). Same sessionID-addressed shape as the rest.
+  statusRetry: (id, attempt = 1, next = Date.now() + 5000) =>
+    hostEvent(SESSION_STATUS, id, { status: { attempt, message: "rate limited", next, type: "retry" } }),
+  statusBusy: (id) => hostEvent(SESSION_STATUS, id, { status: { type: "busy" } }),
   /**
    * A turn at work: the host saying this session is running. It is the first
    * fact a replacement turn produces, and therefore the life sign that lets that

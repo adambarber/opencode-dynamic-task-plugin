@@ -40,6 +40,10 @@ export const FORM_CANCELLED = "form.cancelled" satisfies HostEventType;
 // The turn-ending events, spelled here for the same reason: a lifecycle branch
 // that names a session event nobody publishes would be equally invisible.
 export const SESSION_RETRY_SCHEDULED = "session.retry.scheduled" satisfies HostEventType;
+// The host's ONGOING turn-status channel: ephemeral {type: "idle"|"retry"|"busy"}
+// events. The retry variant carries attempt/next — the same fact as
+// retry.scheduled, delivered while the retry is in flight.
+export const SESSION_STATUS = "session.status" satisfies HostEventType;
 export const SESSION_IDLE = "session.idle" satisfies HostEventType;
 export const SESSION_ERROR = "session.execution.failed" satisfies HostEventType;
 export const SESSION_DELETED = "session.deleted" satisfies HostEventType;

@@ -604,7 +604,11 @@ function bindChild(harness, id, spawnArgs, ctx) {
       ({ id } = out);
       return out;
     },
-    steer: (prompt) => tool("task_continue")({ prompt }),
+    steer: async (prompt) => {
+      const out = await tool("task_continue")({ prompt });
+      await sleep(0); // fire-and-forget prompt lands on the next microtask
+      return out;
+    },
     interrupt: () => tool("task_interrupt")(),
     status: () => tool("task_status")(),
     result: () => tool("task_result")(),

@@ -139,7 +139,7 @@ describe("task_continue branches", () => {
     answerSays(out, "Steer sent");
     answerSays(out, "task_interrupt", "names the stall recovery");
     assert.ok(wasAborted(h.client, id), "the running turn is stopped first");
-    const followUps = promptsToCarrying(h.client, id, "follow up");
+        const followUps = promptsToCarrying(h.client, id, "follow up");
     assert.strictEqual(followUps.length, 1, "the message becomes the next turn");
     assert.ok(
     promptText(followUps[0]).includes("[Parent steer"),
@@ -168,7 +168,7 @@ describe("task_continue branches", () => {
         answerSays(out, "no turn was running", "the truth: nothing was aborted");
         answerSays(out, "it will read it on its next turn", "the idle wording");
         answerOmits(out, "aborted", "an idle task cost nothing");
-        assert.strictEqual(promptsToCarrying(h.client, id, "pivot").length, 1, "the message still fires");
+                assert.strictEqual(promptsToCarrying(h.client, id, "pivot").length, 1, "the message still fires");
       }],
     ["an unanswered presence read is named as unknown, never dressed as either",
       { hooks: { presenceThrows: new Error("status down") } }, async ({ c }) => {
@@ -219,7 +219,7 @@ describe("task_continue branches", () => {
     answerSays(steerResult, "Steer sent", "the steer is confirmed");
     answerSays(steerResult, "next step boundary", "the native cost is named: none");
     answerOmits(steerResult, "aborted", "nothing was aborted");
-    assert.deepStrictEqual(deliveriesTo(h.client, id), ["steer"], "the prompt carried the native delivery");
+        assert.deepStrictEqual(deliveriesTo(h.client, id), ["steer"], "the prompt carried the native delivery");
     assert.strictEqual(promptsToCarrying(h.client, id, "follow up").length, 1, "the message is the parent's words");
     const state = await stateOf(c);
     assert.ok(state.includes("State: active"), "a steer never settles");
@@ -273,7 +273,7 @@ describe("task_continue branches", () => {
       const inboxChild = await withInboxChild();
       const { c, h, id } = inboxChild;
       await c.steer("pivot");
-      const deliveries = h.client.testState.promptDeliveries.filter((d) => d.to === id);
+            const deliveries = h.client.testState.promptDeliveries.filter((d) => d.to === id);
       assert.ok(deliveries.length >= 1, "the delivery was recorded");
       assert.deepStrictEqual(deliveries[deliveries.length - 1].delivery, "steer", "the steer verdict rode the prompt");
     });
@@ -368,7 +368,7 @@ describe("task_continue branches", () => {
       await sleep(30);
       releaseAbort(); // the abort lands; the steer re-validates and finds it settled
       const out = await steer;
-      answerSays(out, "revived", "closes the loop in one call");
+            answerSays(out, "revived", "closes the loop in one call");
       assert.strictEqual(
         promptTextsTo(h.client, c.id).filter((t) => t === "pivot").length,
         1,
@@ -422,7 +422,7 @@ describe("task_continue branches", () => {
 
     const out = await c.steer("summarize");
     answerSays(out, "Follow-up sent");
-    const followUps = promptsToCarrying(h.client, id, "summarize");
+        const followUps = promptsToCarrying(h.client, id, "summarize");
     assert.strictEqual(followUps.length, 1, "the same session is revived, not replaced");
 
     // The settled turn published its ending more than once, and the extra copy
@@ -462,7 +462,8 @@ describe("task_continue branches", () => {
     await h.settle(id);
     const out = await h.tool.task_continue.execute({ model: "other/thing-1", prompt: "again", session_id: id });
     answerSays(out, "Follow-up sent");
-    // v2 routes via `switchModel`, not a model key on the prompt body — the prompt
+    await sleep(0); // fire-and-forget prompt lands on the next microtask
+        // v2 routes via `switchModel`, not a model key on the prompt body — the prompt
     // itself carries only text, and the route is the host's own record of it.
     assert.deepStrictEqual(h.client.testState.routed.get(id), { agent: "explore", modelID: "thing-1", providerID: "other" });
     await statusSays(c, "Model: other/thing-1", "persists on the record");

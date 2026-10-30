@@ -69,7 +69,7 @@ export function fireAndForget(
   work: (client: OpenCodeClient) => unknown,
   onFailure?: FailureReporter,
 ): void {
-  void Promise.resolve(work(host[HOST])).catch((error: unknown) => {
+  void Promise.resolve().then(() => work(host[HOST])).catch((error: unknown) => {
     // Swallowed only when there is nobody to tell. A caller that classifies the
     // failure passes `onFailure`, so the report is not lost to this shape.
     onFailure?.(error);

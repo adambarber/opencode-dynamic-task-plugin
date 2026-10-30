@@ -317,6 +317,29 @@ describe("boot reconciles what the last boot was still running", () => {
   // word the host declares": if the host ever adds one, that case fails until the new
   // word's meaning is decided in writing.
 
+  // The host's OWN verdict is in hand at reconcile time (SessionInfo.outcome).
+  // Discarding it and letting the transcript reclassify is the birdcage specimen:
+  // a failed turn whose last words were mid-work prose settled as "completed".
+  it("a child whose host turn record says failed settles error, not from its transcript", async () => {
+    const { h, notices } = await bootWithRunners(
+      { ses_failed: runningEntry("ses_failed") },
+      { ses_failed: "failed" },
+    );
+    await waitFor(() => notices().length > 0, "the failed child to settle");
+    textDeclaresKind(notices()[0].message, "error", "the host's verdict, not the transcript's");
+    assert.deepStrictEqual(Object.keys(ledgerActive(h)), [], "nothing left running");
+  });
+
+  it("a child whose host turn record says interrupted settles interrupted", async () => {
+    const { notices } = await bootWithRunners(
+      { ses_cut: runningEntry("ses_cut") },
+      { ses_cut: "interrupted" },
+    );
+    await waitFor(() => notices().length > 0, "the interrupted child to settle");
+    textDeclaresKind(notices()[0].message, "error", "an unfinished turn is not a completed one");
+    answerMatches(notices()[0].message, /interrupted/i, "the cause names the interruption");
+  });
+
   it("a spawned task is on disk while it runs, and gone from the active set once it settles", async () => {
     const directory = tmpProjectDir();
     const h = await setupHarness({ directory, hooks: {} });

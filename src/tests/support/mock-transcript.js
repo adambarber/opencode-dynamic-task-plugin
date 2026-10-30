@@ -86,10 +86,17 @@ export const stampHostTurn = (state, id, extra) => {
 // orphan its error under `info` while the readers walk the new `time`.
 const messageRole = (m) => m?.type ?? m?.info?.role;
 const messageClock = (m) => m?.time ?? m?.info?.time;
+// "Open" means the host was mid-write: a message with a created clock but no
+// completed one (the streaming shape), or no message at all. A message with NO
+// time is a finished v1-era seed, not an open one — reading it as open
+// manufactured empty endings (#52's silent resume loop).
 const finishOpenMessage = (have, extra) => {
   const last = have.at(-1);
-  const open = messageRole(last) === "assistant" && messageClock(last)?.completed === undefined;
-  if (!open) return [...have, hostSaid("", undefined, extra)];
+  const clock = messageClock(last);
+  const open = messageRole(last) === "assistant" && clock !== undefined && clock.completed === undefined;
+  // Only an OPEN message is finished. Appending a blank one manufactured a
+  // turn the host never wrote — the silent-resume loop #52 chased.
+  if (!open) return [...have];
   const stamped = { ...last, ...extra };
   if (last?.info) stamped.info = { ...last.info, time: { ...messageClock(last), completed: Date.now() } };
   else stamped.time = { ...messageClock(last), completed: Date.now() };

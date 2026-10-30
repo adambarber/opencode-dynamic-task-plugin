@@ -1,5 +1,5 @@
 
-import { ARMERS, assert, createMockClient, describe, FAULTS, hostOutcomeWords, it, listFakeModules, listTestSupportFiles, readSource, setHostTurn, sleep, unengagedFaults } from "./support/index.js";
+import { ARMERS, assert, createMockClient, describe, FAULTS, hostOutcomeWords, hostSaying, it, listFakeModules, listTestSupportFiles, readSource, setHostTurn, sleep, unengagedFaults } from "./support/index.js";
 
 /**
  * The fake host is a CLAIM about the host, and nothing used to check it. That is
@@ -111,10 +111,14 @@ describe("invariant: only the host's own words can describe a turn", () => {
     setHostTurn(state, "ses_x", "open");
     assert.strictEqual(state.turns.get("ses_x").outcome, undefined, "a turn with no verdict is a turn still open");
 
+    // A turn that said something: the closer finishes THE message, never appends
+    // a blank one — a manufactured blank made every empty turn read as silence (#52).
+    state.transcripts.set("ses_x", [hostSaying("work in progress")]);
     setHostTurn(state, "ses_x", "succeeded");
     assert.strictEqual(state.turns.get("ses_x").outcome, "succeeded", "the verdict the turn ended with is the one production reads");
     const last = state.transcripts.get("ses_x").at(-1);
     assert.notStrictEqual(last.time?.completed, undefined, "and the message it was writing is finished");
+    assert.strictEqual(state.transcripts.get("ses_x").length, 1, "no blank message was manufactured");
   });
 
   it("finds no fake holding a turn word anywhere but that one funnel", () => {

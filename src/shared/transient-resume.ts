@@ -25,11 +25,10 @@
  */
 
 import type { AgentCapSource } from "./caps.js";
-import { classifyFailure, FailureClass } from "./failure-class.js";
+import { FailureClass } from "./failure-class.js";
 import type { SessionId } from "./ids.js";
 import { retainedFor } from "./settled-record.js";
 import type { TaskStore } from "./store.js";
-import type { TaskState } from "./task-state.js";
 
 /**
  * Automatic revivals a child may be given before the next transient failure is
@@ -63,13 +62,11 @@ export const TRANSIENT_RESUME_BUDGET = 2;
 export function transientResumeAvailable(
   store: TaskStore,
   childSessionId: SessionId,
-  verdict: TaskState,
-  errorDetail: unknown,
-  capSource: AgentCapSource | undefined,
-  retryAfterMs?: number,
+  decision: { failure: FailureClass; capSource: AgentCapSource | undefined },
 ): boolean {
+  const { failure, capSource } = decision;
   if (capSource === undefined) return false;
-  if (classifyFailure(verdict, errorDetail, retryAfterMs) !== FailureClass.Transient) return false;
+  if (failure !== FailureClass.Transient) return false;
   const spent = retainedFor(store, childSessionId)?.transientResumes ?? 0;
   return spent < TRANSIENT_RESUME_BUDGET;
 }

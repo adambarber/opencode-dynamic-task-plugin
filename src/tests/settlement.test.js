@@ -7,7 +7,39 @@
  * still owed — rather than about any one tool.
  */
 
-import { abortedSessions, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
+import { abortedSessions, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, deferred, describe, dispatchArgs, eventHarness, events, harnessRejectingPrompt, it, notifiedNotes, promptsTo, sessionIds, setupHarness, sleep, textDeclaresKind, waitFor, wasAborted, withChild, withSettledChild, withSingleSlot } from "./support/index.js";
+
+const settleRepeat = async (h, id, times) => {
+  for (let spent = 0; spent < times; spent += 1) {
+    await h.settle(id);
+    await sleep(150);
+  }
+};
+
+const settleOnce = async (h, id) => {
+  await h.settle(id);
+  await sleep(150);
+};
+
+// A child whose every turn ends empty reads as the interruption signature, so
+// the harness is the same for each budget case.
+const emptyTurnHarness = async (stale = "Reading the three target tests...") => {
+  const staleMsgs = [
+    { content: [{ text: stale, type: "text" }], time: { completed: Date.now() - 10000, created: Date.now() - 10000 }, type: "assistant" },
+    { content: [], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
+  ];
+  const h = await setupHarness({ hooks: { messages: () => staleMsgs } });
+  const { id } = await h.spawn({ description: "empty stop task" });
+  return { h, id, stale };
+};
+
+const assertsTransientReport = async (note, stale, id, h) => {
+  textDeclaresKind(note.message, "error", "reported as the error it became");
+  answerSays(note.message, "Failure class: transient", "named a blip, not broken work");
+  answerOmits(note.message, stale, "stale last words are not quoted");
+  const summary = await h.child(id).result();
+  answerSays(summary, "error", "task retained as error");
+};
 
 describe("settlement: the notification layer owns outcomes", () => {
   // The head that sees EVERY event is the most-executed code in the plugin, so
@@ -120,24 +152,19 @@ describe("settlement: the notification layer owns outcomes", () => {
   });
 
 
-  it("an empty-content terminal turn settles as error, not completed with stale words", async () => {
-    const stale = "Reading the three target tests...";
-    const staleMsgs = [
-      { content: [{ text: stale, type: "text" }], time: { completed: Date.now() - 10000, created: Date.now() - 10000 }, type: "assistant" },
-      { content: [], time: { completed: Date.now(), created: Date.now() }, type: "assistant" },
-    ];
-    const h = await setupHarness({
-      hooks: {
-        messages: () => staleMsgs,
-      },
-    });
-    const { id } = await h.spawn({ description: "empty stop task" });
-    const note = await h.settledNotice(id);
-    textDeclaresKind(note.message, "error", "empty-content turn is an error, not completed");
-    answerSays(note.message, "The turn ended with no content", "honest empty-content note");
-    answerOmits(note.message, stale, "stale last words are not quoted");
-    const summary = await h.child(id).result();
-    answerSays(summary, "error", "task retained as error");
+  it("an empty-content terminal turn resumes silently, then reports transient when the budget is spent", async () => {
+    const { h, id, stale } = await emptyTurnHarness();
+    const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
+    // Silence within the budget: an empty turn-end is the interruption signature,
+    // and the parent is not woken for what the child recovers from.
+    await settleRepeat(h, id, TRANSIENT_RESUME_BUDGET);
+    await assertNoticeCount(h, 0, "empty-content blips are resumed, not reported");
+    assert.strictEqual(promptsTo(h.client, id).length, 1 + TRANSIENT_RESUME_BUDGET, "one resume prompt per budgeted blip");
+    // Budget spent: the parent is told, honestly labeled transient.
+    await settleOnce(h, id);
+    await assertNoticeCount(h, 1, "the budget's end is reported");
+    const [note] = h.notices();
+    await assertsTransientReport(note, stale, id, h);
   });
   it("a genuine completion notifies completed with real content", async () => {
     const real = "The task produced real output.";

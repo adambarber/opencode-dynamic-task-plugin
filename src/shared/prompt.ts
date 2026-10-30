@@ -5,6 +5,7 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
+import type { HostErrorShape } from "./failure-class.js";
 import { callHost, type FailureReporter, fireAndForget, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
 import { hostPayload } from "./host-events.js";
@@ -496,18 +497,41 @@ export function messageErrorDetail(message: unknown): string {
  * honor it rather than re-deriving retryability from message prose alone.
  * Returns undefined when the message carries no retryable signal.
  */
-function messageRetryAfterMs(message: unknown): number | undefined {
+
+// The structured error a message carries, when the surface declares one: the
+// host's own machine-readable word about what went wrong.
+function messageStructuredError(message: unknown): Record<string, unknown> | undefined {
   if (!isMessage(message) || !isEventRecord(message)) return undefined;
   const info = isEventRecord(message.info) ? message.info : undefined;
   const error = info?.error ?? message.error;
-  if (!isEventRecord(error)) return undefined;
-  const value = error.retryAfterMs;
+  return isEventRecord(error) ? error : undefined;
+}
+
+// The host's structured verdict off the message error union: the name
+// discriminant and, when the surface declares it, the retryability flag.
+function messageErrorShape(message: unknown): HostErrorShape | undefined {
+  const error = messageStructuredError(message);
+  if (error === undefined) return undefined;
+  const read = (key: "name" | "type"): string | undefined => {
+    const value = error[key];
+    return typeof value === "string" ? value : undefined;
+  };
+  const name = read("name") ?? read("type");
+  const isRetryable = typeof error.isRetryable === "boolean" ? error.isRetryable : undefined;
+  if (name === undefined && isRetryable === undefined) return undefined;
+  return { ...(name !== undefined ? { name } : {}), ...(isRetryable !== undefined ? { isRetryable } : {}) };
+}
+
+function messageRetryAfterMs(message: unknown): number | undefined {
+  const error = messageStructuredError(message);
+  const value = error?.retryAfterMs;
   return typeof value === "number" ? value : undefined;
 }
 
 interface ErrorDetail {
   detail: string;
   retryAfterMs?: number | undefined;
+  errorShape?: HostErrorShape | undefined;
 }
 
 function latestMessageErrorDetail(messages: unknown): ErrorDetail {
@@ -517,6 +541,7 @@ function latestMessageErrorDetail(messages: unknown): ErrorDetail {
       if (role === ASSISTANT_ROLE || role === ERROR_ROLE) {
         return {
           detail: messageErrorDetail(message),
+          errorShape: messageErrorShape(message),
           retryAfterMs: messageRetryAfterMs(message),
         };
       }
@@ -536,6 +561,7 @@ function latestMessageErrorDetail(messages: unknown): ErrorDetail {
 export interface HydratedOutcome {
   errorDetail: string;
   retryAfterMs?: number | undefined;
+  errorShape?: HostErrorShape | undefined;
   text: string;
   unreadable: boolean;
 }
@@ -544,15 +570,17 @@ export async function hydrateLatestOutcome(
   host: OpaqueHost,
   sessionId: string,
 ): Promise<HydratedOutcome> {
-  const blank: HydratedOutcome = { errorDetail: "", retryAfterMs: undefined, text: "", unreadable: true };
+  const blank: HydratedOutcome = { errorDetail: "", errorShape: undefined, retryAfterMs: undefined, text: "", unreadable: true };
   try {
     // Through the shared transcript read, which is where the bound lives. It used
     // to be a second chokepoint with its own deadline, so the two could disagree
     // about how long a child gets to describe itself.
     const messages = await readSessionMessages(host, sessionId);
+    const error = latestMessageErrorDetail(messages);
     return {
-      errorDetail: latestMessageErrorDetail(messages).detail,
-      retryAfterMs: latestMessageErrorDetail(messages).retryAfterMs,
+      errorDetail: error.detail,
+      errorShape: error.errorShape,
+      retryAfterMs: error.retryAfterMs,
       text: getLatestAssistantText(messages),
       unreadable: false,
     };

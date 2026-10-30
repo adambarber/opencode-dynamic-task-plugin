@@ -20,6 +20,11 @@ import { assert, describe, it } from "./support/index.js";
 
 const failed = (detail) => classifyFailure(TaskState.Error, detail);
 
+// The assistant message error is a discriminated union {name, data}; APIError
+// carries isRetryable — the host's OWN retry verdict, and it outranks prose.
+const hostShape = (isRetryable, detail) =>
+  classifyFailure(TaskState.Error, detail, { errorShape: { isRetryable, name: "APIError" } });
+
 // One door for "all of these details land on this class". The list cases differ
 // only in WHICH words they name, and three hand-rolled loops over three lists is
 // three places for the table to drift without a case noticing.
@@ -100,24 +105,44 @@ describe("classifyFailure: structural means retrying changes nothing", () => {
     ], FailureClass.Structural);
   });
 
-  it("does not resume an interrupt, and declines to guess about silence", () => {
+  it("does not resume bare aborted prose, which cannot tell operator-stop from a dropped stream", () => {
     // An interrupt is the operator saying stop, and the host reports it through
-    // the same aborted-turn shape a dropped connection produces. Reviving that
-    // is a child that ignores the stop button — so the one case where a loose
-    // read undoes the operator's own decision is the case that must NOT be
-    // rescued by a revival. Silence is grouped with it because both decline for
-    // the same reason: no evidence it was the network's fault.
-    assertClassOf(["Aborted", "MessageAbortedError: Aborted", "", undefined, 42], FailureClass.Structural);
+    // the same aborted-turn shape a dropped connection produces. Prose alone
+    // cannot tell them apart, and reviving an operator's stop button is a child
+    // that ignores the stop — so prose-only aborts stay structural. The SHAPE
+    // (name: "MessageAbortedError", read off the message union) can tell them
+    // apart, and it is transient — see the structured-verdict suite below.
+    assertClassOf(["Aborted", "MessageAbortedError: Aborted"], FailureClass.Structural);
   });
   it("treats retryAfterMs as an affirmative transient signal even without matching prose", () => {
     // The host's own retryAfterMs says this error is retryable. The plugin
     // must not override that with a Structural verdict just because the
     // message text doesn't match a known fragment.
-    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", 5000), FailureClass.Transient);
-    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", 0), FailureClass.Structural);
+    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", { retryAfterMs: 5000 }), FailureClass.Transient);
+    assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error", { retryAfterMs: 0 }), FailureClass.Structural);
     assert.strictEqual(classifyFailure(TaskState.Error, "unknown provider error"), FailureClass.Structural);
   });
 
+});
+
+describe("classifyFailure: the host's own structured error verdict", () => {
+  it("the host's isRetryable flag outranks the message text", () => {
+    assert.strictEqual(hostShape(true, "some weird prose"), FailureClass.Transient);
+    assert.strictEqual(hostShape(false, "temporarily unavailable"), FailureClass.Structural);
+    assert.strictEqual(hostShape(false, ""), FailureClass.Structural);
+  });
+
+  it("MessageAbortedError is the interrupted-stream signature: transient", () => {
+    assert.strictEqual(classifyFailure(TaskState.Error, "Aborted", { errorShape: { name: "MessageAbortedError" } }), FailureClass.Transient);
+  });
+
+  // Empty detail with no shape is NOT enough to resume: an affirmative failure
+  // EVENT with no payload is the host's verdict. Only the IDLE empty-turn path
+  // (settleOutcome's emptyTurn) reads as the interruption signature.
+  it("empty detail with no shape stays structural", () => {
+    assert.strictEqual(classifyFailure(TaskState.Error, ""), FailureClass.Structural);
+    assert.strictEqual(classifyFailure(TaskState.Error, undefined), FailureClass.Structural);
+  });
 });
 
 describe("failureNote: the parent is told which kind it is, in the same words", () => {

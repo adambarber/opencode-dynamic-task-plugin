@@ -351,7 +351,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // every site, any of which could disagree about what "empty" means.
   const assertHydrated = async (read, expected) => assert.deepStrictEqual(
     await hydrateLatestOutcome(clientReading(read), "ses_1"),
-    { errorDetail: "", retryAfterMs: undefined, text: "", unreadable: false, ...expected },
+    { errorDetail: "", errorShape: undefined, retryAfterMs: undefined, text: "", unreadable: false, ...expected },
   );
 
   it("reads the latest assistant text from the session", async () => {
@@ -363,7 +363,7 @@ describe("prompt dance: hydrateLatestOutcome", () => {
       info: { error: { data: { message: "Too Many Requests" }, name: "APIError" }, role: ASSISTANT_ROLE },
       parts: [],
     }];
-    await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests" });
+    await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests", errorShape: { name: "APIError" } });
   });
 
   // The field defect, verbatim. A child aborted mid-turn notifies SUCCESS
@@ -371,20 +371,21 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   // it, and the verdict kept the host's `idle`. The child's last real words
   // still make good context beside the error — the text is not the bug, the
   // lost error is — so the outcome keeps both and the kind becomes `error`.
+  const abortedOutcome = { errorDetail: "Aborted", errorShape: { name: "MessageAbortedError" }, text: "" };
   it("reports an aborted turn as the failure it is, not the turn before it", async () => {
     const stream = [turn(ASSISTANT_ROLE, "the child's real last words"), abortedTurn()];
-    await assertHydrated(() => stream, { errorDetail: "Aborted", text: "" });
+    await assertHydrated(() => stream, abortedOutcome);
   });
 
   it("an aborted turn with nothing said before it is still a failure, not (completed)", async () => {
-    await assertHydrated(() => [abortedTurn()], { errorDetail: "Aborted", text: "" });
+    await assertHydrated(() => [abortedTurn()], abortedOutcome);
   });
   it("surfaces an error on an assistant message behind a newer user message", async () => {
     const stream = [
       { info: { error: { data: { message: "rate limited" }, name: "APIError" } }, parts: [{ text: "said something", type: "text" }], role: ASSISTANT_ROLE },
       turn("user", "next question"),
     ];
-    await assertHydrated(() => stream, { errorDetail: "rate limited", text: "said something" });
+    await assertHydrated(() => stream, { errorDetail: "rate limited", errorShape: { name: "APIError" }, text: "said something" });
   });
 
 
@@ -394,6 +395,6 @@ describe("prompt dance: hydrateLatestOutcome", () => {
     const gone = () => {
       throw new Error("gone");
     };
-    await assertHydrated(gone, { unreadable: true });
+    await assertHydrated(gone, { errorShape: undefined, unreadable: true });
   });
 });

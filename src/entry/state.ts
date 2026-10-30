@@ -12,7 +12,7 @@ import { LifecycleStatus } from "../shared/host-events.js";
 import { hasInboxSupport, installInboxSupport } from "../shared/inbox.js";
 import { type LedgerChange, LedgerChangeKind } from "../shared/ledger-change.js";
 import { createDeliveryClaimStore, createLedgerStore } from "../shared/ledger-storage.js";
-import { hostTurnRunning, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
+import { hostTurnRunning, hostTurnSucceeded, readLiveness, readSessionPresence, SessionExistence } from "../shared/liveness.js";
 import {
   configureDeliveryClaims,
   configurePendingPersistence,
@@ -29,6 +29,11 @@ import { createStateFacade } from "../shared/state-facade.js";
 import { restoreActive, restoreRetained } from "../shared/task-ledger.js";
 import { createTaskStore, pruneRetainedTasks, type TaskStore } from "../shared/task-state.js";
 import { releaseWaitingDispatches, settleRunningChild } from "./lifecycle.js";
+
+        const CAUSES: Record<string, string> = {
+          failed: "The host recorded this child's turn as failed across the restart.",
+          interrupted: "The host recorded this child's turn as interrupted across the restart: the turn did not finish. Resume with task_continue if the work should continue.",
+        };
 
 // Plugin-level state store (ephemeral — lost on restart)
 export interface PluginState {
@@ -309,7 +314,18 @@ async function reconcileRestored(host: OpaqueHost, store: TaskStore): Promise<vo
       // same in there.
       const presence = await readSessionPresence(host, childSessionId);
       if (presence.existence !== SessionExistence.Missing) {
-        await settleRunningChild(host, store, childSessionId, { status: LifecycleStatus.Idle });
+        // The host's OWN verdict outranks the transcript: it watched the turn end.
+        // A "failed" outcome reclassified by mid-work last words is the false
+        // completion this pass shipped once before (#52).
+        // The host's OWN verdict outranks the transcript: it watched the turn end.
+        // A "failed" outcome reclassified by mid-work last words is the false
+        // completion this pass shipped once before (#52). An interrupted turn
+        // did not finish either — Error naming the interruption, since Blocked
+        // means the CHILD asked for the parent and here the parent must decide.
+        const verdict = reading.hostTurn;
+        const status = hostTurnSucceeded(verdict) ? LifecycleStatus.Idle : LifecycleStatus.Error;
+        const cause = verdict !== undefined ? CAUSES[verdict] : undefined;
+        await settleRunningChild(host, store, childSessionId, { ...(cause ? { cause } : {}), status });
         continue;
       }
       // No cap source, and deliberately so: a boot-reconciled child is not a

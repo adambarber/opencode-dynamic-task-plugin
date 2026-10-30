@@ -284,7 +284,14 @@ function settleOutcome(input: SettlementFacts & {
     base === TaskState.Completed && (input.outcome.errorDetail || input.outcome.unreadable || input.outcome.text === "")
       ? TaskState.Error
       : base;
-  const failure = classifyFailure(verdict, input.outcome.errorDetail, input.outcome.retryAfterMs);
+  // Empty content on an IDLE ending is the interruption signature — the resume
+  // budget bounds it. An affirmative failure EVENT with no detail is the host's
+  // verdict, and stays structural.
+  const emptyTurn = input.status === LifecycleStatus.Idle && input.outcome.text === "" && !input.outcome.unreadable
+    && !input.outcome.errorDetail && !input.outcome.retryAfterMs && !input.outcome.errorShape;
+  const failure = emptyTurn
+    ? FailureClass.Transient
+    : classifyFailure(verdict, input.outcome.errorDetail, { errorShape: input.outcome.errorShape, retryAfterMs: input.outcome.retryAfterMs });
   const quote = input.outcome.text || input.outcome.errorDetail || "";
   const causeNote = input.cause ? `\n\n${input.cause}` : "";
   const classNote = failureNote(failure, input.resumesSpent);
@@ -397,7 +404,7 @@ export async function settleRunningChild(
   // that recovers tells the parent its real outcome, because the revival cleared
   // the settle-dedup (reviveWithPrompt) — a resume that left it in place would
   // swallow the next outcome too.
-  if (transientResumeAvailable(store, childSessionId, verdict, outcome.errorDetail, capSource, outcome.retryAfterMs)) {
+  if (transientResumeAvailable(store, childSessionId, { capSource, failure: settled.failure })) {
     const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
     if (resumeAfterBlip(host, store, childSessionId, capSource)) {
       void safeLog(LogLevel.Info, `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);

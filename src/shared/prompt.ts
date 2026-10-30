@@ -5,9 +5,9 @@
 // Result hydration semantics (single-wait, content-first) land here in
 // Task 03 proper; the funnel exists now so no new prompt path can bypass it.
 
-import type { HostErrorShape } from "./failure-class.js";
 import { callHost, type FailureReporter, fireAndForget, type OpaqueHost } from "./client.js";
 import { READ_BOUNDS } from "./execution-bound.js";
+import type { HostErrorShape } from "./failure-class.js";
 import { hostPayload } from "./host-events.js";
 import { errorMessage, eventField, eventString, isEventRecord } from "./host-shape.js";
 import type { Verdict } from "./verdict.js";

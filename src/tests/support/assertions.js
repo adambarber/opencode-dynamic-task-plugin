@@ -141,7 +141,7 @@ export function answerOmits(answer, reason, note) {
  * has landed before the count is snapshotted.
  */
 /** Wait for the notice count to go quiet (two polls, same value), up to 2s. */
-export async function awaitQuiescent(h) {
+async function awaitQuiescent(h) {
   let stable = 0;
   const deadline = Date.now() + 2000;
   while (stable < 2 && Date.now() < deadline) {

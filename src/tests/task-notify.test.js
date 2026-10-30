@@ -10,7 +10,7 @@
 
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
 import { NOTICE_SENT } from "../../dist/shared/voice.js";
-import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, waitFor, PARENT, withChild, withSettledChild } from "./support/index.js";
+import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, PARENT, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, waitFor, withChild, withSettledChild } from "./support/index.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 

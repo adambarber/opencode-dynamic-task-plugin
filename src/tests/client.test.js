@@ -2,8 +2,8 @@
 // exception — work() is deferred into the promise chain so sync throws become
 // rejections the .catch can handle.
 
-import { assert, describe, it } from "./support/index.js";
 import { asOpaqueHost, fireAndForget } from "../../dist/shared/client.js";
+import { assert, describe, it } from "./support/index.js";
 
 const fakeClient = { session: { prompt: async () => {} } };
 const host = asOpaqueHost(fakeClient);

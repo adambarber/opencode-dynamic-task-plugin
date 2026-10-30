@@ -280,15 +280,13 @@ function readHostOutcome(info: Record<string, unknown>): HostTurnWord | undefine
 }
 
 // Every word the SDK declares, so an undeclared one cannot pass as a verdict.
-export const HOST_TURN_WORD_LIST = ["succeeded", "failed", "interrupted"] as const;
+const HOST_TURN_WORD_LIST = ["succeeded", "failed", "interrupted"] as const;
 function isHostTurnWord(value: unknown): value is HostTurnWord {
   return includesWord(HOST_TURN_WORD_LIST, value);
 }
 
-/** Typed reads of the host's verdict, spelled once: no raw-string comparison sites. */
+/** Typed read of the host's verdict, spelled once: no raw-string comparison sites. */
 export const hostTurnSucceeded = (word: HostTurnWord | undefined): boolean => word === HOST_TURN_WORD_LIST[0];
-export const hostTurnFailed = (word: HostTurnWord | undefined): boolean => word === HOST_TURN_WORD_LIST[1];
-export const hostTurnInterrupted = (word: HostTurnWord | undefined): boolean => word === HOST_TURN_WORD_LIST[2];
 
 /**
  * Presence, for the callers that only ask that. Existence and turn state come from

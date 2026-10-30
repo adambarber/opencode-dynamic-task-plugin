@@ -5,7 +5,7 @@ import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { isEventRecord } from "../shared/host-shape.js";
 import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
-import { LogLevel, getLatestNotification, noticeDedupKey, notifyParent, safeLog, takeNotice } from "../shared/notify.js";
+import { getLatestNotification, LogLevel, noticeDedupKey, notifyParent, safeLog, takeNotice } from "../shared/notify.js";
 import { isParentless } from "../shared/session-lifecycle.js";
 import { findTask, pruneRetainedTasks, TaskState } from "../shared/task-state.js";
 import {
@@ -17,8 +17,8 @@ import {
   NOTICE_PARENTLESS,
   NOTICE_PENDING_ACK,
   NOTICE_SENT,
-  noticeRateLimited,
   noticeClaimRefused,
+  noticeRateLimited,
   noticeTooLong,
   parentUndelivered,
 } from "../shared/voice.js";

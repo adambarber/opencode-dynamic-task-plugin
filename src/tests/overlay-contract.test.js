@@ -13,10 +13,10 @@
 // fromJsonSchemaDocument shape differs — the server runs the nested rc.112, and only it
 // reproduces the production error text this gate exists for.
 
+import { Effect, JsonSchema, Schema, SchemaRepresentation } from "effect";
 import { overlayHandlers } from "../../dist/entry/state.js";
 import { OverlayRpc } from "../../dist/shared/overlay-rpc.js";
 import { createOverlayStore, overlayKey } from "../../dist/shared/overlay-store.js";
-import { Effect, JsonSchema, Schema, SchemaRepresentation } from "effect";
 import { assert, createMockClient, describe, facadeOver, it, withTempDir } from "./support/index.js";
 
 /** The host's decode for a plain JSON Schema, mirrored from core/rpc.ts. */

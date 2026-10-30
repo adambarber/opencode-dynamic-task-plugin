@@ -175,6 +175,28 @@ describe("settlement: the notification layer owns outcomes", () => {
     await failing.settle(id);
     assert.strictEqual(notes.length, 1, "exactly-once survives a late idle");
     });
+  // #9: a RETRYABLE failure on the INITIAL prompt (the transport refuses before
+  // the prompt is ever accepted) has no turn running and no terminal event ever
+  // coming — the old code returned on retryable, stranding the task Active and
+  // holding its concurrency slot forever. Because no turn started, the retryable
+  // failure must settle the task (error kind, transient class) rather than leave
+  // a zombie.
+  it("an initial prompt refused retryably settles as error, never stranding active", async () => {
+    const refusing = await setupHarness({
+      hooks: { childPromptFailOnce: { code: "ETIMEDOUT", message: "connect ETIMEDOUT" } },
+    });
+    const { id } = await refusing.spawn({ description: "never-accepted task" });
+    await waitFor(() => notifiedNotes(refusing.client).length === 1, "the retryable prompt-failure settlement to land");
+    const [note] = notifiedNotes(refusing.client);
+    textDeclaresKind(note.message, "error", "error-kind notification");
+    answerSays(note.message, "Failure class: transient", "the retryable classification rides in the notice");
+    answerSays(await refusing.tool.task_result.execute({ session_id: id }), "error", "task is retained as error, not stranded active");
+    // A late terminal signal (a child that never ran cannot send one, but a
+    // stray event must not double-notify) still settles exactly once.
+    await refusing.settle(id);
+    assert.strictEqual(notifiedNotes(refusing.client).length, 1, "exactly-once survives a late signal");
+    });
+
 
   it("repeated terminal events notify exactly once", async () => {
     const { h, id } = await withSettledChild();

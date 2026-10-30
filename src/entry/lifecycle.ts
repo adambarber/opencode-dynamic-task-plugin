@@ -128,6 +128,44 @@ function settlePromptDeliveryFailure(host: OpaqueHost, task: ChildRef, message: 
     .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
 }
 
+/**
+ * Has this prompt been accepted / is a turn running for this child?
+ *
+ * A prompt delivery failure is only SURVIVABLE when a turn is actually running:
+ * the child's own terminal event settles it later. But if the prompt was never
+ * accepted — the initial dispatch, whose transport refused at fire time — no
+ * turn ever starts and no terminal event will ever arrive, so returning on the
+ * failure would strand the task Active, holding its concurrency slot forever
+ * (issue #9). A freshly registered child has no turn-observation yet (no
+ * `turnLiveAt`/`lastActivityAt`) and has not replaced a turn (`replacedAt`) or
+ * taken a steer (`lastSteer`); every later prompt — a steer, a continuation, a
+ * revival — rides a child that has already been seen in a turn or replaced one,
+ * so its blips stay survivable.
+ */
+function promptTurnRunning(store: TaskStore, childSessionId: SessionId): boolean {
+  const active = activeFor(store, childSessionId);
+  if (active === undefined) return false;
+  return (
+    active.turnLiveAt !== undefined ||
+    active.lastActivityAt !== undefined ||
+    active.replacedAt !== undefined ||
+    active.lastSteer !== undefined
+  );
+}
+
+// The prompt-failure settlement writes just one state move, shared by the
+// retryable-never-accepted arm and the non-retryable arm so neither re-spells
+// the single-winner transition and its catch.
+function settleError(store: TaskStore, childSessionId: SessionId): boolean {
+  try {
+    transitionState(store, childSessionId, TaskState.Error);
+    return true;
+  } catch {
+    // A lifecycle event won the settlement.
+    return false;
+  }
+}
+
 export interface ChildRef extends TaskIdentity {
   requestedModel?: TaskRecordBase["requestedModel"];
   /** The inbox delivery verdict this prompt asks the host for, if any. */
@@ -146,21 +184,33 @@ export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildR
     ...(task.requestedModel !== undefined ? { model: task.requestedModel } : {}),
   };
   // A delivery failure settles exactly once through the same gate the async
-  // path uses — but only a NON-retryable one. A transport blip (timeout,
-  // refused connection) says nothing about the child: the turn may well be
-  // running, and settling error here would deafen the ledger to the child's
-  // genuine terminal event. Retryable failures leave the task active; the
-  // only bound on a truly-dead child stays operator interruption.
+  // path uses. A NON-retryable failure always settles. A retryable failure
+  // settles TOO when the prompt was never accepted (no turn is running, so no
+  // terminal event will ever arrive and the task would otherwise strand Active
+  // holding a slot, #9); it only survives when the child's turn is actually
+  // running, because then the child's own terminal event settles it.
   const onPromptFailure = (error: unknown): void => {
     const classified = classifyPromptError(error);
     void safeLog(LogLevel.Warn, `Prompt delivery failed for ${task.childSessionId}: ${classified.message} (retryable: ${classified.retryable})`);
-    if (classified.retryable) return;
-    let settled = false;
-    try {
-      transitionState(store, task.childSessionId, TaskState.Error);
-      settled = true;
-    } catch { /* a lifecycle event won the settlement */ }
-    if (settled) settlePromptDeliveryFailure(host, task, classified.message);
+    // A transport blip (timeout, refused connection) says nothing about a child
+    // whose turn is actually RUNNING — settling error there would deafen the
+    // ledger to the child's genuine terminal event. But a blank on a prompt that
+    // was never accepted (the initial dispatch, where no turn ever started, or
+    // a revival whose resume prompt cannot land) has no terminal event coming
+    // at all: retryable must still settle it, never strand it Active holding a
+    // slot (#9). The class rides the notice so the parent can tell the blip
+    // from broken work.
+    if (classified.retryable && promptTurnRunning(store, task.childSessionId)) return;
+    const settled = settleError(store, task.childSessionId);
+    if (!settled) return;
+    if (classified.retryable) {
+      // The prompt was never accepted, so the class is known without a
+      // transcript: the transport refused, and that is a transient blip.
+      recordSettledOutcome(store, task.childSessionId, TaskState.Error, FailureClass.Transient);
+      settlePromptDeliveryFailure(host, task, `${classified.message}\n\n${failureNote(FailureClass.Transient)}`);
+      return;
+    }
+    settlePromptDeliveryFailure(host, task, classified.message);
   };
   try {
     invokePrompt(host, task.childSessionId, prompt, routing, onPromptFailure);

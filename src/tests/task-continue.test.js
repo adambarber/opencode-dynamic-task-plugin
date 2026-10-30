@@ -226,20 +226,14 @@ describe("task_continue branches", () => {
   });
 
   // One hypothesis: a disturbance that is not a terminal signal — an abort echo
-  // from a steer, a retryable transport blip — leaves the task active and
-
-  // silent, so nothing is deafened and the child's own terminal event settles it.
+  // from a steer — leaves the task active and silent, so nothing is deafened and
+  // the child's own terminal event settles it.
   const disturbScenarios = [
     // The steer makes the child echo the abort, and that first idle IS the echo:
     // the next genuine event is the one that settles. Fired bare, because an
     // echo by definition arrives with no turn behind it.
     ["a steered turn's abort echo never settles the task, but the next genuine event does",
       {}, async ({ c, h, id }) => { await c.steer("pivot"); await h.fireEvent(events.idle(id)); }],
-    // A transport blip (ETIMEDOUT) says nothing about the child: the turn may
-    // well be running, so the task stays active and waits for its own event.
-    ["a retryable prompt failure leaves the task active — its event settles it",
-      { hooks: { childPromptFailOnce: { code: "ETIMEDOUT", message: "connect ETIMEDOUT" } } },
-      async () => { await sleep(50); }], // the fire-and-forget catch has run
   ];
   for (const [scenarioName, scenarioHarness, scenarioDisturb] of disturbScenarios) {
     it(scenarioName, async () => {
@@ -252,6 +246,31 @@ describe("task_continue branches", () => {
       textDeclaresKind(note.message, "completed", "the real event still settles");
     });
   }
+
+  // #9: a retryable prompt failure is SURVIVABLE only while a turn is actually
+  // running — a blip on a running turn stays unreported, and that turn's own
+  // terminal event settles it. (A retryable failure on the INITIAL, never-
+  // accepted prompt is the bug #9 fixes: it settles as error instead of
+  // stranding Active. That is asserted in settlement.test.js.)
+  it("a retryable prompt failure on a running steered turn stays active and silent", async () => {
+    const h = await setupHarness();
+    const origPrompt = h.client.session.prompt;
+    let promptCalls = 0;
+    // The initial spawn prompt (call 1) succeeds; the steer's replacement prompt
+    // (call 2) is refused retryably — a transport blip on a turn that is running.
+    h.client.session.prompt = (args) => {
+      promptCalls++;
+      if (promptCalls === 2) {
+        return Promise.reject(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
+      }
+      return origPrompt(args);
+    };
+    const { c } = await h.spawn({ description: "running child" });
+    await c.steer("pivot");
+    await sleep(80); // the fire-and-forget catch has run
+    answerSays(await c.status(), "active", "a running turn makes a retryable blip survivable");
+    await assertNoticeCount(h, 0, "nothing is notified for a survivable blip");
+  });
 
   // The NATIVE steer (an inbox-capable host) is not an abort: the message is
   // promoted at the running turn's next step boundary, so no work is discarded

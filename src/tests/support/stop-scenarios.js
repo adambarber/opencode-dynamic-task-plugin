@@ -85,10 +85,7 @@ export async function withSelfStop({ note = "a caller naming its own session" } 
 export async function withOrphan() {
   const h = await withSingleSlot();
   const before = new Set(sessionIds(h.client));
-  const answers = await Promise.all([
-    h.trySpawn({ description: "winner", prompt: "hi", subagent_type: "explore" }),
-    h.trySpawn({ description: "loser", prompt: "hi", subagent_type: "explore" }),
-  ]);
+  const answers = await Promise.all(twoSlotRace(h));
   // The orphan is named by what it IS — a created session no confirmation claims.
   // Reading it off `wasAborted` would make the fixture depend on what is under test.
   const created = sessionIds(h.client).filter((id) => !before.has(id));
@@ -96,6 +93,20 @@ export async function withOrphan() {
   assert.strictEqual(typeof orphan, "string", "fixture: the race must produce an orphan");
   return { answers, h, orphan };
 }
+
+
+/**
+ * Fire two `dynamic_task` dispatches for one slot, un-awaited. Both pass the
+ * pre-create capacity check (the store is empty when each reads it), so both
+ * sessions are created; one then wins the slot and the OTHER cannot be
+ * registered — the created-but-untracked session the caller must account for.
+ * Returns the two raw promises so a caller that does NOT want to await yet (a
+ * race that parks at a gate) can hold them, and one that does can `Promise.all`.
+ */
+export const twoSlotRace = (h) => [
+  h.trySpawn({ description: "winner", prompt: "hi", subagent_type: "explore" }),
+  h.trySpawn({ description: "loser", prompt: "hi", subagent_type: "explore" }),
+];
 
 /** A child whose abort the host loses once, so the bound is the only thing that answers. */
 export async function withLostAbort() {

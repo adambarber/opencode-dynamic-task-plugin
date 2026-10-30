@@ -13,17 +13,9 @@
 // on disk BEFORE the transcript read answers, and a boot redelivers the
 // placeholder to the parent.
 
-import { formatParentNotification } from "../../dist/shared/notification-text.js";
 import { setupHarness } from "./support/harness.js";
-import { assert, bootOn, describe, it, ledgerSays, owedEntry, retainedEntry, waitFor } from "./support/index.js";
-
-/**
- * The durable pending queue as the next boot would read it: one child's slice,
- * under THIS project's directory. A crash assert reads the disk, not the
- * in-memory queue, because the claim is what SURVIVES a restart.
- */
-const pendingOwedTo = (boot, childSessionId) =>
-  ledgerSays(boot.kv, boot.directory).pending.filter((debt) => debt.childSessionId === childSessionId);
+import { assert, describe, it, waitFor } from "./support/index.js";
+import { pendingOwedTo, residueBoot } from "./support/settlement-debt.js";
 
 describe("a crash between settlement and delivery must not silence the parent", () => {
   it("writes the settlement debt to disk BEFORE reading the child's transcript", async () => {
@@ -54,25 +46,7 @@ describe("a crash between settlement and delivery must not silence the parent", 
     // The on-disk residue a crash leaves AFTER the fix: a retained (settled)
     // record and a pending placeholder debt carrying that child and kind. This is
     // the boot shape the previous case's debt becomes the moment the process dies.
-    const boot = await bootOn(() => ({
-      // A real notice from the real renderer, dated so the ledger reader keeps it:
-      // the reader drops an undated pending row, which would make this case pass
-      // by never seeding the debt at all.
-      pending: [owedEntry({
-        childSessionId: "ses_reserve",
-        kind: "completed",
-        parentSessionId: "ses_parent",
-        text: formatParentNotification({ childSessionId: "ses_reserve", description: "reserved" }, "completed", "reserved this"),
-      })],
-      tasks: {
-        ses_reserve: retainedEntry({
-          agentName: "general",
-          childSessionId: "ses_reserve",
-          description: "reserved",
-          parentSessionId: "ses_parent",
-        }),
-      },
-    }));
+    const boot = await residueBoot({ childSessionId: "ses_reserve", kind: "completed" });
 
     // Boot redelivery offers the placeholder as a real write to the parent.
     await waitFor(() => pendingOwedTo(boot, "ses_reserve").length === 0, "the debt to be paid and retired from disk");

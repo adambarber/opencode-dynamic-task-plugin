@@ -23,6 +23,7 @@ import { errorMessage } from "../shared/host-shape.js";
 import { isSessionMissing } from "../shared/liveness.js";
 import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
+import { reserveSettlementDebt } from "../shared/notify.js";
 import { abortSession } from "../shared/session-abort.js";
 import { resolveParentSessionId, UNKNOWN_PARENT, validateSessionResult } from "../shared/session-lifecycle.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
@@ -312,7 +313,18 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         // state — it exists to reach the funnel, not to be observed.
         const failedRecord = activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now());
         notifyRunning(store, store.markRunning(failedChildSessionId, failedRecord));
-        try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* settled concurrently */ }
+        try {
+          transitionState(store, failedChildSessionId, TaskState.Error);
+          // The settlement claim is durable; the parent-owed debt for it is taken
+          // NOW, before the abort below. The real `deliverParent` a moment later
+          // dedups against this placeholder by (child + kind) and replaces it; the
+          // process dying inside the abort must not leave a settled error record
+          // with no debt and no delivery claim — the crash this placeholder is for.
+          reserveSettlementDebt(
+            { childSessionId: failedChildSessionId, kind: NotifyKind.Error, parentSessionId: parentSessionId || UNKNOWN_PARENT },
+            args.description || "background task",
+          );
+        } catch { /* settled concurrently — the concurrent settlement already took the debt */ }
         await abortSession({ callerSessionId: parentSessionId || undefined, host, store }, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal

@@ -37,6 +37,14 @@ export interface Store {
 }
 
 /** A refusal is reported where it happens; the chain only carries the failure. */
+// One page of a scan, reduced so the reader never tests a `(page | refused)` union —
+// that is exactly how a refused page is mistaken for an empty one. PARTIAL covers
+// both a read that refused and a read that timed out: one vocabulary for "the host
+// did not answer", keeping what the host DID return.
+type ReadPage =
+  | { page: StorageScanResult; partial: false }
+  | { partial: true };
+
 export function createStore(host: OpaqueHost, onRefusal: (what: string) => void): Store {
   // One chain for every key. Two writes to the same key racing would let an
   // earlier record land after a later removal, and the stale one would survive.
@@ -133,28 +141,45 @@ export function createStore(host: OpaqueHost, onRefusal: (what: string) => void)
     load: async (prefix) => {
       const found = new Map<string, StoredValue>();
       let after: string | undefined = undefined;
-      for (;;) {
-        const page = await callHost(
-          host,
-          READ_BOUNDS.storage,
+      // One page, asked on the caller's schedule the way the loop needs it: a
+      // closure over this store's host and refusal channel, so `load` reads one
+      // page at a time and none of this leaks into createStore's own body.
+      const readPage = async (cursor: string | undefined): Promise<ReadPage> => {
+        try {
           // `after` is OMITTED rather than passed undefined: the host declares it
           // optional but not nullable, and the first page is a different request
           // from every page after it.
-          (context) =>
-            context.storage.scan(
-              after === undefined ? { limit: SCAN_PAGE, prefix } : { after, limit: SCAN_PAGE, prefix },
-            ),
-          FINISHED_PAGE,
-        );
-        // A read that timed out returns what it already had, never a clean slate:
-        // an empty ledger and an unreadable one must stay distinguishable.
-        if (page.timedOut) {
-          onRefusal(`refused the read of ${prefix}: no answer in ${READ_BOUNDS.storage}ms`);
-          return { complete: false, entries: found };
+          const bounded = await callHost(
+            host,
+            READ_BOUNDS.storage,
+            (context) =>
+              context.storage.scan(
+                cursor === undefined ? { limit: SCAN_PAGE, prefix } : { after: cursor, limit: SCAN_PAGE, prefix },
+              ),
+            FINISHED_PAGE,
+          );
+          if (bounded.timedOut) {
+            onRefusal(`refused the read of ${prefix}: no answer in ${READ_BOUNDS.storage}ms`);
+            return { partial: true };
+          }
+          return { page: bounded.value, partial: false };
+        } catch (error: unknown) {
+          // A scan that REJECTED refused rather than stayed silent: it may have
+          // answered earlier pages (the host's write chain is one process away) and
+          // what it DID return is real, so the caller keeps every page it already has.
+          onRefusal(`refused the read of ${prefix}: ${errorMessage(error)}`);
+          return { partial: true };
         }
-        for (const entry of page.value.entries) found.set(entry.key, entry.value);
-        if (page.value.next === undefined) return { complete: true, entries: found };
-        after = page.value.next;
+      };
+      for (;;) {
+        const read = await readPage(after);
+        // A refused scan and a timed-out scan are one vocabulary: what the host did
+        // answer is real, and the read is PARTIAL — never a clean slate dressed as a
+        // whole one.
+        if (read.partial) return { complete: false, entries: found };
+        for (const entry of read.page.entries) found.set(entry.key, entry.value);
+        if (read.page.next === undefined) return { complete: true, entries: found };
+        after = read.page.next;
       }
     },
     put: (key, value) => write(key, value),

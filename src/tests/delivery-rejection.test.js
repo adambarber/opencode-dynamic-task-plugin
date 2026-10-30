@@ -18,7 +18,13 @@ const owedDebt = (childSessionId) =>
   owedDelivery({ childSessionId, kind: NotifyKind.Completed, parentSessionId: PARENT }, "owed notice", 1);
 
 describe("a delivery whose durable read fails is contained, never fatal", () => {
-  it("a settlement whose delivery-claim read fails records the non-delivery and leaves the host alive", async () => {
+  // A storage fault no longer REJECTS the claim walk: durable-store.load converts a
+  // scan rejection into a partial read, takeDeliveryClaim reads a partial -> "revoked",
+  // and a revoked claimant still dials (the parent's own transport is fine). The right
+  // assertion is therefore containment — the settlement is delivered, the host is not
+  // killed, the storage loss is still reported — not a non-delivery invented by a
+  // rejection that no longer happens.
+  it("a settlement whose delivery-claim read is unreadable is still delivered and leaves the host alive", async () => {
     const hb = {};
     const h = await setupHarness({ hooks: hb });
     // spawn first so the boot's own read is unaffected, then arm the fault
@@ -28,20 +34,20 @@ describe("a delivery whose durable read fails is contained, never fatal", () => 
     await waitFor(() => getLatestNotification(c.id) !== null, "the settlement's delivery record");
     assert.strictEqual(
       getLatestNotification(c.id).delivered,
-      false,
-      "the non-delivery is recorded, not lost to a crash",
+      true,
+      "the partial read degrades to a revoked claim that still dials, not a lost delivery",
     );
-    answerSays(h.prose(), "storage unavailable", "the operator is told why nothing was delivered");
+    answerSays(h.prose(), "storage unavailable", "the operator is still told the store would not answer");
   });
 
-  it("deliverParent resolves false when the durable claim read fails", async () => {
+  it("deliverParent survives an unreadable durable claim read and still delivers", async () => {
     const hb2 = {};
     const h = await setupHarness({ hooks: hb2 });
     hb2.storageThrows = true;
     const verdict = await deliverParent(opaqueHost(h.client), PARENT, "ses_child", "bg task", NotifyKind.Error, "the text");
-    assert.strictEqual(verdict, false, "a failed delivery resolves false instead of rejecting");
-    assert.strictEqual(getLatestNotification("ses_child").delivered, false, "and the non-delivery is recorded");
-    answerSays(h.prose(), "storage unavailable", "and the failure is on the operator's log");
+    assert.strictEqual(verdict, true, "the partial read degrades to a revoked claim that still dials, never an unhandled rejection");
+    assert.strictEqual(getLatestNotification("ses_child").delivered, true, "and the parent is told");
+    answerSays(h.prose(), "storage unavailable", "and the store's refusal is still on the operator's log");
   });
 
   it("a boot that redelivers an owed notice survives a failing durable read", async () => {

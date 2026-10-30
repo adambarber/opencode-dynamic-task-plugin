@@ -449,6 +449,7 @@ export async function notifyParent(
     return false;
   };
   const run = async (): Promise<boolean> => {
+    try {
     // The CROSS-PROCESS claim, before any dial. Every opencode process on a project
     // receives the same terminal event and would each settle and dial the parent;
     // the durable marker is read before the write and left in place when it lands, so
@@ -540,6 +541,22 @@ export async function notifyParent(
       return false;
     }
 return commit({ attempts: carried + 1, delivered: true });
+    } catch (error: unknown) {
+      // run() opening moved the gate claim from "just taken" to "owed by the in-flight
+      // work", and that work can THROW between the claim and any releasing arm: the
+      // delivery-claim walk (takeDeliveryClaim) is a host read, so a transport fault
+      // (say ECONNRESET via callHost) is exactly the throw that can cross it. If it
+      // does, neither commit nor standDown ran, and without this the gate key would
+      // stay in inFlight for the life of the process and every later notifyParent for
+      // this (child, kind) would be suppressed with { suppressed: true }. Both releases
+      // are idempotent: release() no-ops on a stale generation or a key not in flight,
+      // and releaseDeliveryClaim drops nothing the claim never took, so this is safe
+      // whether the durable claim was reached at all.
+      gateLedger.release(claim);
+      releaseDeliveryClaim(opts.childSessionId, dedupKey);
+      throw error;
+    }
+
   };
   const prev = notifyChains.get(opts.childSessionId) ?? Promise.resolve();
   const cur: Promise<boolean> = prev.then(run, run);

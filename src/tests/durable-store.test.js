@@ -125,3 +125,34 @@ describe("durable store: a refused write and the writes queued behind it", () =>
     world.assertRefused(/refused the write to .*ses_alone/);
   });
 });
+
+// The load() contract: a scan it cannot finish is a PARTIAL read, not a rejected
+// one. The timeout arm already returns { complete: false, entries: found }; a scan
+// that REJECTS (a transport fault — the host refused rather than stayed silent)
+// must land in the same vocabulary, so "host did not answer" is one shape a caller
+// has to handle, and never a clean slate dressed as a whole one.
+describe("durable store: a scan that rejects is a partial read, not a crash", () => {
+  durable.tightBounds();
+
+  it("a host that throws on scan resolves to { complete: false, entries } instead of rejecting", async () => {
+    const world = durable.failing();
+    const found = await world.store.load(durable.key("ses_"));
+    assert.equal(found.complete, false, "a rejected scan is a partial read, never a whole one");
+    assert.equal(found.entries.size, 0, "nothing was read, and it is not reported as present");
+  });
+
+  it("a scan that rejects mid-way keeps the pages already found", async () => {
+    const world = durable.build();
+    for (let i = 0; i < 8; i++) world.seed(`partial_${i}`, { n: i });
+    const real = world.client.storage.scan;
+    let page = 0;
+    world.client.storage.scan = async (options) => {
+      page += 1;
+      if (page >= 2) throw new Error("storage unavailable mid-scan");
+      return real({ ...options, limit: 5 });
+    };
+    const found = await world.store.load(durable.key("partial_"));
+    assert.equal(found.complete, false, "a mid-scan rejection is a partial read");
+    assert.equal(found.entries.size, 5, "the page already read is not thrown away");
+  });
+});

@@ -1,6 +1,6 @@
 
-import { clearNotifyLedger, gateLedger, getLatestNotification, notifyChainCount, notifyParent } from "../../dist/shared/notify.js";
-import { assert, beforeEach, deferred, describe, it, opaqueHost, promptText, recordingClient } from "./support/index.js";
+import { clearNotifyLedger, configureDeliveryClaims, gateLedger, getLatestNotification, notifyChainCount, notifyParent, resetDeliveryClaims } from "../../dist/shared/notify.js";
+import { afterEach, assert, beforeEach, deferred, describe, it, opaqueHost, promptText, recordingClient } from "./support/index.js";
 import { accepted, answeredClient, assertDelivered, gatedClient, gateOpts, withHeldWrites } from "./support/notify-setup.js";
 
 describe("notify gate: notifyParent", () => {
@@ -235,3 +235,47 @@ describe("notify gate: what the gate refuses to deliver twice", () => {
 // BEFORE the dial and retired only when the outcome is known, which makes a
 // duplicate after a crash the visible, accepted cost: a missing notice is silent
 // deafness, a duplicate is a line the operator can read.
+
+// The gate claim and the durable delivery claim are taken SEPARATELY, in two
+// places: the gate claim synchronously at the top of notifyParent, the delivery
+// claim inside run(). If run() throws AFTER the gate claim was taken but before
+// any releasing arm (commit/standDown/deferDebt) runs, the gate key stays in
+// inFlight for the life of the process and every later notifyParent for that
+// (child, kind) is suppressed with { suppressed: true } — the queued debt only
+// ever paid by a restart. The claim walk (takeDeliveryClaim) is where a throwing
+// run() starts: its very first host read can reject as a transport error before
+// any delivering arm has a chance to release the gate claim.
+describe("notify gate: a claim released when the delivery claim walk throws", () => {
+  // A claim store whose FIRST read rejects with a transport error: takeDeliveryClaim
+  // throws before any delivering arm of run() can run. (Post-Bug-2 the durable
+  // store converts a raw scan rejection into a partial read, so no host fault
+  // drives a throw here — this one-shot rejection is the honest way to exercise
+  // the invariant the fix guards: the in-memory gate claim must not outlive run().)
+  beforeEach(() => {
+    clearNotifyLedger();
+    let reads = 0;
+    configureDeliveryClaims({
+      drop: () => {},
+      read: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("ECONNRESET: claim walk refused");
+        return null;
+      },
+      settled: async () => {},
+      write: () => {},
+    });
+  });
+  afterEach(resetDeliveryClaims);
+
+  it("releases the gate claim, so the next notice for the same child is delivered, not suppressed", async () => {
+    const { client } = answeredClient([]);
+    await assert.rejects(
+      notifyParent(opaqueHost(client), "parent_1", "turn 1", gateOpts("ses_leak1", "completed")),
+      /ECONNRESET/,
+      "a transport fault in the claim walk rejects out of notifyParent",
+    );
+    const retried = await notifyParent(opaqueHost(client), "parent_1", "turn 2", gateOpts("ses_leak1", "completed"));
+    assert.strictEqual(retried, true, "the gate claim was released, so the notice is delivered rather than suppressed");
+    assert.strictEqual(getLatestNotification("ses_leak1").suppressed, undefined, "and it is not the suppressed path");
+  });
+});

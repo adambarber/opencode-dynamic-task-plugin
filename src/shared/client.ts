@@ -11,8 +11,9 @@
 // deadline is an argument at the call rather than a scan finding above it.
 
 import type { Context } from "@opencode/plugin/promise/plugin";
+import { debugLog } from "../debug-logger.js";
 import { type BoundArgs, type Bounded, expired, withBound } from "./execution-bound.js";
-import { isEventRecord } from "./host-shape.js";
+import { errorMessage, isEventRecord } from "./host-shape.js";
 
 /** The host, as v2 defines it: a set of typed domains and no client. */
 export type OpenCodeClient = Context;
@@ -72,7 +73,14 @@ export function fireAndForget(
   void Promise.resolve().then(() => work(host[HOST])).catch((error: unknown) => {
     // Swallowed only when there is nobody to tell. A caller that classifies the
     // failure passes `onFailure`, so the report is not lost to this shape.
-    onFailure?.(error);
+    try {
+      onFailure?.(error);
+    } catch (reportError: unknown) {
+      // A reporter that THROWS must not turn the handled work failure into an
+      // unhandled rejection one frame later (#20, one frame on). Contain the
+      // report's own failure so the onFailure contract really holds.
+      debugLog("fire-and-forget", "", "onfailure-threw", { error: errorMessage(reportError) });
+    }
   });
 }
 

@@ -35,3 +35,33 @@ describe("fireAndForget", () => {
     assert.strictEqual(reported.message, "sync boom", "the reported error is the thrown one");
   });
 });
+
+  it("contains a throwing onFailure instead of surfacing an unhandled rejection", async () => {
+    // work throws AND onFailure throws: the .catch's promise must not reject
+    // with nobody to handle it. An unhandledRejection is the process-level
+    // symptom — register an observer (append, never replace) and assert it
+    // never fires, so a regression surfaces as a test failure, not a crash.
+    const unhandled = [];
+    const onUnhandled = (reason) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      assert.doesNotThrow(() => {
+        fireAndForget(
+          host,
+          () => {
+            throw new Error("sync boom");
+          },
+          () => {
+            throw new Error("reporter boom");
+          },
+        );
+      });
+      // Both the deferred work and the reporter run in microtasks; drain them.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.deepStrictEqual(unhandled, [], "a throwing onFailure is contained, not an unhandled rejection");
+    } finally {
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
+  });

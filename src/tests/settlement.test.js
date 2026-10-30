@@ -24,6 +24,44 @@ const settleThenRace = async (h, id) => {
   return h.noticeKinds().length;
 };
 
+// A child whose last message carries the host's OWN retry verdict on the error
+// union (data.isRetryable): the classification must honor it over prose.
+// A harness whose child's transcript reads as the given messages: the shared
+// setup for every case that scripts what the host's turn said.
+const transcriptHarness = async (messages, description) => {
+  const h = await setupHarness({ hooks: { messages: () => messages } });
+  const { id } = await h.spawn({ description });
+  return { h, id };
+};
+
+// The host's own retry verdict on the error union, plus an EARLIER completed
+// message whose words are stale by the final report: the quote must reach the
+// error, never the old text.
+const retryableErrorHarness = async (isRetryable, prose, stale = "the previous stage of the work") => {
+  const { h, id } = await transcriptHarness(
+    [
+      { content: [{ text: stale, type: "text" }], role: "assistant", time: { completed: Date.now() - 10000, created: Date.now() - 10000 } },
+      { info: { error: { data: { isRetryable, message: prose, statusCode: 503 }, name: "APIError" }, role: "assistant" }, parts: [] },
+    ],
+    "host-verdict error task",
+  );
+  return { h, id, prose, stale };
+};
+
+// The budget's arc, shared by every blip doctrine: silent within the budget,
+// one honest transient report at its end. The buddy is the harness plus its
+// child and the stale words the report must not quote.
+const budgetThenTransientReport = async (buddy, notYet) => {
+  const { h, id, stale } = buddy;
+  const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
+  await settleRepeat(h, id, TRANSIENT_RESUME_BUDGET);
+  await assertNoticeCount(h, 0, notYet);
+  await settleOnce(h, id);
+  await assertNoticeCount(h, 1, "the budget's end is reported");
+  const [note] = h.notices();
+  await assertsTransientReport(note, stale, id, h);
+};
+
 const settleRepeat = async (h, id, times) => {
   for (let spent = 0; spent < times; spent += 1) {
     await h.settle(id);
@@ -157,15 +195,7 @@ describe("settlement: the notification layer owns outcomes", () => {
 
   it("a genuine completion notifies completed with real content", async () => {
     const real = "The task produced real output.";
-    const h = await setupHarness({
-      hooks: {
-        // single message with real content
-        messages: () => [
-          { content: [{ text: real, type: "text" }], type: "assistant" },
-        ],
-      },
-    });
-    const { id } = await h.spawn({ description: "real completion task" });
+    const { h, id } = await transcriptHarness([{ content: [{ text: real, type: "text" }], type: "assistant" }], "real completion task");
     const note = await h.settledNotice(id);
     textDeclaresKind(note.message, "completed", "genuine completion is completed, not error");
     answerSays(note.message, real, "notification quotes real content");
@@ -177,55 +207,68 @@ describe("settlement: the notification layer owns outcomes", () => {
 });
 
 describe("settlement defers around host retries and empty-turn blips", () => {
-// A retry announced by EITHER host channel defers settlement: the static
-// session.retry.scheduled, or the in-flight session.status {type: "retry"}.
-// The payload shapes differ, the deferral must not.
-it("defers settlement when a retry is announced — session.retry.scheduled or session.status", async () => {
-  for (const announce of [
-    (sid) => events.retryScheduled(sid, { at: Date.now(), attempt: 1, error: { message: "rate limited", retryAfterMs: 5000, type: "provider" } }),
-    (sid) => events.statusRetry(sid, 1),
-  ]) {
+  // A retry announced by EITHER host channel defers settlement: the static
+  // session.retry.scheduled, or the in-flight session.status {type: "retry"}.
+  // The payload shapes differ, the deferral must not.
+  it("defers settlement when a retry is announced — session.retry.scheduled or session.status", async () => {
+    for (const announce of [
+      (sid) => events.retryScheduled(sid, { at: Date.now(), attempt: 1, error: { message: "rate limited", retryAfterMs: 5000, type: "provider" } }),
+      (sid) => events.statusRetry(sid, 1),
+    ]) {
+      const h = await setupHarness();
+      const { id } = await h.spawn({ description: "retry task" });
+      await assertIdleDeferredDuringRetry(h, id, announce);
+      // The retry's own turn settles it once it finishes.
+      const race = await settleThenRace(h, id);
+      assert.strictEqual(race, 1, "one notice from the retry's own outcome");
+    }
+  });
+
+  // The retry-pending marker is not a one-way latch: the first sign the turn is
+  // alive again (status busy / execution.started) clears it, so the idle that
+  // ends a LATER turn settles instead of being deferred forever.
+  it("a turn that is alive again clears the retry-pending marker", async () => {
     const h = await setupHarness();
-    const { id } = await h.spawn({ description: "retry task" });
-    await assertIdleDeferredDuringRetry(h, id, announce);
-    // The retry's own turn settles it once it finishes.
-    const race = await settleThenRace(h, id);
-    assert.strictEqual(race, 1, "one notice from the retry's own outcome");
-  }
-});
-
-// The retry-pending marker is not a one-way latch: the first sign the turn is
-// alive again (status busy / execution.started) clears it, so the idle that
-// ends a LATER turn settles instead of being deferred forever.
-it("a turn that is alive again clears the retry-pending marker", async () => {
-  const h = await setupHarness();
-  const { id } = await h.spawn({ description: "recovered retry task" });
-  await assertIdleDeferredDuringRetry(h, id, (sid) => events.statusRetry(sid, 1));
-  // The retry begins running: the recovery window is over.
-  await h.fireEvent(events.statusBusy(id));
-  await h.fireEvent(events.working(id));
-  await h.fireEvent(events.idle(id));
-  await waitFor(() => h.noticeKinds().length > 0, "the recovered turn's idle settles it");
-  const [note] = h.notices();
-  textDeclaresKind(note.message, "completed", "not deferred: the retry window closed when the turn ran");
-});
+    const { id } = await h.spawn({ description: "recovered retry task" });
+    await assertIdleDeferredDuringRetry(h, id, (sid) => events.statusRetry(sid, 1));
+    // The retry begins running: the recovery window is over.
+    await h.fireEvent(events.statusBusy(id));
+    await h.fireEvent(events.working(id));
+    await h.fireEvent(events.idle(id));
+    await waitFor(() => h.noticeKinds().length > 0, "the recovered turn's idle settles it");
+    const [note] = h.notices();
+    textDeclaresKind(note.message, "completed", "not deferred: the retry window closed when the turn ran");
+  });
 
 
-it("an empty-content terminal turn resumes silently, then reports transient when the budget is spent", async () => {
-  const { h, id, stale } = await emptyTurnHarness();
-  const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
-  // Silence within the budget: an empty turn-end is the interruption signature,
-  // and the parent is not woken for what the child recovers from.
-  await settleRepeat(h, id, TRANSIENT_RESUME_BUDGET);
-  await assertNoticeCount(h, 0, "empty-content blips are resumed, not reported");
-  assert.strictEqual(promptsTo(h.client, id).length, 1 + TRANSIENT_RESUME_BUDGET, "one resume prompt per budgeted blip");
-  // Budget spent: the parent is told, honestly labeled transient.
-  await settleOnce(h, id);
-  await assertNoticeCount(h, 1, "the budget's end is reported");
-  const [note] = h.notices();
-  await assertsTransientReport(note, stale, id, h);
+  it("an empty-content terminal turn resumes silently, then reports transient when the budget is spent", async () => {
+    const { h, id, stale } = await emptyTurnHarness();
+    await budgetThenTransientReport({ h, id, stale }, "empty-content blips are resumed, not reported");
+    const { TRANSIENT_RESUME_BUDGET } = await import("../../dist/shared/transient-resume.js");
+    assert.strictEqual(promptsTo(h.client, id).length, 1 + TRANSIENT_RESUME_BUDGET, "one resume prompt per budgeted blip");
+  });
+
+  // The host's own retry verdict is the signal: isRetryable:true on the error's
+  // data means the child recovers on its own even when the message text matches
+  // no symptom fragment — silence within the budget, one honest transient report
+  // at the end. isRetryable:false means the host itself calls it fatal; nothing
+  // resumes, whatever the prose looks like.
+  it("a host-marked retryable error with unmatched prose resumes silently, then reports transient", async () => {
+    const { h, id, stale } = await retryableErrorHarness(true, "the upstream service returned an error");
+    await budgetThenTransientReport({ h, id, stale }, "host-stated retryable blips are resumed, not reported");
+  });
+
+  it("a host-marked non-retryable error is reported immediately, whatever the prose says", async () => {
+    const { h, id } = await retryableErrorHarness(false, "socket hang up");
+    await h.settle(id);
+    await sleep(150);
+    await assertNoticeCount(h, 1, "host-stated fatal errors are not resumed");
+    const [note] = h.notices();
+    textDeclaresKind(note.message, "error", "reported as the error it became");
+    answerSays(note.message, "Failure class: structural", "the host's non-retryable verdict outranks transient-looking prose");
+  });
 });
-});
+
 
 describe("notification delivery records", () => {
   it("failed parent delivery is recorded and surfaced", async () => {

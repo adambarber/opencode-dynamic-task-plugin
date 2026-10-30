@@ -512,19 +512,24 @@ function messageStructuredError(message: unknown): Record<string, unknown> | und
 function messageErrorShape(message: unknown): HostErrorShape | undefined {
   const error = messageStructuredError(message);
   if (error === undefined) return undefined;
+  const data = isEventRecord(error.data) ? error.data : undefined;
   const read = (key: "name" | "type"): string | undefined => {
     const value = error[key];
     return typeof value === "string" ? value : undefined;
   };
   const name = read("name") ?? read("type");
-  const isRetryable = typeof error.isRetryable === "boolean" ? error.isRetryable : undefined;
+  // The host's message error is the {name, data} union (schema session.d.ts):
+  // the retryable verdict lives INSIDE data, not beside the name. Reading it
+  // at the top level made the structured verdict dead code on the message path.
+  const isRetryable = data !== undefined && typeof data.isRetryable === "boolean" ? data.isRetryable : undefined;
   if (name === undefined && isRetryable === undefined) return undefined;
   return { ...(name !== undefined ? { name } : {}), ...(isRetryable !== undefined ? { isRetryable } : {}) };
 }
 
 function messageRetryAfterMs(message: unknown): number | undefined {
   const error = messageStructuredError(message);
-  const value = error?.retryAfterMs;
+  const data = isEventRecord(error?.data) ? error.data : undefined;
+  const value = data?.retryAfterMs ?? error?.retryAfterMs;
   return typeof value === "number" ? value : undefined;
 }
 

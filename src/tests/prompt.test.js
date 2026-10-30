@@ -31,6 +31,13 @@ const abortedTurn = (name = "MessageAbortedError", message = "Aborted") => ({
   role: ASSISTANT_ROLE,
 });
 
+// An assistant message carrying the host's structured error envelope: the
+// message union is {name, data}, and the retry verdict lives INSIDE data.
+const apiErrorTurn = (data) => [{
+  info: { error: { data, name: "APIError" }, role: ASSISTANT_ROLE },
+  parts: [],
+}];
+
 describe("describeModelShapeError", () => {
   it("rejects bare ids with the qualified form", () => {
     assert.match(describeModelShapeError("GLM-5.3-Flash"), /providerID\/modelID/);
@@ -359,11 +366,15 @@ describe("prompt dance: hydrateLatestOutcome", () => {
   });
 
   it("surfaces the message-level error detail from the same read", async () => {
-    const failedTurn = [{
-      info: { error: { data: { message: "Too Many Requests" }, name: "APIError" }, role: ASSISTANT_ROLE },
-      parts: [],
-    }];
-    await assertHydrated(() => failedTurn, { errorDetail: "Too Many Requests", errorShape: { name: "APIError" } });
+    await assertHydrated(() => apiErrorTurn({ message: "Too Many Requests" }), { errorDetail: "Too Many Requests", errorShape: { name: "APIError" } });
+  });
+
+  // The host's message error is the {name, data} union: APIError carries its
+  // retry verdict INSIDE data (schema session.d.ts:1899-1906). Reading it at
+  // top level made the structured verdict dead code on the message path.
+  it("surfaces the host's isRetryable verdict from the error's data", async () => {
+    await assertHydrated(() => apiErrorTurn({ isRetryable: true, message: "Too Many Requests", statusCode: 429 }), { errorDetail: "Too Many Requests", errorShape: { isRetryable: true, name: "APIError" } });
+    await assertHydrated(() => apiErrorTurn({ isRetryable: false, message: "temporarily unavailable" }), { errorDetail: "temporarily unavailable", errorShape: { isRetryable: false, name: "APIError" } });
   });
 
   // The field defect, verbatim. A child aborted mid-turn notifies SUCCESS

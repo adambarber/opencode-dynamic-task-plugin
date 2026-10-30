@@ -515,10 +515,14 @@ describe("error settlement guidance", () => {
 // successfully" with "Latest output: (completed)". These tests pin the fix.
 
 describe("outcome correctness: failed turns never report success", () => {
+  // Fatal by the host's own verdict: isRetryable:false means the host calls the
+  // turn dead, so these report error. A retryable:true error on an idle is the
+  // host reestablishing the connection — the plugin defers to it and resumes
+  // silently within the budget (covered in settlement.test.js).
   const erroredMessages = () => [
   { info: { role: "user" }, parts: [] },
   {
-    info: { error: { data: { isRetryable: true, message: "Too Many Requests", statusCode: 429 }, name: "APIError" }, role: ASSISTANT_ROLE },
+    info: { error: { data: { isRetryable: false, message: "Too Many Requests", statusCode: 429 }, name: "APIError" }, role: ASSISTANT_ROLE },
     parts: [],
     },
   ];

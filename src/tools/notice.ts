@@ -5,7 +5,7 @@ import type { ToolContext } from "@opencode/plugin/promise/tool";
 import { isEventRecord } from "../shared/host-shape.js";
 import { annotateNotice, isNoticeClaim, NoticeClaim } from "../shared/notice-claim.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
-import { getLatestNotification, noticeDedupKey, notifyParent } from "../shared/notify.js";
+import { LogLevel, getLatestNotification, noticeDedupKey, notifyParent, safeLog, takeNotice } from "../shared/notify.js";
 import { isParentless } from "../shared/session-lifecycle.js";
 import { findTask, pruneRetainedTasks, TaskState } from "../shared/task-state.js";
 import {
@@ -17,6 +17,7 @@ import {
   NOTICE_PARENTLESS,
   NOTICE_PENDING_ACK,
   NOTICE_SENT,
+  noticeRateLimited,
   noticeClaimRefused,
   noticeTooLong,
   parentUndelivered,
@@ -59,6 +60,27 @@ export async function executeTaskNotify(deps: ToolDeps, args: NotifyArgs, ctx: T
   }
   if (task.state !== TaskState.Active) {
     return alreadySettledNotice(task.state);
+  }
+
+  const now = Date.now();
+  const { allowed, summaryOwed } = takeNotice(callerId, config.noticeMaxPerMinute, now);
+  // When the bucket recovers from a suppression, tell the parent once how many
+  // notices were lost. This is a system message, so it bypasses the child's bucket.
+  if (summaryOwed > 0 && !isParentless(task.parentSessionId)) {
+    const summary = `Suppressed ${summaryOwed} notice(s) from this child sent faster than ${config.noticeMaxPerMinute} per minute.`;
+    await notifyParent(host, task.parentSessionId, formatParentNotification(
+      { childSessionId: task.childSessionId, description: task.description },
+      NotifyKind.Notice,
+      summary,
+    ), {
+      childSessionId: task.childSessionId,
+      dedupKey: noticeDedupKey(summary),
+      kind: NotifyKind.Notice,
+    });
+  }
+  if (!allowed) {
+    safeLog(LogLevel.Warn, `Dynamic task plugin: rate-limited a task_notice from child ${callerId} over ${config.noticeMaxPerMinute} per minute; notice not delivered.`);
+    return noticeRateLimited(config.noticeMaxPerMinute);
   }
 
   annotateNotice(store, callerId, message, claim);

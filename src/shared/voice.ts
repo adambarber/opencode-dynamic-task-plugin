@@ -356,6 +356,11 @@ export const NOTICE_SENT = "Message sent to parent.";
 export const NOTICE_DUPLICATE_SUPPRESSED =
   "Message not sent: this exact notice was already delivered (duplicate suppressed). Say something new and call task_notify again.";
 
+/** A child is sending notices faster than the allowed per-minute rate. */
+export function noticeRateLimited(maxPerMinute: number): string {
+  return `Message not sent: notices are limited to ${maxPerMinute} per minute for this child. Slow down and call task_notify again.`;
+}
+
 /**
  * What a child is told when a notice did not land, derived from the record.
  *

@@ -44,6 +44,8 @@ export interface DynamicTaskConfig {
    * re-offered forever.
    */
   pendingMaxAttempts: number;
+  /** Max task_notice messages a single child may land in any rolling 60-second window. */
+  noticeMaxPerMinute: number;
   blockedAgents: string[];
   allowSameAgentRecursion: boolean;
 }
@@ -81,6 +83,8 @@ function buildDefaultConfig(): DynamicTaskConfig {
     // enough that a parent which is gone is written off rather than re-offered
     // forever. The gate has its own smaller backstop for a caller that names no
     // bound; that is a funnel safety and is deliberately not this number.
+    // A child that chatters faster than this is suppressed, not dialed: each notice is a real turn in a parent's session.
+    noticeMaxPerMinute: 20,
     pendingMaxAttempts: 3,
     retainedTaskMaxEntries: 100,
     retainedTaskTtlMs: 3_600_000,
@@ -164,6 +168,7 @@ function applyKnownFields(target: DynamicTaskConfig, src: unknown): void {
   takePositiveInt(target, s, "retainedTaskTtlMs");
   takePositiveInt(target, s, "retainedTaskMaxEntries");
   takePositiveInt(target, s, "pendingMaxAttempts");
+  takePositiveInt(target, s, "noticeMaxPerMinute");
   if (Array.isArray(s.blockedAgents)) {
     // An explicit empty list is a real setting ("block nothing"), not an
     // absent one — it must override the default blocklist.
@@ -204,6 +209,7 @@ export const ENV = {
   maxConcurrent: "DYNAMIC_TASK_MAX_CONCURRENT",
   maxDepth: "DYNAMIC_TASK_MAX_DEPTH",
   model: "DYNAMIC_TASK_MODEL",
+  noticeMaxPerMinute: "DYNAMIC_TASK_NOTICE_MAX_PER_MINUTE",
   pendingMaxAttempts: "DYNAMIC_TASK_PENDING_MAX_ATTEMPTS",
   retainedTaskMaxEntries: "DYNAMIC_TASK_RETAINED_MAX_ENTRIES",
   retainedTaskTtlMs: "DYNAMIC_TASK_RETAINED_TTL_MS",
@@ -251,6 +257,7 @@ export function normalizeDynamicTaskConfig(
     // Read by the model module's rule, like the file's, so a variable that names a bare
     // id configures nothing rather than a pair with an empty provider.
     model: () => readModelSetting(envValue(ENV.model)),
+    noticeMaxPerMinute: () => parsePositiveInt(envValue(ENV.noticeMaxPerMinute)),
     pendingMaxAttempts: () => parsePositiveInt(envValue(ENV.pendingMaxAttempts)),
     retainedTaskMaxEntries: () => parsePositiveInt(envValue(ENV.retainedTaskMaxEntries)),
     retainedTaskTtlMs: () => parsePositiveInt(envValue(ENV.retainedTaskTtlMs)),
@@ -276,6 +283,7 @@ export function normalizeDynamicTaskConfig(
     // key holding nothing are different statements, and "no global model" has to
     // survive normalization so the ladder can tell it from one that said something.
     ...(merged.model === undefined ? {} : { model: merged.model }),
+    noticeMaxPerMinute: merged.noticeMaxPerMinute,
     pendingMaxAttempts: merged.pendingMaxAttempts,
     retainedTaskMaxEntries: merged.retainedTaskMaxEntries,
     retainedTaskTtlMs: merged.retainedTaskTtlMs,

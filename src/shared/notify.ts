@@ -19,6 +19,7 @@ import { inboxSupported } from "./inbox.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
 import { NotifyKind } from "./notification-text.js";
 import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
+import { clearNoticeBucket } from "./notify-bucket.js";
 import { LogLevel, safeLog } from "./notify-log.js";
 import {
   announceDropped,
@@ -40,6 +41,7 @@ import { type SettlementVerdict, TaskState } from "./task-state.js";
 
 export { configureDeliveryClaims, forgetChildDeliveryClaims, resetDeliveryClaims } from "./delivery-claim.js";
 export { NOTIFY_KINDS } from "./notification-text.js";
+export { takeNotice } from "./notify-bucket.js";
 export { gateLedger } from "./notify-gate.js";
 export { containFailure, LogLevel, safeLog } from "./notify-log.js";
 export type { PendingDelivery } from "./notify-queue.js";
@@ -79,6 +81,7 @@ export function settlementKind(verdict: SettlementVerdict): NotifyKind {
 export function clearNotifyLedger(): void {
   clearDeliveryLedger();
   clearGate();
+  clearNoticeBucket();
 }
 
 function defaultSleep(ms: number): Promise<void> {

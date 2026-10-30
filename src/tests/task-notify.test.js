@@ -9,7 +9,8 @@
  */
 
 import { NOTIFY_TOOL } from "../../dist/shared/notification-text.js";
-import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, waitFor, withChild, withSettledChild } from "./support/index.js";
+import { NOTICE_SENT } from "../../dist/shared/voice.js";
+import { agentDeclaring, allowAction, answerMatches, answerOmits, answerSays, assert, assertNoticeCount, bootOn, bounded, confirmationFor, declareNeedsInput, denyAction, describe, events, it, promptTextsTo, setupHarness, sleep, stateOf, stillActive, textDeclaresKind, waitFor, PARENT, withChild, withSettledChild } from "./support/index.js";
 
 describe("task_notify: the child-to-parent channel", () => {
 
@@ -286,5 +287,18 @@ describe("the spawn confirmation tells the parent what its child cannot report",
     const h = await setupHarness({ hooks: { agentsList: [{ mode: "subagent", name: "explore", permissions: [] }] } });
     const out = await confirmationFor(h, "undeclared worker");
     answerOmits(out, `no ${NOTIFY_TOOL}`, "absence of knowledge must not manufacture a warning either");
+  });
+});
+
+describe("task_notify rate limit (per-child token bucket)", () => {
+  it("delivers at most the bucketed count when a child loops distinct notices", async () => {
+    const maxPerMinute = 5;
+    const { c, h } = await withChild({ harness: { options: { noticeMaxPerMinute: maxPerMinute } } });
+    const verdicts = await Promise.all(Array.from({ length: 50 }, (_, n) => c.notify(`progress ${n}`)));
+    const delivered = h.notices().filter((note) => note.to === PARENT).length;
+    assert.ok(delivered <= maxPerMinute, `expected at most ${maxPerMinute} deliveries, got ${delivered}`);
+    const sent = verdicts.filter((verdict) => verdict === NOTICE_SENT).length;
+    assert.strictEqual(sent, delivered, "every delivered notice reports sent");
+    assert.strictEqual(verdicts.filter((verdict) => /per minute/i.test(verdict)).length, 50 - sent, "every non-sent notice is rate-limited");
   });
 });

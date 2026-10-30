@@ -17,13 +17,14 @@ import { errorMessage } from "./host-shape.js";
 import type { SessionId } from "./ids.js";
 import { inboxSupported } from "./inbox.js";
 import { hostTurnRunning, readLiveness } from "./liveness.js";
-import { NotifyKind } from "./notification-text.js";
-import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
+import { formatParentNotification, NotifyKind } from "./notification-text.js";
 import { clearNoticeBucket } from "./notify-bucket.js";
+import { type Claim, clearGate, currentGateEpoch, gateLedger } from "./notify-gate.js";
 import { LogLevel, safeLog } from "./notify-log.js";
 import {
   announceDropped,
   type DeliverableDebt,
+  type DeliveryTarget,
   dropPending,
   getPendingDeliveries,
   owedDelivery,
@@ -72,6 +73,44 @@ export function settlementKind(verdict: SettlementVerdict): NotifyKind {
     // a fourth verdict must fail loudly here, not fall through as undefined.
     default: throw new Error(`unhandled settlement verdict: ${JSON.stringify(verdict satisfies never)}`);
   }
+}
+
+/**
+ * A settlement's placeholder debt, written the moment the settlement claim
+ * lands — BEFORE the async work (reading the child's transcript) that precedes
+ * the real delivery. The identity of a settlement debt is (child + kind),
+ * independent of the message text, so the real debt `notifyParent` writes a
+ * moment later dedups against this placeholder and replaces its text — and if
+ * the process dies in the gap, this is the debt the next boot redelivers.
+ *
+ * A placeholder only ever reaches the parent in that crash case, so its text is
+ * an honest, self-contained notice: the operator is told the task settled and
+ * how to read what actually happened. Skipped for a parentless child, for the
+ * same reason `deliverParent` records-not-dials one.
+ */
+export function reserveSettlementDebt(
+  target: DeliveryTarget,
+  description: string,
+): void {
+  if (isParentless(target.parentSessionId)) return;
+  const message = formatParentNotification(
+    { childSessionId: target.childSessionId, description },
+    target.kind,
+    `The task settled as ${target.kind}, but this plugin process died before it could read the child's final message. The outcome could differ. Read this task with task_result to see what actually happened.`,
+  );
+  queuePending(owedDelivery(target, message, 0));
+}
+
+/**
+ * Withdraw a reservation the settlement no longer owes. A settlement that
+ * escalates completed → error changed the KIND it owes, which is part of the
+ * debt identity, so the old kind's placeholder would otherwise survive beside
+ * the real debt as a stale duplicate. Called only on that kind change, directly
+ * before the new kind is reserved.
+ */
+export function clearSettlementReservation(target: DeliveryTarget): void {
+  if (isParentless(target.parentSessionId)) return;
+  dropPending(owedDelivery(target, "", 0));
 }
 
 // One reset for the whole notification world: receipts, gate and epoch together. A

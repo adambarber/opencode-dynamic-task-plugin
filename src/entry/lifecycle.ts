@@ -15,12 +15,14 @@ import type { SessionId } from "../shared/ids.js";
 import { declaredBlocked } from "../shared/notice-claim.js";
 import { formatParentNotification, NotifyKind } from "../shared/notification-text.js";
 import {
+  clearSettlementReservation,
   forgetChildDeliveryClaims,
   gateLedger,
   LogLevel,
   notifyParent,
   notifyRecord,
   recordNotification,
+  reserveSettlementDebt,
   safeLog,
   settlementKind,
 } from "../shared/notify.js";
@@ -107,6 +109,25 @@ async function deliverOrContain(
   }
 }
 
+// The settlement claim for a prompt delivery that failed NON-retryably:
+// reserve the parent-owed debt the moment the claim lands, then deliver the
+// failure notice. The reserve closes the same crash window the async settlement
+// path has — the debt is a microtask from the claim, and leaving that gap open
+// is a settled record with no debt and no delivery claim after a crash. Only
+// the notice body changes here, so the two facts ride one named function rather
+// than being spelled out in the failure closure.
+function settlePromptDeliveryFailure(host: OpaqueHost, task: ChildRef, message: string): void {
+  reserveSettlementDebt(
+    { childSessionId: task.childSessionId, kind: NotifyKind.Error, parentSessionId: task.parentSessionId },
+    task.description,
+  );
+  const modelSuffix = task.requestedModel
+    ? `\nRequested model: ${task.requestedModel.providerID}/${task.requestedModel.modelID}`
+    : "";
+  void deliverParent(host, task.parentSessionId, task.childSessionId, task.description, NotifyKind.Error, `${message}${modelSuffix}`)
+    .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
+}
+
 export interface ChildRef extends TaskIdentity {
   requestedModel?: TaskRecordBase["requestedModel"];
   /** The inbox delivery verdict this prompt asks the host for, if any. */
@@ -139,14 +160,7 @@ export function fireChildPrompt(host: OpaqueHost, store: TaskStore, task: ChildR
       transitionState(store, task.childSessionId, TaskState.Error);
       settled = true;
     } catch { /* a lifecycle event won the settlement */ }
-    if (settled) {
-      // The requested model rides along so a bad id names its suspect.
-      const modelSuffix = task.requestedModel
-        ? `\nRequested model: ${task.requestedModel.providerID}/${task.requestedModel.modelID}`
-        : "";
-      void deliverParent(host, task.parentSessionId, task.childSessionId, task.description, NotifyKind.Error, `${classified.message}${modelSuffix}`)
-        .then((delivered) => debugLog(task.parentSessionId, task.childSessionId, "prompt-error-notify", { delivered }));
-    }
+    if (settled) settlePromptDeliveryFailure(host, task, classified.message);
   };
   try {
     invokePrompt(host, task.childSessionId, prompt, routing, onPromptFailure);
@@ -363,6 +377,20 @@ export async function settleRunningChild(
   }
   void safeLog(LogLevel.Info, `Settled ${childSessionId} as ${verdict}`);
 
+  // The settlement claim is durable; the parent-owed debt for it is taken NOW,
+  // before the async work below — the process dying inside the transcript read
+  // (up to 5s) must not leave a settled record with no debt and no delivery
+  // claim. The reservation is a placeholder: its (child + kind) identity is
+  // what the real debt `deliverParent` writes a moment later dedups against, so
+  // it survives a crash and is replaced by the real notice when none comes.
+  const reservedKind = settlementKind(verdict);
+  const reservedDebt = {
+    childSessionId,
+    kind: reservedKind,
+    parentSessionId: task.parentSessionId,
+  };
+  reserveSettlementDebt(reservedDebt, task.description);
+
   const outcome = await hydrateLatestOutcome(host, childSessionId);
   // The kind IS the verdict: the wire vocabulary and the state vocabulary are
   // the same words, so a settled `blocked` cannot be announced as a success.
@@ -375,6 +403,16 @@ export async function settleRunningChild(
     resumesSpent: task.transientResumes ?? 0,
   });
   const kind: NotifyKind = settlementKind(settled.verdict);
+  // The verdict the parent actually owes can differ from the one the claim
+  // reserved: a transcript that corrected a claimed success escalates it to
+  // error, and the kind is part of the debt identity. The old kind's placeholder
+  // is cleared so it cannot survive as a stale duplicate beside the real debt,
+  // and the new kind is reserved before any delivery is attempted — the debt a
+  // crash in the gap leaves is still owed, just under the true kind.
+  if (kind !== reservedKind) {
+    clearSettlementReservation(reservedDebt);
+    reserveSettlementDebt({ ...reservedDebt, kind }, task.description);
+  }
   // WHY, recorded on the same amendment that may correct the state. A parent that
   // inspects this child in an hour asks "was this the network or was this the
   // work", and only the record can answer it — the notification is a moment, and
@@ -407,6 +445,12 @@ export async function settleRunningChild(
   if (transientResumeAvailable(store, childSessionId, { capSource, failure: settled.failure })) {
     const spent = findTask(store, childSessionId)?.transientResumes ?? 0;
     if (resumeAfterBlip(host, store, childSessionId, capSource)) {
+      // A resumed child is NOT going to be told to the parent — the reservation
+      // taken when the claim landed would otherwise survive as a stale durable
+      // debt the next boot redelivers as a bogus "settled" notice for a task
+      // that is running again. The revival cleared the settle-dedup; the owed
+      // debt goes the same way.
+      clearSettlementReservation({ childSessionId, kind, parentSessionId: task.parentSessionId });
       void safeLog(LogLevel.Info, `Resumed ${childSessionId} after a transient failure (resume ${spent + 1} of budget)`);
       return true;
     }
@@ -516,6 +560,14 @@ export async function handleChildLifecycleEvent(
     });
     const kind = settlementKind(settled.verdict);
     recordSettledOutcome(store, childSessionId, settled.verdict, settled.failure);
+    // The escalation's amendment is durable; the debt for it is taken now, so a
+    // crash between the amendment and the debt's own write cannot leave a
+    // record reading `error` with nothing owed. The real debt below overwrites
+    // this placeholder by the same (child + kind) identity.
+    reserveSettlementDebt(
+      { childSessionId, kind, parentSessionId: settledRecord.parentSessionId },
+      settledRecord.description,
+    );
     void deliverParent(host, settledRecord.parentSessionId, childSessionId, settledRecord.description, kind, settled.text)
       .then((delivered) => debugLog(settledRecord.parentSessionId, childSessionId, "retained-late-error", { delivered, kind }));
   }

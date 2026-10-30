@@ -282,6 +282,25 @@ describe("notify: the redelivery budget", () => {
     assert.strictEqual(getLatestNotification(CHILD).delivered, true, "and delivered");
     assert.deepStrictEqual(queuedFor(CHILD), [], "and settled");
   });
+
+  it("a refused first dial at the budget's edge is written off, never dialed a second time", async () => {
+    // The budget was checked ONCE at entry: a debt carried at the budget's edge
+    // passed it, and the in-boot retry could then dial a SECOND time — billing
+    // carried+2 against a bound of maxAttempts, one real parent turn past it.
+    // The retry must share the SAME budget; a debt that spent its last attempt
+    // on the refused first dial is written off, not dialed again.
+    const { client, calls } = answeredClient([new Error("parent busy")]);
+    const verdict = await notifyParent(opaqueHost(client), "parent_1", "owed", {
+      ...gateOpts(CHILD, "error"), carriedAttempts: 2, maxAttempts: 3,
+    });
+
+    assert.strictEqual(verdict, false, "the write-off does not report delivery");
+    assert.strictEqual(calls.length, 1, "the refused first dial, and NO second retry dial");
+    assert.deepStrictEqual(queuedFor(CHILD), [], "an expired debt is not owed any more");
+    const record = getLatestNotification(CHILD);
+    assert.strictEqual(record.expired, true, "the budget-spent debt is EXPIRED, not re-queued");
+    assert.strictEqual(record.attempts, 3, "billed at exactly the budget, never past it");
+  });
 });
 
 // --- The prose the gate writes -----------------------------------------------

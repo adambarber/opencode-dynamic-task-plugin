@@ -343,20 +343,26 @@ export async function notifyParent(
   // flight is claimed, so it is suppressed rather than expired, and a parent
   // being slow is never written off underneath a request it may still answer.
   const maxAttempts = opts.maxAttempts ?? DEFAULT_PENDING_MAX_ATTEMPTS;
-  if (carried >= maxAttempts) {
-    // Written off rather than dialed. This is the only branch in the gate that
-    // ends a debt WITHOUT asking the host anything, and it is the whole point:
-    // redelivering is `session.prompt`, so an attempt is not a free retry — it
-    // is a real user turn in the parent's session, which is why a host that
-    // holds one write per boot wedged the project instead of merely falling
-    // behind. The debt is retired, the claim is released so a genuinely new
-    // notice for this child is not suppressed by a write-off, and the record
-    // says EXPIRED so the parent is not told a failure that will be retried.
+  // The ONE budget gate. A debt is offered while its attempt count is inside the
+  // budget; the moment that count reaches the bound the debt is written off, not
+  // dialed. `session.prompt` is the only parent-write path there is, so every
+  // place that would put another real parent turn on the wire routes through
+  // this same predicate — the entry offer above AND the in-boot retry below —
+  // because an attempt is not a free retry, it is a real user turn in the
+  // parent's session. A bound checked at only one site lets a second site dial
+  // past it (the retry once billed carried+2 against a bound of carried+1).
+  const budgetExhausted = (count: number): boolean => count >= maxAttempts;
+  // Write a budget-spent debt off: retired rather than dialed, the one branch
+  // that ends a debt WITHOUT asking the host anything. The debt is retired, the
+  // claim is released so a genuinely new notice for this child is not suppressed
+  // by a write-off, and the record says EXPIRED so the parent is not told a
+  // failure that will be retried. Returns `false` (not delivered).
+  const writeOff = (count: number): boolean => {
     gateLedger.retire(claim);
     // The gate's retire now frees the claim's own key and ends the generation;
     // an explicit release here would arrive after the bump and recognize nothing.
     dropPending(owed);
-    if (epoch === currentGateEpoch()) emit({ attempts: carried, delivered: false, expired: true });
+    if (epoch === currentGateEpoch()) emit({ attempts: count, delivered: false, expired: true });
     // The host log, for the same reason every other durable-state loss goes
     // there: the notification ledger is in-memory, so this record dies with the
     // process, and the parent may never open a status view. This is the only
@@ -365,10 +371,11 @@ export async function notifyParent(
     // they have to act on — the parent session is not accepting writes, and
     // nothing will be retried.
     void safeLog(LogLevel.Warn, `Dynamic task plugin: a ${kind} notification to parent ${parentSessionId} for task ${opts.childSessionId ?? "(root)"} ` +
-      `was given up on after ${carried} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
+      `was given up on after ${count} attempt(s) and will not be retried. The parent session is not accepting writes. ` +
       `The parent has NOT been told — read this task's status from the parent session to see the write-off.`);
-    return Promise.resolve(false);
-  }
+    return false;
+  };
+  if (budgetExhausted(carried)) return writeOff(carried);
   // Owed BEFORE the dial, every attempt: the debt must be on disk while the
   // request is in flight, because that window is the crash this exists for.
   // A dropped debt is a notice the operator will never be told exists, so it is
@@ -514,6 +521,12 @@ export async function notifyParent(
       // A REFUSED write — the caller is told the attempt failed and the gate's
       // one retry is the answer, which is what this has always done.
       await sleep(NOTIFY_RETRY_DELAY_MS);
+      // The first dial already BILLED carried+1, so the budget is re-checked
+      // before the retry dial against that spent count — the SAME gate as the
+      // entry offer. A debt at the budget's edge spends its last attempt on the
+      // refused first dial, and is written off here rather than putting a second
+      // real parent turn on the wire past the bound.
+      if (budgetExhausted(carried + 1)) return writeOff(carried + 1);
       try {
         await dial(2);
         return commit({ attempts: carried + 2, delivered: true });

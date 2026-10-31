@@ -18,7 +18,7 @@
 import { configureDeliveryClaims, resetDeliveryClaims } from "../../dist/shared/notify.js";
 import { claimStoreFirstRead } from "./support/delivery-claim-store.js";
 import { assert, describe, it, waitFor, withChild } from "./support/index.js";
-import { pendingOwedTo } from "./support/settlement-debt.js";
+import { pendingOwedTo, residueBoot } from "./support/settlement-debt.js";
 
 /**
  * A child steered to a vanished session, with the notify's delivery-claim read
@@ -63,5 +63,16 @@ describe("a crash between the serverGone steer claim and its delivery must not s
     await steer;
 
     resetDeliveryClaims();
+  });
+
+  it("redelivers a vanished-session error placeholder across a restart", async () => {
+    // The on-disk residue a crash leaves AFTER the fix: a retained (settled-error)
+    // record and a pending placeholder debt carrying that child and error kind.
+    // This is the shape the prior case's debt becomes the moment the process dies.
+    const boot = await residueBoot({ childSessionId: "ses_vanished", kind: "error" });
+
+    await waitFor(() => pendingOwedTo(boot, "ses_vanished").length === 0, "the debt to be paid and retired from disk");
+    const noticeBody = boot.noticeBodies().find((body) => body.includes("ses_vanished"));
+    assert.ok(noticeBody, "the parent is re-notified about the reserved task on the next boot");
   });
 });

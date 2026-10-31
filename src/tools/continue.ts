@@ -10,6 +10,7 @@ import { inboxSupported } from "../shared/inbox.js";
 import { hostTurnRunning, readSessionTurn, type SessionTurn } from "../shared/liveness.js";
 import { clearTurnReplacement, markSteerRepeat, markTurnReplacement, steerWasRepeat } from "../shared/notice-claim.js";
 import { NotifyKind } from "../shared/notification-text.js";
+import { reserveSettlementDebt } from "../shared/notify.js";
 import { abortSession, stopPlan } from "../shared/session-abort.js";
 import type { SettledTaskState } from "../shared/task-records.js";
 import { activeFor, isRunning, retainedFor, TaskState, transitionState } from "../shared/task-state.js";
@@ -142,7 +143,21 @@ export async function executeTaskContinue(scope: ResolvedSessionScope, args: Con
       // notification) stands, and the report names it instead of
       // double-notifying an error over the winner.
       let weSettled = false;
-      try { transitionState(store, sessionId, TaskState.Error); weSettled = true; } catch { /* settled concurrently */ }
+      try {
+        transitionState(store, sessionId, TaskState.Error);
+        weSettled = true;
+        // The settlement claim is durable; the parent-owed debt for it is taken NOW,
+        // before the shared notify below. The real `deliverParent` a moment later
+        // dedups against this placeholder by (child + kind) and replaces it; the
+        // process dying before that delivery's own debt is queued (inside
+        // `notifyParent`, after an `await takeDeliveryClaim`) must not leave a
+        // settled error record with no debt and no delivery claim — the crash this
+        // placeholder is for.
+        reserveSettlementDebt(
+          { childSessionId: sessionId, kind: NotifyKind.Error, parentSessionId: active.parentSessionId },
+          active.description,
+        );
+      } catch { /* settled concurrently — the concurrent settlement already took the debt */ }
       if (!weSettled) {
         const state = retainedFor(store, sessionId)?.state;
         if (state) {

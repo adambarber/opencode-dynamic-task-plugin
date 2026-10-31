@@ -25,7 +25,7 @@ import { readParentModel, resolveChildModel } from "../shared/model-choice.js";
 import { NOTIFY_TOOL, NotifyKind } from "../shared/notification-text.js";
 import { reserveSettlementDebt } from "../shared/notify.js";
 import { abortSession } from "../shared/session-abort.js";
-import { resolveParentSessionId, UNKNOWN_PARENT, validateSessionResult } from "../shared/session-lifecycle.js";
+import { type ParentSession, resolveParentSessionId, UNKNOWN_PARENT, validateSessionResult } from "../shared/session-lifecycle.js";
 import { buildBackgroundPrompt } from "../shared/task-formatting.js";
 import {
   activeRecord,
@@ -33,6 +33,7 @@ import {
   isRunning,
   type NewTaskRegistration,
   TaskState,
+  type TaskStore,
   transitionState,
 } from "../shared/task-state.js";
 import {
@@ -91,6 +92,30 @@ import type { SpawnArgs } from "./args.js";
 import { createDummyLineage, type ToolDeps } from "./context.js";
 
 export type { SpawnArgs } from "./args.js";
+
+/**
+ * The ONE way a spawn failure settles the Error claim AND takes the parent-owed
+ * debt for it, whichever branch of the failure path is running. #51/#57 doctrine:
+ * the claim is durable the moment `transitionState` lands, and the real debt is
+ * queued by `deliverParent` only after an await, so a crash in that window would
+ * leave a settled error record with no debt and no delivery claim. The reserve is
+ * the same (child + kind) identity the real debt uses, so the real delivery
+ * replaces it instead of duplicating it. A settled-concurrently failure is the
+ * one reason not to reserve: the winner already took the debt.
+ */
+function settleSpawnFailureClaim(
+  store: TaskStore,
+  failedChildSessionId: SessionId,
+  opts: { parentSessionId: ParentSession; description: string },
+): void {
+  try {
+    transitionState(store, failedChildSessionId, TaskState.Error);
+    reserveSettlementDebt(
+      { childSessionId: failedChildSessionId, kind: NotifyKind.Error, parentSessionId: opts.parentSessionId },
+      opts.description,
+    );
+  } catch { /* settled concurrently — the concurrent settlement already took the debt */ }
+}
 
 export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: ToolContext): Promise<string> {
   const { host, store, config } = deps;
@@ -296,7 +321,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
     if (createdSessionId) {
       const failedChildSessionId = createdSessionId;
       if (isRunning(store, failedChildSessionId)) {
-        try { transitionState(store, failedChildSessionId, TaskState.Error); } catch { /* already terminal */ }
+        settleSpawnFailureClaim(store, failedChildSessionId, { description: args.description || "background task", parentSessionId: parentSessionId || UNKNOWN_PARENT });
       } else {
         // Not "already untracked, nothing to do" — this process created the session,
         // so the record is how it accounts for it. Three things turn on it: the kill
@@ -313,18 +338,7 @@ export async function executeDynamicTask(deps: ToolDeps, args: SpawnArgs, ctx: T
         // state — it exists to reach the funnel, not to be observed.
         const failedRecord = activeRecord({ ...registration, childSessionId: failedChildSessionId }, Date.now());
         notifyRunning(store, store.markRunning(failedChildSessionId, failedRecord));
-        try {
-          transitionState(store, failedChildSessionId, TaskState.Error);
-          // The settlement claim is durable; the parent-owed debt for it is taken
-          // NOW, before the abort below. The real `deliverParent` a moment later
-          // dedups against this placeholder by (child + kind) and replaces it; the
-          // process dying inside the abort must not leave a settled error record
-          // with no debt and no delivery claim — the crash this placeholder is for.
-          reserveSettlementDebt(
-            { childSessionId: failedChildSessionId, kind: NotifyKind.Error, parentSessionId: parentSessionId || UNKNOWN_PARENT },
-            args.description || "background task",
-          );
-        } catch { /* settled concurrently — the concurrent settlement already took the debt */ }
+        settleSpawnFailureClaim(store, failedChildSessionId, { description: args.description || "background task", parentSessionId: parentSessionId || UNKNOWN_PARENT });
         await abortSession({ callerSessionId: parentSessionId || undefined, host, store }, failedChildSessionId);
       }
       // The error settlement notifies like every other terminal

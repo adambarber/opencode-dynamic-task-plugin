@@ -1,5 +1,6 @@
 
 import { clearNotifyLedger, configureDeliveryClaims, gateLedger, getLatestNotification, notifyChainCount, notifyParent, resetDeliveryClaims } from "../../dist/shared/notify.js";
+import { claimStoreFirstRead } from "./support/delivery-claim-store.js";
 import { afterEach, assert, beforeEach, deferred, describe, it, opaqueHost, promptText, recordingClient } from "./support/index.js";
 import { accepted, answeredClient, assertDelivered, gatedClient, gateOpts, withHeldWrites } from "./support/notify-setup.js";
 
@@ -253,17 +254,9 @@ describe("notify gate: a claim released when the delivery claim walk throws", ()
   // the invariant the fix guards: the in-memory gate claim must not outlive run().)
   beforeEach(() => {
     clearNotifyLedger();
-    let reads = 0;
-    configureDeliveryClaims({
-      drop: () => {},
-      read: async () => {
-        reads += 1;
-        if (reads === 1) throw new Error("ECONNRESET: claim walk refused");
-        return null;
-      },
-      settled: async () => {},
-      write: () => {},
-    });
+    configureDeliveryClaims(claimStoreFirstRead(() => {
+      throw new Error("ECONNRESET: claim walk refused");
+    }));
   });
   afterEach(resetDeliveryClaims);
 
